@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { HISTORY_LIMIT, PPS_DEFAULT } from './constants'
-import { applyCommand, applyCommands, EditorCommand, EditorCommandError } from './commands'
+import { applyCommand, applyCommands, EditorCommand } from './commands'
 import { createDoc } from './factories'
 import { linkedClips } from './links'
 import { pruneEmptiedTracks } from './tracks'
@@ -122,21 +122,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   apply: (command) => {
     const { doc, past } = get()
-    try {
-      const next = Array.isArray(command) ? applyCommands(doc, command) : applyCommand(doc, command)
-      // An edit that takes a lane's last clip takes the lane with it (empty
-      // layers never linger); it rides in the same history entry as the edit.
-      const pruned = pruneEmptiedTracks(doc, next)
-      set({
-        doc: pruned,
-        past: [...past, doc].slice(-HISTORY_LIMIT),
-        future: [],
-        // Commands may delete selected clips — drop dangling selection ids.
-        ...normalizeSelections(pruned, get().selections),
-      })
-    } catch (error) {
-      rethrowFriendly(error)
-    }
+    const next = Array.isArray(command) ? applyCommands(doc, command) : applyCommand(doc, command)
+    // An edit that takes a lane's last clip takes the lane with it (empty
+    // layers never linger); it rides in the same history entry as the edit.
+    const pruned = pruneEmptiedTracks(doc, next)
+    set({
+      doc: pruned,
+      past: [...past, doc].slice(-HISTORY_LIMIT),
+      future: [],
+      // Commands may delete selected clips — drop dangling selection ids.
+      ...normalizeSelections(pruned, get().selections),
+    })
   },
 
   beginTransient: () => {
@@ -256,11 +252,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   markAutosaved: () => set({ autosavedAt: Date.now() }),
   setPendingRestore: (json) => set({ pendingRestore: json }),
 }))
-
-function rethrowFriendly(error: unknown): never {
-  if (error instanceof EditorCommandError) throw error
-  throw error
-}
 
 /** Raw (non-hook) access for engine code and tests. */
 export const editorStore = {

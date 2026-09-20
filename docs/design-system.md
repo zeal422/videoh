@@ -12,8 +12,7 @@ Tokens, theming, layout, and UI conventions. Sibling docs: [docs index](README.m
 - **Tokens live in CSS.** `src/app/globals.css` declares `:root` (light reference) and `.dark` (the
   applied theme). A `@theme inline` block maps each CSS variable to a Tailwind utility
   (`--color-background` → `bg-background`, etc.), and `@custom-variant dark (&:is(.dark *))` wires the
-  `dark:` variant. This is Tailwind 4's CSS-first configuration; `tailwind.config.ts` only carries
-  legacy content globs.
+  `dark:` variant. This is Tailwind 4's CSS-first configuration; there is no `tailwind.config.ts`.
 - **Native widgets follow the theme.** `.dark` sets `color-scheme: dark` so number-input spinners,
   scrollbars, and checkboxes render dark chrome instead of flashing white.
 - **There is no theming dependency.** No `next-themes` (or any other theme library) is installed and

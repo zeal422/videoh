@@ -29,12 +29,16 @@ The state core is deliberately browser-free so it can be tested without jsdom. B
 isolated in `media/`, `playback/`, and `export/`, which are tested either through the mocked harness
 or by static wiring assertions.
 
-## Inventory — 27 files, 317 tests
+## Inventory — 30 files, 352 tests
 
 | File                             | Tests | Focus                                                                                                                                             |
 | -------------------------------- | ----: | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `commands.test.ts`               |    33 | every command variant: validation, clamping, track/kind rules, split transitions, z-order insertion                                               |
-| `av-links.test.ts`               |    32 | `hasAudio`, pair placement, group selection/audible routing, group delete/split/duplicate/unlink                                                  |     | `compositing-ui.test.ts` | 34  | static wiring locks across timeline/preview/clipboard/keyboard/link UI, plus the track menu and clip-drag plumbing |
+| `clip-gesture.test.ts`           |    24 | pure gesture decisions: lane drop compatibility, move/trim clamping, snap edge choice, partner shifts                                             |
+| `timeline-panel-ui.test.tsx`     |     6 | first React-render tests (jsdom): lanes + clip markup render, drag commit = one undo entry, cancel leaves no history                              |
+| `docs-drift.test.ts`             |     3 | locks doc test-count claims (README, testing, structure, AGENTS) to the real suite so counts cannot rot                                           |
+| `av-links.test.ts`               |    32 | `hasAudio`, pair placement, group selection/audible routing, group delete/split/duplicate/unlink                                                  |
+| `compositing-ui.test.ts`         |    34 | static wiring locks across timeline/preview/clipboard/keyboard/link UI, plus the track menu and clip-drag plumbing                                |
 | `gate.test.ts`                   |    24 | session sign/verify/expiry/tamper, key derivation (both-materials, rotation), env resolution + init caching, throttle ramp, proxy exact-path lock |
 | `menus.test.ts`                  |    21 | menu structure, no duplicate ids, state resolution, shortcut wiring                                                                               |
 | `playback-core.mocked.test.ts`   |    17 | audio-graph wiring, drift correction, gain×mute×crossfade, shadowing, seek/step, dispose                                                          |
@@ -97,7 +101,7 @@ the static-lock suites; each assertion carries a comment explaining the regressi
 
 ## End-to-end battery
 
-`e2e/battery.sh` drives the real UI through every product feature in 28 steps (import, quick-add,
+`e2e/battery.sh` drives the real UI through every product feature in 29 steps (import, quick-add,
 playback + compositing, split/undo/redo, trim, crossfade, text, audio, menus, panels, autosave/save,
 export at 1080p, settings, and a zero-console-error check). It was built for A/B verification of the
 mocked harness against real browser APIs and still runs as a smoke test:

@@ -10,7 +10,7 @@ deeper references, and they cross-link to each other so you can move between the
 | [flows.md](flows.md)                 | the behavior contracts for each user flow (import, edit, link, export, save/refresh)       |
 | [testing.md](testing.md)             | how to run tests, the test inventory, conventions, the mocked harness, and the E2E battery |
 | [design-system.md](design-system.md) | design tokens, theming, layout conventions, and UI/a11y rules                              |
-| [deployment.md](deployment.md)       | build, run, the standalone output, and the CI gate                                         |
+| [deployment.md](deployment.md)       | build, run, the standalone output, and the verification gate                               |
 
 Project-level files:
 

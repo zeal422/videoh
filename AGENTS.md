@@ -3,7 +3,7 @@
 Browser-based multi-track video editor. Everything runs client-side (object URLs, canvas, Web Audio,
 MediaRecorder) — there is no backend, database, or environment configuration. Single page mounted from
 `src/app/page.tsx` (client-only dynamic import of the editor shell). Stack: Next.js 16 App Router +
-React 19 + TypeScript strict + Tailwind 4 (tokens in `src/app/globals.css`) + shadcn/ui +
+React 19 + TypeScript strict (`noImplicitAny` on, build-time type errors not ignored) + Tailwind 4 (tokens in `src/app/globals.css`) + shadcn/ui +
 zustand 5 + Vitest. Run with **Bun**, never npm/pnpm/yarn.
 
 Docs: [README.md](README.md) and the [docs/ index](docs/README.md) (architecture, structure, flows,
@@ -24,9 +24,8 @@ bun run format       # Prettier write (src, docs, root config)
 bun run build        # production build (standalone)
 ```
 
-Golden rule: after any change run `bun run check`. It mirrors CI exactly — if any step is red you are
-not done. `build` uses `output: "standalone"` (see `next.config.ts`; don't break it), and `typecheck`
-matters because `next build` skips type validation (`typescript.ignoreBuildErrors: true`).
+Golden rule: after any change run `bun run check`. If any step is red you are
+not done. `build` uses `output: "standalone"` (see `next.config.ts`; don't break it).
 
 ## Map
 

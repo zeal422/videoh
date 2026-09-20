@@ -1,0 +1,149 @@
+import { describe, expect, it } from 'vitest'
+import { readFileSync, readdirSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+
+/**
+ * docs-drift.test.ts — locks the documentation's test-count claims to reality.
+ *
+ * testing.md's own convention: "When you add a test file or change the totals,
+ * update this table and the test-count references in the README." This test
+ * enforces that mechanically:
+ *
+ * - Repo-wide headline claims ("N tests", "N test files", "N tests across
+ *   N files") must exactly match the real suite on disk.
+ * - Scoped directory-tree comments ("N test files (M tests)") describe a
+ *   subdirectory, not the repo, so they are only checked to be INTERNALLY
+ *   consistent (files <= tests) and to not accidentally equal a stale
+ *   repo-wide total. They cannot be validated against disk without parsing
+ *   the tree layout they annotate.
+ */
+
+const ROOT = resolve(__dirname, '..', '..', '..', '..')
+const DOCS = ['README.md', 'docs/testing.md', 'docs/structure.md', 'AGENTS.md'] as const
+
+/** Every test file the suite actually runs (vitest include: any src .test.ts or .test.tsx). */
+function realTestFiles(): string[] {
+  const out: string[] = []
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, entry.name)
+      if (entry.isDirectory()) walk(p)
+      else if (/\.test\.tsx?$/.test(entry.name)) out.push(p)
+    }
+  }
+  walk(join(ROOT, 'src'))
+  return out.sort()
+}
+
+/** Count the it/test declarations in one test file (line-anchored, comments excluded). */
+function countCases(file: string): number {
+  const src = readFileSync(file, 'utf8')
+  return (src.match(/^\s*(?:it|test)\s*\(/gm) ?? []).length
+}
+
+/**
+ * Validate one doc's repo-wide headline claims. Returns null when the doc is
+ * consistent, or a short failure description when it is not.
+ */
+function checkHeadline(doc: string, files: string[], total: number): string | null {
+  const text = readFileSync(join(ROOT, doc), 'utf8')
+  // "N tests across N files" (README headline) — the strongest claim.
+  for (const m of text.matchAll(/(\d+)\s+tests across (\d+)\s+files/g)) {
+    if (Number(m[1]) !== total || Number(m[2]) !== files.length)
+      return `${doc}: "${m[0]}" != ${total} tests across ${files.length} files`
+  }
+  // "Inventory — N files, N tests" (testing.md heading).
+  for (const m of text.matchAll(/(\d+)\s+files?,\s*(\d+)\s+tests\b/g)) {
+    if (Number(m[1]) !== files.length || Number(m[2]) !== total)
+      return `${doc}: "${m[0]}" != ${files.length} files, ${total} tests`
+  }
+  // Bare "N tests" / "N test files": scoped directory-tree pairs are stripped
+  // first (parenthetical and comma forms); what remains must be repo-wide.
+  const withoutScoped = text
+    .replace(/\d+\s+test files?\s*\(\d+\s+tests?\)/g, '')
+    .replace(/\d+\s+test files?,\s*\d+\s+tests?/g, '')
+    .replace(/\(\d+\s+tests?\)/g, '')
+  for (const m of withoutScoped.matchAll(/(\d+)\s+tests\b/g)) {
+    if (Number(m[1]) !== total) return `${doc}: "${m[1]} tests" != ${total} tests`
+  }
+  for (const m of withoutScoped.matchAll(/(\d+)\s+test files\b/g)) {
+    if (Number(m[1]) !== files.length) return `${doc}: "${m[1]} test files" != ${files.length}`
+  }
+  return null
+}
+
+/**
+ * Validate scoped directory-tree counts ("N test files (M tests)"). These
+ * describe a subdirectory: `src/lib/editor/__tests__` (the gate test lives in
+ * `src/lib/` and is listed separately in the same line). Where the doc names
+ * the directory, the claim is checked EXACTLY against a real directory count;
+ * unnamed claims fall back to the internal-sanity range.
+ */
+function checkScoped(doc: string, total: number): string | null {
+  const text = readFileSync(join(ROOT, doc), 'utf8')
+  const patterns = [
+    /(\d+)\s+test files\s*\((\d+)\s+tests\)/g,
+    /(\d+)\s+test files,\s*(\d+)\s+tests/g,
+  ]
+  for (const re of patterns) {
+    for (const m of text.matchAll(re)) {
+      const n = Number(m[1])
+      const t = Number(m[2])
+      if (n <= 0) return `${doc}: scoped "${m[0]}" has no files`
+      if (t < n || t > total) return `${doc}: scoped "${m[0]}" out of range (repo total ${total})`
+    }
+  }
+  // Exact check for the one scoped claim shape this repo uses: a directory
+  // count for src/lib/editor/__tests__ with the gate test listed separately.
+  // Count the directory from disk so the claim cannot drift.
+  const dir = join(ROOT, 'src', 'lib', 'editor', '__tests__')
+  const dirFiles = readdirSync(dir).filter((f) => /\.test\.tsx?$/.test(f))
+  const dirTests = dirFiles.reduce(
+    (sum, f) =>
+      sum + (readFileSync(join(dir, f), 'utf8').match(/^\s*(?:it|test)\s*\(/gm) ?? []).length,
+    0,
+  )
+  if (text.includes('gate.test.ts')) {
+    // Claims of the form "N test files (M tests) + gate.test.ts": N and M must
+    // equal the directory totals, and the combined claim must be <= repo total.
+    if (!dirTests && dirFiles.length === 0) return `${doc}: editor __tests__ dir empty?`
+    for (const m of text.matchAll(
+      /(\d+)\s+test files[ ,]+\((\d+)\s+tests?\)\s*\+\s*src\/lib\/gate\.test\.ts/g,
+    )) {
+      if (Number(m[1]) !== dirFiles.length || Number(m[2]) !== dirTests) {
+        return `${doc}: "${m[0]}" != ${dirFiles.length} files / ${dirTests} tests in src/lib/editor/__tests__`
+      }
+    }
+    for (const m of text.matchAll(
+      /(\d+)\s+test files,\s*(\d+)\s+tests\s*\(see testing\.md; \+ gate\.test\.ts/g,
+    )) {
+      if (Number(m[1]) !== dirFiles.length || Number(m[2]) !== dirTests) {
+        return `${doc}: "${m[0]}" != ${dirFiles.length} files / ${dirTests} tests in src/lib/editor/__tests__`
+      }
+    }
+  }
+  return null
+}
+
+describe('docs test-count claims match the real suite', () => {
+  const files = realTestFiles()
+  const total = files.reduce((sum, f) => sum + countCases(f), 0)
+
+  it('the suite is non-empty (the lock must not vacuously pass)', () => {
+    expect(files.length).toBeGreaterThan(0)
+    expect(total).toBeGreaterThan(0)
+  })
+
+  it('every doc headline test count matches the suite', () => {
+    // NOTE: this file must NOT generate its tests in a loop (no `for (...) it(`).
+    // A loop-generated test count would make the static counter below disagree
+    // with vitest, and the lock would fight itself.
+    expect(DOCS.map((doc) => checkHeadline(doc, files, total)).filter((f) => f !== null)).toEqual(
+      [],
+    )
+  })
+
+  it('every doc scoped directory count is internally consistent', () => {
+    expect(DOCS.map((doc) => checkScoped(doc, total)).filter((f) => f !== null)).toEqual([])
+  })
+})

@@ -14,7 +14,10 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    // React component tests opt into jsdom with a per-file
+    // `// @vitest-environment jsdom` comment (environmentMatchGlobs was
+    // removed in vitest 4).
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     coverage: {
       provider: 'v8',
       reportsDirectory: 'coverage',

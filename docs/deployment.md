@@ -53,9 +53,9 @@ excluded by the proxy's matcher. The app bundle never reaches an unauthenticated
 | `bun run test:coverage` | Vitest with enforced coverage thresholds                                |
 | `bun run format`        | Prettier write (`src/`, docs, root config files)                        |
 | `bun run format:check`  | Prettier check (`src/`, docs, root config files)                        |
-| `bun run check`         | the full CI gate (below)                                                |
+| `bun run check`         | the full verification gate (below)                                      |
 
-## The CI gate — `bun run check`
+## The verification gate — `bun run check`
 
 ```bash
 bun run check
@@ -68,13 +68,14 @@ on code that would fail anyway.
 1. **`format:check`** — Prettier over `src/**/*.{ts,tsx}`, the root config files, and `docs/**/*.md`.
    Cheapest signal.
 2. **`lint`** — ESLint (`eslint-config-next` flat config).
-3. **`typecheck`** — `tsc --noEmit` over the whole project. (`next build` skips type validation via
-   `typescript.ignoreBuildErrors`, so this step is the only place types are enforced.)
+3. **`typecheck`** — `tsc --noEmit` over the whole project. (`next build` also type-checks — the
+   "Running TypeScript" build step — so this rung is the earlier, faster signal, not the only
+   place types are enforced.)
 4. **`test`** — Vitest. See [testing.md](testing.md) for the inventory and coverage thresholds.
 5. **`build`** — the production build. Fastest way to catch a broken import graph or a page that fails
    to prerender.
 
-Green here means CI is green. Run it after every change.
+Green here means the gate is green. Run it after every change.
 
 ## Production build
 

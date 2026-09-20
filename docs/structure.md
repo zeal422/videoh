@@ -18,7 +18,6 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 ├── next.config.ts           # output: "standalone"
 ├── vitest.config.ts         # node env, @ alias, coverage include + thresholds
 ├── eslint.config.mjs        # eslint-config-next flat config
-├── tailwind.config.ts       # legacy content globs (Tailwind 4 tokens live in globals.css)
 ├── postcss.config.mjs       # @tailwindcss/postcss
 ├── components.json          # shadcn/ui CLI config (new-york, neutral, lucide)
 ├── tsconfig.json            # strict, noEmit, "@/*" → "./src/*"
@@ -101,6 +100,7 @@ src/lib/editor/
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
 ├── commands.ts           # the 22 EditorCommand variants + applyCommand(s)
 ├── snap.ts               # snap-point computation and application
+├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim math, partner shifts
 ├── transition.ts         # crossfade span + alpha math
 ├── links.ts              # multi-selection / A/V link-group helpers
 ├── clipboard.ts          # copy / cut / paste (module memory, outside undo)
@@ -127,7 +127,7 @@ src/lib/editor/
 │   └── text-box.ts       # text-box measurement (twins the compositor's text renderer)
 ├── export/
 │   └── exporter.ts       # MediaRecorder pipeline + downloadBlob
-└── __tests__/            # 26 test files, 293 tests (see testing.md; + gate.test.ts in src/lib/)
+└── __tests__/            # 29 test files, 328 tests (see testing.md; + gate.test.ts in src/lib/)
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / MediaRecorder
 ```

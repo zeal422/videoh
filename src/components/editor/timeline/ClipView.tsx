@@ -13,8 +13,8 @@ import {
 } from 'lucide-react'
 import { MIN_CLIP_DURATION } from '@/lib/editor/constants'
 import { findMedia } from '@/lib/editor/factories'
-import { SNAP_THRESHOLD_PX } from '@/lib/editor/constants'
-import { applySnap, computeSnapPoints } from '@/lib/editor/snap'
+import { computeSnapPoints } from '@/lib/editor/snap'
+import { decideMove, decideTrimEnd, decideTrimStart } from '@/lib/editor/clip-gesture'
 import { autoScrollStep } from '@/lib/editor/timeline-scroll'
 import {
   commandsToDeleteClips,
@@ -327,7 +327,6 @@ export function ClipView({
     const liveDoc = store.doc
     const scale = store.pxPerSec || pxPerSec
     const snapping = store.snapEnabled
-    const dxSec = (clientX - g.startX) / scale
     if (!g.moved && Math.abs(clientX - g.startX) < 2 && Math.abs(clientY - g.startY) < 2) return
     g.moved = true
     g.lastX = clientX
@@ -337,82 +336,52 @@ export function ClipView({
       excludeClipIds: [clip.id],
       includeTimelineEnd: false,
     })
-    const thr = snapping ? SNAP_THRESHOLD_PX / scale : 0
 
     if (g.mode === 'move') {
       // Re-read the lane boxes every move: the rows can have moved under the
       // pointer since the last event (auto-scroll, a wheel scroll, a resized
       // timeline), and a stale box would resolve the drop onto the wrong lane.
       g.lanes = readLanes()
-      // Track change: find the lane under the pointer (compatible kinds only).
-      let targetTrackId = g.origTrackId
-      let blocked: (typeof g.lanes)[number] | null = null
-      const lane = g.lanes.find((l) => clientY >= l.top && clientY <= l.bottom)
-      if (lane && lane.id !== g.origTrackId) {
-        const target = liveDoc.project.tracks.find((t) => t.id === lane.id)
-        const origTrack = liveDoc.project.tracks.find((t) => t.id === g.origTrackId)
-        if (target && origTrack) {
-          const fits =
-            (target.kind === 'video' && origTrack.kind === 'video') ||
-            (target.kind === 'audio' && origTrack.kind === 'audio')
-          if (fits) targetTrackId = target.id
-          else blocked = lane
-        }
-      }
+      // The whole move decision (lane compatibility, snap edge choice, partner
+      // shifts) is pure math in clip-gesture.ts — this is only the dispatch.
+      const decision = decideMove({
+        orig: g.orig,
+        origTrackId: g.origTrackId,
+        origTrackKind: track.kind,
+        clientX,
+        clientY,
+        startX: g.startX,
+        lanes: g.lanes,
+        tracks: liveDoc.project.tracks,
+        scale,
+        snapping,
+        snapPoints: points,
+        partners: g.partners,
+      })
       // Mark an incompatible lane while the pointer is over it. Without this a
       // refused drop looks identical to a drag that simply did nothing.
       for (const l of g.lanes) {
-        if (l === blocked) l.el.setAttribute('data-drop-blocked', 'true')
+        if (decision.blockedLane && l.id === decision.blockedLane.id)
+          l.el.setAttribute('data-drop-blocked', 'true')
         else l.el.removeAttribute('data-drop-blocked')
       }
-      g.blockedLane = blocked ? { id: blocked.id, kind: blocked.kind } : null
+      g.blockedLane = decision.blockedLane
 
-      let start = Math.max(0, g.orig.start + dxSec)
-      let snapped: number | null = null
-      if (snapping) {
-        const head = applySnap(start, points, thr)
-        const tail = applySnap(start + g.orig.duration, points, thr)
-        if (
-          head.snapped !== null &&
-          (tail.snapped === null ||
-            Math.abs(head.time - start) <= Math.abs(tail.time - (start + g.orig.duration)))
-        ) {
-          start = head.time
-          snapped = head.snapped
-        } else if (tail.snapped !== null) {
-          start = Math.max(0, tail.time - g.orig.duration)
-          snapped = tail.snapped
-        }
-      }
       store.applyTransient({
         type: 'moveClip',
         clipId: clip.id,
-        trackId: targetTrackId,
-        start,
+        trackId: decision.targetTrackId,
+        start: decision.start,
       })
-      // The whole selection follows: same time delta; when the dragged clip
-      // changed lane, partners shift by the SAME track-index offset (skipped
-      // when the destination lane is missing or a different kind).
-      const delta = start - g.orig.start
-      const tracks = liveDoc.project.tracks
-      const dIndex =
-        tracks.findIndex((t) => t.id === targetTrackId) -
-        tracks.findIndex((t) => t.id === g.origTrackId)
-      for (const p of g.partners) {
-        let partnerTrackId = tracks[p.trackIndex]?.id
-        if (dIndex !== 0) {
-          const candidate = tracks[p.trackIndex + dIndex]
-          if (candidate && candidate.kind === p.kind) partnerTrackId = candidate.id
-        }
-        if (!partnerTrackId) continue
+      for (const p of decision.partnerUpdates) {
         store.applyTransient({
           type: 'moveClip',
-          clipId: p.id,
-          trackId: partnerTrackId,
-          start: Math.max(0, p.origStart + delta),
+          clipId: p.clipId,
+          trackId: p.trackId,
+          start: p.start,
         })
       }
-      onSnapGuide(snapped)
+      onSnapGuide(decision.snapped)
       // Keep the edge scroll running while the pointer holds a band, and stop it
       // the moment it leaves.
       syncAutoScroll(g)
@@ -420,37 +389,24 @@ export function ClipView({
     }
 
     if (g.mode === 'trim-start') {
-      let delta = dxSec
-      const minDelta = -g.orig.inPoint // media cannot reveal source before 0
-      const maxDelta = g.orig.duration - MIN_CLIP_DURATION
-      // Images/text: inPoint stays 0 → cannot pull source, only shrink/grow via start
-      const isUnbounded = !asset || asset.kind === 'image'
-      delta = Math.min(
-        Math.max(
-          delta,
-          isUnbounded ? -(g.orig.start + g.orig.duration - MIN_CLIP_DURATION) : minDelta,
-        ),
-        maxDelta,
-      )
-      let newStart = Math.max(0, g.orig.start + delta)
-      let newIn = isUnbounded ? 0 : Math.max(0, g.orig.inPoint + (newStart - g.orig.start))
-      let newDuration = g.orig.start + g.orig.duration - newStart
-      if (snapping) {
-        const s = applySnap(newStart, points, thr)
-        if (s.snapped !== null) {
-          newStart = s.time
-          newIn = isUnbounded ? 0 : Math.max(0, g.orig.inPoint + (newStart - g.orig.start))
-          newDuration = Math.max(MIN_CLIP_DURATION, g.orig.start + g.orig.duration - newStart)
-          onSnapGuide(s.snapped)
-        } else onSnapGuide(null)
-      }
+      // Pure decision in clip-gesture.ts; this is the dispatch.
+      const d = decideTrimStart({
+        orig: g.orig,
+        isUnbounded: !asset || asset.kind === 'image',
+        clientX,
+        startX: g.startX,
+        scale,
+        snapping,
+        snapPoints: points,
+      })
+      onSnapGuide(snapping ? d.snapped : null)
       try {
         store.applyTransient({
           type: 'trimClip',
           clipId: clip.id,
-          start: newStart,
-          inPoint: newIn,
-          duration: newDuration,
+          start: d.start,
+          inPoint: d.inPoint,
+          duration: d.duration,
         })
       } catch {
         // transient clamp violation — ignore
@@ -459,26 +415,27 @@ export function ClipView({
     }
 
     // trim-end
-    let newDuration = g.orig.duration + dxSec
     const maxDur = isMedia
       ? Math.max(MIN_CLIP_DURATION, (asset?.duration ?? 0) - clip.inPoint)
       : Infinity
-    newDuration = Math.min(Math.max(newDuration, MIN_CLIP_DURATION), maxDur)
-    if (snapping) {
-      const end = clip.start + newDuration
-      const s = applySnap(end, points, thr)
-      if (s.snapped !== null) {
-        newDuration = Math.max(MIN_CLIP_DURATION, s.time - clip.start)
-        onSnapGuide(s.snapped)
-      } else onSnapGuide(null)
-    }
+    const d = decideTrimEnd({
+      origStart: clip.start,
+      origDuration: g.orig.duration,
+      maxDuration: maxDur,
+      clientX,
+      startX: g.startX,
+      scale,
+      snapping,
+      snapPoints: points,
+    })
+    onSnapGuide(snapping ? d.snapped : null)
     try {
       store.applyTransient({
         type: 'trimClip',
         clipId: clip.id,
         start: clip.start,
         inPoint: clip.inPoint,
-        duration: newDuration,
+        duration: d.duration,
       })
     } catch {
       // ignore

@@ -147,10 +147,12 @@ describe('A/V linked clips (Premiere-style split + unlink)', () => {
   })
 
   it('clip moves drag the whole selection along (same time delta, per-lane track offset)', () => {
+    // The partner math itself is pure and lives in clip-gesture.ts (decideMove);
+    // the component keeps the capture and dispatch wiring.
     expect(clipView).toMatch(
       /partners: \{ id: string; trackIndex: number; kind: string; origStart: number \}\[\]/,
     )
-    expect(clipView).toMatch(/for \(const p of g\.partners\)/)
+    expect(clipView).toMatch(/decideMove\(/)
     expect(clipView).toMatch(/resolveSelectionGroups\(fresh\.doc, selIds\)/)
   })
 

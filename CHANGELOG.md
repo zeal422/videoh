@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.5] — 2026-09-20
+
+### Changed
+
+- **The TypeScript configuration now matches the "strict" claim.** `noImplicitAny` is on,
+  `typescript.ignoreBuildErrors` is removed from `next.config.ts`, and `reactStrictMode` is enabled
+  (double-render issues in the engine path can no longer hide). No implicit-any errors surfaced: the
+  codebase was already typed as if strict were fully on.
+- **The verification gate is honest about what it is.** There is no CI server; docs now say "the
+  verification gate" instead of implying a CI system exists. `bun run check` remains the golden
+  rule after any change.
+- **The timeline's gesture logic is now pure and tested in Node.** Lane hit-testing, cross-lane
+  compatibility, snap edge choice, trim clamping and selection-partner shifting moved from
+  `ClipView` into `src/lib/editor/clip-gesture.ts` with injected geometry (24 new tests). The
+  component keeps rendering and DOM wiring; behavior is unchanged.
+
+### Added
+
+- **First React-render tests in the gate.** `timeline-panel-ui.test.tsx` (jsdom + Testing Library)
+  renders `TimelinePanel`, asserts lanes and clip markup, and locks the drag commit contract:
+  a whole gesture becomes exactly one undo entry, and a cancelled gesture leaves no history.
+- **A docs drift lock.** `docs-drift.test.ts` parses the test-count claims in README, testing.md,
+  structure.md and AGENTS.md and fails the gate when they disagree with the real suite. Repo-wide
+  totals must match exactly; the scoped `src/lib/editor/__tests__` directory counts are compared
+  against the real directory contents; unnamed scoped claims get an internal-sanity range. This is
+  the mechanical version of testing.md's own "update the counts" convention, which had drifted twice.
+
+### Fixed
+
+- **Two snap-vs-clamp bugs in the extracted gesture math** (`clip-gesture.ts`): a snap point within
+  the snap threshold but past the media boundary could override the raw clamps. On tail-trim the
+  clip could extend past the asset's end; on head-trim the start could be pushed outside the legal
+  window (revealing trimmed source or shrinking below the minimum duration). Snap results are now
+  accepted only inside the same bounds the raw path clamps to; both locked with regression tests
+  proven to fail on the unfixed code.
+- `docs/testing.md`: the `compositing-ui.test.ts` inventory row was glued onto the `av-links.test.ts`
+  line (second occurrence of this bug class; now prevented by the drift lock).
+- `docs/testing.md`: the E2E battery was described as "28 steps"; it runs 29.
+- Removed the orphaned `tailwind.config.ts` (Next starter default, unreferenced; Tailwind 4 tokens
+  live in `globals.css`).
+- Removed `rethrowFriendly` in `store.ts`, a catch block that rethrew the same error unchanged, so
+  the surrounding try/catch did nothing.
+
 ## [0.4.2] — 2026-09-20
 
 ### Changed
