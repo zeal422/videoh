@@ -73,9 +73,10 @@ the browser tests missed — see the entry in [CHANGELOG.md](../CHANGELOG.md).
 
 ## Static wiring locks
 
-Some guarantees are about code shape rather than runtime behavior — React fiber internals (like
-framer-motion's `viewport` option), CSS z-index order, or a component being mounted in a flex
-container. Those are asserted by reading the source or the component's rendered output directly.
+Some guarantees are about code shape rather than runtime behavior — CSS z-index order, a Tailwind
+class contract (a `@container` query where a `sm:` viewport query would clip the transport), or a
+component being mounted in a flex container. Those are asserted by reading the source or the
+component's rendered output directly.
 `compositing-ui.test.ts`, `timeline-layers.test.ts`, `preview-layout.test.ts`, and `theme.test.ts` are
 the static-lock suites; each assertion carries a comment explaining the regression it prevents.
 
@@ -103,3 +104,11 @@ BASE_URL=http://localhost:3000 OUT=results.txt bash e2e/battery.sh
 
 It needs the dev server running and `agent-browser` on `PATH`. Results are written as `PASS`/`FAIL`
 lines so two runs can be diffed. `results*.txt` is gitignored.
+
+Clicks are dispatched at an element's screen coordinates, and both the Inspector and the timeline are
+scroll areas shorter than their content. A control can therefore be listed in the a11y snapshot and
+still be below the fold, where a blind click lands on whatever is painted at that point (the Timeline
+header, or the app footer) instead of the control — which is how `f03 crossfade` and both `f05` audio
+steps used to fail on a short viewport. Every step scrolls its target into view first (`insp()` for
+Inspector controls, `click_clip()` / `delete_clip()` for clips), which keeps results independent of the
+window height. **When you add a step that clicks or fills an element, scroll it into view first.**

@@ -191,6 +191,7 @@ All mutations flow through 22 named commands in `src/lib/editor/commands.ts`, ap
 | `linkClips`          | Bond 2+ selected clips into ONE link group (merge-safe: groups that extend beyond the selection merge whole).                                            |
 | `setClipGain`        | Set linear gain, clamped to `GAIN_MIN..GAIN_MAX`.                                                                                                        |
 | `setClipMuted`       | Set a clip's `muted` flag.                                                                                                                               |
+| `setClipOpacity`     | Set visual opacity, clamped to `OPACITY_MIN..OPACITY_MAX`; omitted at 1 when saved.                                                                      |
 | `setTextContent`     | Change a text clip's content.                                                                                                                            |
 | `setTextStyle`       | Merge a partial `TextStyle` into a text clip.                                                                                                            |
 | `addTransition`      | Add a crossfade by pulling the next clip left to overlap.                                                                                                |

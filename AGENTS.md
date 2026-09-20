@@ -4,7 +4,7 @@ Browser-based multi-track video editor. Everything runs client-side (object URLs
 MediaRecorder) — there is no backend, database, or environment configuration. Single page mounted from
 `src/app/page.tsx` (client-only dynamic import of the editor shell). Stack: Next.js 16 App Router +
 React 19 + TypeScript strict + Tailwind 4 (tokens in `src/app/globals.css`) + shadcn/ui +
-framer-motion + zustand 5 + Vitest. Run with **Bun**, never npm/pnpm/yarn.
+zustand 5 + Vitest. Run with **Bun**, never npm/pnpm/yarn.
 
 Docs: [README.md](README.md) and the [docs/ index](docs/README.md) (architecture, structure, flows,
 testing, design-system, deployment). Read [CHANGELOG.md](CHANGELOG.md) for release history; notable

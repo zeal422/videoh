@@ -7,7 +7,7 @@ Tokens, theming, layout, and UI conventions. Sibling docs: [docs index](README.m
 ## Theming
 
 - **Dark-only.** `src/app/layout.tsx` renders `<html lang="en" className="dark">` — the theme lives on
-  `<html>` so every Radix portal (menu, select, dialog, popover, toast), which mounts at `document.body`
+  `<html>` so every Radix portal (menu, select, dialog, tooltip, toast), which mounts at `document.body`
   outside any component tree, resolves the dark tokens. Do not add a `dark` wrapper inside the shell.
 - **Tokens live in CSS.** `src/app/globals.css` declares `:root` (light reference) and `.dark` (the
   applied theme). A `@theme inline` block maps each CSS variable to a Tailwind utility
@@ -16,8 +16,8 @@ Tokens, theming, layout, and UI conventions. Sibling docs: [docs index](README.m
   legacy content globs.
 - **Native widgets follow the theme.** `.dark` sets `color-scheme: dark` so number-input spinners,
   scrollbars, and checkboxes render dark chrome instead of flashing white.
-- `next-themes` is present only because the shadcn `sonner.tsx` primitive imports `useTheme`; there is
-  no runtime theme switcher.
+- **There is no theming dependency.** No `next-themes` (or any other theme library) is installed and
+  no switcher is rendered — dark is the application's only theme.
 
 ## Tokens
 
@@ -74,8 +74,10 @@ The video surfaces stay dark regardless of the token theme, the way an NLE's mon
 
 ## Components
 
-- `src/components/ui/` holds 48 preinstalled **shadcn/ui** primitives (style `new-york`, base colour
-  `neutral`, icons from `lucide-react`, per `components.json`). **Use them; do not hand-edit them.**
+- `src/components/ui/` holds the **18 shadcn/ui** primitives the editor uses (style `new-york`, base
+  colour `neutral`, icons from `lucide-react`, per `components.json`). The preinstalled 48-primitive
+  set was trimmed to exactly these; `bunx shadcn add <name>` restores any of them on demand.
+  **Use them; do not hand-edit them.**
 - Class merging goes through `cn()` in `src/lib/utils.ts` (`clsx` + `tailwind-merge`).
 - Editor-specific components live in `src/components/editor/` and compose the primitives.
 - Icons come from `lucide-react` only.

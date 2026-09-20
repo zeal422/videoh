@@ -5,6 +5,57 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] — 2026-09-20
+
+Three follow-ups: the dev server now reports failures honestly, the UI layer keeps only the components
+the editor actually uses, and the 28-step UI battery scrolls each control into view before clicking it.
+No editor behavior changed — 266 tests, typecheck and the production build are green. The battery passes
+28/28 with identical results across runs; before the harness fix it reported 25/28 on the same app code.
+
+### Fixed
+
+- **The `dev` script reported success when the server failed to start** (`package.json`).
+  `next dev … 2>&1 | tee dev.log` returns `tee`'s exit status, so a boot failure (port already in use,
+  a startup crash) still exited 0. It now runs under `set -o pipefail`, matching `start`. Proven by
+  occupying the dev port: the old pipeline exited 0, the new one exits 1.
+- **The UI battery clicked off-screen controls** (`e2e/battery.sh`), failing three steps on a short
+  viewport. The Inspector and the timeline are scroll areas shorter than their content, so a control
+  below the fold has no clickable coordinates and the blind click lands on whatever is painted at that
+  point instead — the Timeline header for the Inspector switches, the app footer for the audio clip.
+  `f03 crossfade`, `f05 mute` and `f05 gain` all failed this way, and `click_clip` was silently missing
+  its target in `f07 export prep` (a step that returns success unconditionally, so it never surfaced as
+  a failure). Every target is now scrolled into view before it is touched — `insp()` for Inspector
+  controls, `click_clip()` / `delete_clip()` for clips, and the spinbutton fills. This was a harness
+  defect only: the app was verified correct by scrolling and clicking the same controls live, and the
+  battery now reports 28/28 with byte-identical results across runs.
+
+### Removed
+
+- **30 unused shadcn/ui primitives** (`src/components/ui/`), leaving the 18 that app code actually
+  reaches: badge, button, context-menu, dialog, dropdown-menu, input, label, menubar, progress,
+  resizable, select, separator, slider, switch, textarea, toast, toaster, tooltip. The set was trimmed
+  as a transitive closure, so a primitive imported by a kept primitive (or by app code outside `ui/`)
+  was never removed; `bunx shadcn add <name>` restores any of them.
+- **23 dependencies that existed only to back those primitives**: the `@radix-ui/*` packages those
+  files imported, plus `recharts`, `embla-carousel-react`, `cmdk`, `vaul`, `input-otp`,
+  `react-day-picker`, `react-hook-form`, `sonner` and `next-themes`.
+- **17 dependencies that were already dead** — unreferenced by `src/`, the root config files or
+  `globals.css`: `framer-motion`, `next-auth`, `next-intl`, `zod`, `uuid`, `date-fns`, `sharp`,
+  `@dnd-kit/core`, `@dnd-kit/sortable`, `@dnd-kit/utilities`, `@hookform/resolvers`,
+  `@tanstack/react-query`, `@tanstack/react-table`, `@mdxeditor/editor`, `react-markdown`,
+  `react-syntax-highlighter` and `@reactuses/core`. (`sharp` is safe to drop because the app uses no
+  `next/image`.) Runtime dependencies go from 63 to 23.
+
+### Changed
+
+- `theme.test.ts`'s portal-primitive guard drops its `popover.tsx` entry, since that file was removed
+  with the trimmed primitives. The guard still covers menubar, dropdown-menu, select and dialog.
+- Documentation re-synced with the code after the trim: the ui-primitive count (48 → 18) in
+  `design-system.md` and `structure.md`; the menu action-id count (28 → 36) in `architecture.md`; the
+  `setClipOpacity` row that was missing from the README's command table; and the `framer-motion`,
+  `next-themes`, `sonner` and `popover` references that no longer exist in the project. The shadcn
+  restoration command reads `bunx shadcn add <name>`, matching the project's Bun-only tooling.
+
 ## [0.3.0] — 2026-09-20
 
 Repository hygiene pass: the project no longer carries any leftovers from the scaffold it was

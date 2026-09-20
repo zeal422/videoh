@@ -6,7 +6,7 @@ import { join } from 'node:path'
  * Theme wiring regression locks.
  *
  * The editor is permanently dark-themed, but every Radix portal (menubar
- * dropdowns, dialogs, selects, popovers, toasts) mounts at document.body —
+ * dropdowns, dialogs, selects, toasts) mounts at document.body —
  * OUTSIDE any in-app wrapper div. The `.dark` class must therefore live on
  * `<html>` itself (src/app/layout.tsx), or portaled surfaces silently fall
  * back to the light `:root` tokens and render white.
@@ -47,7 +47,6 @@ describe('theme wiring', () => {
       'src/components/ui/dropdown-menu.tsx',
       'src/components/ui/select.tsx',
       'src/components/ui/dialog.tsx',
-      'src/components/ui/popover.tsx',
     ]) {
       expect(read(file), `${file} must not hardcode bg-white`).not.toMatch(/bg-white\b/)
     }

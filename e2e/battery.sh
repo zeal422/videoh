@@ -15,6 +15,14 @@
 #   go to start, frame-step 60 frames (= 2.0s), press Ctrl+K (Premiere Add Edit;
 #   S now toggles snapping like Premiere).
 # - addTransition PULLS the next clip left → the tail clip's label shifts.
+# - the Inspector and the timeline are scroll areas shorter than their content →
+#   a target below the fold has no clickable screen coordinates, so a blind click
+#   lands on whatever is painted at that point instead (the Timeline header, the
+#   footer, or nothing at all when it is off-screen entirely). Every such target is
+#   scrolled into view before it is touched — insp() for Inspector controls,
+#   click_clip() for clips — so results do not depend on the window height. This is
+#   why f03/f05 failed on a short viewport, and why enabling the crossfade (the new
+#   transition lane pushes the lower tracks down) could break the later audio steps.
 
 set -u
 BASE_URL="${BASE_URL:-http://localhost:3000}"
@@ -35,9 +43,20 @@ step() {
   if "$@" >>"$OUT" 2>&1; then echo "PASS $name" >>"$OUT"; else echo "FAIL $name" >>"$OUT"; fi
 }
 
+# Scroll an Inspector control into view before touching it — see the header note.
+# Never assume a control is on screen just because the a11y snapshot lists it.
+insp() { # insp <selector inside the Inspector>
+  ab scrollintoview "aside[aria-label=Inspector] $1" >/dev/null 2>&1
+  sleeps 0.3
+}
+
 click_clip() { # click_clip <name-regex>
   local r; r=$(firstref "button \"Clip $1")
-  [ -n "$r" ] && ab click "@$r" >/dev/null 2>&1 && sleeps 0.5
+  [ -n "$r" ] || return 1
+  # The timeline is a scroll area too — a clip can sit below its visible edge,
+  # where a blind click lands on the footer instead of selecting the clip.
+  ab scrollintoview "@$r" >/dev/null 2>&1 && sleeps 0.2
+  ab click "@$r" >/dev/null 2>&1 && sleeps 0.5
 }
 fill_timing() { # fill_timing <start> <duration> — Timing spinbuttons of a selected clip
   local n; n=$(snap | grep -c -- '- spinbutton')
@@ -48,7 +67,9 @@ fill_timing() { # fill_timing <start> <duration> — Timing spinbuttons of a sel
   local s d
   s=$(spinrefs | sed -n '1p')
   d=$(spinrefs | sed -n '2p')
+  ab scrollintoview "@$s" >/dev/null 2>&1 && sleeps 0.2
   ab fill "@$s" "$1" >/dev/null 2>&1 && ab press Enter >/dev/null 2>&1 && sleeps 0.3
+  ab scrollintoview "@$d" >/dev/null 2>&1 && sleeps 0.2
   ab fill "@$d" "$2" >/dev/null 2>&1 && ab press Enter >/dev/null 2>&1 && sleeps 0.4
   return 0
 }
@@ -137,6 +158,7 @@ f02_trim() {
 # ————— F3 crossfade —————
 f03_crossfade() {
   click_clip 'sample-video' || { echo "f03: video clip not found" >&2; return 1; }
+  insp '[role=switch][aria-label="Enable crossfade transition"]'
   ab find role switch click --name 'Enable crossfade transition' >/dev/null 2>&1 || {
     echo "f03: switch missing, inspector switches: $(snap | grep -c switch)" >&2
     return 1
@@ -152,6 +174,7 @@ f04_text_add() {
 }
 f04_text_edit() {
   click_clip 'Your text here' || return 1
+  insp 'textarea[aria-label="Text content"]'
   local t; t=$(firstref 'textbox "Text content"')
   [ -n "$t" ] && ab fill "@$t" 'Hello A/B' >/dev/null && sleeps 0.3
 }
@@ -159,6 +182,7 @@ f04_text_edit() {
 # ————— F5 audio —————
 f05_mute() {
   click_clip 'sample-audio' || { echo "f05: audio clip not found" >&2; return 1; }
+  insp '[role=switch][aria-label="Mute clip"]'
   ab find role switch click --name 'Mute clip' >/dev/null 2>&1 || {
     echo "f05: mute switch missing, inspector switches: $(snap | grep -c switch)" >&2
     return 1
@@ -169,6 +193,7 @@ f05_mute() {
 f05_gain() {
   # Radix renders aria-label on the slider root, not the thumb — the a11y
   # snapshot shows it unnamed, so target it via CSS instead of by role+name.
+  insp '[role=slider]'
   ab find first 'aside[aria-label=Inspector] [role=slider]' click >/dev/null 2>&1 || return 1
   ab press End >/dev/null 2>&1 && sleeps 0.4
   [ "$(evaln 'document.querySelector("aside[aria-label=Inspector]").innerText.includes("200%")')" = "true" ]
@@ -230,6 +255,7 @@ f08_save() {
 delete_clip() { # delete_clip <name-regex>
   local r; r=$(firstref "button \"Clip $1")
   if [ -n "$r" ]; then
+    ab scrollintoview "@$r" >/dev/null 2>&1 && sleeps 0.2
     ab click "@$r" >/dev/null 2>&1 && sleeps 0.4 && ab press Delete >/dev/null 2>&1 && sleeps 0.4
   fi
   return 0
@@ -256,6 +282,7 @@ settings_width() {
   sleep 0.5
   local r; r=$(spinrefs | sed -n '1p')
   [ -n "$r" ] || return 1
+  ab scrollintoview "@$r" >/dev/null 2>&1 && sleeps 0.2
   ab fill "@$r" '960' >/dev/null && ab press Enter >/dev/null && sleep 0.8
   [ "$(evaln 'document.querySelector("[data-testid=preview-canvas]").width')" = "960" ]
 }
