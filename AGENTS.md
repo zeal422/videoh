@@ -42,7 +42,8 @@ matters because `next build` skips type validation (`typescript.ignoreBuildError
 - `src/app/` — `layout.tsx` (dark `<html>`, fonts, Toaster), `page.tsx`, `globals.css` (tokens),
   `icon.svg`.
 - `src/lib/editor/__tests__/` — all tests (`*.test.ts`), plus the mocked browser harness in `mocks/`.
-- `e2e/battery.sh` — 28-step UI battery (needs the dev server + `agent-browser`).
+- `e2e/battery.sh` — 29-step UI battery, first step is the gate login (needs the dev server +
+  `agent-browser`; set `GATE_PASSWORD` when the gate is active).
 - `public/samples/` — bundled demo media used by "Load sample media".
 
 ## Critical rules
@@ -68,13 +69,22 @@ matters because `next build` skips type validation (`typescript.ignoreBuildError
 8. **Dev server:** check first (`curl -s --max-time 3 http://localhost:3000`), never start a duplicate,
    and read the `dev.log` tail for state. If you started it, stop your own process group when done;
    never `pkill -f 'next dev'`. If the user started it, leave it running.
-9. **Do not edit without explicit go-ahead.** Vague approval is not edit permission, and one task's
-   approval doesn't extend to the next. Once approved, execute end-to-end without re-asking.
-10. **Surgical changes only** — no drive-by refactors, no new dependencies when the existing stack
+9. **Clean up browser sessions.** Headless browsers (`agent-browser`, puppeteer-style debug runs)
+   leak processes that hold inotify instances and file descriptors — enough of them exhaust the
+   system's 128-instance watch limit and crash Turbopack with `Too many open files`. Close every
+   session you open; the owning tool's exit/stop command, never a bare `pkill chrome` (the user's real
+   browser is Chrome too).
+10. **Do not edit without explicit go-ahead.** Vague approval is not edit permission, and one task's
+    approval doesn't extend to the next. Once approved, execute end-to-end without re-asking.
+11. **Surgical changes only** — no drive-by refactors, no new dependencies when the existing stack
     suffices, no config flags to make errors disappear. Simplicity first.
-11. **Fix-request lists (e.g. `TO_FIX.md`):** verify every finding against the current code before
+12. **Fix-request lists (e.g. `TO_FIX.md`):** verify every finding against the current code before
     fixing; skip invalid ones with a reason; ask before product decisions; add regression tests; keep
     docs in sync; run the full `bun run check`.
+13. **No em dashes. Never, in anything you write to the user: replies, docs, commit messages, code
+    comments.** Use a period or a comma instead. If a thought needs separation, end the sentence.
+    (Also from the unslop skill: no curly quotes, no decorative emoji, sentence-case headings, and
+    prefer plain words over AI-vocabulary like "delve", "showcase", "leverage".)
 
 ## Workflow
 

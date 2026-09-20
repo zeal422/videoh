@@ -5,6 +5,93 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] — 2026-09-20
+
+### Changed
+
+- **Session cookies are no longer signed with the password itself.** The HMAC key is now derived from
+  two materials: the new `GATE_SECRET` (independent, machine-generated — `openssl rand -base64 32`)
+  and `GATE_PASSWORD`, via `sessionKey()`. Neither value alone can mint or verify a cookie; a stolen
+  cookie can no longer be brute-forced for the password offline (the attacker lacks the secret);
+  rotating the password still invalidates every live session at once. This revises 0.4.1's recorded
+  decision, on review: the cost is one more env var, and it removes a whole attack category instead
+  of arguing likelihood.
+  - **Production refuses to boot without `GATE_SECRET`** — a silent password-only fallback there
+    would quietly reopen the hole. Local dev without the secret falls back to password-only signing
+    and prints a one-time warning, so the repo stays contributor-friendly.
+  - The password never signs anything directly — it authenticates logins (`verifyPassword`) and is
+    one of the two inputs to the signing-key derivation (`sessionKey(secret, password)`), so rotating
+    it still rotates the key; the raw password is never the HMAC key itself.
+  - 11 new tests: both-materials derivation, legacy-cookie rejection (old-scheme cookies do not verify
+    and vice versa), rotation invalidation, cross-material rejection, and the full env-resolution
+    matrix (open / both-set / production-throws / dev-fallback) plus init-caching semantics — the
+    gate resolves once per process at init (a production misconfiguration surfaces at boot, not on a
+    user's first request), the gate-open result is memoized correctly (a `??=` would have re-resolved
+    it forever, caught by test before it shipped), and the dev-fallback warning fires exactly once.
+    306 → 317 tests.
+
+## [0.4.1] — 2026-09-20
+
+### Fixed
+
+- The gate proxy's asset bypasses matched by **prefix** (`startsWith('/icon')`), so a future route
+  named like an asset (`/icon-admin`, `/favicon-api`) would have skipped the gate silently. The
+  bypass set is now exact paths only (`/gate`, `/api/gate-login`, and Next's dev-only hot-reload
+  endpoint); static assets stay handled by the matcher's exact exclusions. Locked by a static-source
+  test that fails if a `startsWith` ever returns to the proxy's path logic.
+- `docs/testing.md` was missing the `gate.test.ts` row from the per-file inventory (totals said
+  27 files / 304 tests with only 26 rows listed); row added, totals updated to 27 / 306.
+- `docs/deployment.md` claimed "the only route served without one [a session]" — inaccurate, since
+  the login POST and static assets are also reachable unauthenticated. Reworded to name the real
+  bypass set.
+
+### Security decisions (reviewed, declined on purpose)
+
+- **Server-side throttle store.** The failure counter lives in a signed cookie, so a client can reset
+  it by clearing cookies or replaying an older value — any client-held state is client-controlled by
+  definition. The real fix is server-side state, i.e. an external service for a friction feature on a
+  private deployment. Declined: the password's entropy is the actual security boundary; the ramp only
+  slows casual guessing. Revisit if the deployment ever becomes a target.
+- **Independent signing secret.** The session cookie is signed with the password itself, so an
+  attacker holding one valid cookie could brute-force the password offline from it. A second random
+  env var mixed into the HMAC key would close that — but the scenario requires already possessing a
+  valid cookie, which on HTTPS + HttpOnly means the attacker is effectively in anyway. Declined in
+  favour of a strong password; cheap to add later if the threat model changes.
+
+## [0.4.0] — 2026-09-20
+
+### Added
+
+- **Access gate** — a password-protected entry zone for public deployments (e.g. Vercel). Next 16's
+  `src/proxy.ts` (the renamed middleware convention) checks a signed session cookie on every request;
+  without one, only `/gate` — a minimal, token-styled password screen with zero client JS — is ever
+  served, so the app bundle never reaches an unauthenticated visitor.
+  - Password comes from the `GATE_PASSWORD` environment variable (`.env.example` documents it; unset
+    means the gate is open, so a checkout without the variable is not a mystery outage). It is never
+    committed to the repo.
+  - Sessions last 24 hours (daily re-login), HttpOnly + SameSite=Lax + Secure in production, signed
+    HMAC-SHA256 with the password itself — rotating the password invalidates every live session.
+  - Constant-time password comparison; failed attempts counted in a second signed cookie with an
+    escalating delay ramp (3 free tries, then 15 s doubling to a 15 min ceiling).
+  - 11 unit tests for the sign/verify/expiry/tamper/throttle primitives (`src/lib/gate.test.ts`);
+    verified against the production server with a real browser: stranger redirect, blocked deep
+    routes, wrong/right password, throttle lockout even for the correct password, expiry, and the
+    editor loading after login.
+  - E2E battery gains a gate-login step (`g0`) and runs 29/29 against the gated build.
+
+### Fixed
+
+- Login redirects use relative `Location` headers. Absolute URLs built from `nextUrl` normalise the
+  origin (e.g. `127.0.0.1` → `localhost` behind the standalone server or a reverse proxy), which
+  stranded the fresh session cookie on the wrong host and re-fired the gate right after a correct
+  login — found by the battery, not by reading code.
+
+### Changed
+
+- `.gitignore` exempts `.env.example` from the `.env*` rule so the documented variable ships with the
+  repo; docs (`deployment.md`, `testing.md`, `AGENTS.md`) describe the gate, the battery login step,
+  and the new inventory counts (27 files, 304 tests).
+
 ## [0.3.5] — 2026-09-20
 
 Makes the timeline's layers behave the way a layers panel is expected to: a clip can be dragged onto

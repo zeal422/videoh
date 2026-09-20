@@ -10,8 +10,34 @@ Build, run, and verify. Sibling docs: [docs index](README.md) · [architecture.m
   the entry points.
 - A **current Chromium-based browser** for the full feature set (MediaRecorder + Web Audio + canvas
   `captureStream`). Firefox/Safari lack parts of the export pipeline.
-- No database, no environment variables, no server-only code. The editor is a client-side app; the only
-  server piece is the Next.js process that serves the static shell.
+- No database, no server-only application code. The editor itself is a client-side app; the only
+  server pieces are the Next.js process that serves the static shell and the **access gate**
+  (see [Access gate](#access-gate) below).
+
+## Access gate
+
+The deployment can sit behind a password gate (`src/proxy.ts`, Next 16's renamed middleware): every
+request without a valid session cookie is redirected to `/gate`. Only the two routes that make login
+work (`/gate` itself and `POST /api/gate-login`, plus Next's dev-only hot-reload endpoint) are served
+without a session; static assets (`/_next/static`, `/_next/image`, `favicon.ico`, `icon.svg`) are
+excluded by the proxy's matcher. The app bundle never reaches an unauthenticated client.
+
+- **Setup:** set `GATE_PASSWORD` and `GATE_SECRET` (see `.env.example`; on Vercel: Project Settings →
+  Environment Variables). The password is the human credential; the secret is an independent random
+  value (`openssl rand -base64 32`) mixed into the session-cookie key. The server **refuses to boot**
+  in production without `GATE_SECRET`; local dev falls back to password-only signing with a console
+  warning. When `GATE_PASSWORD` is unset the gate is open — a checkout without the variable must not
+  turn into a mystery outage.
+- **Sessions:** a correct login sets a signed HttpOnly cookie valid for 24 hours (daily re-login).
+  The cookie key is `HMAC(GATE_SECRET, GATE_PASSWORD)` — neither value alone can mint or verify a
+  cookie, a stolen cookie cannot be brute-forced for the password (the attacker lacks the secret),
+  and rotating the password still invalidates every live session at once.
+- **Throttle:** failed attempts are counted in a second signed cookie; after 3 free tries each
+  further attempt inside the penalty window is refused without comparing the password (15 s doubling
+  to 15 min). Clearing cookies resets the counter — accepted, because the password's entropy plus the
+  signing secret are the real defence and the deployment is not a public target.
+- The E2E battery logs in as its `g0` step when the gate is active (`GATE_PASSWORD` env var).
+- Local dev uses the same gate: copy `.env.example` to `.env.local` and set the password there.
 
 ## Scripts
 

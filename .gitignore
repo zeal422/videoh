@@ -27,8 +27,9 @@ node_modules
 # logs
 *.log
 
-# env files
+# env files (the checked-in example is the exception)
 .env*
+!.env.example
 
 # vercel
 .vercel

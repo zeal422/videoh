@@ -39,6 +39,8 @@ src/app/
 ├── layout.tsx        # root layout: Geist fonts, dark <html>, <Toaster>
 ├── page.tsx          # client-only dynamic import of the editor shell (avoids SSR id mismatch)
 ├── globals.css       # Tailwind 4 entry + design tokens (:root / .dark) + editor scrollbars
+├── gate/page.tsx     # password screen served when the access gate is locked (see deployment.md)
+├── api/gate-login/   # POST route: password check, session cookie, throttle ramp
 └── icon.svg          # favicon (Next.js file convention)
 ```
 
@@ -76,6 +78,15 @@ src/hooks/
 ├── use-mobile.ts                 # responsive breakpoint hook (shadcn)
 └── use-toast.ts                  # toast store (shadcn)
 ```
+
+## `src/lib/gate.ts` — the access gate primitives
+
+Pure session/throttle crypto (HMAC-SHA256 via node:crypto, constant-time compares): sign/verify the
+24 h session cookie under a key derived from `GATE_SECRET` + `GATE_PASSWORD` (`sessionKey()`), the
+failure-counter cookie, and the delay ramp. `gate-env.ts` resolves and validates the two env
+materials (secret required in production, dev warns and falls back). Unit-tested in `gate.test.ts`;
+`src/proxy.ts` (Next 16 middleware) and `src/app/api/gate-login/route.ts` wire it to cookies. See
+[deployment.md](deployment.md#access-gate).
 
 ## `src/lib/editor/` — the editor core
 
@@ -116,7 +127,7 @@ src/lib/editor/
 │   └── text-box.ts       # text-box measurement (twins the compositor's text renderer)
 ├── export/
 │   └── exporter.ts       # MediaRecorder pipeline + downloadBlob
-└── __tests__/            # 26 test files, 293 tests (see testing.md)
+└── __tests__/            # 26 test files, 293 tests (see testing.md; + gate.test.ts in src/lib/)
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / MediaRecorder
 ```

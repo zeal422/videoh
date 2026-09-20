@@ -76,6 +76,19 @@ fill_timing() { # fill_timing <start> <duration> — Timing spinbuttons of a sel
 
 # ————— 0. boot —————
 s01_boot() { ab open "$BASE_URL" >/dev/null && sleep 2.5; }
+
+# g0 gate login — the app sits behind a password gate (src/proxy.ts). With
+# GATE_PASSWORD unset (gate open) this is a no-op; with it set, the first
+# navigation lands on /gate and every later step needs the session cookie.
+g0_login() {
+  if snap | grep -q 'This editor is private'; then
+    ab fill 'input[type=password]' "${GATE_PASSWORD:?GATE_PASSWORD must match the server}" >/dev/null
+    ab press Enter >/dev/null
+    sleep 2.5
+  fi
+  snap | grep -q 'Load sample media'
+}
+
 s02_fresh() {
   ab eval 'localStorage.clear()' >/dev/null
   ab reload >/dev/null && sleep 2.5
@@ -294,6 +307,7 @@ console_clean() {
 
 # ————— run —————
 step "s01 boot: page loads and renders"            s01_boot
+step "g0  gate: login accepts the access password"   g0_login
 step "s02 fresh: storage cleared, editor empty"    s02_fresh
 step "f01 import: sample media loads 3 assets"     f01_import
 step "f02 add: video+audio+image quick-added"      f02_add
