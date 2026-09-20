@@ -10,6 +10,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
+import { Input } from '@/components/ui/input'
 import { toast } from '@/hooks/use-toast'
 
 import { Ruler } from './Ruler'
@@ -265,6 +273,36 @@ export function TimelinePanel() {
     useEditorStore.getState().apply({ type: 'addTrack', kind, trackId: uid('track') })
   }, [])
 
+  // ————— keep the view on the lanes you were looking at when a track is added —————
+  // Only ~two rows fit in the track area, so a new lane takes its slot out of
+  // the lanes below it — which is how "add an audio track" used to hide the very
+  // clip you meant to drag onto it. Adding a lane shifts every lane below the
+  // insertion down by exactly one row, so scrolling by that row cancels the
+  // shift and leaves them where they were. The browser clamps, so when every lane
+  // still fits nothing moves at all. The new lane is not force-scrolled into view
+  // on purpose: the lanes you were working on win, and drag auto-scroll is what
+  // reaches a lane that is off-screen.
+  const trackIdsRef = useRef<string[]>([])
+  useEffect(() => {
+    const ids = doc.project.tracks.map((t) => t.id)
+    const prev = trackIdsRef.current
+    trackIdsRef.current = ids
+    // Only a genuine ADD scrolls — project load, undo/redo and deletes must not
+    // move the viewport under the user.
+    if (prev.length === 0 || ids.length <= prev.length) return
+    const added = ids.find((id) => !prev.includes(id))
+    const scrollEl = scrollRef.current
+    // Match on the dataset rather than interpolating the id into a selector:
+    // a track id can arrive from a loaded project file and may contain quotes.
+    const rowEl = added
+      ? Array.from(scrollEl?.querySelectorAll<HTMLElement>('[data-track-row]') ?? []).find(
+          (el) => el.dataset.trackRow === added,
+        )
+      : null
+    if (!scrollEl || !rowEl) return
+    scrollEl.scrollTop += rowEl.getBoundingClientRect().height
+  }, [doc.project.tracks])
+
   return (
     <section aria-label="Timeline" className="flex min-h-0 flex-1 flex-col bg-background">
       <div
@@ -356,8 +394,13 @@ export function TimelinePanel() {
               the topmost compositing layer (compositor draws last→first), so
               a drop between rows maps 1:1 to an addTrack atIndex insertion */}
           {doc.project.tracks.map((track, rowIndex) => (
-            <div key={track.id} className="flex" style={{ height: TRACK_HEIGHT[track.kind] }}>
-              <TrackHeader track={track} />
+            <div
+              key={track.id}
+              data-track-row={track.id}
+              className="flex"
+              style={{ height: TRACK_HEIGHT[track.kind] }}
+            >
+              <TrackHeader track={track} canDelete={doc.project.tracks.length > 1} />
               <div
                 data-lane-id={track.id}
                 data-lane-kind={track.kind}
@@ -471,39 +514,135 @@ export function TimelinePanel() {
   )
 }
 
-function TrackHeader({ track }: { track: Track }) {
+/**
+ * A timeline lane's header: kind icon, name (double-click or the menu to
+ * rename), clip count, track mute, and the track menu.
+ *
+ * The menu is where the track-level commands live — `renameTrack` and
+ * `removeTrack` had no UI reachable from anywhere, so neither was usable.
+ */
+function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean }) {
   const KindIcon = track.kind === 'video' ? Video : track.kind === 'audio' ? AudioLines : TypeIcon
+  const [renaming, setRenaming] = useState(false)
+  const [draft, setDraft] = useState(track.name)
+  const renameInputRef = useRef<HTMLInputElement>(null)
+  // Choosing “Rename Track…” has to out-race Radix's focus return: the field
+  // mounts only once the menu unmounts, and the menu then hands focus back to
+  // the header — which silently swallowed every keystroke. The flag lets us
+  // suppress that one focus restore; the effect below focuses the field.
+  const renameFromMenuRef = useRef(false)
   const toggleMute = () =>
     useEditorStore.getState().apply({ type: 'toggleTrackMute', trackId: track.id })
+  const deleteTrack = () =>
+    useEditorStore.getState().apply({ type: 'removeTrack', trackId: track.id })
+  const startRename = () => {
+    setDraft(track.name)
+    setRenaming(true)
+  }
+  const commitRename = () => {
+    const name = draft.trim()
+    if (name && name !== track.name) {
+      useEditorStore.getState().apply({ type: 'renameTrack', trackId: track.id, name })
+    }
+    setRenaming(false)
+  }
+
+  useEffect(() => {
+    if (!renaming) return
+    // A frame later, so this lands after Radix has finished closing the menu
+    // and any of its focus juggling has settled.
+    const id = requestAnimationFrame(() => renameInputRef.current?.focus())
+    return () => cancelAnimationFrame(id)
+  }, [renaming])
 
   return (
-    <div
-      className="sticky left-0 z-30 flex shrink-0 items-center gap-2 border-b border-r border-b-border/60 bg-card px-2"
-      style={{ width: TRACK_HEADER_WIDTH }}
-    >
-      <KindIcon
-        className={cn(
-          'size-3.5 shrink-0',
-          track.kind === 'video' && 'text-emerald-400',
-          track.kind === 'audio' && 'text-amber-400',
-          track.kind === 'text' && 'text-violet-400',
-        )}
-      />
-      <span className="min-w-0 flex-1 truncate text-xs font-medium">{track.name}</span>
-      <span className="text-[10px] text-muted-foreground">{track.clips.length}</span>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-6"
-        aria-label={track.muted ? `Unmute ${track.name}` : `Mute ${track.name}`}
-        onClick={toggleMute}
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          data-testid={`track-header-${track.id}`}
+          className="sticky left-0 z-30 flex shrink-0 items-center gap-2 border-b border-r border-b-border/60 bg-card px-2"
+          style={{ width: TRACK_HEADER_WIDTH }}
+        >
+          <KindIcon
+            className={cn(
+              'size-3.5 shrink-0',
+              track.kind === 'video' && 'text-emerald-400',
+              track.kind === 'audio' && 'text-amber-400',
+              track.kind === 'text' && 'text-violet-400',
+            )}
+          />
+          {renaming ? (
+            <Input
+              ref={renameInputRef}
+              aria-label={`Rename ${track.name}`}
+              className="h-6 min-w-0 flex-1 px-1 text-xs"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  commitRename()
+                } else if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setRenaming(false)
+                }
+              }}
+            />
+          ) : (
+            <span
+              className="min-w-0 flex-1 truncate text-xs font-medium"
+              title={track.name}
+              onDoubleClick={startRename}
+            >
+              {track.name}
+            </span>
+          )}
+          <span className="text-[10px] text-muted-foreground">{track.clips.length}</span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-6"
+            aria-label={track.muted ? `Unmute ${track.name}` : `Mute ${track.name}`}
+            onClick={toggleMute}
+          >
+            {track.muted ? (
+              <VolumeX className="size-3.5 text-rose-400" />
+            ) : (
+              <Volume2 className="size-3.5" />
+            )}
+          </Button>
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent
+        data-testid="track-context-menu"
+        onCloseAutoFocus={(event) => {
+          if (!renameFromMenuRef.current) return
+          renameFromMenuRef.current = false
+          event.preventDefault()
+        }}
       >
-        {track.muted ? (
-          <VolumeX className="size-3.5 text-rose-400" />
-        ) : (
-          <Volume2 className="size-3.5" />
-        )}
-      </Button>
-    </div>
+        <ContextMenuItem
+          data-testid="track-menu-rename"
+          onSelect={() => {
+            renameFromMenuRef.current = true
+            startRename()
+          }}
+        >
+          Rename Track…
+        </ContextMenuItem>
+        <ContextMenuItem data-testid="track-menu-mute" onSelect={toggleMute}>
+          {track.muted ? 'Unmute Track' : 'Mute Track'}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          data-testid="track-menu-delete"
+          disabled={!canDelete}
+          onSelect={deleteTrack}
+        >
+          Delete Track
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }

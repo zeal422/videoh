@@ -71,6 +71,10 @@ The video surfaces stay dark regardless of the token theme, the way an NLE's mon
   `workspace.ts`.
 - **Scrollbars.** Editor scroll containers use the `.editor-scroll` class (thin dark thumb).
   `[data-timeline-scroll]` disables text selection while dragging clips.
+- **Blocked drop target.** `[data-drop-blocked='true']` outlines a lane in `--destructive` with a
+  `not-allowed` cursor — set by `ClipView` for the duration of a drag whose clip cannot land on that
+  lane. It is the only lane-level state style; the outline is drawn inside the lane (`outline-offset:
+-1px`) so the row geometry, and therefore the drop maths, does not shift.
 
 ## Components
 

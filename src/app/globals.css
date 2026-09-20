@@ -156,3 +156,12 @@
   user-select: none;
   -webkit-user-select: none;
 }
+
+/* A clip dragged over a lane that cannot host it (kind mismatch): mark the
+   lane as blocked instead of silently ignoring the drop. Set/cleared by
+   ClipView for the duration of the drag. */
+[data-drop-blocked='true'] {
+  outline: 1px solid var(--destructive);
+  outline-offset: -1px;
+  cursor: not-allowed;
+}

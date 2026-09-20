@@ -214,3 +214,85 @@ describe('multi-selection (Premiere shift/ctrl click)', () => {
     expect(useEditorStore.getState().activeTool).toBe('select')
   })
 })
+
+describe('an emptied lane is pruned when the edit commits', () => {
+  beforeEach(() => {
+    useEditorStore.setState({
+      doc: createDoc(),
+      past: [],
+      future: [],
+      selections: [],
+      selection: null,
+      activeTool: 'select',
+    })
+  })
+
+  /** Default doc (V1 + A1) with one video clip on V1. */
+  function clipOnV1() {
+    const doc = useEditorStore.getState().doc
+    const asset = createMediaAsset({
+      kind: 'video',
+      name: 'a.mp4',
+      duration: 10,
+      url: 'blob:a',
+    })
+    const v1 = doc.project.tracks.filter((t) => t.kind === 'video')[0]
+    useEditorStore.getState().apply([
+      { type: 'addMediaAsset', asset },
+      { type: 'addClip', trackId: v1.id, clip: createClip({ mediaId: asset.id, duration: 4 }) },
+    ])
+    const lane = useEditorStore.getState().doc.project.tracks.find((t) => t.id === v1.id)
+    return { v1Id: v1.id, clipId: lane?.clips[0]?.id ?? '' }
+  }
+
+  it("deleting a lane's last clip removes the lane as ONE undoable step", () => {
+    const { v1Id, clipId } = clipOnV1()
+    useEditorStore.getState().apply({ type: 'deleteClip', clipId })
+
+    const after = useEditorStore.getState().doc
+    expect(after.project.tracks.some((t) => t.id === v1Id)).toBe(false)
+    expect(after.project.tracks).toHaveLength(1) // the audio lane survives
+
+    useEditorStore.getState().undo()
+    const restored = useEditorStore.getState().doc
+    expect(restored.project.tracks).toHaveLength(2)
+    expect(restored.project.tracks.find((t) => t.id === v1Id)?.clips).toHaveLength(1)
+  })
+
+  it('does NOT prune mid-drag — only the committed gesture removes the lane', () => {
+    const { v1Id, clipId } = clipOnV1()
+    useEditorStore.getState().apply({ type: 'addTrack', kind: 'video' })
+    const empty = useEditorStore
+      .getState()
+      .doc.project.tracks.filter((t) => t.kind === 'video' && t.clips.length === 0)[0]
+
+    const store = useEditorStore.getState()
+    store.beginTransient()
+    store.applyTransient({ type: 'moveClip', clipId, trackId: empty.id, start: 0 })
+    // Mid-gesture the source lane IS empty for a frame; deleting it here would
+    // remove the lane the pointer is still dragging out of.
+    expect(useEditorStore.getState().doc.project.tracks.some((t) => t.id === v1Id)).toBe(true)
+
+    useEditorStore.getState().commitTransient()
+    const committed = useEditorStore.getState().doc
+    expect(committed.project.tracks.some((t) => t.id === v1Id)).toBe(false)
+    expect(committed.project.tracks.find((t) => t.id === empty.id)?.clips).toHaveLength(1)
+
+    // The move AND the prune are one history entry.
+    useEditorStore.getState().undo()
+    const restored = useEditorStore.getState().doc
+    expect(restored.project.tracks.some((t) => t.id === v1Id)).toBe(true)
+    expect(restored.project.tracks.find((t) => t.id === empty.id)?.clips).toHaveLength(0)
+  })
+
+  it('leaves an already-empty lane alone on an unrelated edit', () => {
+    const { clipId } = clipOnV1()
+    useEditorStore.getState().apply({ type: 'addTrack', kind: 'video' })
+    const emptyId = useEditorStore
+      .getState()
+      .doc.project.tracks.filter((t) => t.clips.length === 0)[0].id
+
+    useEditorStore.getState().apply({ type: 'setClipMuted', clipId, muted: true })
+    expect(useEditorStore.getState().doc.project.tracks.some((t) => t.id === emptyId)).toBe(true)
+  })
+})

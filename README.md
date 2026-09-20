@@ -8,6 +8,7 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/
 
 - **Media import** — video, audio, and image files via the media bin (multi-select) or drag-and-drop; automatic duration/size probing, JPEG thumbnails, normalized waveform peaks, and audio-track detection.
 - **Multi-track timeline** — move clips (including across compatible tracks, with the whole selection following), trim either edge, split at the playhead, duplicate, delete, and snapping to clip edges, the playhead, and timeline bounds. Add video/audio/text tracks from the `+` button in the timeline's corner cell (or the toolbar `+` and the menus) — new tracks stack per the convention text → video → audio, and `tracks[0]` renders on top.
+- **Manageable layers** — each track header has a context menu (or double-click the name) to **rename**, **mute** or **delete** the layer; delete is disabled for the last remaining lane. A layer the edit leaves **empty is removed with it**, in the same undo step, so a lane never lingers with nothing on it (a lane that was already empty is kept, which is what makes "add a layer, then fill it" work). Dragging a clip near the top or bottom edge of the tracks **scrolls the timeline** so it can reach a lane that is off-screen, and dropping it on a lane of the wrong kind marks that lane, and the drop is rolled back whole — the clip returns to where it started rather than keeping the part of the gesture that happened to be legal.
 - **Multi-selection + manual A/V linking** — plain click selects a clip (its link group), **Shift+click adds** another clip's group, **Ctrl+click toggles** it, **Ctrl+A** selects everything; every group op (move, delete, cut/copy/paste, split, duplicate) acts on the whole selection. Select a video clip and an audio clip with Shift+click, then **right-click → Link** (or `Ctrl+L`) to bond them Premiere-style; `Ctrl+L` on a linked selection unlinks it again. A **Razor tool** (`C`) cuts a clip exactly where you click; **Shift+Delete ripple-deletes** the selection and closes the gap.
 - **A/V linked clips** — dropping a video that HAS audio places it as a linked pair: the video part on the video track and an audio-only twin on the audio track (waveform included). The pair selects, moves, splits, duplicates and deletes together, and the audio twin is the sole sound carrier (no double audio). **Right-click any clip** for the Premiere-style menu — Cut, Copy, Paste at playhead, Split, Duplicate, **Link / Unlink Audio/Video**, Delete, **Ripple Delete** — and after unlinking, each half is fully independent.
 - **Drop-between-tracks** — drag media from the bin onto the middle of a row to drop it onto that track, or onto a row's edge (or the empty strip below the tracks) to insert a brand-new layer at exactly that z-position: a kind-colored insertion line with a `+ V2` / `+ A2` preview shows where the layer will land — the Premiere-style way to build stacked compositions (put one video above/below/between others in one gesture).
@@ -249,7 +250,7 @@ bun run format:check   # prettier check
 
 The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **266 tests across 24 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **293 tests across 26 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -296,6 +297,8 @@ src/
 │   ├── project-io.ts            # shared save / open / import-media helpers
 │   ├── sample-media.ts          # bundled samples + idempotent filtering
 │   ├── timeline-drop.ts         # drop-target geometry (drop-between-tracks)
+│   ├── tracks.ts                # removes the tracks an edit leaves empty (prune)
+│   ├── timeline-scroll.ts       # drag edge auto-scroll geometry (pure)
 │   ├── store.ts                 # zustand store: history, transients, selection, playhead
 │   ├── serialization.ts         # .veproj.json (v1): serialize/parse/hydrate
 │   ├── persistence.ts           # debounced localStorage autosave + restore
@@ -310,7 +313,7 @@ src/
 │   │   └── text-box.ts          # text-box measurement (preview drag outline)
 │   ├── export/
 │   │   └── exporter.ts          # MediaRecorder pipeline, downloadBlob
-│   └── __tests__/               # 24 test files (266 tests); mocks/ = browser-mock harness
+│   └── __tests__/               # 26 test files (293 tests); mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs
@@ -322,9 +325,9 @@ src/
 │   ├── StatusBar.tsx            # pinned footer: project info, autosave state
 │   ├── ExportDialog.tsx         # quality, progress, cancel, preview, download
 │   └── timeline/
-│       ├── TimelinePanel.tsx    # track lanes, playhead, drop targets, zoom
+│       ├── TimelinePanel.tsx    # track lanes, playhead, drop targets, zoom, track menu
 │       ├── Ruler.tsx            # canvas time ruler + scrubbing
-│       ├── ClipView.tsx         # move/trim gestures, snapping, fade overlays
+│       ├── ClipView.tsx         # move/trim gestures across lanes, snapping, fade overlays
 │       └── Waveform.tsx         # per-clip waveform canvas
 └── hooks/editor/
     └── useEditorKeyboard.ts     # global keyboard shortcuts

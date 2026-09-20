@@ -238,3 +238,106 @@ describe('A/V linked clips (Premiere-style split + unlink)', () => {
     expect(inspector).toMatch(/data-testid="linked-av-hint"/)
   })
 })
+
+describe('track operations are reachable from the timeline UI', () => {
+  const panel = read('src/components/editor/timeline/TimelinePanel.tsx')
+
+  it('the track-header menu dispatches rename + delete (both had NO ui before)', () => {
+    expect(panel).toMatch(/type: 'renameTrack', trackId: track\.id/)
+    expect(panel).toMatch(/type: 'removeTrack', trackId: track\.id/)
+    expect(panel).toMatch(/data-testid="track-context-menu"/)
+    expect(panel).toMatch(/data-testid="track-menu-delete"/)
+  })
+
+  it('delete is offered but disabled for the last remaining lane', () => {
+    expect(panel).toMatch(/canDelete=\{doc\.project\.tracks\.length > 1\}/)
+    expect(panel).toMatch(/disabled=\{!canDelete\}/)
+  })
+
+  it('menu rename takes focus instead of Radix handing it back to the header', () => {
+    // Radix restores focus when the menu closes, and the rename field mounts a
+    // moment later — so every keystroke was swallowed until the user re-clicked
+    // the field. The close-focus is suppressed for that one item, and the field
+    // takes focus a frame later, once Radix has settled.
+    expect(panel).toMatch(/onCloseAutoFocus/)
+    expect(panel).toMatch(/event\.preventDefault\(\)/)
+    expect(panel).toMatch(/requestAnimationFrame\(\(\) => renameInputRef\.current\?\.focus\(\)\)/)
+  })
+
+  it('a clip dragged over an incompatible lane reads as blocked, and says why', () => {
+    const clip = read('src/components/editor/timeline/ClipView.tsx')
+    expect(clip).toMatch(/setAttribute\('data-drop-blocked', 'true'\)/)
+    expect(clip).toMatch(/removeAttribute\('data-drop-blocked'\)/)
+    expect(clip).toMatch(/Not a valid drop target/)
+  })
+
+  it('a refused drop rolls the whole drag back, not just the lane change', () => {
+    // The drag keeps applying the LEGAL half of the gesture (the time shift, on
+    // the original lane) while the pointer sits over the blocked lane, so
+    // committing would move the clip to a new time while the toast says the drop
+    // was invalid. Cancel restores the base doc instead.
+    const clip = read('src/components/editor/timeline/ClipView.tsx')
+    expect(clip).toMatch(/if \(g\.blockedLane\) store\.cancelTransient\(\)/)
+    expect(clip).toMatch(/else store\.commitTransient\(\)/)
+  })
+
+  it('refuses a second drag while another gesture owns the transient base', () => {
+    // `gesture` is a per-instance ref: a drag on a different clip (another
+    // ClipView) is invisible to the local check, but the store holds ONE
+    // transient base and beginTransient would overwrite it. The store's flag is
+    // the shared truth, and the refusal still leaves the click selecting.
+    const clip = read('src/components/editor/timeline/ClipView.tsx')
+    expect(clip).toMatch(/import \{ isTransientActive, useEditorStore \}/)
+    expect(clip).toMatch(/const transientOwnedElsewhere = isTransientActive\(\)/)
+    expect(clip).toMatch(/if \(transientOwnedElsewhere\) return/)
+  })
+
+  it('adding a track scrolls by the new row, so the lanes you were on stay put', () => {
+    expect(panel).toMatch(/data-track-row=\{track\.id\}/)
+    expect(panel).toMatch(/scrollEl\.scrollTop \+= rowEl\.getBoundingClientRect\(\)\.height/)
+  })
+})
+
+describe('a clip drag survives crossing lanes (and can reach lanes off screen)', () => {
+  const clip = read('src/components/editor/timeline/ClipView.tsx')
+
+  it('drives the gesture from window listeners instead of clip-element handlers', () => {
+    // A clip that changes lane is rendered inside THAT lane's clip list, so React
+    // unmounts the component and mounts a new one: element handlers (and their
+    // pointer capture) die with it. Binding the gesture to the element is what
+    // made a drag stop at the first lane it crossed, leaving one-lane moves as
+    // the only thing that ever worked.
+    // The end handler is capture-phase so it beats EditorShell's dangling-gesture
+    // safety net, which is registered on window earlier (at mount) and would
+    // otherwise commit before a refused drop could cancel itself.
+    expect(clip).toMatch(/window\.addEventListener\('pointerup', onUp, true\)/)
+    expect(clip).toMatch(/window\.removeEventListener\('pointerup', g\.onUp, true\)/)
+    expect(clip).toMatch(/window\.addEventListener\('pointermove', onMove\)/)
+    expect(clip).toMatch(/window\.removeEventListener\('pointermove', g\.onMove\)/)
+    expect(clip).not.toMatch(/onPointerMove=\{onPointerMove\}/)
+    expect(clip).not.toMatch(/setPointerCapture/)
+  })
+
+  it('does not tear a live drag down when the component unmounts mid-gesture', () => {
+    expect(clip).toMatch(/if \(gesture\.current\) return/)
+  })
+
+  it('re-reads the lane boxes on every move (auto-scroll moves the rows under the pointer)', () => {
+    expect(clip).toMatch(/g\.lanes = readLanes\(\)/)
+  })
+
+  it('queues the next auto-scroll frame BEFORE replaying the move', () => {
+    // The replay calls syncAutoScroll; with a null ref that queues a second loop
+    // on top of this one, and the scroll compounds into a runaway every frame.
+    expect(clip).toMatch(
+      /autoScrollRaf\.current = requestAnimationFrame\(autoScrollTick\)[\s\S]{0,400}?moveTo\(g\.lastX, g\.lastY\)/,
+    )
+  })
+
+  it('keeps the auto-scroll band pure and frame-budgeted', () => {
+    const geometry = read('src/lib/editor/timeline-scroll.ts')
+    expect(geometry).toMatch(/export function autoScrollStep/)
+    expect(geometry).toMatch(/AUTOSCROLL_EDGE_PX = 24/)
+    expect(geometry).toMatch(/AUTOSCROLL_MAX_STEP_PX = 14/)
+  })
+})

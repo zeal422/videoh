@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Copy,
   CopyPlus,
@@ -15,6 +15,7 @@ import { MIN_CLIP_DURATION } from '@/lib/editor/constants'
 import { findMedia } from '@/lib/editor/factories'
 import { SNAP_THRESHOLD_PX } from '@/lib/editor/constants'
 import { applySnap, computeSnapPoints } from '@/lib/editor/snap'
+import { autoScrollStep } from '@/lib/editor/timeline-scroll'
 import {
   commandsToDeleteClips,
   commandsToDuplicateClips,
@@ -37,7 +38,7 @@ import {
   linkedClips,
   resolveSelectionGroups,
 } from '@/lib/editor/links'
-import { useEditorStore } from '@/lib/editor/store'
+import { isTransientActive, useEditorStore } from '@/lib/editor/store'
 import type { Clip, Doc, MediaAsset, Track } from '@/lib/editor/types'
 import { toast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
@@ -85,7 +86,6 @@ export function ClipView({
 }) {
   const selections = useEditorStore((s) => s.selections)
   const activeTool = useEditorStore((s) => s.activeTool)
-  const snapEnabled = useEditorStore((s) => s.snapEnabled)
   // Right-click must (a) select the clip BEFORE any menu action runs and
   // (b) re-evaluate clipboard/split enablement at open time — both are
   // store-external facts (module clipboard, live playhead) that a plain
@@ -108,20 +108,42 @@ export function ClipView({
     startY: number
     orig: Clip
     origTrackId: string
-    lanes: { id: string; kind: string; top: number; bottom: number }[]
+    lanes: { id: string; kind: string; top: number; bottom: number; el: HTMLElement }[]
+    /** Lane under the pointer that cannot host this clip (shown blocked). */
+    blockedLane: { id: string; kind: string } | null
+    /** Latest pointer position. The auto-scroll tick replays the move from here,
+     *  because a scroll produces no further pointermove events. */
+    lastX: number
+    lastY: number
+    /** Window listeners that drive this drag — see beginGesture for why the drag
+     *  is not bound to the clip element. */
+    onMove: (ev: PointerEvent) => void
+    onUp: () => void
     /** Every OTHER selected clip: follows the move with the same time delta
      *  (and the same track-index offset when the dragged clip changes lane). */
     partners: { id: string; trackIndex: number; kind: string; origStart: number }[]
     moved: boolean
   }>(null)
 
-  const thresholdSec = () => (snapEnabled ? SNAP_THRESHOLD_PX / pxPerSec : 0)
-
-  const snapPoints = (excludeId: string) =>
-    computeSnapPoints(doc, {
-      excludeClipIds: [excludeId],
-      includeTimelineEnd: false,
+  /**
+   * Live lane boxes in viewport coordinates. Must be re-read after ANY scroll —
+   * the rows move under a stationary pointer, so cached boxes would point at the
+   * wrong lane.
+   */
+  const readLanes = () => {
+    const scrollEl = document.querySelector('[data-timeline-scroll]')
+    const laneEls = scrollEl?.querySelectorAll<HTMLElement>('[data-lane-id]') ?? []
+    return Array.from(laneEls).map((el) => {
+      const r = el.getBoundingClientRect()
+      return {
+        id: el.dataset.laneId ?? '',
+        kind: el.dataset.laneKind ?? '',
+        top: r.top,
+        bottom: r.bottom,
+        el,
+      }
     })
+  }
 
   /** Razor tool: cut this clip (its link group) exactly at the pointer. */
   const razorCut = (e: React.PointerEvent) => {
@@ -159,24 +181,26 @@ export function ClipView({
       // collapsing here would destroy an existing multi-selection.
       return
     }
+    // One gesture at a time. A second pointer (multi-touch) would otherwise
+    // overwrite `gesture.current` and orphan the first drag's window listeners,
+    // which would then never be removed.
+    if (gesture.current) endGesture()
+    // `gesture` is a per-instance ref, so a drag running on a DIFFERENT clip (a
+    // different ClipView) is invisible to the check above — yet the store holds
+    // ONE transient base, and beginning another overwrites it, leaving the
+    // gesture already running to push a base that is not its own. The store's
+    // flag is the shared truth; ask it and refuse. The click still selects below,
+    // it just does not start a second drag on top of the first one.
+    const transientOwnedElsewhere = isTransientActive()
     const live = useEditorStore.getState()
     if (e.shiftKey) live.addSelection(clip.id)
     else if (e.ctrlKey || e.metaKey) live.toggleSelection(clip.id)
     else if (!clipIsSelected(live.doc, live.selections, clip)) live.select(clip.id)
     // Dragging an ALREADY-selected clip keeps the selection intact — that is
     // what makes a shift-selected multi-drag move every selected clip.
+    if (transientOwnedElsewhere) return
 
-    const scrollEl = document.querySelector('[data-timeline-scroll]')
-    const laneEls = scrollEl?.querySelectorAll<HTMLElement>('[data-lane-id]') ?? []
-    const lanes = Array.from(laneEls).map((el) => {
-      const r = el.getBoundingClientRect()
-      return {
-        id: el.dataset.laneId ?? '',
-        kind: el.dataset.laneKind ?? '',
-        top: r.top,
-        bottom: r.bottom,
-      }
-    })
+    const lanes = readLanes()
     // Capture EVERY other selected clip (whole link groups) so a MOVE drags
     // the full selection in sync — same time delta, each keeps its own lane
     // unless the whole selection shifts by the same track-index offset.
@@ -196,6 +220,15 @@ export function ClipView({
           origStart: c.start,
         }
       })
+    // The drag is driven by listeners on `window` rather than by handlers on the
+    // clip element. A clip that moves to another lane is rendered inside THAT
+    // lane's clip list, so React unmounts this component and mounts a new one in
+    // its place — element handlers (and the pointer capture bound to the element)
+    // die with it, which is what made a drag stop at the first lane it crossed,
+    // leaving a one-lane move as the only thing that ever worked. These listeners
+    // outlive the element and remove themselves when the gesture ends.
+    const onMove = (ev: PointerEvent) => moveTo(ev.clientX, ev.clientY)
+    const onUp = () => endGesture()
     gesture.current = {
       mode,
       startX: e.clientX,
@@ -203,42 +236,140 @@ export function ClipView({
       orig: structuredClone(clip),
       origTrackId: track.id,
       lanes,
+      blockedLane: null,
+      lastX: e.clientX,
+      lastY: e.clientY,
       partners,
       moved: false,
+      onMove,
+      onUp,
     }
     useEditorStore.getState().beginTransient()
-    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+    window.addEventListener('pointermove', onMove)
+    // Capture phase on purpose. EditorShell registers a "commit any dangling
+    // gesture" safety net on window at mount, so in the BUBBLE order it is
+    // registered earlier than this listener and therefore runs first — it would
+    // commit before this gesture gets to decide anything, and a refused drop
+    // (which must cancel) would be frozen into history. Capture listeners on an
+    // ancestor always run before bubble listeners, so the gesture's own end
+    // handler gets the first word; the net then sees a closed transient.
+    window.addEventListener('pointerup', onUp, true)
+    window.addEventListener('pointercancel', onUp, true)
   }
 
-  const onPointerMove = (e: React.PointerEvent) => {
+  const autoScrollRaf = useRef<number | null>(null)
+
+  const stopAutoScroll = () => {
+    if (autoScrollRaf.current !== null) {
+      cancelAnimationFrame(autoScrollRaf.current)
+      autoScrollRaf.current = null
+    }
+  }
+
+  /**
+   * One frame of drag auto-scroll: move the rows, then replay the drag from the
+   * last known pointer position so the clip follows onto whatever lane is now
+   * under it. Scrolling fires no pointermove, so without this replay the clip
+   * would stay behind on the lane it came from.
+   */
+  const autoScrollTick = () => {
+    const g = gesture.current
+    const el = document.querySelector('[data-timeline-scroll]')
+    const dy = g && el ? autoScrollStep(g.lastY, el.getBoundingClientRect()) : 0
+    if (!g || !el || dy === 0) {
+      // Pointer left the band (or the timeline went away): let the loop stop.
+      autoScrollRaf.current = null
+      return
+    }
+    const before = el.scrollTop
+    el.scrollTop = before + dy
+    if (el.scrollTop === before) {
+      autoScrollRaf.current = null // already at the end of the track list
+      return
+    }
+    // Queue the next frame BEFORE replaying the move: the replay calls
+    // syncAutoScroll, and leaving the ref null there would queue a second loop
+    // on top of this one — which compounds every frame into runaway scrolling.
+    autoScrollRaf.current = requestAnimationFrame(autoScrollTick)
+    // The rows slid under a stationary pointer, so the lane boxes now point at
+    // the wrong lanes — moveTo re-reads them before resolving the drop.
+    moveTo(g.lastX, g.lastY)
+  }
+
+  /**
+   * Run the auto-scroll loop only while the pointer holds an edge band. The band
+   * is the whole visible track area (the ruler strip is part of it), because the
+   * pointer sits over that strip when a drag is pushed to the very top.
+   */
+  const syncAutoScroll = (g: NonNullable<typeof gesture.current>) => {
+    const el = document.querySelector('[data-timeline-scroll]')
+    if (!el || autoScrollStep(g.lastY, el.getBoundingClientRect()) === 0) {
+      stopAutoScroll()
+      return
+    }
+    if (autoScrollRaf.current === null)
+      autoScrollRaf.current = requestAnimationFrame(autoScrollTick)
+  }
+
+  /**
+   * The drag updater, keyed on raw pointer coordinates instead of an event — the
+   * auto-scroll tick replays it from the last known position.
+   */
+  const moveTo = (clientX: number, clientY: number) => {
     const g = gesture.current
     if (!g) return
+    // The gesture's window listeners are registered once, at pointer-down, so
+    // anything this closure read from props or selectors would be frozen for the
+    // whole drag. Read the live doc, zoom and snap flag from the store instead:
+    // the doc changes under the drag (selected partners move with it) and the
+    // snap guides must be computed from where the clips are NOW.
     const store = useEditorStore.getState()
-    const dxSec = (e.clientX - g.startX) / pxPerSec
-    if (!g.moved && Math.abs(e.clientX - g.startX) < 2 && Math.abs(e.clientY - g.startY) < 2) return
+    const liveDoc = store.doc
+    const scale = store.pxPerSec || pxPerSec
+    const snapping = store.snapEnabled
+    const dxSec = (clientX - g.startX) / scale
+    if (!g.moved && Math.abs(clientX - g.startX) < 2 && Math.abs(clientY - g.startY) < 2) return
     g.moved = true
+    g.lastX = clientX
+    g.lastY = clientY
 
-    const points = snapPoints(clip.id)
-    const thr = thresholdSec()
+    const points = computeSnapPoints(liveDoc, {
+      excludeClipIds: [clip.id],
+      includeTimelineEnd: false,
+    })
+    const thr = snapping ? SNAP_THRESHOLD_PX / scale : 0
 
     if (g.mode === 'move') {
+      // Re-read the lane boxes every move: the rows can have moved under the
+      // pointer since the last event (auto-scroll, a wheel scroll, a resized
+      // timeline), and a stale box would resolve the drop onto the wrong lane.
+      g.lanes = readLanes()
       // Track change: find the lane under the pointer (compatible kinds only).
       let targetTrackId = g.origTrackId
-      const lane = g.lanes.find((l) => e.clientY >= l.top && e.clientY <= l.bottom)
+      let blocked: (typeof g.lanes)[number] | null = null
+      const lane = g.lanes.find((l) => clientY >= l.top && clientY <= l.bottom)
       if (lane && lane.id !== g.origTrackId) {
-        const target = doc.project.tracks.find((t) => t.id === lane.id)
-        const origTrack = doc.project.tracks.find((t) => t.id === g.origTrackId)
+        const target = liveDoc.project.tracks.find((t) => t.id === lane.id)
+        const origTrack = liveDoc.project.tracks.find((t) => t.id === g.origTrackId)
         if (target && origTrack) {
           const fits =
             (target.kind === 'video' && origTrack.kind === 'video') ||
             (target.kind === 'audio' && origTrack.kind === 'audio')
           if (fits) targetTrackId = target.id
+          else blocked = lane
         }
       }
+      // Mark an incompatible lane while the pointer is over it. Without this a
+      // refused drop looks identical to a drag that simply did nothing.
+      for (const l of g.lanes) {
+        if (l === blocked) l.el.setAttribute('data-drop-blocked', 'true')
+        else l.el.removeAttribute('data-drop-blocked')
+      }
+      g.blockedLane = blocked ? { id: blocked.id, kind: blocked.kind } : null
 
       let start = Math.max(0, g.orig.start + dxSec)
       let snapped: number | null = null
-      if (snapEnabled) {
+      if (snapping) {
         const head = applySnap(start, points, thr)
         const tail = applySnap(start + g.orig.duration, points, thr)
         if (
@@ -263,7 +394,7 @@ export function ClipView({
       // changed lane, partners shift by the SAME track-index offset (skipped
       // when the destination lane is missing or a different kind).
       const delta = start - g.orig.start
-      const tracks = doc.project.tracks
+      const tracks = liveDoc.project.tracks
       const dIndex =
         tracks.findIndex((t) => t.id === targetTrackId) -
         tracks.findIndex((t) => t.id === g.origTrackId)
@@ -282,6 +413,9 @@ export function ClipView({
         })
       }
       onSnapGuide(snapped)
+      // Keep the edge scroll running while the pointer holds a band, and stop it
+      // the moment it leaves.
+      syncAutoScroll(g)
       return
     }
 
@@ -301,7 +435,7 @@ export function ClipView({
       let newStart = Math.max(0, g.orig.start + delta)
       let newIn = isUnbounded ? 0 : Math.max(0, g.orig.inPoint + (newStart - g.orig.start))
       let newDuration = g.orig.start + g.orig.duration - newStart
-      if (snapEnabled) {
+      if (snapping) {
         const s = applySnap(newStart, points, thr)
         if (s.snapped !== null) {
           newStart = s.time
@@ -330,7 +464,7 @@ export function ClipView({
       ? Math.max(MIN_CLIP_DURATION, (asset?.duration ?? 0) - clip.inPoint)
       : Infinity
     newDuration = Math.min(Math.max(newDuration, MIN_CLIP_DURATION), maxDur)
-    if (snapEnabled) {
+    if (snapping) {
       const end = clip.start + newDuration
       const s = applySnap(end, points, thr)
       if (s.snapped !== null) {
@@ -351,9 +485,49 @@ export function ClipView({
     }
   }
 
+  // Unmounting does NOT end a drag: a lane change remounts this component with
+  // the gesture still running, so tearing it down here would kill exactly the
+  // move the drag is in the middle of. Only clean up an idle instance (the
+  // listeners own their own removal, in endGesture).
+  useEffect(
+    () => () => {
+      if (gesture.current) return
+      if (autoScrollRaf.current !== null) cancelAnimationFrame(autoScrollRaf.current)
+    },
+    [],
+  )
+
   const endGesture = () => {
-    if (!gesture.current) return
-    useEditorStore.getState().commitTransient()
+    stopAutoScroll()
+    const g = gesture.current
+    if (!g) return
+    window.removeEventListener('pointermove', g.onMove)
+    window.removeEventListener('pointerup', g.onUp, true)
+    window.removeEventListener('pointercancel', g.onUp, true)
+    // Releasing over an incompatible lane is refused — say why, so the clip
+    // snapping back is explained rather than silent.
+    if (g.blockedLane) {
+      const what =
+        clip.text !== undefined
+          ? 'Text clips'
+          : asset?.kind === 'audio' || clip.audioOnly
+            ? 'Audio clips'
+            : 'Video and image clips'
+      toast({
+        title: 'Not a valid drop target',
+        description: `${what} cannot be placed on a ${g.blockedLane.kind} track`,
+        variant: 'destructive',
+      })
+    }
+    for (const l of g.lanes) l.el.removeAttribute('data-drop-blocked')
+    // A refused drop is refused in full. While the pointer sat over the blocked
+    // lane the drag kept applying the legal half of the gesture (the time shift,
+    // on the original lane), so committing here would move the clip to a new
+    // time under a toast saying the drop was invalid. Cancel restores the base
+    // doc instead, so the clip goes back to where it started.
+    const store = useEditorStore.getState()
+    if (g.blockedLane) store.cancelTransient()
+    else store.commitTransient()
     gesture.current = null
     onSnapGuide(null)
   }
@@ -491,9 +665,6 @@ export function ClipView({
           )}
           style={{ left: leftPx, width: widthPx, touchAction: 'none' }}
           onPointerDown={(e) => beginGesture(e, 'move')}
-          onPointerMove={onPointerMove}
-          onPointerUp={endGesture}
-          onPointerCancel={endGesture}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') useEditorStore.getState().select(clip.id)
           }}
@@ -566,9 +737,6 @@ export function ClipView({
               background: 'linear-gradient(90deg, rgba(255,255,255,.45), transparent)',
             }}
             onPointerDown={(e) => beginGesture(e, 'trim-start')}
-            onPointerMove={onPointerMove}
-            onPointerUp={endGesture}
-            onPointerCancel={endGesture}
           />
           <div
             aria-label="Trim clip end"
@@ -577,9 +745,6 @@ export function ClipView({
               background: 'linear-gradient(270deg, rgba(255,255,255,.45), transparent)',
             }}
             onPointerDown={(e) => beginGesture(e, 'trim-end')}
-            onPointerMove={onPointerMove}
-            onPointerUp={endGesture}
-            onPointerCancel={endGesture}
           />
         </div>
       </ContextMenuTrigger>

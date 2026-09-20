@@ -31,8 +31,8 @@ matters because `next build` skips type validation (`typescript.ignoreBuildError
 ## Map
 
 - `src/lib/editor/` — the state core. Types, constants, factories, commands, snap, transition, links,
-  clipboard, actions, store, serialization, persistence, workspace, menus. Pure TypeScript (no React,
-  except the zustand stores); this is what unit tests target. See
+  clipboard, actions, tracks, timeline-scroll, store, serialization, persistence, workspace, menus. Pure
+  TypeScript (no React, except the zustand stores); this is what unit tests target. See
   [docs/architecture.md](docs/architecture.md).
 - `src/lib/editor/media|playback|export/` — the only modules allowed to touch browser APIs (media
   elements, Web Audio, canvas, MediaRecorder).

@@ -64,6 +64,8 @@ All paths below are relative to `src/lib/editor/` unless stated otherwise.
 | `project-io.ts`      | `downloadProjectJSON`, `loadProjectFile`, `importMediaFiles`, `pickFiles` — shared save/open/import helpers used by the toolbar, media bin, and menu bar                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `sample-media.ts`    | `SAMPLES` (`/samples/*`), `filterNewSamples(bin, samples)` — idempotent sample loading                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `timeline-drop.ts`   | `computeTrackDropTarget(yInRows, heights)`, `mediaKindFromDragEvent(e)`, `TRACK_DROP_EDGE_PX` (12) — pure drop-target geometry for drop-between-tracks                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `tracks.ts`          | `pruneEmptiedTracks(prev, next)` — removes the tracks THIS edit emptied (a track that was already empty is left alone, and the first track always survives). The store runs it on committed edits only, never on a transient drag frame, so a drag cannot delete the lane it is still dragging out of                                                                                                                                                                                                                                                                     |
+| `timeline-scroll.ts` | `BandRect`, `autoScrollStep(pointerY, band, edge?, maxStep?)`, `AUTOSCROLL_EDGE_PX` (24), `AUTOSCROLL_MAX_STEP_PX` (14) — pure drag-edge auto-scroll geometry: how far to scroll per frame while a dragged clip hovers near the top/bottom edge of the track area, ramping 1px → 14px with depth                                                                                                                                                                                                                                                                          |
 
 ### Media
 
@@ -90,22 +92,22 @@ All paths below are relative to `src/lib/editor/` unless stated otherwise.
 
 ### UI components (`src/components/editor/`)
 
-| File                                    | Exports                               | Responsibility                                                                     |
-| --------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------- |
-| `EditorShell.tsx`                       | `EditorShell`                         | Layout; starts autosave + restore banner; window `pointerup`/`blur` safety net     |
-| `MenuBar.tsx`                           | `MenuBar`                             | Premiere-style menu bar; maps `menus.ts` action ids to editor operations           |
-| `PanelShell.tsx`                        | `PanelShell`                          | Resizable/collapsible panel frame (header, actions, collapsed strip)               |
-| `Toolbar.tsx`                           | `Toolbar`                             | Undo/redo, select/razor tools, split/duplicate/delete, add text/track, save/export |
-| `MediaBin.tsx`                          | `MediaBin`                            | Multi-file import, "Load sample media", quick-add, drag source, relink, remove     |
-| `PreviewPanel.tsx`                      | `PreviewPanel`                        | Attaches the preview engine; transport, time display, volume; text-drag overlay    |
-| `InspectorPanel.tsx`                    | `InspectorPanel`                      | Selected-clip properties (timing, gain/mute, opacity, text style, transition)      |
-| `StatusBar.tsx`                         | `StatusBar`                           | Pinned footer: project info, selection count, zoom, undo depth, autosave state     |
-| `ExportDialog.tsx`                      | `ExportDialog`                        | Quality select, progress, cancel, result preview, download                         |
-| `timeline/TimelinePanel.tsx`            | `TimelinePanel`, `TRACK_HEADER_WIDTH` | Track lanes, playhead, drop targets, zoom, add-track menu                          |
-| `timeline/Ruler.tsx`                    | `Ruler`                               | Canvas ticks/labels, doubles as the scrub surface                                  |
-| `timeline/ClipView.tsx`                 | `ClipView`                            | Pointer gestures (move/trim), context menu, link badge, fade overlays              |
-| `timeline/Waveform.tsx`                 | `Waveform`                            | Draws the asset peak slice `[inPoint, inPoint + duration]`, DPR-aware              |
-| `src/hooks/editor/useEditorKeyboard.ts` | `useEditorKeyboard(onSave)`           | Global shortcuts, skipped inside form fields                                       |
+| File                                    | Exports                               | Responsibility                                                                                                               |
+| --------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `EditorShell.tsx`                       | `EditorShell`                         | Layout; starts autosave + restore banner; window `pointerup`/`blur` safety net                                               |
+| `MenuBar.tsx`                           | `MenuBar`                             | Premiere-style menu bar; maps `menus.ts` action ids to editor operations                                                     |
+| `PanelShell.tsx`                        | `PanelShell`                          | Resizable/collapsible panel frame (header, actions, collapsed strip)                                                         |
+| `Toolbar.tsx`                           | `Toolbar`                             | Undo/redo, select/razor tools, split/duplicate/delete, add text/track, save/export                                           |
+| `MediaBin.tsx`                          | `MediaBin`                            | Multi-file import, "Load sample media", quick-add, drag source, relink, remove                                               |
+| `PreviewPanel.tsx`                      | `PreviewPanel`                        | Attaches the preview engine; transport, time display, volume; text-drag overlay                                              |
+| `InspectorPanel.tsx`                    | `InspectorPanel`                      | Selected-clip properties (timing, gain/mute, opacity, text style, transition)                                                |
+| `StatusBar.tsx`                         | `StatusBar`                           | Pinned footer: project info, selection count, zoom, undo depth, autosave state                                               |
+| `ExportDialog.tsx`                      | `ExportDialog`                        | Quality select, progress, cancel, result preview, download                                                                   |
+| `timeline/TimelinePanel.tsx`            | `TimelinePanel`, `TRACK_HEADER_WIDTH` | Track lanes, playhead, drop targets, zoom, add-track menu, per-track header menu (rename / mute / delete)                    |
+| `timeline/Ruler.tsx`                    | `Ruler`                               | Canvas ticks/labels, doubles as the scrub surface                                                                            |
+| `timeline/ClipView.tsx`                 | `ClipView`                            | Pointer gestures (move/trim, across lanes), context menu, link badge, fade overlays, edge auto-scroll, blocked-drop feedback |
+| `timeline/Waveform.tsx`                 | `Waveform`                            | Draws the asset peak slice `[inPoint, inPoint + duration]`, DPR-aware                                                        |
+| `src/hooks/editor/useEditorKeyboard.ts` | `useEditorKeyboard(onSave)`           | Global shortcuts, skipped inside form fields                                                                                 |
 
 ## Undo/redo and transient gestures
 
@@ -257,7 +259,10 @@ Rules the codebase relies on; new code must preserve them.
 10. **History is whole-doc snapshots, capped at `HISTORY_LIMIT` (100).** Anything undoable must live
     inside `Doc`; playhead, zoom, selection, and snap line are deliberately non-undoable.
 11. **At most one transient gesture may be active.** `beginTransient` overwrites `transientBase`;
-    window-level `pointerup`/`blur` guarantee the gesture is committed or cancelled.
+    window-level `pointerup`/`blur` guarantee the gesture is committed or cancelled. A gesture that
+    starts while another already owns the base is refused, and the check is made against the store's
+    shared flag rather than a component-local one — the clip drag's own ref cannot see a drag running
+    on a different clip.
 12. **The last track cannot be removed** (`removeTrack` throws when one track remains).
 13. **Track compatibility is enforced at the command layer**: video/image on `video` tracks, audio on
     `audio` tracks, text clips on `text` tracks (`clipFitsTrack`). `audioOnly` twins of video assets
@@ -269,3 +274,9 @@ Rules the codebase relies on; new code must preserve them.
 16. **Serialization validates before trusting.** `deserializeDoc` coerces unknown fields to defaults,
     drops non-finite numbers, and raises `SerializationError` for a wrong `version` or missing
     `project.tracks` rather than producing a half-broken doc.
+17. **A track an edit empties is removed with that edit.** `pruneEmptiedTracks` (applied by the store
+    on committed edits, inside the same history entry — so one undo restores both the clip and the
+    lane) drops only the tracks whose LAST clip this edit took away. A track that was already empty
+    is kept, which is what keeps "add an empty layer, then fill it" working, and at least one track
+    always survives. Transient drag frames are exempt — the lane a drag is leaving must outlive the
+    gesture that empties it.

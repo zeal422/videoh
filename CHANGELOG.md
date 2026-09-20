@@ -5,6 +5,85 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.5] — 2026-09-20
+
+Makes the timeline's layers behave the way a layers panel is expected to: a clip can be dragged onto
+any layer, a layer can be deleted, an empty layer does not linger, and adding a layer no longer hides
+the clips you meant to move onto it. Every claim below was reproduced against the running UI before it
+was fixed; 293 unit tests, typecheck, the production build and the 28-step E2E battery are green.
+
+### Added
+
+- **A track-header context menu** (`TimelinePanel.tsx`): Rename Track…, Mute/Unmute Track, Delete
+  Track. `renameTrack` and `removeTrack` existed in the command set but were dispatched by nothing, so
+  neither was reachable from the UI at all. Delete is disabled for the last remaining lane (the model
+  forbids removing it) and renaming is also on double-click.
+- **Empty layers are removed by the edit that empties them** (`tracks.ts`, wired into the store). The
+  clip move that takes a lane's last clip takes the lane with it, in the same history entry, so one undo
+  restores both. A lane that was ALREADY empty is never removed — that is what keeps "add a layer, then
+  fill it" working — and the last lane always survives.
+- **Drag edge auto-scroll** (`timeline-scroll.ts`, `ClipView.tsx`): holding a dragged clip near the top
+  or bottom of the track area scrolls it, ramping from 1px to 14px per frame with depth, so a clip can
+  be dropped on a lane that is outside the visible rows.
+- **Refused drops explain themselves**: a clip dragged over a lane of the wrong kind marks that lane
+  while the pointer is over it and toasts the reason on release, instead of snapping back in silence.
+  The refusal is total — the drag keeps applying the legal half of the gesture (the time shift, on the
+  original lane) while the pointer sits over the blocked lane, so the drop cancels the transient edit
+  rather than committing it and landing the clip at a new time under a toast saying the drop was
+  invalid.
+
+### Fixed
+
+- **A clip drag went dead at the first lane it crossed** — the real reason "I cannot move the audio to
+  another layer". A clip that changes lane is rendered inside THAT lane's clip list, so React unmounted
+  the component mid-gesture: its pointer capture, its handlers and its gesture state died with it. The
+  clip landed on the first lane it crossed into and every later pointer move was ignored, so a
+  multi-lane move silently became a one-lane move. The gesture is now driven by listeners on `window`
+  that outlive the element (and remove themselves when it ends), so a drag follows the pointer across
+  as many lanes as it visits and commits as a single undo step.
+- **Adding a track hid the lanes you were looking at.** A new lane takes its slot above the other lanes
+  of its kind, pushing everything below it down by one row — and with only about two rows visible at a
+  typical window height, the lane holding your clips scrolled out of view, which is what made the new
+  layer look unusable. The timeline now scrolls by exactly the height of the inserted row, cancelling
+  the shift; the browser clamps it, so when every lane still fits nothing moves at all.
+- **The auto-scroll loop compounded into runaway scrolling.** Replaying the move inside a frame called
+  back into `syncAutoScroll` with the handle already cleared, queueing a second loop on top of the
+  running one — the scroll rate grew every frame (178px in under half a second). The next frame is now
+  queued before the replay, and the rate holds at 1px per frame near the inner edge.
+- **A second drag could steal the history base of the one already running.** `beginTransient()`
+  snapshots the doc, and there is only one snapshot: the gesture start guarded against another drag
+  with a per-INSTANCE ref, so a drag begun on a different clip (a different `ClipView`, with its own
+  ref) was invisible to that check and overwrote the base — leaving the first gesture to push a base
+  that was not its own. The shared store flag (`isTransientActive()`) is now consulted, and a second
+  drag is refused while the first is live (the click still selects, it just cannot start a drag on top
+  of one).
+- **The "commit any dangling gesture" safety net pre-empted the gesture it was meant to back up.**
+  `EditorShell` registers it on `window` at mount, so in the bubble order it ran BEFORE the drag's own
+  pointerup listener and committed the edit before the gesture could decide anything — a refused drop
+  that must roll back was frozen into history instead. The gesture's end handler is now capture-phase,
+  which the DOM always dispatches before bubble listeners, so the owner decides first and the net only
+  ever sees a closed transient.
+- **Stale lane geometry resolved drops onto the wrong lane.** The lane boxes were captured at
+  pointer-down and never refreshed, so any scroll — auto-scroll, a wheel, a resized timeline — left them
+  pointing at the wrong rows. They are re-read on every move.
+- **Choosing "Rename Track…" swallowed every keystroke.** The rename field mounts as the menu closes, and
+  Radix hands focus back to the header just after, so the field was on screen but never focused — the
+  name you typed went nowhere and Enter committed nothing. Only the menu path was affected (double-click
+  rename has no menu to fight); the menu's close-focus restore is now suppressed for that one item and
+  the field takes focus a frame later.
+
+### Notes
+
+- `removeTrack`, `renameTrack`, `addTrack` and the clip-move command were all correct; the failures
+  reproduced here were reachability and gesture-lifetime defects in the timeline UI, not in the state
+  core. No command semantics changed.
+- The E2E battery gained no steps: the new behaviour is covered by `tracks.test.ts`,
+  `timeline-scroll.test.ts` and the source-wiring locks in `compositing-ui.test.ts`, which is where this
+  repo already keeps the assertions that need real layout to mean anything.
+- The docs moved with the code: `structure.md` and `architecture.md` gained the two new modules (plus
+  the prune invariant), `flows.md` the layer-management and drag flows, `design-system.md` the new
+  blocked-lane state, and `testing.md` / `README.md` the new inventory totals.
+
 ## [0.3.1] — 2026-09-20
 
 Three follow-ups: the dev server now reports failures honestly, the UI layer keeps only the components

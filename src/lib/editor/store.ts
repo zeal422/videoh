@@ -3,6 +3,7 @@ import { HISTORY_LIMIT, PPS_DEFAULT } from './constants'
 import { applyCommand, applyCommands, EditorCommand, EditorCommandError } from './commands'
 import { createDoc } from './factories'
 import { linkedClips } from './links'
+import { pruneEmptiedTracks } from './tracks'
 import type { Doc } from './types'
 
 /**
@@ -123,12 +124,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { doc, past } = get()
     try {
       const next = Array.isArray(command) ? applyCommands(doc, command) : applyCommand(doc, command)
+      // An edit that takes a lane's last clip takes the lane with it (empty
+      // layers never linger); it rides in the same history entry as the edit.
+      const pruned = pruneEmptiedTracks(doc, next)
       set({
-        doc: next,
+        doc: pruned,
         past: [...past, doc].slice(-HISTORY_LIMIT),
         future: [],
         // Commands may delete selected clips — drop dangling selection ids.
-        ...normalizeSelections(next, get().selections),
+        ...normalizeSelections(pruned, get().selections),
       })
     } catch (error) {
       rethrowFriendly(error)
@@ -152,13 +156,20 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   commitTransient: () => {
     const { doc, past } = get()
     if (!transientBase) return
-    const changed = JSON.stringify(transientBase) !== JSON.stringify(doc)
+    const base = transientBase
+    // Prune only now, on commit: mid-gesture the source lane is legitimately
+    // empty for a frame, and removing it would delete the lane being dragged out of.
+    const pruned = pruneEmptiedTracks(base, doc)
+    const changed = JSON.stringify(base) !== JSON.stringify(pruned)
     // Clear the transient flag BEFORE set() — the autosave subscription runs
     // synchronously and must observe a non-transient state to schedule a save.
-    const base = transientBase
     transientBase = null
     if (changed) {
-      set({ past: [...past, base].slice(-HISTORY_LIMIT), future: [] })
+      set({
+        doc: pruned,
+        past: [...past, base].slice(-HISTORY_LIMIT),
+        future: [],
+      })
     }
   },
 

@@ -57,7 +57,7 @@ src/components/
 │   ├── StatusBar.tsx             #   pinned footer
 │   ├── ExportDialog.tsx          #   export: quality, progress, preview, download
 │   └── timeline/
-│       ├── TimelinePanel.tsx     #   lanes, playhead, drop targets, zoom, add-track
+│       ├── TimelinePanel.tsx     #   lanes, playhead, drop targets, zoom, track menu
 │       ├── Ruler.tsx             #   canvas time ruler + scrubbing
 │       ├── ClipView.tsx          #   clip: move/trim gestures, context menu, link badge
 │       └── Waveform.tsx          #   per-clip waveform canvas
@@ -103,6 +103,8 @@ src/lib/editor/
 ├── project-io.ts         # save / open / import-media browser helpers
 ├── sample-media.ts       # bundled sample list + idempotent filtering
 ├── timeline-drop.ts      # drop-target geometry for drop-between-tracks
+├── tracks.ts             # removes the tracks an edit leaves empty (prune)
+├── timeline-scroll.ts    # drag edge auto-scroll geometry (pure)
 ├── media/
 │   ├── probe.ts          # importFile: probe duration/size, thumbnail, waveform peaks, hasAudio
 │   └── elements.ts       # ClipMediaPool: per-clip media elements + source nodes
@@ -114,7 +116,7 @@ src/lib/editor/
 │   └── text-box.ts       # text-box measurement (twins the compositor's text renderer)
 ├── export/
 │   └── exporter.ts       # MediaRecorder pipeline + downloadBlob
-└── __tests__/            # 24 test files, 266 tests (see testing.md)
+└── __tests__/            # 26 test files, 293 tests (see testing.md)
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / MediaRecorder
 ```

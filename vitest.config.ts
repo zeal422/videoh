@@ -24,6 +24,8 @@ export default defineConfig({
         'src/lib/editor/snap.ts',
         'src/lib/editor/time.ts',
         'src/lib/editor/transition.ts',
+        'src/lib/editor/tracks.ts',
+        'src/lib/editor/timeline-scroll.ts',
         'src/lib/editor/serialization.ts',
         'src/lib/editor/store.ts',
         'src/lib/editor/persistence.ts',

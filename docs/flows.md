@@ -11,6 +11,9 @@ Stable hooks used across flows and tests:
 - `[data-testid^="clip-"]`, `[data-testid="clip-link-badge"]`, `[data-testid="clip-context-menu"]`
 - `[data-testid="track-insert-line"]`, `[data-testid="track-insert-label"]`
 - `[data-testid="text-drag-outline"]`, `[data-testid="linked-av-hint"]`
+- `[data-testid="track-header-<id>"]`, `[data-testid="track-context-menu"]`, `[data-testid^="track-menu-"]`
+- `[data-lane-kind]` on each lane and `[data-track-row]` on the newly inserted row
+- `[data-drop-blocked="true"]` — a lane marked as an illegal drop target for the duration of a drag
 - `[data-timeline-scroll]` — the timeline's scroll container
 - Panel ids `panel-media`, `panel-preview`, `panel-inspector`, `panel-timeline`
 - Drag payloads `application/x-media-id` and `application/x-media-kind-<kind>`
@@ -51,7 +54,18 @@ Stable hooks used across flows and tests:
 
 - **Move** — drag a clip within its lane or across compatible lanes; the whole selection moves with the
   same time delta (and the same track-index offset per partner where compatible). One drag = one undo
-  entry (transient gesture).
+  entry (transient gesture). The gesture follows the pointer across as many lanes as it visits, because
+  its listeners live on `window` rather than on the clip element: a clip that changes lane is re-rendered
+  inside the new lane's list, and the remount used to destroy the drag at the first lane it crossed.
+- **Reaching a lane** — holding a dragged clip within 24px of the top/bottom edge of the track area
+  scrolls the timeline (1px → 14px per frame with depth), so a lane that is not among the visible rows
+  can still be reached and dropped on.
+- **Refused drops** — dropping a clip over a lane of the wrong kind marks that lane
+  (`[data-drop-blocked="true"]`) while the pointer is over it and toasts the reason on release, instead
+  of snapping back silently. The document does not change.
+- **Empty lanes do not linger** — the edit that takes a lane's last clip removes the lane with it, in the
+  same history entry, so one undo restores both. A lane that was already empty is kept, and the last lane
+  always survives ([architecture.md](architecture.md#invariants), rule 17).
 - **Trim** — drag either edge; video/audio clips are bounded by their source (the `inPoint + duration ≤
 asset.duration` invariant), images and text are unbounded.
 - **Split** — `Ctrl+K` (Add Edit) splits every clip the playhead crosses; with a selection it splits
@@ -90,6 +104,14 @@ asset.duration` invariant), images and text are unbounded.
 
 - New tracks stack by convention (text → video → audio); the newest track of a kind appears above the
   older ones. Any explicit `atIndex` placement is honoured verbatim.
+- Adding a layer scrolls the track area by exactly the height of the inserted row, cancelling the shift
+  it would otherwise push onto the lanes below — the browser clamps it, so a timeline that still fits
+  does not move at all. Without this, the lane holding your clips scrolled out of view and the new layer
+  looked unusable.
+- **Managing a layer** — right-click a track header (or double-click its name) for Rename Track…, Mute/
+  Unmute Track and Delete Track. Delete is disabled while only one lane remains, because the model
+  forbids removing the last track. Rename takes focus when it is chosen from the menu, so the name you
+  type goes into the field rather than being swallowed by the closing menu.
 - Per-clip **opacity** (0–100 %) multiplies with crossfade alphas, so a clip on a higher track blends
   through to the track below.
 - **Play / pause (Space)**, `J`/`K`/`L` shuttle (browsers cannot play backwards, so `J` stops like `K`),
