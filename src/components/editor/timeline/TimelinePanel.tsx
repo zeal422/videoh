@@ -1,0 +1,509 @@
+'use client'
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Volume2, VolumeX, Video, AudioLines, Plus, Type as TypeIcon } from 'lucide-react'
+
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { toast } from '@/hooks/use-toast'
+
+import { Ruler } from './Ruler'
+import { ClipView, computeFadeIn } from './ClipView'
+import {
+  commandsToAddMedia,
+  commandsToAddMediaInNewTrack,
+  trackKindForMedia,
+} from '@/lib/editor/actions'
+import { previewTrackName } from '@/lib/editor/commands'
+import { computeTrackDropTarget, mediaKindFromDragEvent } from '@/lib/editor/timeline-drop'
+import { docDuration, uid } from '@/lib/editor/factories'
+import { applySnap, computeSnapPoints } from '@/lib/editor/snap'
+import { playbackRef } from '@/lib/editor/playback/engine-ref'
+import { useEditorStore } from '@/lib/editor/store'
+import { SNAP_THRESHOLD_PX, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
+import type { Track, TrackKind } from '@/lib/editor/types'
+import { cn } from '@/lib/utils'
+
+/** Sticky header column width (moved to constants for cross-module reuse). */
+export { TRACK_HEADER_WIDTH }
+
+const TRACK_HEIGHT: Record<TrackKind, number> = {
+  video: 64,
+  audio: 56,
+  text: 44,
+}
+const RULER_HEIGHT = 28
+const TAIL_PADDING_SEC = 20
+
+/** Lane highlight while dragged media hovers over the row itself (drop ONTO the track). */
+const LANE_DROP_HIGHLIGHT: Record<TrackKind, string> = {
+  video: 'bg-emerald-400/10 ring-1 ring-inset ring-emerald-400/50',
+  audio: 'bg-amber-400/10 ring-1 ring-inset ring-amber-400/50',
+  text: 'bg-violet-400/10 ring-1 ring-inset ring-violet-400/50',
+}
+
+/**
+ * Transient drop feedback while media drags over the timeline (component
+ * state — it never outlives the gesture, so it stays out of the store).
+ * `insert` carries the boundary offset (px within the rows region), the kind
+ * of track that would be created and its preview name ("+ V2").
+ */
+type DropIndicator =
+  | { mode: 'lane'; index: number }
+  | { mode: 'insert'; index: number; top: number; kind: 'video' | 'audio'; name: string }
+
+/**
+ * Multi-track timeline: sticky track headers, canvas ruler with scrubbing,
+ * draggable/trimmable clips, playhead, snap guide and media-bin drop target.
+ *
+ * Stacking scale (all in the content div's stacking context) — the playhead
+ * lives in CONTENT coordinates, so when the user scrolls it slides beneath
+ * the sticky header column and must be PAINTED under it, never over:
+ *   clips (auto, selected z-10) < snap guide z-15 < playhead line z-20
+ *   < track headers z-30 < ruler row z-40 (corner cell z-50 inside it).
+ * The diamond marker lives INSIDE the ruler row (z-30 < corner z-50) so the
+ * sticky corner cell covers it exactly like it covers the line.
+ *
+ * Two more artifact rules learned the hard way (user screenshots):
+ * - The line/guide are confined to the track rows (top: RULER_HEIGHT,
+ *   height: tracksHeight) — running to the content bottom painted a stray
+ *   dot in the empty strip below the last row where no header can cover it.
+ * - Row separators live on the lane + header cells, NOT on the row div:
+ *   a row-level border-b is painted below the header's box, and the line
+ *   (z-20) showed through it as one magenta dot per row boundary.
+ *
+ * Media drop zones (HTML5 DnD from the media bin): handlers live on the
+ * CONTENT div and are guarded by the `application/x-media-id` payload type,
+ * so pointer-driven clip gestures and OS file drags are untouched. The middle
+ * of a row drops ONTO that track; a thin edge strip at each row boundary (and
+ * the empty strip below the last row) INSERTS a new track at exactly that
+ * z-position — geometry in lib/editor/timeline-drop.ts. The insertion line
+ * renders at z-[25]: above clips/playhead, below the sticky headers (z-30).
+ */
+export function TimelinePanel() {
+  const doc = useEditorStore((s) => s.doc)
+  const pxPerSec = useEditorStore((s) => s.pxPerSec)
+  const playhead = useEditorStore((s) => s.playhead)
+  const playing = useEditorStore((s) => s.playing)
+  const snapLine = useEditorStore((s) => s.snapLine)
+  const activeTool = useEditorStore((s) => s.activeTool)
+
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const scrubbingRef = useRef(false)
+  const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null)
+
+  const duration = docDuration(doc)
+  const contentWidth = Math.max(600, (duration + TAIL_PADDING_SEC) * pxPerSec)
+  // Total pixel height of the track rows — bounds the playhead line and snap
+  // guide so they never render in the empty strip below the last row.
+  const tracksHeight = useMemo(
+    () => doc.project.tracks.reduce((h, t) => h + TRACK_HEIGHT[t.kind], 0),
+    [doc.project.tracks],
+  )
+
+  // ————— seeking —————
+  const seekToClientX = useCallback(
+    (clientX: number) => {
+      const rulerEl = contentRef.current?.querySelector('[data-ruler]')
+      if (!rulerEl) return
+      const rect = rulerEl.getBoundingClientRect()
+      const t = Math.max(0, (clientX - rect.left) / pxPerSec)
+      playbackRef.current?.seek(t)
+    },
+    [pxPerSec],
+  )
+
+  // ————— playhead follow during playback —————
+  useEffect(() => {
+    if (!playing) return
+    const el = scrollRef.current
+    if (!el) return
+    const x = playhead * pxPerSec
+    const viewStart = el.scrollLeft
+    const viewEnd = viewStart + el.clientWidth - TRACK_HEADER_WIDTH
+    if (x > viewEnd - 60 || x < viewStart) {
+      el.scrollLeft = Math.max(0, x - 120)
+    }
+  }, [playhead, playing, pxPerSec])
+
+  // ————— ctrl+wheel zoom around the cursor (non-passive) —————
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return
+      e.preventDefault()
+      const store = useEditorStore.getState()
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
+      const next = Math.min(400, Math.max(10, Math.round(store.pxPerSec * factor)))
+      if (next === store.pxPerSec) return
+      // keep the time under the cursor stationary
+      const rect = el.getBoundingClientRect()
+      const cursorX = e.clientX - rect.left - TRACK_HEADER_WIDTH
+      const cursorTime = (el.scrollLeft + cursorX) / store.pxPerSec
+      store.setPxPerSec(next)
+      requestAnimationFrame(() => {
+        el.scrollLeft = Math.max(0, cursorTime * next - cursorX)
+      })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  // ————— media drop zones (onto a lane, or BETWEEN tracks) —————
+
+  /** Resolves a drag position to the drop feedback to show (null = not a target). */
+  const computeIndicator = useCallback(
+    (e: React.DragEvent): DropIndicator | null => {
+      const scrollEl = scrollRef.current
+      const contentEl = contentRef.current
+      if (!scrollEl || !contentEl) return null
+      const scrollRect = scrollEl.getBoundingClientRect()
+      const contentRect = contentEl.getBoundingClientRect()
+      // The sticky ruler zone and the sticky header column are not drop
+      // targets — this also rejects the ruler's home position when unscrolled.
+      if (e.clientY < scrollRect.top + RULER_HEIGHT) return null
+      if (e.clientX < scrollRect.left + TRACK_HEADER_WIDTH) return null
+      const heights = doc.project.tracks.map((t) => TRACK_HEIGHT[t.kind])
+      const target = computeTrackDropTarget(e.clientY - contentRect.top - RULER_HEIGHT, heights)
+      if (!target) return null
+      if (target.mode === 'lane') return { mode: 'lane', index: target.index }
+      const dragKind = mediaKindFromDragEvent(e)
+      const kind = dragKind ? trackKindForMedia(dragKind) : 'video'
+      return {
+        mode: 'insert',
+        index: target.index,
+        top: target.y,
+        kind,
+        name: previewTrackName(doc, kind),
+      }
+    },
+    [doc],
+  )
+
+  const handleDragOver = (e: React.DragEvent) => {
+    // React only to media-bin drags: clip move/trim gestures use pointer
+    // events (no dataTransfer payload) and OS file drags keep their native
+    // behavior (import happens via the media bin).
+    if (!e.dataTransfer.types.includes('application/x-media-id')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    setDropIndicator(computeIndicator(e))
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    // Fires when moving BETWEEN children too — only clear when genuinely
+    // leaving the timeline content (or the window).
+    const next = e.relatedTarget as Node | null
+    if (next && contentRef.current?.contains(next)) return
+    setDropIndicator(null)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    setDropIndicator(null)
+    if (!e.dataTransfer.types.includes('application/x-media-id')) return
+    e.preventDefault()
+    const target = computeIndicator(e)
+    const contentEl = contentRef.current
+    if (!target || !contentEl) return
+    const store = useEditorStore.getState()
+    const mediaId = e.dataTransfer.getData('application/x-media-id')
+    const asset = store.doc.media.find((m) => m.id === mediaId)
+    if (!asset) return
+
+    // Drop time from the content-frame x (lanes start after the header column).
+    let t = Math.max(
+      0,
+      (e.clientX - contentEl.getBoundingClientRect().left - TRACK_HEADER_WIDTH) / store.pxPerSec,
+    )
+    if (store.snapEnabled) {
+      const points = computeSnapPoints(store.doc, { includeTimelineEnd: false })
+      t = applySnap(t, points, SNAP_THRESHOLD_PX / store.pxPerSec).time
+    }
+
+    if (target.mode === 'lane') {
+      const track = doc.project.tracks[target.index]
+      const commands = commandsToAddMedia(store.doc, asset, t, track.id)
+      if (!commands) {
+        toast({
+          title: 'Incompatible track',
+          description: `${asset.kind} material cannot go on a ${track.kind} track`,
+          variant: 'destructive',
+        })
+        return
+      }
+      store.apply(commands)
+      return
+    }
+    // Edge strip / empty area below the rows: create a layer at the exact
+    // boundary the user pointed at (Premiere-style drop-between-tracks).
+    store.apply(commandsToAddMediaInNewTrack(store.doc, asset, t, target.index))
+  }
+
+  // Safety net: drags that end outside the timeline (dropped back on the bin,
+  // cancelled, Escape) never hit our drop/dragleave handlers — `dragend`
+  // always fires on the drag source, so a window-level listener clears the
+  // indicator no matter where the gesture ends.
+  useEffect(() => {
+    if (!dropIndicator) return
+    const clear = () => setDropIndicator(null)
+    window.addEventListener('dragend', clear)
+    window.addEventListener('drop', clear)
+    return () => {
+      window.removeEventListener('dragend', clear)
+      window.removeEventListener('drop', clear)
+    }
+  }, [dropIndicator])
+
+  const addTrack = useCallback((kind: TrackKind) => {
+    useEditorStore.getState().apply({ type: 'addTrack', kind, trackId: uid('track') })
+  }, [])
+
+  return (
+    <section aria-label="Timeline" className="flex min-h-0 flex-1 flex-col bg-background">
+      <div
+        ref={scrollRef}
+        data-timeline-scroll
+        className="editor-scroll relative min-h-0 flex-1 overflow-auto"
+        onPointerDown={(e) => {
+          // click empty space deselects
+          if (e.target === e.currentTarget || (e.target as HTMLElement).dataset.laneId) {
+            useEditorStore.getState().select(null)
+          }
+        }}
+      >
+        <div
+          ref={contentRef}
+          className="relative"
+          style={{
+            width: TRACK_HEADER_WIDTH + contentWidth,
+            minHeight: '100%',
+          }}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {/* ruler row — z-40: covers clips, playhead line and track headers
+              when they scroll beneath it vertically */}
+          <div className="sticky top-0 z-40 flex bg-card" style={{ height: RULER_HEIGHT }}>
+            <div
+              className="sticky left-0 z-50 flex shrink-0 items-center justify-between border-b border-r bg-card py-1 pl-2 pr-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+              style={{ width: TRACK_HEADER_WIDTH }}
+            >
+              <span>Timeline</span>
+              {/* Always-visible add-track affordance right where the tracks
+                  live (the toolbar "+" dropdown alone was not discoverable —
+                  user feedback: "I don't see a way to add another video"). */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6"
+                    aria-label="Add track"
+                    title="Add track (video / audio / text)"
+                  >
+                    <Plus className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => addTrack('video')}>
+                    <Video className="mr-2 size-4 text-emerald-400" /> Video track
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => addTrack('audio')}>
+                    <AudioLines className="mr-2 size-4 text-amber-400" /> Audio track
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => addTrack('text')}>
+                    <TypeIcon className="mr-2 size-4 text-violet-400" /> Text track
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <div data-ruler className="border-b">
+              <Ruler
+                width={contentWidth}
+                pxPerSec={pxPerSec}
+                onScrubStart={(t) => {
+                  scrubbingRef.current = true
+                  playbackRef.current?.seek(t)
+                }}
+                onScrub={(t) => playbackRef.current?.seek(t)}
+                onScrubEnd={() => {
+                  scrubbingRef.current = false
+                }}
+              />
+            </div>
+            {/* playhead diamond — inside the ruler row so the sticky corner
+                cell paints over it when the playhead scrolls under the header
+                column (it used to be a z-40 full-height element that sliced
+                through the V1/A1 headers — user-reported visual bug) */}
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute top-0 z-30"
+              style={{ left: TRACK_HEADER_WIDTH + playhead * pxPerSec }}
+            >
+              <div className="absolute -left-[5px] top-0 size-[11px] rotate-45 bg-rose-500" />
+            </div>
+          </div>
+
+          {/* track rows — the row INDEX doubles as the z-position: index 0 is
+              the topmost compositing layer (compositor draws last→first), so
+              a drop between rows maps 1:1 to an addTrack atIndex insertion */}
+          {doc.project.tracks.map((track, rowIndex) => (
+            <div key={track.id} className="flex" style={{ height: TRACK_HEIGHT[track.kind] }}>
+              <TrackHeader track={track} />
+              <div
+                data-lane-id={track.id}
+                data-lane-kind={track.kind}
+                className={cn(
+                  'relative flex-1 border-b border-border/60',
+                  track.kind === 'video' && 'bg-emerald-950/20',
+                  track.kind === 'audio' && 'bg-amber-950/20',
+                  track.kind === 'text' && 'bg-violet-950/20',
+                  dropIndicator?.mode === 'lane' &&
+                    dropIndicator.index === rowIndex &&
+                    LANE_DROP_HIGHLIGHT[track.kind],
+                  // Razor tool (Premiere C): the blade cursor everywhere on
+                  // the lanes — pointer-down on a clip now cuts it.
+                  activeTool === 'razor' && 'cursor-crosshair',
+                )}
+                style={{ width: contentWidth }}
+                onPointerDown={(e) => {
+                  if ((e.target as HTMLElement).dataset.laneId) {
+                    useEditorStore.getState().select(null)
+                  }
+                }}
+              >
+                {track.clips.map((clip, i) => (
+                  <ClipView
+                    key={clip.id}
+                    doc={doc}
+                    clip={clip}
+                    track={track}
+                    pxPerSec={pxPerSec}
+                    height={TRACK_HEIGHT[track.kind]}
+                    fadeIn={computeFadeIn(track.clips, i)}
+                    onSnapGuide={(t) => useEditorStore.getState().setSnapLine(t)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+
+          {/* playhead line — starts BELOW the ruler (the diamond lives in the
+              ruler row above), spans exactly the track rows, and paints UNDER
+              the sticky headers (z-30) so scrolling it beneath the header
+              column hides it instead of slicing through the V1/A1 labels */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute z-20 w-px bg-rose-500/90"
+            style={{
+              left: TRACK_HEADER_WIDTH + playhead * pxPerSec,
+              top: RULER_HEIGHT,
+              height: tracksHeight,
+            }}
+          />
+
+          {/* snap guide — above clips, below playhead/headers/ruler, and
+              confined to the track rows like the playhead line */}
+          {snapLine !== null && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute z-[15] w-px bg-amber-300"
+              style={{
+                left: TRACK_HEADER_WIDTH + snapLine * pxPerSec,
+                top: RULER_HEIGHT,
+                height: tracksHeight,
+              }}
+            />
+          )}
+
+          {/* drop-between-tracks indicator: a kind-colored line at the exact
+              boundary where a new track will be created, with a "+ V2" preview
+              pill. Content-frame coordinates (scrolls with the rows); painted
+              above clips and the playhead (z-[25]) but under the sticky
+              headers (z-30) and ruler (z-40). */}
+          {dropIndicator?.mode === 'insert' && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute z-[25]"
+              style={{
+                left: TRACK_HEADER_WIDTH,
+                width: contentWidth,
+                // Keep the 2px line fully inside the rows region — at the top
+                // boundary it would otherwise hide under the sticky ruler.
+                top: RULER_HEIGHT + Math.max(0, dropIndicator.top - 1),
+              }}
+            >
+              <div
+                data-testid="track-insert-line"
+                className={cn(
+                  'h-0.5 rounded-full',
+                  dropIndicator.kind === 'video' ? 'bg-emerald-400' : 'bg-amber-400',
+                )}
+              />
+              <div
+                data-testid="track-insert-label"
+                className={cn(
+                  'absolute left-2 flex items-center gap-0.5 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-semibold shadow-md',
+                  // Above the topmost boundary the pill would slide under the
+                  // sticky ruler — flip it below the line instead.
+                  dropIndicator.top === 0 ? 'top-1' : '-top-5',
+                  dropIndicator.kind === 'video'
+                    ? 'bg-emerald-500 text-emerald-50'
+                    : 'bg-amber-500 text-amber-50',
+                )}
+              >
+                <Plus className="size-3" />
+                {dropIndicator.name}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function TrackHeader({ track }: { track: Track }) {
+  const KindIcon = track.kind === 'video' ? Video : track.kind === 'audio' ? AudioLines : TypeIcon
+  const toggleMute = () =>
+    useEditorStore.getState().apply({ type: 'toggleTrackMute', trackId: track.id })
+
+  return (
+    <div
+      className="sticky left-0 z-30 flex shrink-0 items-center gap-2 border-b border-r border-b-border/60 bg-card px-2"
+      style={{ width: TRACK_HEADER_WIDTH }}
+    >
+      <KindIcon
+        className={cn(
+          'size-3.5 shrink-0',
+          track.kind === 'video' && 'text-emerald-400',
+          track.kind === 'audio' && 'text-amber-400',
+          track.kind === 'text' && 'text-violet-400',
+        )}
+      />
+      <span className="min-w-0 flex-1 truncate text-xs font-medium">{track.name}</span>
+      <span className="text-[10px] text-muted-foreground">{track.clips.length}</span>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-6"
+        aria-label={track.muted ? `Unmute ${track.name}` : `Mute ${track.name}`}
+        onClick={toggleMute}
+      >
+        {track.muted ? (
+          <VolumeX className="size-3.5 text-rose-400" />
+        ) : (
+          <Volume2 className="size-3.5" />
+        )}
+      </Button>
+    </div>
+  )
+}

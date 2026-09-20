@@ -1,0 +1,7 @@
+node_modules
+.next
+coverage
+bun.lock
+*.log
+public/samples
+e2e

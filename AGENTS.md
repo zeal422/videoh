@@ -1,0 +1,84 @@
+# AGENTS.md — Instructions for AI Coding Agents
+
+Browser-based multi-track video editor. Everything runs client-side (object URLs, canvas, Web Audio,
+MediaRecorder) — there is no backend, database, or environment configuration. Single page mounted from
+`src/app/page.tsx` (client-only dynamic import of the editor shell). Stack: Next.js 16 App Router +
+React 19 + TypeScript strict + Tailwind 4 (tokens in `src/app/globals.css`) + shadcn/ui +
+framer-motion + zustand 5 + Vitest. Run with **Bun**, never npm/pnpm/yarn.
+
+Docs: [README.md](README.md) and the [docs/ index](docs/README.md) (architecture, structure, flows,
+testing, design-system, deployment). Read [CHANGELOG.md](CHANGELOG.md) for release history; notable
+changes must be documented there ([Keep a Changelog](https://keepachangelog.com/en/1.1.0) format).
+
+## Commands
+
+```bash
+bun install          # install dependencies
+bun run dev          # dev server :3000 (output mirrored to dev.log)
+bun run check        # FULL gate: format:check → lint → typecheck → test → build
+bun run test         # Vitest only (NOT bare `bun test` — Bun's runner ignores vitest.config.ts)
+bun run test:coverage # Vitest with enforced coverage thresholds
+bun run typecheck    # tsc --noEmit
+bun run lint         # ESLint
+bun run format       # Prettier write (src, docs, root config)
+bun run build        # production build (standalone)
+```
+
+Golden rule: after any change run `bun run check`. It mirrors CI exactly — if any step is red you are
+not done. `build` uses `output: "standalone"` (see `next.config.ts`; don't break it), and `typecheck`
+matters because `next build` skips type validation (`typescript.ignoreBuildErrors: true`).
+
+## Map
+
+- `src/lib/editor/` — the state core. Types, constants, factories, commands, snap, transition, links,
+  clipboard, actions, store, serialization, persistence, workspace, menus. Pure TypeScript (no React,
+  except the zustand stores); this is what unit tests target. See
+  [docs/architecture.md](docs/architecture.md).
+- `src/lib/editor/media|playback|export/` — the only modules allowed to touch browser APIs (media
+  elements, Web Audio, canvas, MediaRecorder).
+- `src/components/editor/` — the UI. `src/components/editor/timeline/` holds the timeline.
+- `src/components/ui/` — preinstalled shadcn/ui: use them, never modify by hand.
+- `src/hooks/editor/useEditorKeyboard.ts` — the verified Premiere keyboard map.
+- `src/app/` — `layout.tsx` (dark `<html>`, fonts, Toaster), `page.tsx`, `globals.css` (tokens),
+  `icon.svg`.
+- `src/lib/editor/__tests__/` — all tests (`*.test.ts`), plus the mocked browser harness in `mocks/`.
+- `e2e/battery.sh` — 28-step UI battery (needs the dev server + `agent-browser`).
+- `public/samples/` — bundled demo media used by "Load sample media".
+
+## Critical rules
+
+1. **Commands are the only mutation path.** UI dispatches an `EditorCommand` to the store; commands
+   clone, validate, and return a new `Doc`. Never edit `doc` fields in place. If new state must be
+   undoable, it lives inside `Doc`.
+2. **Keep the state core browser-free** so it runs in Vitest's Node environment. Browser APIs belong in
+   `media/`, `playback/`, and `export/`.
+3. **Style through design tokens** (`bg-background`, `text-muted-foreground`, `border-border`, …) with
+   [docs/design-system.md](docs/design-system.md). The kind colours (emerald/amber/violet clips, rose
+   playhead, amber snap guide) are the deliberate exception; never hardcode surface hex values.
+4. **All times are seconds (floats).** Frame conversion lives only in `time.ts`. `tracks[0]` is the
+   topmost layer; the compositor draws last-to-first.
+5. **Layout: panels must be flex chains.** A panel root is `flex min-h-0 min-w-0 flex-1 flex-col`, and
+   `PanelShell`'s content wrapper is `flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden` — without
+   it, content is clipped instead of scrolling (react-resizable-panels renders plain block boxes).
+6. **Tests.** Add tests under `src/lib/editor/__tests__/`. A regression test must fail on the unfixed
+   code before it counts as proof. Behavior that is about code shape (z-order, CSS, mounted markup) is
+   locked with static-source assertions; runtime engine behavior uses the mocked harness.
+7. **Grep is an indicator, not truth.** Open the cited code and verify before writing any factual claim
+   — in code, docs, or commit messages. Report problems regardless of when they were introduced.
+8. **Dev server:** check first (`curl -s --max-time 3 http://localhost:3000`), never start a duplicate,
+   and read the `dev.log` tail for state. If you started it, stop your own process group when done;
+   never `pkill -f 'next dev'`. If the user started it, leave it running.
+9. **Do not edit without explicit go-ahead.** Vague approval is not edit permission, and one task's
+   approval doesn't extend to the next. Once approved, execute end-to-end without re-asking.
+10. **Surgical changes only** — no drive-by refactors, no new dependencies when the existing stack
+    suffices, no config flags to make errors disappear. Simplicity first.
+11. **Fix-request lists (e.g. `TO_FIX.md`):** verify every finding against the current code before
+    fixing; skip invalid ones with a reason; ask before product decisions; add regression tests; keep
+    docs in sync; run the full `bun run check`.
+
+## Workflow
+
+Read the relevant docs → make the minimal localized change → add or update colocated tests → run
+`bun run check` → verify the UI (`bun run dev`, exercise the flow, keep the console clean) → update the
+owning doc(s) and `CHANGELOG.md` → **do not commit**: the user commits and pushes. Commit messages, only
+when asked, use Conventional Commits with a bullet body listing each notable change.
