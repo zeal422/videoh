@@ -109,6 +109,18 @@ export function docDuration(doc: Doc): number {
   return end
 }
 
+/**
+ * The source timestamp a clip shows at clip-local time `local` (seconds from
+ * the clip's start), honoring speed and reverse. A reversed clip reads its
+ * source span mirrored, so local 0 maps to the span's last frame. This is the
+ * single mapping the preview, the frame plan and the exporter all share.
+ */
+export function sourceTimeAt(clip: Clip, local: number): number {
+  const speed = clip.speed ?? 1
+  const offset = clip.reverse ? Math.max(0, clip.duration - local) : local
+  return clip.inPoint + offset * speed
+}
+
 export function findClip(doc: Doc, clipId: string): { clip: Clip; track: Track } | undefined {
   for (const track of doc.project.tracks) {
     const clip = track.clips.find((c) => c.id === clipId)

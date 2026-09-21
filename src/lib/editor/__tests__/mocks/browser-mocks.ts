@@ -11,7 +11,7 @@ import { vi } from 'vitest'
  *   state machines instead of jsdom's "not implemented" stubs.
  * - Fake2DContext: records every compositor call (fillRect/drawImage/fillText,
  *   globalAlpha values) instead of needing the `canvas` native package.
- * - FakeMediaRecorder + FakeMediaStream + canvas.captureStream for export.
+ * - FakeMediaStream + FakeMediaStreamAudioDestinationNode for the audio graph.
  * - Manual requestAnimationFrame pump: frames advance only when the test says.
  *
  * Everything installs through vi.stubGlobal / prototype patching and reports
@@ -78,6 +78,25 @@ export class FakeMediaElementSourceNode extends FakeAudioNode {
   }
 }
 
+export class FakeBiquadFilterNode extends FakeAudioNode {
+  type = 'peaking'
+  frequency = new FakeAudioParam()
+  Q = new FakeAudioParam()
+  gain = new FakeAudioParam()
+}
+
+export class FakeDynamicsCompressorNode extends FakeAudioNode {
+  threshold = new FakeAudioParam()
+  knee = new FakeAudioParam()
+  ratio = new FakeAudioParam()
+  attack = new FakeAudioParam()
+  release = new FakeAudioParam()
+}
+
+export class FakeStereoPannerNode extends FakeAudioNode {
+  pan = new FakeAudioParam()
+}
+
 class FakeStreamDest {
   stream = {
     tracks: [new FakeMediaStreamTrack('audio')],
@@ -115,8 +134,25 @@ export class FakeAudioContext {
   async close(): Promise<void> {
     this.state = 'closed'
   }
+  /** Every shaping node (EQ / compressor / panner) this context created. */
+  shapingNodes: FakeAudioNode[] = []
   createGain(): FakeGainNode {
     return new FakeGainNode()
+  }
+  createBiquadFilter(): FakeBiquadFilterNode {
+    const node = new FakeBiquadFilterNode()
+    this.shapingNodes.push(node)
+    return node
+  }
+  createDynamicsCompressor(): FakeDynamicsCompressorNode {
+    const node = new FakeDynamicsCompressorNode()
+    this.shapingNodes.push(node)
+    return node
+  }
+  createStereoPanner(): FakeStereoPannerNode {
+    const node = new FakeStereoPannerNode()
+    this.shapingNodes.push(node)
+    return node
   }
   createMediaElementSource(el: HTMLMediaElement): FakeMediaElementSourceNode {
     return new FakeMediaElementSourceNode(el)
@@ -152,56 +188,6 @@ export class FakeMediaStream {
   }
   addTrack(t: FakeMediaStreamTrack): void {
     this.tracks.push(t)
-  }
-}
-
-export class FakeMediaRecorder {
-  static instances: FakeMediaRecorder[] = []
-  /** Mimetypes reported as supported; tests override to force fallbacks. */
-  static supported: string[] = [
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
-    'video/webm',
-  ]
-  static isTypeSupported(type: string): boolean {
-    return FakeMediaRecorder.supported.includes(type)
-  }
-  state: 'inactive' | 'recording' | 'paused' = 'inactive'
-  ondataavailable: ((e: { data: Blob }) => void) | null = null
-  onstop: (() => void) | null = null
-  onerror: ((e: unknown) => void) | null = null
-  timeslice: number | null = null
-  started = false
-  chunks: Blob[] = []
-  constructor(
-    public stream: FakeMediaStream,
-    public options: MediaRecorderOptions = {},
-  ) {
-    FakeMediaRecorder.instances.push(this)
-  }
-  start(timeslice?: number): void {
-    this.timeslice = timeslice ?? null
-    this.state = 'recording'
-    this.started = true
-    this.emitChunk(`timeslice-${this.timeslice}`)
-  }
-  stop(): void {
-    if (this.state === 'inactive') return
-    this.state = 'inactive'
-    this.emitChunk('final')
-    // onstop fires asynchronously in real browsers.
-    queueMicrotask(() => this.onstop?.())
-  }
-  pause(): void {
-    this.state = 'paused'
-  }
-  resume(): void {
-    this.state = 'recording'
-  }
-  private emitChunk(tag: string): void {
-    const blob = new Blob([tag], { type: 'video/webm' })
-    this.chunks.push(blob)
-    this.ondataavailable?.({ data: blob })
   }
 }
 
@@ -300,20 +286,13 @@ export function patchMediaElements(): void {
   })
 }
 
-/** Patches getContext('2d') and captureStream for every canvas. */
-export function patchCanvas(captureCalls: { fps: number }[] = []): void {
+/** Patches getContext('2d') for every canvas (the compositor's render target). */
+export function patchCanvas(): void {
   HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement) {
     const self = this as unknown as Record<string, unknown>
     if (!self.__fakeCtx) self.__fakeCtx = createFake2DContext()
     return self.__fakeCtx as CanvasRenderingContext2D
   } as unknown as typeof HTMLCanvasElement.prototype.getContext
-  ;(HTMLCanvasElement.prototype as unknown as Record<string, unknown>).captureStream = function (
-    this: HTMLCanvasElement,
-    fps: number,
-  ) {
-    captureCalls.push({ fps })
-    return new FakeMediaStream([new FakeMediaStreamTrack('video')])
-  }
 }
 
 // ————— rAF pump —————
@@ -354,39 +333,39 @@ export function installRAFPump(): RAFPump {
 
 export interface MockHarness {
   pump: RAFPump
-  captureCalls: { fps: number }[]
   audioContexts(): FakeAudioContext[]
-  recorders(): FakeMediaRecorder[]
   lastAudioContext(): FakeAudioContext
-  lastRecorder(): FakeMediaRecorder
   uninstall(): void
 }
 
 /**
- * Installs the full mock browser: AudioContext, MediaRecorder, MediaStream,
- * rAF pump, canvas 2D + captureStream, media element state machines.
- * `supported` controls MediaRecorder.isTypeSupported for codec-fallback tests.
+ * Installs the full mock browser: AudioContext, MediaStream, rAF pump,
+ * canvas 2D, and media element state machines. (The MediaRecorder mocks left
+ * with the retired WebM exporter in 0.5.0.)
  */
-export function installBrowserMocks(opts: { supported?: string[] } = {}): MockHarness {
+export function installBrowserMocks(): MockHarness {
   FakeAudioContext.instances = []
-  FakeMediaRecorder.instances = []
-  FakeMediaRecorder.supported = opts.supported ?? [...FakeMediaRecorder.supported]
-  const captureCalls: { fps: number }[] = []
 
   vi.stubGlobal('AudioContext', FakeAudioContext)
-  vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
   vi.stubGlobal('MediaStream', FakeMediaStream)
+  // Radix primitives (Select, Slider) measure elements via ResizeObserver;
+  // jsdom has none, so the harness installs a no-op observer.
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    },
+  )
   patchMediaElements()
-  patchCanvas(captureCalls)
+  patchCanvas()
   const pump = installRAFPump()
 
   return {
     pump,
-    captureCalls,
     audioContexts: () => FakeAudioContext.instances,
-    recorders: () => FakeMediaRecorder.instances,
     lastAudioContext: () => FakeAudioContext.instances[FakeAudioContext.instances.length - 1],
-    lastRecorder: () => FakeMediaRecorder.instances[FakeMediaRecorder.instances.length - 1],
     uninstall: () => vi.unstubAllGlobals(),
   }
 }

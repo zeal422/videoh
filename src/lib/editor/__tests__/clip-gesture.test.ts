@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   decideMove,
+  decideRateStretch,
   decideTrimEnd,
   decideTrimStart,
   resolveLaneDrop,
   snapThreshold,
   type LaneBox,
 } from '../clip-gesture'
-import { MIN_CLIP_DURATION, SNAP_THRESHOLD_PX } from '../constants'
+import { MIN_CLIP_DURATION, SNAP_THRESHOLD_PX, SPEED_MAX, SPEED_MIN } from '../constants'
 import type { Clip } from '../types'
 
 const clip = (over: Partial<Clip> = {}): Clip =>
@@ -276,5 +277,61 @@ describe('decideTrimEnd', () => {
     })
     expect(d.duration).toBe(6)
     expect(d.snapped).toBeNull()
+  })
+})
+
+describe('decideRateStretch (Alt-drag on an edge)', () => {
+  const base = {
+    mode: 'trim-end' as 'trim-end' | 'trim-start',
+    origStart: 2,
+    origDuration: 4,
+    origInPoint: 1,
+    origSpeed: 1,
+    startX: 100,
+    scale: 10,
+  }
+
+  it('end edge: source span is fixed, speed re-derives from the new duration', () => {
+    // Drag from 4s to 8s at 1x: the same 4s of source now plays over 8s → 0.5x.
+    const d = decideRateStretch({ ...base, clientX: 140 })
+    expect(d.start).toBe(2)
+    expect(d.duration).toBe(8)
+    expect(d.speed).toBeCloseTo(0.5, 10)
+    expect(d.inPoint).toBe(1)
+  })
+
+  it('end edge: shorter duration stretches the source faster', () => {
+    const d = decideRateStretch({ ...base, clientX: 80 }) // 4s → 2s
+    expect(d.duration).toBe(2)
+    expect(d.speed).toBeCloseTo(2, 10)
+  })
+
+  it('start edge: the right edge stays anchored, start and duration move', () => {
+    // Anchor end = 6. Drag left by 2s: start 0, duration 6, speed 4/6.
+    const d = decideRateStretch({ ...base, mode: 'trim-start', clientX: 80 })
+    expect(d.start).toBeCloseTo(0, 10)
+    expect(d.duration).toBe(6)
+    expect(d.speed).toBeCloseTo(4 / 6, 10)
+  })
+
+  it('start edge: never pushes the start below 0', () => {
+    const d = decideRateStretch({ ...base, mode: 'trim-start', clientX: -1000 })
+    expect(d.start).toBeGreaterThanOrEqual(0)
+  })
+
+  it('clamps speed into SPEED_MIN..SPEED_MAX and keeps duration/speed consistent', () => {
+    const fast = decideRateStretch({ ...base, clientX: -10000 })
+    expect(fast.speed).toBe(SPEED_MAX)
+    expect(fast.duration).toBeCloseTo((4 * 1) / SPEED_MAX, 10)
+    const slow = decideRateStretch({ ...base, clientX: 100000 })
+    expect(slow.speed).toBe(SPEED_MIN)
+    expect(slow.duration).toBeCloseTo(4 / SPEED_MIN, 10)
+  })
+
+  it('a pre-stretched clip stretches relative to its own span, not its duration', () => {
+    // 4s at 2x consumed 8s of source; dragging to 4s again (no movement) is a no-op.
+    const d = decideRateStretch({ ...base, origSpeed: 2, clientX: 100 })
+    expect(d.duration).toBe(4)
+    expect(d.speed).toBeCloseTo(2, 10)
   })
 })

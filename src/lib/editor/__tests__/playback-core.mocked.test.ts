@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PlaybackCore } from '../playback/core'
 import {
   FakeAudioContext,
+  FakeBiquadFilterNode,
   FakeGainNode,
+  FakeStereoPannerNode,
   installBrowserMocks,
   installRAFPump,
   type MockHarness,
@@ -111,6 +113,76 @@ describe('PlaybackCore (mocked browser)', () => {
     // The stream destination (used by the exporter) is fed from the master too.
     expect(master.connections.length).toBeGreaterThanOrEqual(2)
     expect(core.audioStream?.getAudioTracks().length).toBe(1)
+  })
+
+  it('rebuilds a clip audio chain when EQ, compressor or pan change', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+
+    const ctx = h.lastAudioContext()
+    // Flat shaping: only the per-clip gain node exists.
+    expect(ctx.shapingNodes).toHaveLength(0)
+
+    // EQ arrives after the graph is live: the chain is rebuilt with it.
+    doc.project.tracks[0].clips[0].eq = { low: 6, mid: 0, high: 0 }
+    await h.pump.pump(1)
+    expect(ctx.shapingNodes).toHaveLength(3)
+    const low = ctx.shapingNodes[0] as FakeBiquadFilterNode
+    expect(low.type).toBe('lowshelf')
+    expect(low.gain.value).toBe(6)
+
+    // Moving a band rebuilds again: the old biquads baked the old value in.
+    doc.project.tracks[0].clips[0].eq = { low: -4, mid: 0, high: 0 }
+    await h.pump.pump(1)
+    expect(ctx.shapingNodes).toHaveLength(6)
+    expect((ctx.shapingNodes[3] as FakeBiquadFilterNode).gain.value).toBe(-4)
+
+    // Pan and the compressor join the chain on the next shaping change.
+    doc.project.tracks[0].clips[0].compressor = true
+    doc.project.tracks[0].clips[0].pan = 0.5
+    await h.pump.pump(1)
+    expect(ctx.shapingNodes).toHaveLength(11)
+    expect(ctx.shapingNodes[9].constructor.name).toBe('FakeDynamicsCompressorNode')
+    expect((ctx.shapingNodes[10] as FakeStereoPannerNode).pan.value).toBe(0.5)
+  })
+
+  it('applies a speed change to an element that is already playing', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+
+    const el = document.querySelector('video') as HTMLVideoElement
+    expect(el.paused).toBe(false)
+    expect(el.playbackRate).toBe(1)
+
+    doc.project.tracks[0].clips[0].speed = 2
+    await h.pump.pump(1)
+    expect(el.playbackRate).toBe(2)
+
+    // Reversed clips stay stepped: no rate on the parked element beyond the clamp.
+    doc.project.tracks[0].clips[0].reverse = true
+    await h.pump.pump(1)
+    expect(el.paused).toBe(true)
+  })
+
+  it('leaves the chain alone when only the gain value changes', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+
+    const ctx = h.lastAudioContext()
+    doc.project.tracks[0].clips[0].gain = 0.5
+    await h.pump.pump(2)
+    expect(ctx.shapingNodes).toHaveLength(0)
+    const clipGain = masterGainOf(ctx).inputs[0] as FakeGainNode
+    expect(clipGain.gain.last?.value).toBeCloseTo(0.5, 5)
   })
 
   it('play() on an empty timeline never starts', async () => {

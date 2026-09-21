@@ -1,6 +1,6 @@
 # Web Video Editor
 
-A browser-based multi-track video editor MVP — a minimal Premiere Pro / CapCut-style editing experience that runs entirely client-side. Import media, arrange clips on a timeline, add cross-dissolves and text overlays, mix audio, preview in real time, and export to WebM. No uploads and no server-side processing: object URLs, canvas compositing, Web Audio, and MediaRecorder do all of the work in the tab.
+A browser-based multi-track video editor MVP: a minimal Premiere Pro / CapCut-style editing experience that runs entirely client-side. Import media, arrange clips on a timeline, add cross-dissolves and text overlays, animate properties with keyframes, re-time clips, mix and shape audio, preview in real time, and export to MP4. No uploads and no server-side processing: object URLs, canvas compositing, Web Audio, and WebCodecs do all of the work in the tab.
 
 Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/ui, and Vitest.
 
@@ -15,9 +15,12 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/
 - **Cross-dissolve transitions** — per-clip `transitionOut` with real overlap; the compositor and audio mixer both ramp.
 - **Text overlays** — text tracks and clips with font size, color, family, bold/italic, alignment, position, and shadow. **Drag the text directly in the program monitor** to reposition it (a dashed outline shows the box; one drag = one undo step; precise control stays in the Inspector's Position X/Y sliders).
 - **Layer compositing** — per-clip **opacity** (0–100 %) that stacks with crossfade alphas: put a clip on a higher track, lower its opacity, and the track below shows through — the same model as Photoshop/Premiere layering.
-- **Audio control** — per-clip linear gain (0–2) and mute, per-track mute, waveforms drawn on audio-bearing clips.
+- **Keyframes + Effect Controls**: animate opacity, position, scale, volume and the color set (exposure, contrast, saturation, brightness, hue) per clip. The Inspector has a Clip / Effect Controls tab split: a value slider, a keyframe diamond that adds/removes at the playhead, and a light graph whose dots drag in time. Keyframe times are clip-local, interpolation is linear for now, splitting a clip redistributes its curves, and every keyframe drag is one undo step.
+- **Color**: the color set applies through the canvas filter stack in preview and export alike; a neutral clip skips the filter pass entirely.
+- **Speed and reverse**: per-clip speed (0.25×–4×) with an Inspector slider and an Alt-drag rate stretch on either clip edge (the source span stays fixed and the speed re-derives), plus a reverse toggle for video. Reverse renders frame-accurately in the export and stepped in the preview; reversed audio is dropped. Clips carry speed/reverse badges.
+- **Audio control + shaping**: per-clip linear gain (0–2) and mute, per-track mute, waveforms, plus per-clip pan, a 3-band EQ (200 Hz / 1 kHz / 4 kHz), a compressor, and **auto-ducking** that writes volume keyframes for music under dialogue (estimated from the waveform peaks, with a dialogue-source picker).
 - **Synced preview playback** — audio-clock-driven master clock, per-clip media element pool, canvas compositor, drift correction.
-- **WebM export** — MediaRecorder real-time capture with low/medium/high quality presets, progress, cancel, and in-dialog preview.
+- **MP4 export via WebCodecs**: offline, frame-accurate H.264 export through a pure frame plan: source frames are decoded (not element-seeked), the animated doc is composited per frame, audio is mixed offline and encoded as AAC (Opus where the browser has no AAC encoder, notably desktop Linux and Firefox), and the result plays with a correct duration header. Wall time tracks decode speed rather than the old realtime capture. Quality presets map to bitrates; progress, cancel, and in-dialog preview included. Needs a WebCodecs-capable browser (Chromium, Edge, Firefox 130+, Safari 26+).
 - **Undo/redo** — up to 100 steps of whole-document snapshots; drag gestures collapse into a single undo entry.
 - **Save/load project JSON** — `.veproj.json` files; media references survive, object URLs do not.
 - **Autosave/restore** — debounced localStorage writes with a restore-or-discard banner on the next visit.
@@ -33,7 +36,7 @@ bun run dev
 
 Open <http://localhost:3000> (or the preview URL shown by your workspace). For an instant demo, click **Load sample media** in the media bin — it imports the bundled samples from `public/samples/` (`sample-video.mp4`, `sample-audio.mp3`, `sample-image.png`) — then quick-add them to the timeline with the `+` button on each asset.
 
-Use a current Chromium-based browser for the full feature set (MediaRecorder + Web Audio + canvas capture streams).
+Use a current Chromium-based browser for the full feature set (WebCodecs + Web Audio + canvas rendering). Export additionally needs WebCodecs (Chromium, Edge, Firefox 130+, Safari 26+).
 
 ### Keyboard shortcuts
 
@@ -95,8 +98,8 @@ The editor is split into four layers with a strict unidirectional data flow: **U
                 ▼
 ┌──────────────────────────────┐   ┌────────────────────────────┐
 │ engine/playback              │   │ engine/export              │
-│   core.ts (PlaybackCore)     │   │   exporter.ts              │
-│   compositor.ts · preview.ts │   │   (MediaRecorder capture   │
+│   core.ts (PlaybackCore)     │   │   mp4.ts (WebCodecs/MP4)   │
+│   compositor.ts · preview.ts │   │   (WebCodecs/MP4 render)   │
 │   engine-ref.ts · media/*    │   │    of a dedicated core)    │
 └──────────────────────────────┘   └────────────────────────────┘
 ```
@@ -104,7 +107,7 @@ The editor is split into four layers with a strict unidirectional data flow: **U
 - **UI** never mutates state directly. Every edit is a named `EditorCommand` dispatched via `store.apply(...)` (or as transient updates during drags).
 - **Commands** validate input, clone the document, and return a new `Doc`. The store keeps a snapshot of the previous doc for undo.
 - **The store** is the single source of truth. React components subscribe to slices of it; the playback engine reads the current doc via a `getDoc()` callback and reports the playhead back through the store, which flows to the views.
-- **The engine** is framework-free: `PlaybackCore` owns the audio clock, the media element pool, the Web Audio graph, and canvas rendering. Export reuses the same core on an offscreen canvas.
+- **The engine** is framework-free and drives the preview only: `PlaybackCore` owns the audio clock, the media element pool, the Web Audio graph, and canvas rendering. Export is separate: it walks the pure frame plan and renders through WebCodecs (no playback core, no realtime constraint).
 
 A deeper module-by-module reference lives in [`docs/architecture.md`](docs/architecture.md). The whole documentation set — architecture, structure, flows, testing, and design system — is indexed at [`docs/README.md`](docs/README.md).
 
@@ -209,29 +212,44 @@ All mutations flow through 22 named commands in `src/lib/editor/commands.ts`, ap
 
 - **Master clock** — the `AudioContext` clock when Web Audio is available (sample-accurate and drift-free); otherwise `performance.now()`. On `play()` the timeline time is anchored to the clock, and each `requestAnimationFrame` derives the playhead from the elapsed audio time.
 - **Per-clip media pool** — `ClipMediaPool` gives every clip its own `HTMLVideoElement`/`HTMLAudioElement` parked in a hidden container, so two clips can reference the same asset simultaneously (after a split or across tracks).
-- **Drift correction** — every frame the engine compares each active element's `currentTime` with the expected source time (`inPoint + (t - start)`); drift over 120 ms triggers a resync seek.
-- **Web Audio graph** — each element feeds a `MediaElementAudioSourceNode` into a per-clip `GainNode`, all connected to a master `GainNode` that routes to both `audio.destination` (speakers) and a `MediaStreamAudioDestinationNode` (export tap). Per-frame gain is `clip.gain × clip mute × track mute × crossfade alpha`, applied with a 20 ms ramp. Without Web Audio the engine falls back to element `volume`.
+- **Drift correction**: every frame the engine compares each active element's `currentTime` with the expected source time (`sourceTimeAt(clip, t - clip.start)`, the one mapping the preview, the plan and the exporter share, mirroring the span for reversed clips); drift over 120 ms triggers a resync seek.
+- **Web Audio graph**: each element feeds a `MediaElementAudioSourceNode` into a per-clip `GainNode`, all connected to a master `GainNode` that routes to `audio.destination` (speakers) and a `MediaStreamAudioDestinationNode` (`audioStream`, a capture destination no longer used by export; the exporter mixes in an `OfflineAudioContext` instead). Per-frame gain is `clip.gain × clip mute × track mute × crossfade alpha`, applied with a 20 ms ramp. Pan, EQ and the compressor bake into that per-clip chain, which is rebuilt when any of them changes so an edit is audible immediately. Without Web Audio the engine falls back to element `volume`.
 - **Compositor rules** (`compositor.ts`) — tracks composite bottom→top onto a black frame; video/image clips are drawn contain-fit (letterboxed, aspect preserved); text clips render styled, shadowed multi-line text; two overlapping clips crossfade with complementary alphas, otherwise the later clip simply wins visually; audio tracks draw nothing.
 - **Scrubbing** — while paused, `seek()` positions active video elements and re-draws once their `seeked` event lands (`drawStill`).
 
 ## Export
 
-`exportTimeline` (`src/lib/editor/export/exporter.ts`) renders the timeline to a downloadable file:
+`exportTimeline` (`src/lib/editor/export/mp4.ts`) renders the timeline to a downloadable MP4
+(H.264 + AAC, or Opus audio where the browser cannot encode AAC), offline, with no MediaRecorder
+involved:
 
-- Runs a **dedicated `PlaybackCore`** on an offscreen canvas sized to the project, so the preview stays free.
-- **Video** comes from `canvas.captureStream(fps)`; **audio** is tapped from the core's `MediaStreamAudioDestinationNode`.
-- **MediaRecorder** encodes WebM — `vp9,opus` preferred, falling back to `vp8,opus`, then generic `video/webm`, then `video/mp4` if the browser offers it.
+- `export/offline.ts` builds a **pure frame plan**: `exportFrameTimes` quantizes the timeline to the
+  project fps, `planVideoFrame` resolves each frame's draws (source timestamps honoring speed and
+  reverse, crossfade alphas, keyframed opacity, color filter, transform), and `planAudioFrame`
+  resolves the audible contributions with gain/pan and twin shadowing. Tests verify the plan in Node.
+- **Video frames are decoded, not element-seeked.** Mediabunny's `VideoSampleSink` returns the
+  source frame at an exact timestamp, which is what makes reverse and sub-second speed exact;the plan's composite goes onto an offscreen canvas (text clips through the same `drawTextClip` the preview uses) and into a Mediabunny `CanvasSource` (codec `avc`).
+- **Audio** is mixed in one `OfflineAudioContext` render with the same graph topology as the preview
+  (gain keyframes, pan, EQ, compressor, crossfade ramps), then encoded as an AAC track, or Opus when
+  `AudioEncoder` cannot do AAC (desktop Linux, Firefox).
 - **Quality presets** set the video bitrate: low ≈ 2.5 Mbps, medium ≈ 6 Mbps, high ≈ 12 Mbps.
-- The dialog shows progress, supports cancel, previews the result inline, and downloads `<project name>.webm`.
+- The dialog shows progress, supports cancel, previews the result inline, and downloads
+  `<project name>.mp4`.
 
 Known limitations:
 
-- **Export runs at 1× playback speed** — a 60-second timeline takes about 60 seconds; keep the tab focused (background tabs throttle `requestAnimationFrame`).
-- **Chrome omits the `Duration` header in MediaRecorder-produced WebM files.** The file plays correctly everywhere, but some players show an unknown duration until they finish buffering. This is a browser limitation, not a corrupt file; a WebCodecs-based offline exporter is the planned fix.
+- **Export requires WebCodecs** (Chromium, Edge, Firefox 130+, Safari 26+). The dialog disables
+  itself and says why on older browsers.
+- **HEVC and ProRes are not offered**: browser encoders for them are not reliably available. H.264
+  video with AAC (or Opus) audio is the supported target.
+- **Export wall time tracks source decode**: roughly realtime for 1080p H.264 decoded in software,
+  faster where the browser decodes on the GPU. It is an offline render, not a realtime capture.
+- **Large timelines buffer the MP4 in memory**: fine at MVP scale; a `StreamTarget` is the upgrade
+  path when files grow past ~100 MB.
 
 ## Persistence
 
-- **Project files** use the `.veproj.json` format (`version: 1`, plus a `savedAt` timestamp; see `serialization.ts`). `serializeDoc` strips object URLs — they are session-bound and can never persist.
+- **Project files** use the `.veproj.json` format (`version: 1`, plus a `savedAt` timestamp; see `serialization.ts`). `serializeDoc` strips object URLs (they are session-bound and can never persist) and the loader hydrates the clip's re-timing, shaping and keyframe fields, clamping and sanitizing them on the way in.
 - **Loading** hydrates every asset with an empty `url` and `missing: true`; clips whose media vanished entirely lose their `mediaId`. Offline assets render as "offline" in the media bin, and missing video shows black in the preview until relinked. Relinking is automatic when you re-import a file with a matching name, or manual via the relink button on each offline asset.
 - **Autosave** writes the serialized doc to `localStorage` (key `web-video-editor:autosave:v1`) with an **800 ms debounce**, after every committed change — transient drag frames are skipped, and the final commit triggers exactly one save. Quota or serialization errors surface in the status bar ("Autosave off").
 - **Restore** — on startup a valid autosave raises a banner: _Restore_ replaces the current doc (pushing the empty starter doc onto the undo stack) or _Discard_ clears the entry.
@@ -250,7 +268,7 @@ bun run format:check   # prettier check
 
 The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **352 tests across 30 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **453 tests across 36 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -287,6 +305,9 @@ src/
 │   ├── time.ts                  # clamp, formatTime(Timecode), frame stepping, rulerStep
 │   ├── commands.ts              # 22 command variants, applyCommand(s), validation
 │   ├── snap.ts                  # computeSnapPoints, applySnap, snapMove
+│   ├── keyframes.ts             # keyframe evaluation, sanitize/clamp, split redistribution
+│   ├── ducking.ts               # auto-duck keyframe analysis from waveform peaks
+│   ├── clip-gesture.ts          # pure gesture decisions: move/trim/rate-stretch
 │   ├── transition.ts            # getTransitionSpan, transitionAlphas, maxTransitionDuration
 │   ├── links.ts                 # multi-selection + A/V link-group helpers
 │   ├── clipboard.ts             # copy / cut / paste (module memory, outside undo)
@@ -312,8 +333,9 @@ src/
 │   │   ├── engine-ref.ts        # PlaybackController ref shared by all UI
 │   │   └── text-box.ts          # text-box measurement (preview drag outline)
 │   ├── export/
-│   │   └── exporter.ts          # MediaRecorder pipeline, downloadBlob
-│   └── __tests__/               # 29 test files (328 tests) + src/lib/gate.test.ts; mocks/ = browser-mock harness
+│   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
+│   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
+│   └── __tests__/               # 35 test files (429 tests) + src/lib/gate.test.ts; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs
@@ -324,6 +346,8 @@ src/
 │   ├── InspectorPanel.tsx       # clip properties / project settings
 │   ├── StatusBar.tsx            # pinned footer: project info, autosave state
 │   ├── ExportDialog.tsx         # quality, progress, cancel, preview, download
+│   ├── effect-controls/
+│   │   └── EffectControlsPanel.tsx # keyframes, graph, audio shaping, speed/reverse
 │   └── timeline/
 │       ├── TimelinePanel.tsx    # track lanes, playhead, drop targets, zoom, track menu
 │       ├── Ruler.tsx            # canvas time ruler + scrubbing
@@ -338,9 +362,10 @@ src/
 Limitations, all observable in the current code:
 
 - **Selection is id-based** — `store.selections` holds clip ids (primary first); group operations expand A/V link groups, but there is no marquee/box selection on the timeline.
-- **MediaRecorder duration quirk** — exported WebM files lack the `Duration` header in Chrome (playback works; metadata is missing).
-- **Real-time export** — rendering happens at 1× speed; no offline/faster-than-realtime encode yet.
-- **No clip speed/rate control**, no reverse, no keyframes for opacity, gain, or pan; gain is linear 0–2 (+6 dB max).
+- **Export requires WebCodecs**: the MP4 pipeline replaced MediaRecorder/WebM, so very old browsers cannot export (playback still works). HEVC and ProRes are out of scope: no reliable browser encoders.
+- **Keyframe interpolation is linear**: ease presets and bezier curves are a later increment; the schema already carries an `interpolation` field so they land without a migration.
+- **Reverse preview is stepped**, `<video>` cannot play backwards in realtime; the export is frame-accurate but playback shows a stepped approximation. Rate stretch on one half of a linked A/V pair does not re-time the twin (link groups still move/delete/split together).
+- **No noise reduction**, EQ and compression are native Web Audio nodes; spectral noise reduction is out of scope. Gain is linear 0–2 (+6 dB max).
 - **Ripple delete is explicit** — plain Delete leaves the gap; `Shift+Del` closes it. `removeTransition` leaves the overlap behind (harmless: the later clip wins visually).
 - **Trim bounds** — video/audio clips are bounded by their source; images and text are unbounded (images have no intrinsic length; they default to 4 s).
 - **Missing media is silent** — offline assets render black (video) or nothing (audio) until relinked.
@@ -348,12 +373,12 @@ Limitations, all observable in the current code:
 
 Roadmap candidates, roughly in order of impact:
 
-1. WebCodecs-based offline export (fixes both the duration header and 1× render speed).
-2. Clip speed/rate and time remapping.
-3. More transitions (wipe, slide, dip-to-black) reusing the span/alpha model in `transition.ts`.
-4. Keyframed audio gain and opacity, plus per-clip pan.
-5. Marquee/box selection and track-level operations.
-6. Track grouping and compound clips.
+1. More transitions (wipe, slide, dip-to-black) reusing the span/alpha model in `transition.ts`.
+2. Eased keyframe curves (ease in/out, bezier) on top of the existing `interpolation` field.
+3. Speed ramps (keyframed rate) beyond the fixed per-clip speed shipped in 0.5.0.
+4. Marquee/box selection and track-level operations.
+5. Track grouping and compound clips.
+6. A `StreamTarget` export path once files grow past the in-memory buffer.
 
 ---
 

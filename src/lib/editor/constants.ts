@@ -1,4 +1,5 @@
 /** Global tuning constants for the editor. */
+import type { KeyframeProperty } from './types'
 
 /** Clips can never become shorter than this (seconds). */
 export const MIN_CLIP_DURATION = 0.1
@@ -51,3 +52,50 @@ export const TRACK_HEADER_WIDTH = 160
 
 /** Frames stepped by Shift+← / Shift+→ (Premiere default). */
 export const FRAME_STEPS = 5
+
+/** Clip speed limits (linear multiplier, 1 = normal). */
+export const SPEED_MIN = 0.25
+export const SPEED_MAX = 4
+
+/** Color filter parameter bounds (ctx.filter semantics). */
+export const EXPOSURE_MIN = 0.25
+export const EXPOSURE_MAX = 4
+export const CONTRAST_MIN = 0
+export const CONTRAST_MAX = 2
+export const SATURATION_MIN = 0
+export const SATURATION_MAX = 2
+export const BRIGHTNESS_MIN = 0
+export const BRIGHTNESS_MAX = 2
+/** Hue rotation in degrees (-180..180). */
+export const HUE_MIN = -180
+export const HUE_MAX = 180
+
+/** EQ band gain limits (dB) for the three-band biquad stack. */
+export const EQ_DB_MIN = -24
+export const EQ_DB_MAX = 24
+
+/** Crossfade/automation epsilon for time comparisons. */
+export const TIME_EPSILON = 1e-6
+
+/** Visual transform limits (position in project-px offsets, scale multiplier). */
+export const POSITION_MIN = -2000
+export const POSITION_MAX = 2000
+export const SCALE_MIN = 0.1
+export const SCALE_MAX = 4
+
+/** Legal value bounds + neutral defaults per animatable property. */
+export const KEYFRAME_PROPERTY_BOUNDS: Record<
+  KeyframeProperty,
+  { min: number; max: number; default: number }
+> = {
+  opacity: { min: OPACITY_MIN, max: OPACITY_MAX, default: 1 },
+  positionX: { min: POSITION_MIN, max: POSITION_MAX, default: 0 },
+  positionY: { min: POSITION_MIN, max: POSITION_MAX, default: 0 },
+  scale: { min: SCALE_MIN, max: SCALE_MAX, default: 1 },
+  volume: { min: GAIN_MIN, max: GAIN_MAX, default: 1 },
+  exposure: { min: EXPOSURE_MIN, max: EXPOSURE_MAX, default: 1 },
+  contrast: { min: CONTRAST_MIN, max: CONTRAST_MAX, default: 1 },
+  saturation: { min: SATURATION_MIN, max: SATURATION_MAX, default: 1 },
+  brightness: { min: BRIGHTNESS_MIN, max: BRIGHTNESS_MAX, default: 1 },
+  hue: { min: HUE_MIN, max: HUE_MAX, default: 0 },
+}

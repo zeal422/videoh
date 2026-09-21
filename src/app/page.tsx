@@ -6,7 +6,7 @@ import dynamic from 'next/dynamic'
  * Web Video Editor — single-page editor.
  *
  * The entire app is client-side (object URLs, canvas compositing, Web Audio,
- * MediaRecorder), and the initial document contains randomly generated ids, so
+ * WebCodecs), and the initial document contains randomly generated ids, so
  * the shell is loaded client-only to avoid SSR hydration mismatches.
  */
 const EditorShell = dynamic(() => import('@/components/editor/EditorShell'), {

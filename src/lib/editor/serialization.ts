@@ -1,4 +1,15 @@
-import type { Clip, Doc, MediaAsset, Project } from './types'
+import { EQ_DB_MAX, EQ_DB_MIN, KEYFRAME_PROPERTY_BOUNDS, SPEED_MAX, SPEED_MIN } from './constants'
+import { clampPropertyValue, isAnimatableProperty, sanitizeKeyframes } from './keyframes'
+import { clamp } from './time'
+import type {
+  Clip,
+  Doc,
+  Keyframe,
+  KeyframeMap,
+  KeyframeProperty,
+  MediaAsset,
+  Project,
+} from './types'
 
 /**
  * Project serialization: `Doc` → JSON file (and back).
@@ -156,7 +167,52 @@ function hydrateClip(raw: Record<string, unknown>): Clip {
   if (typeof raw.muted === 'boolean') clip.muted = raw.muted
   if (typeof raw.opacity === 'number' && Number.isFinite(raw.opacity)) {
     const opacity = Math.min(1, Math.max(0, raw.opacity))
-    if (opacity !== 1) clip.opacity = opacity // 1 is the default — keep files clean
+    if (opacity !== 1) clip.opacity = opacity // 1 is the default, keep files clean
+  }
+  // 0.5.0 re-timing + audio shaping. Defaults are omitted so files stay clean.
+  if (typeof raw.speed === 'number' && Number.isFinite(raw.speed)) {
+    const speed = clamp(raw.speed, SPEED_MIN, SPEED_MAX)
+    if (speed !== 1) clip.speed = speed
+  }
+  if (raw.reverse === true) clip.reverse = true
+  if (typeof raw.pan === 'number' && Number.isFinite(raw.pan)) {
+    const pan = clamp(raw.pan, -1, 1)
+    if (pan !== 0) clip.pan = pan
+  }
+  if (raw.eq && typeof raw.eq === 'object') {
+    const rawEq = raw.eq as Record<string, unknown>
+    const band = (v: unknown) => clamp(numOr(v, 0), EQ_DB_MIN, EQ_DB_MAX)
+    const eq = { low: band(rawEq.low), mid: band(rawEq.mid), high: band(rawEq.high) }
+    if (eq.low !== 0 || eq.mid !== 0 || eq.high !== 0) clip.eq = eq
+  }
+  if (raw.compressor === true) clip.compressor = true
+  if (raw.animStatics && typeof raw.animStatics === 'object') {
+    const statics: NonNullable<Clip['animStatics']> = {}
+    for (const [property, value] of Object.entries(raw.animStatics as Record<string, unknown>)) {
+      if (!isAnimStaticProperty(property)) continue
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue
+      const clamped = clampPropertyValue(property, value)
+      if (clamped !== KEYFRAME_PROPERTY_BOUNDS[property].default) statics[property] = clamped
+    }
+    if (Object.keys(statics).length > 0) clip.animStatics = statics
+  }
+  if (raw.keyframes && typeof raw.keyframes === 'object') {
+    const map: KeyframeMap = {}
+    for (const [property, value] of Object.entries(raw.keyframes as Record<string, unknown>)) {
+      if (!isAnimatableProperty(property) || !Array.isArray(value)) continue
+      const kfs = sanitizeKeyframes(
+        property,
+        value.map((k) => {
+          const raw = (k ?? {}) as Record<string, unknown>
+          return {
+            time: numOr(raw.time, Number.NaN),
+            value: numOr(raw.value, Number.NaN),
+          } as Keyframe
+        }),
+      )
+      if (kfs.length > 0) map[property] = kfs
+    }
+    if (Object.keys(map).length > 0) clip.keyframes = map
   }
   if (typeof raw.text === 'string') {
     clip.text = raw.text
@@ -173,6 +229,11 @@ function hydrateClip(raw: Record<string, unknown>): Clip {
     }
   }
   return clip
+}
+
+/** Animatable properties that keep a static field (opacity/volume have their own). */
+function isAnimStaticProperty(p: string): p is Exclude<KeyframeProperty, 'opacity' | 'volume'> {
+  return isAnimatableProperty(p) && p !== 'opacity' && p !== 'volume'
 }
 
 function hydrateStyle(raw: Record<string, unknown> | undefined): Clip['style'] {

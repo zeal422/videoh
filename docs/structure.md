@@ -29,7 +29,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 ```
 
 Everything is committed; there is no backend, no database, and no server-only code. The editor runs
-entirely in the browser (object URLs, canvas, Web Audio, MediaRecorder).
+entirely in the browser (object URLs, canvas, Web Audio, WebCodecs).
 
 ## `src/app/` — Next.js App Router
 
@@ -96,11 +96,13 @@ stores. This is the layer that unit tests target.
 src/lib/editor/
 ├── types.ts              # Doc / Project / Track / Clip / MediaAsset / TextStyle
 ├── constants.ts          # all tuning constants and limits
-├── factories.ts          # uid + create* constructors, finders, compatibility checks
+├── factories.ts          # uid + create* constructors, finders, compatibility checks, sourceTimeAt
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
-├── commands.ts           # the 22 EditorCommand variants + applyCommand(s)
+├── commands.ts           # the 22 EditorCommand variants + applyCommand(s), direction-aware split spans
 ├── snap.ts               # snap-point computation and application
-├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim math, partner shifts
+├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
+├── keyframes.ts          # keyframe evaluation, sanitize/clamp, split redistribution
+├── ducking.ts            # auto-duck keyframe analysis from waveform peaks
 ├── transition.ts         # crossfade span + alpha math
 ├── links.ts              # multi-selection / A/V link-group helpers
 ├── clipboard.ts          # copy / cut / paste (module memory, outside undo)
@@ -120,16 +122,17 @@ src/lib/editor/
 │   ├── probe.ts          # importFile: probe duration/size, thumbnail, waveform peaks, hasAudio
 │   └── elements.ts       # ClipMediaPool: per-clip media elements + source nodes
 ├── playback/
-│   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph
-│   ├── compositor.ts     # drawFrame: track compositing, contain-fit, text, crossfade, opacity
+│   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate
+│   ├── compositor.ts     # drawFrame + drawTextClip (shared with the exporter): compositing, contain-fit, scale-from-center, text, crossfade, opacity
 │   ├── preview.ts        # preview engine singleton (attach/detach)
 │   ├── engine-ref.ts     # PlaybackController ref shared by all UI
 │   └── text-box.ts       # text-box measurement (twins the compositor's text renderer)
 ├── export/
-│   └── exporter.ts       # MediaRecorder pipeline + downloadBlob
-└── __tests__/            # 29 test files, 328 tests (see testing.md; + gate.test.ts in src/lib/)
+│   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
+│   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
+└── __tests__/            # 35 test files, 429 tests (see testing.md; + gate.test.ts in src/lib/)
     └── mocks/
-        └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / MediaRecorder
+        └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / ResizeObserver
 ```
 
 `src/lib/utils.ts` holds the shadcn `cn()` class-merge helper.

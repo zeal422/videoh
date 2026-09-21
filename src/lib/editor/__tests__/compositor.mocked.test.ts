@@ -78,6 +78,29 @@ describe('compositor drawFrame (mocked 2D context)', () => {
     expect(draws[0].args).toEqual([el, 0, 0, 1920, 1080])
   })
 
+  it('scales from the frame center (offsets follow the scaled size)', () => {
+    const { doc, asset } = makeDoc()
+    doc.project.tracks[0].clips.push(
+      createClip({
+        id: 'c1',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        animStatics: { scale: 2 },
+      }),
+    )
+    const el = videoEl()
+    const resolve: MediaResolver = () => ({ asset, el })
+    const ctx = createFake2DContext()
+    drawFrame({ ctx, doc, time: 1, resolve })
+
+    const args = drawOps(ctx, 'drawImage')[0].args as unknown[]
+    // fit = min(1920/640, 1080/360) = 3 → 1920x1080 at scale 1; x2 → 3840x2160,
+    // still centered on the 1920x1080 frame (dx/dy come from the scaled size).
+    expect(args).toEqual([el, -960, -540, 3840, 2160])
+  })
+
   it('letterboxes mismatched aspect ratios (contain-fit centers the frame)', () => {
     const { doc, asset } = makeDoc()
     doc.project.tracks[0].clips.push(

@@ -31,16 +31,44 @@ export interface TextStyle {
   shadow: boolean
 }
 
-/** Only cross-dissolve is supported in the MVP. */
+/** Only cross-dissolve is supported in 0.5.0. */
 export interface Transition {
   type: 'crossfade'
   duration: number
 }
 
+/** Interpolation between two keyframes. Only linear ships in 0.5.0; the field exists so eased curves can be added without a schema break. */
+export type KeyframeInterpolation = 'linear'
+
+/** One keyframe: clip-local time (seconds from clip start) and clamped value. */
+export interface Keyframe {
+  time: number
+  value: number
+  interpolation?: KeyframeInterpolation
+}
+
+/**
+ * The animatable per-clip properties (0.5.0): opacity, position, scale,
+ * volume and the ctx.filter color set. A property is animated when its
+ * keyframe array exists and is non-empty; otherwise the static value wins.
+ */
+export type KeyframeProperty =
+  | 'opacity'
+  | 'positionX'
+  | 'positionY'
+  | 'scale'
+  | 'volume'
+  | 'exposure'
+  | 'contrast'
+  | 'saturation'
+  | 'brightness'
+  | 'hue'
+
 /**
  * A clip is an occurrence of media (or text) on a track.
  * `duration` may differ from the source length: trimming changes
- * `inPoint` (left edge) and/or `duration` (right edge).
+ * `inPoint` (left edge) and/or `duration` (right edge). With `speed` set,
+ * the source span consumed is `duration × speed`.
  */
 export interface Clip {
   id: string
@@ -64,8 +92,28 @@ export interface Clip {
   duration: number
   /** Source time (seconds) where playback starts. >= 0 for media clips. */
   inPoint: number
-  /** Linear audio gain, 0..GAIN_MAX (default 1). */
+  /**
+   * Playback rate multiplier (0.25..4, default 1): timeline duration = source
+   * span / speed. Absent means 1. Text clips cannot be re-timed.
+   */
+  speed?: number
+  /**
+   * Play this clip backwards (video clips only, 0.5.0). Export decodes the
+   * source span backwards; preview shows a stepped approximation and the
+   * clip's audio is dropped (Premiere drops it too).
+   */
+  reverse?: boolean
+  /** Linear audio gain, 0..GAIN_MAX (default 1). Static source for the volume property. */
   gain?: number
+  /** Stereo pan, -1 (left) .. 1 (right), default 0. Static (not animatable in 0.5.0). */
+  pan?: number
+  /**
+   * Three-band EQ, dB gains -24..24 (low shelf 200 Hz, mid peak 1 kHz,
+   * high shelf 4 kHz). Undefined = flat/off.
+   */
+  eq?: { low: number; mid: number; high: number }
+  /** DynamicsCompressor with fixed musical defaults (threshold -24 dB, ratio 4). */
+  compressor?: boolean
   muted?: boolean
   /**
    * Visual opacity, 0..1 (default 1). Multiplies into every draw of this clip
@@ -78,6 +126,14 @@ export interface Clip {
   style?: TextStyle
   /** Cross-dissolve into the next clip on the same track. */
   transitionOut?: Transition
+  /**
+   * Static values for animatable properties without keyframes (position,
+   * scale, the color set). Absent fields mean neutral defaults. opacity and
+   * volume keep their dedicated fields as the static source.
+   */
+  animStatics?: Partial<Record<Exclude<KeyframeProperty, 'opacity' | 'volume'>, number>>
+  /** Per-property keyframe curves, when animated. See keyframes.ts. */
+  keyframes?: KeyframeMap
 }
 
 export interface Track {
@@ -109,6 +165,12 @@ export interface MediaAsset {
   height: number
   /** Object URL — in-memory only, never serialized. */
   url: string
+  /**
+   * The source File handle for this session (never serialized). The WebCodecs
+   * export pipeline reads frames/audio straight from it (MediaAsset only
+   * carries the object URL, which cannot be decoded frame-accurately).
+   */
+  file?: File
   /** Small JPEG dataURL used by the media bin. */
   thumbnail?: string
   /**
@@ -141,3 +203,6 @@ export interface ResolvedMediaRef {
   /** Video element (per-clip) for video assets; image element for images. */
   el?: HTMLVideoElement | HTMLImageElement
 }
+
+/** Per-property keyframe arrays, time-sorted, clip-local times. */
+export type KeyframeMap = Partial<Record<KeyframeProperty, Keyframe[]>>

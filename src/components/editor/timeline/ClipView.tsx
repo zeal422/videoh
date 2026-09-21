@@ -14,7 +14,12 @@ import {
 import { MIN_CLIP_DURATION } from '@/lib/editor/constants'
 import { findMedia } from '@/lib/editor/factories'
 import { computeSnapPoints } from '@/lib/editor/snap'
-import { decideMove, decideTrimEnd, decideTrimStart } from '@/lib/editor/clip-gesture'
+import {
+  decideMove,
+  decideRateStretch,
+  decideTrimEnd,
+  decideTrimStart,
+} from '@/lib/editor/clip-gesture'
 import { autoScrollStep } from '@/lib/editor/timeline-scroll'
 import {
   commandsToDeleteClips,
@@ -104,6 +109,8 @@ export function ClipView({
   // ————— gesture state —————
   const gesture = useRef<null | {
     mode: 'move' | 'trim-start' | 'trim-end'
+    /** Alt-drag on an edge re-times the clip (rate stretch) instead of trimming. */
+    rateStretch: boolean
     startX: number
     startY: number
     orig: Clip
@@ -231,6 +238,7 @@ export function ClipView({
     const onUp = () => endGesture()
     gesture.current = {
       mode,
+      rateStretch: e.altKey && mode !== 'move',
       startX: e.clientX,
       startY: e.clientY,
       orig: structuredClone(clip),
@@ -386,6 +394,37 @@ export function ClipView({
       // the moment it leaves.
       syncAutoScroll(g)
       return
+    }
+
+    if (g.mode === 'trim-start' || g.mode === 'trim-end') {
+      if (g.rateStretch && isMedia) {
+        // Alt-drag rate stretch: source span fixed, speed re-derives. Dispatched
+        // as speed-then-trim so the trim validates against the NEW speed.
+        const s = decideRateStretch({
+          mode: g.mode,
+          origStart: g.orig.start,
+          origDuration: g.orig.duration,
+          origInPoint: g.orig.inPoint,
+          origSpeed: g.orig.speed ?? 1,
+          clientX,
+          startX: g.startX,
+          scale,
+        })
+        onSnapGuide(null)
+        try {
+          store.applyTransient({ type: 'setClipSpeed', clipId: clip.id, speed: s.speed })
+          store.applyTransient({
+            type: 'trimClip',
+            clipId: clip.id,
+            start: s.start,
+            inPoint: s.inPoint,
+            duration: s.duration,
+          })
+        } catch {
+          // transient clamp violation, ignore
+        }
+        return
+      }
     }
 
     if (g.mode === 'trim-start') {
@@ -678,6 +717,24 @@ export function ClipView({
             )}
             {clip.muted && (
               <span className="shrink-0 rounded bg-black/40 px-1 text-[9px]">MUTED</span>
+            )}
+            {(clip.speed ?? 1) !== 1 && (
+              <span
+                data-testid="clip-speed-badge"
+                title="Playback speed"
+                className="shrink-0 rounded bg-black/40 px-1 text-[9px]"
+              >
+                {(clip.speed ?? 1).toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}×
+              </span>
+            )}
+            {clip.reverse && (
+              <span
+                data-testid="clip-reverse-badge"
+                title="Reversed (picture only)"
+                className="shrink-0 rounded bg-black/40 px-1 text-[9px]"
+              >
+                ◀
+              </span>
             )}
             {prevTransition && (
               <span className="shrink-0 rounded bg-black/40 px-1 text-[9px]">

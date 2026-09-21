@@ -29,50 +29,56 @@ The state core is deliberately browser-free so it can be tested without jsdom. B
 isolated in `media/`, `playback/`, and `export/`, which are tested either through the mocked harness
 or by static wiring assertions.
 
-## Inventory — 30 files, 352 tests
+## Inventory: 36 files, 453 tests
 
-| File                             | Tests | Focus                                                                                                                                             |
-| -------------------------------- | ----: | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `commands.test.ts`               |    33 | every command variant: validation, clamping, track/kind rules, split transitions, z-order insertion                                               |
-| `clip-gesture.test.ts`           |    24 | pure gesture decisions: lane drop compatibility, move/trim clamping, snap edge choice, partner shifts                                             |
-| `timeline-panel-ui.test.tsx`     |     6 | first React-render tests (jsdom): lanes + clip markup render, drag commit = one undo entry, cancel leaves no history                              |
-| `docs-drift.test.ts`             |     3 | locks doc test-count claims (README, testing, structure, AGENTS) to the real suite so counts cannot rot                                           |
-| `av-links.test.ts`               |    32 | `hasAudio`, pair placement, group selection/audible routing, group delete/split/duplicate/unlink                                                  |
-| `compositing-ui.test.ts`         |    34 | static wiring locks across timeline/preview/clipboard/keyboard/link UI, plus the track menu and clip-drag plumbing                                |
-| `gate.test.ts`                   |    24 | session sign/verify/expiry/tamper, key derivation (both-materials, rotation), env resolution + init caching, throttle ramp, proxy exact-path lock |
-| `menus.test.ts`                  |    21 | menu structure, no duplicate ids, state resolution, shortcut wiring                                                                               |
-| `playback-core.mocked.test.ts`   |    17 | audio-graph wiring, drift correction, gain×mute×crossfade, shadowing, seek/step, dispose                                                          |
-| `workspace.test.ts`              |    16 | layout sanitize/clamp/defaults/round-trip and corrupt-JSON handling                                                                               |
-| `store.test.ts`                  |    16 | history, transient lifecycle, multi-selection, active tool, dangling-id filtering, empty-track prune                                              |
-| `serialization.test.ts`          |    13 | `.veproj.json` round-trips, missing media, clamping, link/opacity/order persistence                                                               |
-| `clipboard.test.ts`              |     9 | copy/cut/paste, per-group re-linking, order independence                                                                                          |
-| `clip-media-pool.mocked.test.ts` |     9 | per-clip element identity, relink recreation, source-node cache, lifecycle                                                                        |
-| `media-pool.test.ts`             |     8 | sample filtering + static wiring locks for media bin / panel shell                                                                                |
-| `snap.test.ts`                   |     8 | snap points, edge selection, thresholds                                                                                                           |
-| `compositor.mocked.test.ts`      |     7 | black background, contain-fit, letterbox maths, z-order, alphas, text                                                                             |
-| `exporter.mocked.test.ts`        |     7 | codec fallbacks, bitrates, stream wiring, progress, cancel cleanup                                                                                |
-| `timeline-layers.test.ts`        |     7 | static locks for the timeline z-scale (playhead, headers, ruler, guide)                                                                           |
-| `transition.test.ts`             |     7 | crossfade span + complementary alpha maths                                                                                                        |
-| `timeline-drop.test.ts`          |     6 | drop-target geometry (lane vs insert edge vs append)                                                                                              |
-| `tracks.test.ts`                 |     6 | empty-track prune: what it removes, what it keeps, and the last-track floor                                                                       |
-| `timeline-scroll.test.ts`        |     6 | drag auto-scroll ramp: edge bands, depth, direction, zero outside the band                                                                        |
-| `actions.test.ts`                |     5 | multi-command actions: exact-index insertion, group operations                                                                                    |
-| `text-box.test.ts`               |     5 | text-box geometry vs a fake `measureText` (align, anchor, clamp)                                                                                  |
-| `persistence.test.ts`            |     5 | autosave debounce, validity, clear/restore                                                                                                        |
-| `time.test.ts`                   |     5 | clamp, time/timecode formatting, frame stepping, ruler steps                                                                                      |
-| `preview-layout.test.ts`         |     4 | static locks for the preview panel's flex/transport layout                                                                                        |
-| `clip-opacity.mocked.test.ts`    |     4 | opacity folded into compositor alphas and crossfade stacking                                                                                      |
-| `theme.test.ts`                  |     3 | static locks: `<html class="dark">`, `color-scheme: dark`, no white portal surfaces                                                               |
+| File                              | Tests | Focus                                                                                                                                                                       |
+| --------------------------------- | ----: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `commands.test.ts`                |    34 | every command variant: validation, clamping, track/kind rules, split transitions (forward and reversed span mapping), z-order insertion                                     |
+| `keyframes.test.ts`               |    18 | keyframe evaluation (linear interp, constant extension, duplicates), sanitize/clamp, split redistribution                                                                   |
+| `keyframe-commands.test.ts`       |    15 | setClipKeyframes / setClipSpeed / setClipReverse / animStatics / pan-EQ-compressor commands, split curves, ducking math                                                     |     | `effect-controls-ui.render.test.tsx` | 7   | jsdom render: inspector tabs, keyframe diamond adds/removes at the playhead, keyframe dot drag = one undo step, A/V twin audio routing, audio clip gets volume + shaping |
+| `effect-controls-ui.test.ts`      |    15 | static locks: Effect Controls rows, kf toggle/graph wiring, pan/EQ/compressor/duck, speed + reverse controls, rate stretch, MP4 dialog                                      |
+| `animation-preview.test.ts`       |     8 | keyframed opacity/position/scale evaluation, buildFilter stack (neutral elision, exposure gamma), speed-aware source time                                                   |
+| `offline-plan.test.ts`            |    29 | export frame quantization, draw plan (speed/reverse mirror/color/transform/crossfade), reversed source reads, gain + crossfade schedules, text draws, decoded-frame release |
+| `clip-gesture.test.ts`            |    32 | pure gesture decisions: lane drop compatibility, move/trim clamping, snap edge choice, partner shifts, rate-stretch span math                                               |
+| `timeline-panel-ui.test.tsx`      |     6 | first React-render tests (jsdom): lanes + clip markup render, drag commit = one undo entry, cancel leaves no history                                                        |
+| `context-menu-ui.render.test.tsx` |     3 | jsdom render: the right-button release that opened a context menu does not activate the item under the cursor; real clicks still select                                     |
+| `docs-drift.test.ts`              |     3 | locks doc test-count claims (README, testing, structure, AGENTS) to the real suite so counts cannot rot                                                                     |
+| `av-links.test.ts`                |    32 | `hasAudio`, pair placement, group selection/audible routing, group delete/split/duplicate/unlink                                                                            |
+| `compositing-ui.test.ts`          |    34 | static wiring locks across timeline/preview/clipboard/keyboard/link UI, plus the track menu and clip-drag plumbing                                                          |
+| `gate.test.ts`                    |    24 | session sign/verify/expiry/tamper, key derivation (both-materials, rotation), env resolution + init caching, throttle ramp, proxy exact-path lock                           |
+| `menus.test.ts`                   |    21 | menu structure, no duplicate ids, state resolution, shortcut wiring                                                                                                         |
+| `playback-core.mocked.test.ts`    |    20 | audio-graph wiring, drift correction, gain×mute×crossfade, shadowing, seek/step, shaping-chain rebuild, mid-playback rate, dispose                                          |
+| `workspace.test.ts`               |    16 | layout sanitize/clamp/defaults/round-trip and corrupt-JSON handling                                                                                                         |
+| `store.test.ts`                   |    16 | history, transient lifecycle, multi-selection, active tool, dangling-id filtering, empty-track prune                                                                        |
+| `serialization.test.ts`           |    15 | `.veproj.json` round-trips, missing media, clamping, link/opacity/order and 0.5.0 re-timing/shaping/keyframe persistence                                                    |
+| `clipboard.test.ts`               |     9 | copy/cut/paste, per-group re-linking, order independence                                                                                                                    |
+| `clip-media-pool.mocked.test.ts`  |     9 | per-clip element identity, relink recreation, source-node cache, lifecycle                                                                                                  |
+| `media-pool.test.ts`              |     8 | sample filtering + static wiring locks for media bin / panel shell                                                                                                          |
+| `snap.test.ts`                    |     8 | snap points, edge selection, thresholds                                                                                                                                     |
+| `compositor.mocked.test.ts`       |     8 | black background, contain-fit, letterbox maths, scale-from-center, z-order, alphas, text                                                                                    |
+| `timeline-layers.test.ts`         |     7 | static locks for the timeline z-scale (playhead, headers, ruler, guide)                                                                                                     |
+| `transition.test.ts`              |     7 | crossfade span + complementary alpha maths                                                                                                                                  |
+| `timeline-drop.test.ts`           |     6 | drop-target geometry (lane vs insert edge vs append)                                                                                                                        |
+| `tracks.test.ts`                  |     6 | empty-track prune: what it removes, what it keeps, and the last-track floor                                                                                                 |
+| `timeline-scroll.test.ts`         |     6 | drag auto-scroll ramp: edge bands, depth, direction, zero outside the band                                                                                                  |
+| `actions.test.ts`                 |     5 | multi-command actions: exact-index insertion, group operations                                                                                                              |
+| `text-box.test.ts`                |     5 | text-box geometry vs a fake `measureText` (align, anchor, clamp)                                                                                                            |
+| `persistence.test.ts`             |     5 | autosave debounce, validity, clear/restore                                                                                                                                  |
+| `time.test.ts`                    |     5 | clamp, time/timecode formatting, frame stepping, ruler steps                                                                                                                |
+| `preview-layout.test.ts`          |     4 | static locks for the preview panel's flex/transport layout                                                                                                                  |
+| `clip-opacity.mocked.test.ts`     |     4 | opacity folded into compositor alphas and crossfade stacking                                                                                                                |
+| `theme.test.ts`                   |     3 | static locks: `<html class="dark">`, `color-scheme: dark`, no white portal surfaces                                                                                         |
 
 ## Mocked browser harness
 
 `src/lib/editor/__tests__/mocks/browser-mocks.ts` installs deterministic stand-ins for the browser
-APIs the engine depends on:
+APIs the engine depends on (the MediaRecorder fakes left with the retired WebM exporter in 0.5.0):
 
-- `FakeAudioContext` with a controllable clock and a recorded gain graph (reverse edges included)
+- `FakeAudioContext` with a controllable clock and a recorded gain graph (reverse edges included), plus biquad / compressor / stereo-panner nodes that record the parameters the shaping chain sets
 - `HTMLMediaElement` state machines (play/pause/paused/currentTime + `seeked` dispatch)
 - a recording fake `CanvasRenderingContext2D` proxy
-- `FakeMediaRecorder`, `FakeMediaStream`, and `captureStream`
+- `FakeMediaStream` + `FakeMediaStreamAudioDestinationNode` for the audio graph
+- `ResizeObserver` no-op (Radix primitives measure via it and jsdom has none)
 - a manual `requestAnimationFrame` pump, plus `installBrowserMocks` / `uninstall`
 
 Suites using the harness are named `*.mocked.test.ts`. This harness has already paid for itself: it

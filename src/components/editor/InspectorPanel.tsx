@@ -26,11 +26,15 @@ import { formatTime } from '@/lib/editor/time'
 import { TRANSITION_MAX, TRANSITION_MIN } from '@/lib/editor/constants'
 import { useEditorStore } from '@/lib/editor/store'
 import type { Clip, TextStyle } from '@/lib/editor/types'
+import { useState } from 'react'
+import { EffectControlsPanel } from '@/components/editor/effect-controls/EffectControlsPanel'
 import { cn } from '@/lib/utils'
 
 /**
  * Right panel: properties of the selected clip (audio gain/mute, text styling,
- * crossfade transition) or project settings when nothing is selected.
+ * crossfade transition) or project settings when nothing is selected. When a
+ * clip is selected the panel gains an Effect Controls tab (keyframes + audio
+ * shaping + speed/reverse).
  */
 export function InspectorPanel({ className }: { className?: string }) {
   const doc = useEditorStore((s) => s.doc)
@@ -43,16 +47,57 @@ export function InspectorPanel({ className }: { className?: string }) {
     ? doc.project.tracks.find((t) => t.clips.some((c) => c.id === selected.id))
     : undefined
   return (
-    <aside
-      aria-label="Inspector"
-      className={cn('editor-scroll flex min-w-0 flex-col overflow-y-auto bg-card', className)}
-    >
+    <aside aria-label="Inspector" className={cn('flex min-w-0 flex-col bg-card', className)}>
       {selected && selectedTrack ? (
-        <ClipInspector key={selected.id} clip={selected} trackKind={selectedTrack.kind} />
+        <ClipPanel key={selected.id} clip={selected} trackKind={selectedTrack.kind} />
       ) : (
-        <ProjectInspector />
+        <div className="editor-scroll min-h-0 flex-1 overflow-y-auto">
+          <ProjectInspector />
+        </div>
       )}
     </aside>
+  )
+}
+
+/** Two-tab strip: Clip properties / Effect Controls (keyframes + audio + speed). */
+function ClipPanel({ clip, trackKind }: { clip: Clip; trackKind: string }) {
+  const [tab, setTab] = useState<'clip' | 'effects'>('clip')
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div
+        role="tablist"
+        aria-label="Inspector tabs"
+        className="mx-4 mt-3 grid shrink-0 grid-cols-2 rounded-md bg-muted p-0.5 text-xs"
+      >
+        {(
+          [
+            ['clip', 'Clip'],
+            ['effects', 'Effect Controls'],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            role="tab"
+            aria-selected={tab === value}
+            data-testid={`inspector-tab-${value}`}
+            className={cn(
+              'rounded px-2 py-1 font-medium transition-colors',
+              tab === value ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground',
+            )}
+            onClick={() => setTab(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div role="tabpanel" className="editor-scroll min-h-0 flex-1 overflow-y-auto">
+        {tab === 'clip' ? (
+          <ClipInspector clip={clip} trackKind={trackKind} />
+        ) : (
+          <EffectControlsPanel clip={clip} trackKind={trackKind} />
+        )}
+      </div>
+    </div>
   )
 }
 

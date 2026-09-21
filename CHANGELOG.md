@@ -5,6 +5,82 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-09-21
+
+### Added
+
+- **Keyframes with an Effect Controls panel.** Opacity, position X/Y, scale, volume and the color
+  set (exposure, contrast, saturation, brightness, hue) are animatable per clip. The Inspector gains
+  a Clip / Effect Controls tab split; each property row has a keyframe diamond (adds/removes at the
+  playhead), a value slider and a light graph whose dots drag in time. Keyframe times are clip-local,
+  interpolation is linear (an `interpolation` field exists so eased curves can land without a schema
+  break), `splitClip` redistributes the curves, and every keyframe drag is one undo step through the
+  transient gesture protocol.
+- **Auto-ducking.** The Effect Controls audio section can compute a volume-keyframe curve for a
+  music clip that dips under overlapping dialogue, estimated from the imported waveform peaks
+  (`ducking.ts`), with a dialogue-source picker. The generated curve is undoable like any edit.
+- **Audio shaping: pan, 3-band EQ, compressor** per clip, all native Web Audio nodes
+  (`StereoPannerNode`, three biquads at 200 Hz / 1 kHz / 4 kHz, `DynamicsCompressorNode`) in both
+  the preview graph and the offline export mix. The preview bakes these settings into a per-clip
+  chain and rebuilds it when any of them changes, so an edit is audible without restarting playback.
+- **Clip speed and reverse.** A per-clip speed scalar (0.25x..4x) with an Alt-drag rate-stretch
+  gesture on either clip edge (`decideRateStretch`: source span fixed, speed re-derives, clamped)
+  plus an Inspector slider. Reverse is a per-clip toggle; the export renders it frame-accurately,
+  the preview shows a stepped approximation (video elements cannot play backwards in realtime), and
+  reversed audio is dropped, as Premiere does. Clips show speed and reverse badges on the timeline.
+- **Offline MP4 export via WebCodecs (Mediabunny).** The MediaRecorder/WebM pipeline is retired.
+  The new exporter walks a pure frame plan (`export/offline.ts`), decodes source frames
+  frame-accurately with `VideoSampleSink` (which is also what makes reverse and exact speed work),
+  composites the animated/keyframed doc onto an offscreen canvas, encodes H.264 through
+  Mediabunny's `CanvasSource`, and mixes audio through an `OfflineAudioContext` into an AAC track,
+  falling back to Opus where the browser cannot encode AAC (desktop Linux, Firefox). Export needs
+  no tab focus and no realtime capture, and produces a real MP4 with a correct duration header.
+  Every track is opened before the output starts, which Mediabunny requires. Text overlays render
+  through the same `drawTextClip` the preview compositor uses, and crossfade audio ramps ride a
+  separate gain node so an exported dissolve blends exactly like the preview mix.
+- **Color pass.** Per-clip exposure/contrast/saturation/brightness/hue applied through `ctx.filter`
+  in both preview and export, so what you see is what you render. `buildFilter` skips the filter pass
+  entirely at neutral values.
+- **`MediaAsset.file`** keeps the source File for the session so the export can read frame-accurate
+  data (object URLs cannot); it is stripped by serialization like the URL.
+
+### Changed
+
+- The README's feature list, limitations and export section now describe the MP4/WebCodecs pipeline
+  (the WebM duration-header quirk is gone with the old exporter). The export dialog says the same:
+  an offline frame-accurate render whose wall time tracks source decode, not playback speed.
+
+### Fixed
+
+- Reverse reads source frames backwards in the preview and in the export. The plan and the preview
+  both used a forward source position, so a reversed clip rendered forward; the mapping now lives in
+  one place (`sourceTimeAt`) and mirrors the source span for reversed clips.
+- A clip that starts at 0:00 no longer exports silent. The mix scheduled a zero gain on the same
+  instant as the clip's own gain, which muted the whole clip; the automation is now a pure schedule
+  (`clipGainSchedule`) with the pre-start guard only applied to later clips.
+- Text overlays now export. The frame plan already carried text draws, but the composite step skipped
+  any draw without a decoded frame, and text clips have none.
+- The export audio mix follows the preview's crossfade ramps again (`clipCrossfadeSchedule`), so a
+  dissolve no longer hard-cuts in the exported audio.
+- Project save/load keeps the 0.5.0 fields. Speed, reverse, pan, EQ, compressor, `animStatics` and
+  keyframe curves are hydrated, clamped and sanitized on load instead of silently dropped, so an
+  autosave restore no longer loses animation or re-timing work.
+- EQ, compressor and pan edits are audible in the preview as soon as they change, instead of waiting
+  for the clip's audio chain to be rebuilt for some other reason.
+- A keyframe dot drag is one undo step again: the dot snapshots the transient base on pointerdown and
+  commits on release, rather than pushing a history entry that undoes to the already-moved curve.
+- Splitting a reversed clip keeps the source traversal: the right half keeps the original `inPoint` and
+  the left half moves up by the right half's source span, so both halves read the same frames the
+  unsplit clip did (forward clips are unchanged).
+- A scaled clip (or title) grows from the frame center in the preview and the export: the offsets are
+  computed from the scaled size instead of the fitted size, so a 2x scale no longer drifts right/down.
+- A speed change reaches a clip that is already playing instead of waiting for the next pause.
+- Volume, pan, EQ and compressor edits on one half of an A/V pair are routed to the audio twin, which
+  is the pair's sound carrier; before, editing the video half wrote settings nothing could hear.
+- Export waits for image decodes before the first frame (a still-decoding image left early frames
+  blank) and closes each frame's decoded surfaces as it moves on, instead of holding every bitmap
+  until the render ends.
+
 ## [0.4.5] — 2026-09-20
 
 ### Changed

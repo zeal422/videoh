@@ -17,7 +17,7 @@ export const metadata: Metadata = {
   title: 'Web Video Editor — MVP',
   description:
     'Browser-based multi-track video editor: import media, arrange clips, add crossfades and text, mix audio, and export to video — all client-side.',
-  keywords: ['video editor', 'timeline', 'WebCodecs', 'MediaRecorder', 'Web Audio', 'canvas'],
+  keywords: ['video editor', 'timeline', 'WebCodecs', 'MP4 export', 'Web Audio', 'canvas'],
 }
 
 export default function RootLayout({

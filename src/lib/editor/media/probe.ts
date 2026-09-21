@@ -5,11 +5,13 @@ import type { MediaAsset, MediaKind } from '../types'
 /**
  * File import pipeline (browser-only).
  *
- * For every file we:
  * 1. create an in-memory object URL,
  * 2. probe duration / dimensions via media elements,
  * 3. capture a small JPEG thumbnail (video frames / images),
  * 4. try to decode the audio track and extract normalized waveform peaks.
+ * 5. keep the source File on the asset, the WebCodecs exporter reads
+ *    frame-accurate data from it (object URLs cannot), and serialization
+ *    strips it like the URL.
  *
  * Failures in steps 3–4 degrade gracefully (missing thumbnail / peaks).
  * Step 4 also yields `hasAudio` — the A/V split signal that places a linked
@@ -84,6 +86,7 @@ async function importImage(file: File, url: string): Promise<MediaAsset> {
     width: img.naturalWidth,
     height: img.naturalHeight,
     url,
+    file,
     thumbnail: makeThumbnail(img, img.naturalWidth, img.naturalHeight),
   }
 }
@@ -119,6 +122,7 @@ async function importVideo(file: File, url: string): Promise<MediaAsset> {
     width,
     height,
     url,
+    file,
     ...(thumbnail ? { thumbnail } : {}),
     ...(waveformPeaks ? { waveformPeaks } : {}),
     // decodeAudioData succeeds exactly when the container has a decodable
@@ -145,6 +149,7 @@ async function importAudio(file: File, url: string): Promise<MediaAsset> {
     width: 0,
     height: 0,
     url,
+    file,
     ...(waveformPeaks ? { waveformPeaks } : {}),
     hasAudio: true,
   }

@@ -1,7 +1,7 @@
 # AGENTS.md — Instructions for AI Coding Agents
 
 Browser-based multi-track video editor. Everything runs client-side (object URLs, canvas, Web Audio,
-MediaRecorder) — there is no backend, database, or environment configuration. Single page mounted from
+WebCodecs), there is no backend, database, or environment configuration. Single page mounted from
 `src/app/page.tsx` (client-only dynamic import of the editor shell). Stack: Next.js 16 App Router +
 React 19 + TypeScript strict (`noImplicitAny` on, build-time type errors not ignored) + Tailwind 4 (tokens in `src/app/globals.css`) + shadcn/ui +
 zustand 5 + Vitest. Run with **Bun**, never npm/pnpm/yarn.
@@ -34,7 +34,7 @@ not done. `build` uses `output: "standalone"` (see `next.config.ts`; don't break
   TypeScript (no React, except the zustand stores); this is what unit tests target. See
   [docs/architecture.md](docs/architecture.md).
 - `src/lib/editor/media|playback|export/` — the only modules allowed to touch browser APIs (media
-  elements, Web Audio, canvas, MediaRecorder).
+  elements, Web Audio, canvas, WebCodecs).
 - `src/components/editor/` — the UI. `src/components/editor/timeline/` holds the timeline.
 - `src/components/ui/` — preinstalled shadcn/ui: use them, never modify by hand.
 - `src/hooks/editor/useEditorKeyboard.ts` — the verified Premiere keyboard map.

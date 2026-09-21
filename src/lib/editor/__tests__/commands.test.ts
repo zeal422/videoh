@@ -4,7 +4,14 @@
  */
 import { describe, expect, it } from 'vitest'
 import { applyCommand, applyCommands, EditorCommandError } from '../commands'
-import { createClip, createDoc, createMediaAsset, createTextClip, docDuration } from '../factories'
+import {
+  createClip,
+  createDoc,
+  createMediaAsset,
+  createTextClip,
+  docDuration,
+  sourceTimeAt,
+} from '../factories'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
 import { MIN_CLIP_DURATION } from '../constants'
 
@@ -397,6 +404,36 @@ describe('splitClip', () => {
     expect(clips[0]).toMatchObject({ start: 1, duration: 3, inPoint: 2 })
     expect(clips[1]).toMatchObject({ start: 4, duration: 3, inPoint: 5 })
     expect(clips[1].id).not.toBe(clips[0].id)
+  })
+
+  it('splits a reversed clip without breaking the source traversal', () => {
+    const { doc, videoAsset } = makeDoc()
+    videoAsset.duration = 60 // room for the 6 s clip at 2x (12 s of source)
+    const withClip = applyCommand(doc, {
+      type: 'addClip',
+      trackId: videoTrack(doc).id,
+      clip: createClip({
+        mediaId: videoAsset.id,
+        start: 1,
+        inPoint: 2,
+        duration: 6,
+        speed: 2,
+        reverse: true,
+      }),
+    })
+    const original = videoTrack(withClip).clips[0]
+    const next = applyCommand(withClip, { type: 'splitClip', clipId: original.id, atTime: 3 })
+    const [left, right] = videoTrack(next).clips
+
+    // Split at local 2: the left half owns the span tail, so it moves up by the
+    // RIGHT half's source span (4 s x 2 = 8); the right half keeps inPoint 2.
+    expect(left).toMatchObject({ start: 1, duration: 2, inPoint: 10 })
+    expect(right).toMatchObject({ start: 3, duration: 4, inPoint: 2 })
+
+    // The halves read exactly the frames the unsplit clip did.
+    expect(sourceTimeAt(left, 0)).toBe(sourceTimeAt(original, 0))
+    expect(sourceTimeAt(left, left.duration)).toBe(sourceTimeAt(right, 0))
+    expect(sourceTimeAt(right, right.duration)).toBe(sourceTimeAt(original, original.duration))
   })
 
   it('rejects splits too close to edges or outside the clip', () => {

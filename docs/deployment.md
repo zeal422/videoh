@@ -8,8 +8,9 @@ Build, run, and verify. Sibling docs: [docs index](README.md) · [architecture.m
 
 - **Bun** (the package manager and runner — never npm/pnpm/yarn). `bun run dev` and `bun run build` are
   the entry points.
-- A **current Chromium-based browser** for the full feature set (MediaRecorder + Web Audio + canvas
-  `captureStream`). Firefox/Safari lack parts of the export pipeline.
+- A **current Chromium-based browser** for the full feature set (WebCodecs + Web Audio + canvas).
+  Export needs WebCodecs: Chromium and Edge, plus Firefox 130+ and Safari 26+; playback alone works
+  in older browsers.
 - No database, no server-only application code. The editor itself is a client-side app; the only
   server pieces are the Next.js process that serves the static shell and the **access gate**
   (see [Access gate](#access-gate) below).

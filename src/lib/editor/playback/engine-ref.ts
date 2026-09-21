@@ -22,5 +22,5 @@ export const playbackRef: { current: PlaybackController | null } = {
   current: null,
 }
 
-/** True while a MediaRecorder export session is running. */
+/** True while an export session is running (suspends preview work). */
 export const exportStateRef: { current: boolean } = { current: false }

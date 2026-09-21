@@ -12,7 +12,7 @@
  * return what SHOULD be applied. They never touch the store or the DOM.
  */
 
-import { MIN_CLIP_DURATION, SNAP_THRESHOLD_PX } from './constants'
+import { MIN_CLIP_DURATION, SNAP_THRESHOLD_PX, SPEED_MAX, SPEED_MIN } from './constants'
 import { applySnap } from './snap'
 import type { Clip } from './types'
 
@@ -264,4 +264,50 @@ export function decideTrimEnd(args: {
 /** The snap threshold in seconds for the current zoom (SNAP_THRESHOLD_PX / scale). */
 export function snapThreshold(scale: number): number {
   return SNAP_THRESHOLD_PX / scale
+}
+
+/**
+ * The RATE-STRETCH decision (Alt-drag on a clip edge): the SOURCE SPAN stays
+ * fixed (`orig.duration × speed`) and the pointer re-times the clip, so the
+ * speed re-derives as span / newDuration. Both edges stretch: the end edge
+ * moves the free end, the start edge keeps the right edge anchored. Speed is
+ * clamped to SPEED_MIN..SPEED_MAX; the duration is re-derived from the clamped
+ * speed so the two never disagree.
+ */
+export function decideRateStretch(args: {
+  mode: 'trim-start' | 'trim-end'
+  origStart: number
+  origDuration: number
+  origInPoint: number
+  origSpeed: number
+  clientX: number
+  startX: number
+  scale: number
+}): { start: number; inPoint: number; duration: number; speed: number } {
+  const { mode, origStart, origDuration, origInPoint, origSpeed, clientX, startX, scale } = args
+  const dxSec = (clientX - startX) / scale
+  const sourceSpan = Math.max(MIN_CLIP_DURATION * SPEED_MIN, origDuration * origSpeed)
+
+  if (mode === 'trim-end') {
+    const rawDuration = Math.max(MIN_CLIP_DURATION, origDuration + dxSec)
+    const speed = clampSpeed(sourceSpan / rawDuration)
+    const duration = Math.max(MIN_CLIP_DURATION, sourceSpan / speed)
+    return { start: origStart, inPoint: origInPoint, duration, speed: sourceSpan / duration }
+  }
+
+  // trim-start: anchor the right edge, move start and duration together.
+  const end = origStart + origDuration
+  const rawDuration = Math.max(MIN_CLIP_DURATION, origDuration - dxSec)
+  const speed = clampSpeed(sourceSpan / rawDuration)
+  const duration = Math.max(MIN_CLIP_DURATION, sourceSpan / speed)
+  return {
+    start: Math.max(0, end - duration),
+    inPoint: origInPoint,
+    duration,
+    speed: sourceSpan / duration,
+  }
+}
+
+function clampSpeed(speed: number): number {
+  return Math.min(SPEED_MAX, Math.max(SPEED_MIN, speed))
 }

@@ -1,6 +1,7 @@
 import {
   GAIN_MAX,
   GAIN_MIN,
+  KEYFRAME_PROPERTY_BOUNDS,
   MIN_CLIP_DURATION,
   MIN_SPLIT_HEADROOM,
   FPS_MAX,
@@ -11,6 +12,10 @@ import {
   PROJECT_MAX_W,
   PROJECT_MIN_H,
   PROJECT_MIN_W,
+  SPEED_MAX,
+  SPEED_MIN,
+  EQ_DB_MIN,
+  EQ_DB_MAX,
   TRANSITION_MAX,
   TRANSITION_MIN,
 } from './constants'
@@ -23,10 +28,14 @@ import {
   nextClipOnTrack,
 } from './factories'
 import { clamp } from './time'
+import { isAnimatableProperty, sanitizeKeyframes, splitKeyframeMap } from './keyframes'
 import { maxTransitionDuration } from './transition'
 import type {
   Clip,
   Doc,
+  Keyframe,
+  KeyframeMap,
+  KeyframeProperty,
   MediaAsset,
   Project,
   TextStyle,
@@ -79,6 +88,24 @@ export type EditorCommand =
   | { type: 'setClipGain'; clipId: string; gain: number }
   | { type: 'setClipMuted'; clipId: string; muted: boolean }
   | { type: 'setClipOpacity'; clipId: string; opacity: number }
+  // keyframes + speed + transform/color statics (0.5.0)
+  | {
+      type: 'setClipKeyframes'
+      clipId: string
+      property: KeyframeProperty
+      keyframes: Keyframe[]
+    }
+  | { type: 'setClipSpeed'; clipId: string; speed: number }
+  | { type: 'setClipReverse'; clipId: string; reverse: boolean }
+  | { type: 'setClipPan'; clipId: string; pan: number }
+  | { type: 'setClipEq'; clipId: string; eq: { low: number; mid: number; high: number } | null }
+  | { type: 'setClipCompressor'; clipId: string; enabled: boolean }
+  | {
+      type: 'setClipAnimStatic'
+      clipId: string
+      property: Exclude<KeyframeProperty, 'opacity' | 'volume'>
+      value: number
+    }
   // text
   | { type: 'setTextContent'; clipId: string; text: string }
   | { type: 'setTextStyle'; clipId: string; style: Partial<TextStyle> }
@@ -215,8 +242,10 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       if (duration < MIN_CLIP_DURATION) throw new EditorCommandError('Clip would become too short')
       start = Math.max(0, start)
       if (asset && asset.kind !== 'image') {
+        const speed = clip.speed ?? 1
+        const sourceSpan = duration * speed
         if (inPoint < 0) throw new EditorCommandError('Trim exceeds the start of the source')
-        if (inPoint + duration > asset.duration + 1e-6) {
+        if (inPoint + sourceSpan > asset.duration + 1e-6) {
           throw new EditorCommandError('Trim exceeds the end of the source')
         }
       } else {
@@ -241,13 +270,25 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       }
       const asset = findMedia(doc, clip.mediaId)
       const leftDuration = at - clip.start
+      const rightDuration = clip.duration - leftDuration
+      const speed = clip.speed ?? 1
+      const isMedia = !!asset && asset.kind !== 'image'
+      // Source-span mapping. A forward clip keeps the left half's inPoint and
+      // advances the right half by the left duration. A reversed clip reads its
+      // span backwards, so the left half owns the span's tail: the right half
+      // keeps the original inPoint and the left half moves up by the right
+      // duration. Either way both halves keep reading the same source frames.
+      const splitInPoint = (offset: number) => clip.inPoint + offset * speed
+      const leftInPoint = isMedia && clip.reverse ? splitInPoint(rightDuration) : clip.inPoint
+      const [leftKeyframes, rightKeyframes] = splitKeyframeMap(clip.keyframes, leftDuration)
       const right: Clip = {
         ...structuredClone(clip),
         id: command.rightId ?? `clip_${cryptoRandom()}`,
         start: at,
-        duration: clip.start + clip.duration - at,
-        inPoint: asset && asset.kind !== 'image' ? clip.inPoint + leftDuration : 0,
+        duration: rightDuration,
+        inPoint: isMedia ? (clip.reverse ? clip.inPoint : splitInPoint(leftDuration)) : 0,
         transitionOut: clip.transitionOut,
+        keyframes: rightKeyframes,
       }
       // Premiere split semantics: the right half is a SEPARATE link group. The
       // group-split action passes one shared `rightLinkId` so all right halves
@@ -257,7 +298,9 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
         right.linkId = command.rightLinkId ?? `link_${cryptoRandom()}`
       }
       clip.duration = leftDuration
+      clip.inPoint = leftInPoint
       clip.transitionOut = undefined
+      clip.keyframes = leftKeyframes
       track.clips.push(right)
       track.clips.sort((a, b) => a.start - b.start)
       return
@@ -324,6 +367,88 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
     case 'setClipOpacity': {
       const { clip } = requireClip(doc, command.clipId)
       clip.opacity = clamp(command.opacity, OPACITY_MIN, OPACITY_MAX)
+      return
+    }
+
+    case 'setClipKeyframes': {
+      const { clip } = requireClip(doc, command.clipId)
+      if (!isAnimatableProperty(command.property)) {
+        throw new EditorCommandError(`Unknown animatable property: ${command.property}`)
+      }
+      const keyframes = sanitizeKeyframes(command.property, command.keyframes)
+      if (!clip.keyframes) clip.keyframes = {}
+      if (keyframes.length === 0) {
+        // An empty curve clears the animation; the property falls back to its
+        // static value. An empty map object is removed entirely.
+        delete clip.keyframes[command.property]
+        if (Object.keys(clip.keyframes).length === 0) clip.keyframes = undefined
+      } else {
+        clip.keyframes[command.property] = keyframes
+      }
+      return
+    }
+
+    case 'setClipSpeed': {
+      const { clip } = requireClip(doc, command.clipId)
+      if (clip.text !== undefined) throw new EditorCommandError('Text clips cannot change speed')
+      const speed = clamp(command.speed, SPEED_MIN, SPEED_MAX)
+      const asset = findMedia(doc, clip.mediaId)
+      if (asset && asset.kind !== 'image') {
+        // Keep the timeline duration (and everything cut against it) stable;
+        // the source span re-derives from the new rate, clamped so the clip
+        // never needs source past the asset's end.
+        const maxDuration = Math.max(MIN_CLIP_DURATION, (asset.duration - clip.inPoint) / speed)
+        clip.duration = Math.min(clip.duration, maxDuration)
+      }
+      clip.speed = speed
+      return
+    }
+
+    case 'setClipReverse': {
+      const { clip } = requireClip(doc, command.clipId)
+      if (clip.text !== undefined) throw new EditorCommandError('Text clips cannot reverse')
+      clip.reverse = command.reverse
+      return
+    }
+
+    case 'setClipPan': {
+      const { clip } = requireClip(doc, command.clipId)
+      clip.pan = clamp(command.pan, -1, 1)
+      return
+    }
+
+    case 'setClipEq': {
+      const { clip } = requireClip(doc, command.clipId)
+      if (!command.eq) {
+        clip.eq = undefined
+        return
+      }
+      const band = (v: number) => clamp(v, EQ_DB_MIN, EQ_DB_MAX)
+      clip.eq = {
+        low: band(command.eq.low),
+        mid: band(command.eq.mid),
+        high: band(command.eq.high),
+      }
+      return
+    }
+
+    case 'setClipCompressor': {
+      const { clip } = requireClip(doc, command.clipId)
+      clip.compressor = command.enabled
+      return
+    }
+
+    case 'setClipAnimStatic': {
+      const { clip } = requireClip(doc, command.clipId)
+      const bounds = KEYFRAME_PROPERTY_BOUNDS[command.property]
+      if (!clip.animStatics) clip.animStatics = {}
+      const clamped = clamp(command.value, bounds.min, bounds.max)
+      if (clamped === bounds.default) {
+        delete clip.animStatics[command.property]
+        if (Object.keys(clip.animStatics).length === 0) clip.animStatics = undefined
+      } else {
+        clip.animStatics[command.property] = clamped
+      }
       return
     }
 
@@ -414,12 +539,13 @@ function describeClip(doc: Doc, clip: Clip): string {
   return asset ? `“${asset.name}” (${asset.kind})` : 'Clip'
 }
 
-/** Clamps a clip's duration against its source media (video/audio only). */
+/** Clamps a clip's duration against its source media (video/audio only), honoring speed. */
 function clampClipToMedia(doc: Doc, clip: Clip): void {
   const asset = findMedia(doc, clip.mediaId)
   if (!asset || asset.kind === 'image') return
   if (clip.inPoint < 0) clip.inPoint = 0
-  const maxDuration = Math.max(MIN_CLIP_DURATION, asset.duration - clip.inPoint)
+  const speed = clip.speed ?? 1
+  const maxDuration = Math.max(MIN_CLIP_DURATION, (asset.duration - clip.inPoint) / speed)
   clip.duration = Math.min(clip.duration, maxDuration)
 }
 

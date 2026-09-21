@@ -24,12 +24,17 @@ import { toast } from '@/hooks/use-toast'
 
 import { docDuration } from '@/lib/editor/factories'
 import { formatTime } from '@/lib/editor/time'
-import { downloadBlob, exportTimeline, type ExportHandle } from '@/lib/editor/export/exporter'
+import {
+  downloadBlob,
+  exportTimeline,
+  webCodecsSupported,
+  type ExportHandle,
+} from '@/lib/editor/export/mp4'
 import { useEditorStore } from '@/lib/editor/store'
 
 type Phase = 'setup' | 'exporting' | 'done'
 
-/** Modal that renders the timeline to a video file (MediaRecorder, real-time). */
+/** Modal that renders the timeline to an MP4 file (WebCodecs, offline frame-by-frame). */
 export function ExportDialog({
   open,
   onOpenChange,
@@ -70,7 +75,7 @@ export function ExportDialog({
       setPhase('done')
       toast({
         title: 'Export complete',
-        description: `${(result.blob.size / 1e6).toFixed(1)} MB WebM`,
+        description: `${(result.blob.size / 1e6).toFixed(1)} MB MP4`,
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -110,8 +115,9 @@ export function ExportDialog({
             <MonitorPlay className="size-4" /> Export video
           </DialogTitle>
           <DialogDescription>
-            Renders the timeline in real time to a WebM file ({doc.project.width}×
-            {doc.project.height} @ {doc.project.fps}fps · {formatTime(duration)}).
+            Renders the timeline offline to an MP4 file (H.264 video, AAC or Opus audio).{' '}
+            {doc.project.width}×{doc.project.height} @ {doc.project.fps}fps · {formatTime(duration)}
+            .
           </DialogDescription>
         </DialogHeader>
 
@@ -131,10 +137,21 @@ export function ExportDialog({
               </Select>
             </div>
             <p className="text-xs leading-relaxed text-muted-foreground">
-              Export plays the timeline once from start to end — keep this tab focused for the best
-              result.
+              Rendering is offline and frame-accurate: it needs no tab focus and does not follow
+              playback speed. Wall time tracks how fast the browser decodes the sources. Reversed
+              clips read their source backwards in the export.
             </p>
-            <Button className="w-full" onClick={() => void start()} disabled={duration <= 0}>
+            {!webCodecsSupported() && (
+              <p className="text-xs font-medium text-destructive" data-testid="export-unsupported">
+                This browser has no WebCodecs support. Use a current Chromium, Edge, Firefox 130+,
+                or Safari 26+.
+              </p>
+            )}
+            <Button
+              className="w-full"
+              onClick={() => void start()}
+              disabled={duration <= 0 || !webCodecsSupported()}
+            >
               Start export
             </Button>
           </div>
@@ -161,13 +178,13 @@ export function ExportDialog({
               data-testid="export-result-video"
             />
             <p className="text-center text-xs text-muted-foreground">
-              {(resultSize / 1e6).toFixed(1)} MB · WebM
+              {(resultSize / 1e6).toFixed(1)} MB · MP4
             </p>
             <Button
               className="w-full gap-1.5"
               onClick={() => {
                 if (resultBlobRef.current) {
-                  downloadBlob(resultBlobRef.current, `${doc.project.name || 'export'}.webm`)
+                  downloadBlob(resultBlobRef.current, `${doc.project.name || 'export'}.mp4`)
                 }
               }}
             >

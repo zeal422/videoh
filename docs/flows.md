@@ -113,7 +113,15 @@ asset.duration` invariant), images and text are unbounded.
   forbids removing the last track. Rename takes focus when it is chosen from the menu, so the name you
   type goes into the field rather than being swallowed by the closing menu.
 - Per-clip **opacity** (0–100 %) multiplies with crossfade alphas, so a clip on a higher track blends
-  through to the track below.
+  through to the track below. When opacity (or any animatable property) has keyframes, the curve
+  replaces the static value during preview and export alike.
+- **Keyframes and Effect Controls**: selecting a clip shows the Clip / Effect Controls tabs. Each
+  animatable property row has a keyframe diamond (add/remove at the playhead) and, once animated, a
+  light graph whose dots drag in time (one drag = one undo step). Keyframe times are clip-local, so
+  moves and duplicates carry their animation along and splitting redistributes the curves.
+- **Rate stretch (Alt-drag a clip edge)** keeps the source span fixed and re-derives the speed from
+  the new duration (clamped 0.25x to 4x); the Inspector's Speed section does the same numerically and
+  carries the Reverse toggle.
 - **Play / pause (Space)**, `J`/`K`/`L` shuttle (browsers cannot play backwards, so `J` stops like `K`),
   frame stepping, Home/End, and Up/Down edit-point navigation. Transport state mirrors into
   `[data-testid="play-pause"]` and `[data-testid="time-display"]`.
@@ -121,13 +129,17 @@ asset.duration` invariant), images and text are unbounded.
 
 ## Export
 
-- `exportTimeline` runs a dedicated `PlaybackCore` on an offscreen canvas, captures
-  `canvas.captureStream(fps)`, taps audio from a `MediaStreamAudioDestinationNode`, and encodes WebM
-  via `MediaRecorder` (`vp9,opus` → `vp8,opus` → `video/webm` → `video/mp4`).
+- `exportTimeline` (WebCodecs) executes the pure frame plan from `export/offline.ts`: per output frame
+  it decodes the source samples (`VideoSampleSink`, frame-accurate, honoring speed and reverse),
+  composites onto an offscreen canvas, and encodes H.264 through Mediabunny (`CanvasSource`).
+- Audio is mixed in one `OfflineAudioContext` render (gain keyframes, pan, EQ, compressor, crossfade
+  ramps) and encoded as an AAC track (Opus where the browser cannot encode AAC, notably desktop
+  Linux and Firefox), so the file is an MP4 with a correct duration.
 - The dialog shows progress, supports cancel, previews the result (`export-result-video`), and
-  downloads `<project name>.webm`.
-- Known limitations: rendering is 1× real-time, and Chrome omits the WebM `Duration` header (the file
-  plays fine — see [README](../README.md)).
+  downloads `<project name>.mp4`. On browsers without WebCodecs it disables itself and says why.
+- Export runs offline (no realtime capture) and does not need tab focus; wall time tracks source
+  decode speed. HEVC/ProRes are deliberately not
+  offered (no reliable browser encoders); see [README](../README.md).
 
 ## Save, load, autosave, restore
 

@@ -204,6 +204,69 @@ describe('A/V link serialization', () => {
     expect(restored.media[0].hasAudio).toBe(true)
   })
 
+  it('round-trips the 0.5.0 re-timing, shaping and keyframe fields', () => {
+    const doc = makeDoc()
+    const track = doc.project.tracks.find((t) => t.kind === 'video')!
+    track.clips[0] = {
+      ...track.clips[0],
+      speed: 2,
+      reverse: true,
+      pan: -0.4,
+      eq: { low: 3, mid: -6, high: 1.5 },
+      compressor: true,
+      animStatics: { scale: 1.25, positionX: 40 },
+      keyframes: {
+        volume: [
+          { time: 0, value: 1 },
+          { time: 1.5, value: 0.2 },
+        ],
+      },
+    }
+
+    const { doc: restored } = deserializeDoc(JSON.parse(JSON.stringify(serializeDoc(doc))))
+    const clip = restored.project.tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip_fixed')!
+    expect(clip.speed).toBe(2)
+    expect(clip.reverse).toBe(true)
+    expect(clip.pan).toBe(-0.4)
+    expect(clip.eq).toEqual({ low: 3, mid: -6, high: 1.5 })
+    expect(clip.compressor).toBe(true)
+    expect(clip.animStatics).toEqual({ scale: 1.25, positionX: 40 })
+    expect(clip.keyframes?.volume).toEqual([
+      { time: 0, value: 1, interpolation: 'linear' },
+      { time: 1.5, value: 0.2, interpolation: 'linear' },
+    ])
+  })
+
+  it('drops neutral shaping values and clamps out-of-range ones on load', () => {
+    const doc = makeDoc()
+    const track = doc.project.tracks.find((t) => t.kind === 'video')!
+    track.clips[0] = {
+      ...track.clips[0],
+      speed: 1,
+      pan: 0,
+      eq: { low: 0, mid: 0, high: 0 },
+      animStatics: { scale: 1 },
+    }
+    const json = JSON.parse(JSON.stringify(serializeDoc(doc))) as {
+      project: { tracks: { clips: Record<string, unknown>[] }[] }
+    }
+    const saved = json.project.tracks.flatMap((t) => t.clips)[0]
+    // Out-of-range values are clamped into the property's bounds, never rejected.
+    saved.speed = 99
+    saved.pan = 5
+    saved.eq = { low: 100, mid: -100, high: 0 }
+    saved.keyframes = { volume: [{ time: 0, value: 999 }], bogus: [{ time: 0, value: 1 }] }
+
+    const { doc: restored } = deserializeDoc(json)
+    const clip = restored.project.tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip_fixed')!
+    expect(clip.speed).toBe(4)
+    expect(clip.pan).toBe(1)
+    expect(clip.eq).toEqual({ low: 24, mid: -24, high: 0 })
+    expect(clip.animStatics).toBeUndefined()
+    expect(clip.keyframes?.volume).toEqual([{ time: 0, value: 2, interpolation: 'linear' }])
+    expect(Object.keys(clip.keyframes ?? {})).toEqual(['volume'])
+  })
+
   it('omits hasAudio when the asset never probed audio', () => {
     const doc = makeDoc()
     delete doc.media[0].waveformPeaks
