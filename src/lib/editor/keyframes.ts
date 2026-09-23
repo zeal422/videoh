@@ -93,8 +93,17 @@ export function sanitizeKeyframes(property: KeyframeProperty, keyframes: Keyfram
 
 /**
  * Redistributes a clip's keyframe map across a split at clip-local time `at`:
- * keyframes at `>= at` move to the right half shifted by `at`. Returns
- * [leftMap, rightMap] (either may be undefined when empty).
+ * keyframes at `>= at` move to the right half shifted by `at`.
+ *
+ * The halves are standalone clips once the cut is made, so every property with
+ * a curve also gets the curve's value at `at` as a boundary keyframe on BOTH
+ * halves. Without it the left half would freeze on its last keyframe (or fall
+ * back to the static value when it has none) and the right half would do the
+ * same from local 0, so any ramp crossing the cut would be destroyed even
+ * though both halves together still cover the original span. A keyframe
+ * already sitting exactly on the boundary is left alone (it already carries
+ * that value). Returns [leftMap, rightMap] (either may be undefined when
+ * empty).
  */
 export function splitKeyframeMap(
   map: KeyframeMap | undefined,
@@ -108,16 +117,17 @@ export function splitKeyframeMap(
   for (const property of Object.keys(map) as KeyframeProperty[]) {
     const kfs = map[property]
     if (!kfs || kfs.length === 0) continue
+    const boundary = evaluateKeyframes(kfs, at, kfs[0].value)
     const l = kfs.filter((k) => k.time < at)
     const r = kfs.filter((k) => k.time >= at).map((k) => ({ ...k, time: k.time - at }))
-    if (l.length > 0) {
-      left[property] = l
-      anyLeft = true
+    l.push({ time: at, value: boundary, interpolation: 'linear' })
+    if (r.length === 0 || r[0].time > 0) {
+      r.unshift({ time: 0, value: boundary, interpolation: 'linear' })
     }
-    if (r.length > 0) {
-      right[property] = r
-      anyRight = true
-    }
+    left[property] = l
+    right[property] = r
+    anyLeft = true
+    anyRight = true
   }
   return [anyLeft ? left : undefined, anyRight ? right : undefined]
 }

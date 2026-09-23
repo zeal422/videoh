@@ -22,9 +22,15 @@ Stable hooks used across flows and tests:
 
 - The media bin accepts multi-file selection, OS drag-and-drop, and **Load sample media**, which
   fetches the three bundled files from `/samples/*`.
-- **Idempotent samples.** Loading samples never duplicates: `filterNewSamples` drops names already in
-  the bin, a re-entrancy ref blocks double clicks, and the button disables + spins while importing. If
-  nothing is new, it toasts "Sample media already loaded".
+- **Idempotent samples.** Loading samples never duplicates: `planSampleLoad` skips names already in the
+  bin and online, overlapping loads share ONE run (single-flight), and every write re-checks the live
+  bin (`sampleImportAction`), so a press landing while the fetches are still in flight cannot add a
+  twin. A re-entrancy ref blocks double clicks, and the button disables + spins while importing. If
+  nothing is new, it toasts "Sample media already loaded". A sample that is in the bin but **offline**
+  is refetched and relinked in place, so the button is also the recovery path after a restore, when
+  every asset hydrates without a URL. A batch stays bound to the project that planned it: opening or
+  restoring another project mid-flight drops the rest instead of writing the old project's files into
+  the new one.
 - Import probes duration/size, generates a JPEG thumbnail (≤160 px), decodes audio for waveform peaks
   (`WAVEFORM_BUCKETS = 1000`) and records `hasAudio`.
 - Removing an asset leaves clips with a dangling `mediaId`; they render as offline and can be relinked.
@@ -125,7 +131,9 @@ asset.duration` invariant), images and text are unbounded.
 - **Play / pause (Space)**, `J`/`K`/`L` shuttle (browsers cannot play backwards, so `J` stops like `K`),
   frame stepping, Home/End, and Up/Down edit-point navigation. Transport state mirrors into
   `[data-testid="play-pause"]` and `[data-testid="time-display"]`.
-- Scrubbing while paused re-seeks active video elements and redraws once `seeked` lands.
+- Scrubbing while paused re-seeks active video elements and redraws once `seeked` lands. Scrubbing
+  while playing pauses playback first (Premiere behavior), so dragging the playhead can never inject
+  a force-seek per pointer move into a running clock.
 
 ## Export
 
@@ -145,8 +153,15 @@ asset.duration` invariant), images and text are unbounded.
 
 - **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 1) and downloads it; object URLs are
   stripped and never persisted.
-- **Open** hydrates every asset with `missing: true`; relinking is automatic on a matching re-import or
-  manual per asset.
+- **Open** hydrates every asset with `missing: true`. Bundled samples then refetch themselves
+  (`hydrateSampleMedia(doc)`), which the restore path shares: their bytes are the app's own. The merge
+  lands BEFORE the doc is installed, so the load is ONE undo step; relink commands applied afterwards
+  would each push their own history entry, and one Ctrl+Z would drop a single sample back to offline
+  and black out the preview again. Anything else relinks automatically on a matching re-import, or
+  manually per asset.
+- While the playhead sits on a clip whose media is offline, the monitor paints **Media offline** with
+  the file names and a relink hint. The frame is genuinely black and silent; the overlay is what keeps
+  that from reading as a broken preview.
 - **Autosave** writes to `localStorage` (`web-video-editor:autosave:v1`, 800 ms debounce) after each
   settled change; transient drag frames are skipped.
 - On startup a valid autosave raises a banner: **Restore** replaces the doc (undoable) or **Discard**

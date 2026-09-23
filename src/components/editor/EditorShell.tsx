@@ -28,6 +28,7 @@ import {
   readValidAutosave,
 } from '@/lib/editor/persistence'
 import { projectFileName, serializeDoc } from '@/lib/editor/serialization'
+import { hydrateSampleMedia, bumpProjectGeneration } from '@/lib/editor/project-io'
 import { toast } from '@/hooks/use-toast'
 
 /**
@@ -141,16 +142,35 @@ export function EditorShell() {
 
   useEditorKeyboard(handleSave)
 
-  const restoreAutosave = () => {
+  const restoreAutosave = async () => {
     try {
       const json = pendingRestore
       if (!json) return
       const { doc: restored } = parseAutosave(json)
-      useEditorStore.getState().replaceDoc(restored)
+      // Bundled samples are the only media the app can refetch by itself, so
+      // they are merged into the doc BEFORE it is installed: the restore stays
+      // one undo step instead of appending a history entry per relinked file.
+      const { doc, relinked, remaining, failed } = await hydrateSampleMedia(restored)
+      // Installing a project invalidates any in-flight project load; the bump
+      // and the install are one step, so no load can land in between them.
+      bumpProjectGeneration()
+      useEditorStore.getState().replaceDoc(doc)
       useEditorStore.getState().setPendingRestore(null)
+      // Hydration returns failures instead of toasting them, so they are
+      // reported here, against the session that actually got installed.
+      for (const name of failed) {
+        toast({ title: 'Sample unavailable', description: name, variant: 'destructive' })
+      }
       toast({
         title: 'Session restored',
-        description: `${restored.media.filter((m) => m.missing).length} media file(s) may need relinking`,
+        description:
+          remaining > 0
+            ? `${remaining} media file(s) need relinking`
+            : relinked > 0
+              ? `${relinked} sample file(s) relinked automatically`
+              : doc.media.length > 0
+                ? `All ${doc.media.length} media file(s) are back online`
+                : undefined,
       })
     } catch {
       toast({ title: 'Restore failed', variant: 'destructive' })
@@ -184,7 +204,7 @@ export function EditorShell() {
               size="sm"
               variant="secondary"
               className="h-6 gap-1 px-2 text-xs"
-              onClick={restoreAutosave}
+              onClick={() => void restoreAutosave()}
             >
               <RotateCcw className="size-3" /> Restore
             </Button>

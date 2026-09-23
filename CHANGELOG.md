@@ -5,6 +5,100 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.3] - 2026-09-23
+
+### Fixed
+
+- **A restored session looked broken: black monitor, no explanation, no way back.** A restore (like a
+  project load) hydrates every asset offline, because object URLs cannot survive a reload, and the
+  engine correctly plays nothing for them. What was wrong is that the bundled samples could never come
+  back: their bytes are the app's own, but "Load sample media" de-duped by name only, so with the
+  samples already in the bin (all offline) it answered "already loaded" and never refetched them, and
+  a sample-based project has no file on disk to pick in a manual relink. Samples now refetch and
+  relink themselves on every restore or project load, and the button refetches offline samples instead
+  of dead-ending. Imported files still need one manual relink, for the honest reason that the browser
+  no longer has their bytes.
+- **The monitor now says why a frame is black.** While the playhead sits on a clip whose media is
+  offline, the preview paints **Media offline** with the file names and a relink hint, so a black
+  frame no longer reads as a broken preview. Locked by `offline.test.ts` (per-frame detection) and the
+  sample plan tests in `media-pool.test.ts` (fresh adds and offline relinks).
+- **A restore or load is one undo step again.** The automatic sample recovery installed the doc first
+  and then applied one `relinkMedia` command per refetched file, so a restore left two or three extra
+  history entries behind: a single Ctrl+Z dropped one sample back to offline and blacked out the
+  preview again. Samples are now merged into the document before it is installed (`hydrateSampleMedia`),
+  so the load stays exactly one undoable operation.
+- **Overlapping sample loads can no longer leave twin assets.** The media bin's re-entrancy ref only
+  guarded one component instance, so a second load (another press landing while the first was still
+  fetching, or a restore racing the button) could pass the dedup check and add a second asset with the
+  same name and the same bytes. Overlapping calls now share one run, every write re-checks the live bin
+  through `sampleImportAction`, and a batch is bound to the project that planned it: opening or
+  restoring another project mid-flight drops the rest of the batch instead of writing the old
+  project's files into the new one.
+- **A relinked asset keeps the bytes the exporter reads.** Both relink sites built their own patch and
+  both omitted the source `file` handle, and `mp4.ts` skips every video asset without one: a clip that
+  was relinked after a restore played in the preview but silently vanished from an MP4 export. The
+  patch fields now live in one place (`media/relink.ts`) and carry the handle.
+- **A manual relink no longer recycles the old file's metadata.** The relink patch preserved a
+  thumbnail, waveform and audio flag the previous file had produced, so replacing an asset with a
+  different file kept the old thumbnail and still claimed to carry sound (which also corrupted the A/V
+  split for future imports of the same asset). The manual relink now clears metadata the new file does
+  not provide; sample recovery keeps preserving it, because it refetches the same bundled file.
+- **A slow project load can no longer clobber a newer one.** While a load's sample hydration was still
+  fetching, another open could install a different project first, and the slow load then overwrote it
+  on landing, along with a success toast for a project the user had already left behind. All project
+  opens now run through one shared coordinator (`openProjectFile`) that numbers each request and drops
+  everything but the newest, and every other installer (File > New, session restore) invalidates
+  in-flight loads too, so a pending open can never overwrite a project installed by any other means. A
+  canceled file picker no longer invalidates a load that is already running, and the toolbar's open
+  button no longer makes the user choose the same file twice (the file its input picked goes straight
+  to the coordinator instead of triggering a second picker). Sample-recovery failures during a load
+  are reported by the coordinator after its staleness check, so a load superseded mid-fetch can no
+  longer raise stale error toasts for a project the user already left behind.
+
+## [0.5.2] - 2026-09-22
+
+### Fixed
+
+- **Preview went permanently black after scrubbing during playback.** Every ruler move sought the
+  media elements with force, and the drift corrector re-seeked whenever the element lagged the
+  master clock by more than 120 ms. A seek is not instantaneous: the readback position updates
+  immediately but the decoded frame arrives later (roughly 130 to 300 ms on a scrub longer than a
+  second), so each re-seek interrupted the previous one and the element never finished a decode:
+  black picture, no audio, playhead advancing, for the rest of the timeline. The engine now leaves
+  an element with a seek in flight strictly alone: the seek completes, the frame lands, playback
+  and audio resume. The drift threshold also moved above the worst-case seek latency (0.4 s), so a
+  landed seek converges instead of reading as fresh drift. Locked by a mocked-browser test that
+  models real seek latency.
+- **Restored sessions played nothing in the preview even after relinking.** Restored assets have no
+  URL until relinked, but the engine still built elements for them (empty sources stuck in
+  error-state) and the relink path left elements stuck in the same seek-starvation loop as above.
+  Missing assets are now skipped entirely (no phantom elements, no autoplay attempts on empty
+  sources), and a relink swaps a live element in on the very next frame. Locked by tests for both
+  the missing-asset skip and the relink recovery. The skip covers the paused scrub path too
+  (`drawStill`), which still materialized a phantom `<video src="">` after the main fix.
+- Scrubbing on the ruler now pauses playback first, as in Premiere. Dragging the playhead with the
+  clock running was the one path that injected a force-seek per pointer move, and it could start the
+  starvation loop above even with the seek guard in place. Playback state is restored on the next
+  play press; the frame under the playhead is drawn while paused.
+
+## [0.5.1] - 2026-09-22
+
+### Fixed
+
+- Splitting an animated clip preserves its curves. Both halves now get the curve's value at the cut as a
+  boundary keyframe, so each half evaluates exactly what the unsplit clip did inside its own span. A ramp
+  crossing the cut used to freeze on the left half (or fall back to the static value when the half held no
+  keyframes), while the right half jumped straight to its first remaining keyframe.
+- Auto-ducking holds the music at the ducked level for as long as dialogue is loud, then releases over
+  `attackRelease` once it ends. The release ramp used to start back at the duck itself, so the music crept
+  back toward full volume through the dialogue and was already at unity when the dialogue ended. The
+  release endpoint is clamped to the clip edge (the clamp runs after the millisecond rounding, so a
+  fractional clip length cannot round the last keyframe back outside the clip), and a duck still
+  active at the edge simply holds the floor instead of stacking two keyframes on the same instant.
+- The export audio gain schedule is sorted chronologically before it is handed to the AudioContext.
+  No audible change: browsers keep a time-ordered event list regardless of insertion order, so this is
+  a contract cleanup, not a bug fix.
+
 ## [0.5.0] - 2026-09-21
 
 ### Added

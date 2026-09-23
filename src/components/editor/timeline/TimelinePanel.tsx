@@ -369,6 +369,11 @@ export function TimelinePanel() {
                 pxPerSec={pxPerSec}
                 onScrubStart={(t) => {
                   scrubbingRef.current = true
+                  // Scrubbing pauses playback, as in Premiere: dragging the
+                  // playhead through a seek-latency storm (one force-seek per
+                  // move with the clock running) is the one path that can
+                  // starve every element of a decode and black out the preview.
+                  playbackRef.current?.pause()
                   playbackRef.current?.seek(t)
                 }}
                 onScrub={(t) => playbackRef.current?.seek(t)}

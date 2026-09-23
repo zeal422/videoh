@@ -103,6 +103,7 @@ src/lib/editor/
 ├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
 ├── keyframes.ts          # keyframe evaluation, sanitize/clamp, split redistribution
 ├── ducking.ts            # auto-duck keyframe analysis from waveform peaks
+├── offline.ts            # offline-media detection for the monitor (pure)
 ├── transition.ts         # crossfade span + alpha math
 ├── links.ts              # multi-selection / A/V link-group helpers
 ├── clipboard.ts          # copy / cut / paste (module memory, outside undo)
@@ -113,13 +114,14 @@ src/lib/editor/
 ├── workspace.ts          # panel layout state (pure)
 ├── workspace-store.ts    # zustand wrapper over workspace.ts
 ├── menus.ts              # menu bar model (pure)
-├── project-io.ts         # save / open / import-media browser helpers
-├── sample-media.ts       # bundled sample list + idempotent filtering
+├── project-io.ts         # save / open / import-media / sample browser helpers
+├── sample-media.ts       # bundled sample list + load plan (fresh adds, offline relinks)
 ├── timeline-drop.ts      # drop-target geometry for drop-between-tracks
 ├── tracks.ts             # removes the tracks an edit leaves empty (prune)
 ├── timeline-scroll.ts    # drag edge auto-scroll geometry (pure)
 ├── media/
 │   ├── probe.ts          # importFile: probe duration/size, thumbnail, waveform peaks, hasAudio
+│   ├── relink.ts         # relinkPatchFrom: patch fields a relink carries (file handle included)
 │   └── elements.ts       # ClipMediaPool: per-clip media elements + source nodes
 ├── playback/
 │   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate
@@ -130,7 +132,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 35 test files, 429 tests (see testing.md; + gate.test.ts in src/lib/)
+└── __tests__/            # 37 test files, 488 tests (see testing.md; gate.test.ts in src/lib/)
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / ResizeObserver
 ```

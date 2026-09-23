@@ -14,6 +14,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import { docDuration, findClip } from '@/lib/editor/factories'
+import { offlineMediaAt } from '@/lib/editor/offline'
 import { formatTime } from '@/lib/editor/time'
 import { attachPreviewEngine, detachPreviewEngine } from '@/lib/editor/playback/preview'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
@@ -63,6 +64,9 @@ export function PreviewPanel() {
 
   const duration = docDuration(doc)
   const isEmpty = duration <= 0
+  // A frame that needs offline media renders black and silent; naming the file
+  // is the difference between "broken" and "waiting for a relink".
+  const offlineMedia = useMemo(() => offlineMediaAt(doc, playhead), [doc, playhead])
 
   // ————— drag-to-position (text) —————
   const selected = selection ? findClip(doc, selection) : undefined
@@ -182,6 +186,20 @@ export function PreviewPanel() {
               <p className="rounded-lg bg-black/60 px-4 py-2 text-sm text-zinc-300">
                 Import media or press <kbd className="rounded bg-zinc-700 px-1">T</kbd> to add text
               </p>
+            </div>
+          )}
+          {!isEmpty && offlineMedia.length > 0 && (
+            <div
+              data-testid="media-offline-overlay"
+              className="pointer-events-none absolute inset-0 flex items-center justify-center p-4"
+            >
+              <div className="max-w-full rounded-lg border border-amber-500/40 bg-black/70 px-4 py-3 text-center">
+                <p className="text-sm font-medium text-amber-300">Media offline</p>
+                <p className="mt-1 truncate text-xs text-amber-200/80">{offlineMedia.join(', ')}</p>
+                <p className="mt-1 text-[11px] text-zinc-400">
+                  Relink in the Media bin to bring this frame back
+                </p>
+              </div>
             </div>
           )}
         </div>

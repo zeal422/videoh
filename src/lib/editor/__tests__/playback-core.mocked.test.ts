@@ -421,6 +421,142 @@ describe('PlaybackCore (mocked browser)', () => {
     expect(canvas.height).toBe(540)
   })
 
+  it('never interrupts a pending seek, so scrub lag cannot starve the element', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+
+    const el = document.querySelector('video') as HTMLVideoElement
+    // Model Chrome's seek: the readback position updates immediately, but the
+    // decoded frame arrives later (seeking stays true until the event fires).
+    let pending = false
+    let seeks = 0
+    let resumeClock = 0
+    const audio = () => h.lastAudioContext()
+    Object.defineProperty(el, 'currentTime', {
+      configurable: true,
+      get() {
+        return pending ? 5 : 5 + (audio().currentTime - resumeClock)
+      },
+      set() {
+        seeks++
+        pending = true // a seek has been requested and is now in flight
+      },
+    })
+    Object.defineProperty(el, 'seeking', {
+      configurable: true,
+      get: () => pending,
+    })
+
+    // A scrub while playing: forceSeek to 5s, a >1s jump that a real decoder
+    // needs hundreds of ms to land.
+    core.seek(5)
+    expect(pending).toBe(true)
+    const before = seeks
+
+    // Half a second of frames while the seek is in flight: the old code saw
+    // drift > threshold every frame (readback already at target, data not
+    // moving) and re-seeked, restarting the decode forever: black preview,
+    // no audio, playhead advancing.
+    audio().currentTime += 0.5
+    await h.pump.pump(15)
+    expect(seeks).toBe(before)
+    expect(el.paused).toBe(false)
+
+    // The seek lands: Chrome fires `seeked` once the frame is decodable.
+    pending = false
+    resumeClock = audio().currentTime
+    el.dispatchEvent(new Event('seeked'))
+    await h.pump.pump(6)
+    // Live playback resumes: at most a couple of settling corrections (the
+    // sim's paused getter keeps reading the pre-seek position for a frame),
+    // never a per-frame storm.
+    expect(seeks).toBeLessThanOrEqual(before + 3)
+    expect(el.paused).toBe(false)
+  })
+
+  it('creates no elements for missing (restored) assets', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    // What a restored session looks like: the asset survived, its object URL
+    // did not.
+    asset.missing = true
+    asset.url = ''
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(2)
+
+    // The old code built an element with src "" (error 4) and "played" it.
+    expect(document.querySelectorAll('video, audio')).toHaveLength(0)
+    expect(core.isPlaying).toBe(true)
+  })
+
+  it('creates no elements for missing assets when drawing a still frame', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    asset.missing = true
+    asset.url = ''
+    const { core } = makeCore(doc)
+    // Scrub while paused: drawStill is the paused-render path.
+    core.seek(2)
+    await h.pump.pump(2)
+
+    // The old code let drawStill materialize a phantom <video src="">.
+    expect(document.querySelectorAll('video, audio')).toHaveLength(0)
+  })
+
+  it('relink swaps the element in when a missing asset regains its URL', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    asset.missing = true
+    asset.url = ''
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    expect(document.querySelectorAll('video')).toHaveLength(0)
+
+    // relinkMedia restores the URL mid-session: the very next frame must have
+    // a real element with the new source, playing.
+    asset.missing = false
+    asset.url = 'blob:relinked'
+    await h.pump.pump(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    expect(el).toBeTruthy()
+    expect(el.src).toContain('blob:relinked')
+    expect(el.paused).toBe(false)
+    void core
+  })
+
+  it('still pauses a clip whose pending seek is in flight once it goes inactive', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    addVideoClip(doc, { mediaId: asset.id, start: 4, duration: 4, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const els = document.querySelectorAll('video')
+    const active = els[0] as HTMLVideoElement
+    const next = els[1] as HTMLVideoElement
+
+    // A seek on the active clip is in flight (never resolved).
+    Object.defineProperty(active, 'seeking', { configurable: true, get: () => true })
+    Object.defineProperty(active, 'currentTime', {
+      configurable: true,
+      get: () => 0,
+      set: () => undefined,
+    })
+
+    // The playhead crosses into the next clip: the guard protects ACTIVE
+    // elements only: the outgoing clip must still be paused promptly.
+    h.lastAudioContext().currentTime += 4.2
+    await h.pump.pump(1)
+    expect(active.paused).toBe(true)
+    expect(next.paused).toBe(false)
+    void core
+  })
+
   it('ignores text tracks when syncing media (no elements, text still renders)', async () => {
     const { doc } = makeDoc()
     doc.project.tracks.unshift(createTrack('text', 1, { id: uid('t-text') }))

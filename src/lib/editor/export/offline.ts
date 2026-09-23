@@ -174,6 +174,10 @@ export interface GainEvent {
  * clip edges; static clips hold one value. A clip that starts at 0:00 gets no
  * pre-start zero event: the event would land on the same instant as the clip's
  * own gain and silence the whole clip.
+ *
+ * Returned in chronological order. The Web Audio spec keeps a time-ordered
+ * event list, so browsers normalize insertion order, but the contract is
+ * explicit here rather than assumed of every engine.
  */
 export function clipGainSchedule(clip: Clip): GainEvent[] {
   const events: GainEvent[] = []
@@ -187,7 +191,7 @@ export function clipGainSchedule(clip: Clip): GainEvent[] {
     events.push({ time: clip.start, value: clip.gain ?? 1, kind: 'set' })
   }
   if (clip.start > 0) events.push({ time: clip.start - 0.001, value: 0, kind: 'set' })
-  return events
+  return events.sort((a, b) => a.time - b.time)
 }
 
 /**

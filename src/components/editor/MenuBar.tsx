@@ -54,8 +54,9 @@ import { buildMenus, type MenuActionId, type MenuContext } from '@/lib/editor/me
 import {
   downloadProjectJSON,
   importMediaFiles,
-  loadProjectFile,
+  openProjectFromPicker,
   pickFiles,
+  bumpProjectGeneration,
 } from '@/lib/editor/project-io'
 import { PANEL_BOUNDS, PANEL_IDS, type PanelId } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
@@ -177,25 +178,19 @@ export function MenuBar({
       try {
         switch (action) {
           case 'file.newProject': {
+            // Installing a project by ANY means invalidates loads still in
+            // flight: without the bump, a pending open could overwrite this
+            // brand-new project when its hydration lands.
+            bumpProjectGeneration()
             store.replaceDoc(createDoc())
             toast({ title: 'New project created' })
             break
           }
           case 'file.openProject': {
-            void pickFiles('.json,application/json').then(async (files) => {
-              const file = files[0]
-              if (!file) return
-              try {
-                const loaded = await loadProjectFile(file)
-                useEditorStore.getState().replaceDoc(loaded)
-                toast({
-                  title: 'Project loaded',
-                  description: `${loaded.media.filter((m) => m.missing).length} media file(s) need relinking`,
-                })
-              } catch (error) {
-                showError(error)
-              }
-            })
+            // The shared coordinator owns the whole flow (pick, parse, sample
+            // hydration, install) and its generation guard: menu opens and
+            // toolbar opens invalidate each other the same way.
+            void openProjectFromPicker()
             break
           }
           case 'file.importMedia': {

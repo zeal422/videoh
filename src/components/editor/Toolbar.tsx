@@ -44,9 +44,9 @@ import { canSplitAnySelectedAt } from '@/lib/editor/links'
 import { docDuration, uid } from '@/lib/editor/factories'
 import { PPS_MAX, PPS_MIN } from '@/lib/editor/constants'
 import { projectFileName, serializeDoc } from '@/lib/editor/serialization'
+import { openProjectFile } from '@/lib/editor/project-io'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { useEditorStore } from '@/lib/editor/store'
-import { deserializeDoc } from '@/lib/editor/serialization'
 
 /** Top toolbar: tools (V/C), edit history, edit tools, zoom, project name, project IO, export. */
 export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
@@ -127,21 +127,13 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
   }
 
   const handleLoadFile = async (file: File) => {
+    // The picker already ran (this File came from the hidden input): open it
+    // through the SAME coordinator the menu uses, so menu opens, toolbar opens
+    // and File > New all invalidate each other's in-flight loads. Opening a
+    // second picker here would make the user choose twice.
     setIsLoading(true)
     try {
-      const text = await file.text()
-      const { doc: loaded } = deserializeDoc(text)
-      useEditorStore.getState().replaceDoc(loaded)
-      toast({
-        title: 'Project loaded',
-        description: `${loaded.media.filter((m) => m.missing).length} media file(s) need relinking`,
-      })
-    } catch (error) {
-      toast({
-        title: 'Load failed',
-        description: error instanceof Error ? error.message : String(error),
-        variant: 'destructive',
-      })
+      await openProjectFile(file)
     } finally {
       setIsLoading(false)
     }

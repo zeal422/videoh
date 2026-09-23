@@ -29,7 +29,25 @@ export interface PlaybackCoreOptions {
   onPlayingChange?: (playing: boolean) => void
 }
 
-const DRIFT_THRESHOLD = 0.12
+/**
+ * Drift worth correcting. This must exceed the worst-case seek latency: a seek
+ * that lands L seconds after it was issued leaves the element exactly L behind
+ * the clock (the clock kept running while the decoder worked). With a threshold
+ * below L, every landed seek looks like fresh drift and re-seeks forever: the
+ * element never catches up and the preview stays black. 0.4 s covers unbuffered
+ * seeks; ordinary playback drift (element clock vs audio clock) stays far below
+ * it for a whole session.
+ */
+const DRIFT_THRESHOLD = 0.4
+/**
+ * A seek is not instantaneous: Chrome must demux + decode before the new frame
+ * is present (the readback position updates immediately, the data does not).
+ * A scrub that lands >1 s away takes hundreds of ms; until it lands the element
+ * shows no drawable frame. While one is pending, every further seek restarts
+ * the wait, so correction decisions made during that window are based on a
+ * position the element has not reached yet.
+ */
+const SEEK_QUIET_MS = 350
 
 /** Applies a clip's clamped speed to its element (reversed clips are stepped). */
 function applyPlaybackRate(el: HTMLMediaElement, clip: Clip): void {
@@ -73,6 +91,15 @@ export class PlaybackCore {
   private anchorDoc = 0
   private anchorAudio = 0
   private anchorPerf = 0
+  /**
+   * Elements with a seek in flight, with the wall-clock time it started and
+   * the `seeked` listener that clears it. While an element is here (or reports
+   * `seeking`), it is left strictly alone: interrupting a pending seek
+   * restarts the decode and can starve the element forever (observed: scrub
+   * during playback kept the frame black for the rest of the timeline because
+   * each rAF re-seeked a seek that never completed).
+   */
+  private seekingEls = new Map<HTMLMediaElement, { started: number; onSeeked: () => void }>()
 
   constructor(private opts: PlaybackCoreOptions) {
     opts.canvas.width = opts.getDoc().project.width
@@ -180,6 +207,7 @@ export class PlaybackCore {
     this.pause()
     this.pool.dispose()
     this.imageCache.clear()
+    for (const el of [...this.seekingEls.keys()]) this.endSeek(el) // detach listeners too
     if (this.audio) {
       void this.audio.close().catch(() => undefined)
       this.audio = null
@@ -243,38 +271,38 @@ export class PlaybackCore {
       if (track.kind === 'text') continue
       for (const clip of track.clips) {
         const asset = findMedia(doc, clip.mediaId)
-        if (!asset || asset.kind === 'image') continue
+        // Restored sessions keep assets without a URL ("missing" until
+        // relinked). Elements for them are pure noise: error events, autoplay
+        // attempts on an empty source, "playing" elements that can never show
+        // or sound anything. Skip them entirely.
+        if (!asset || asset.missing || !asset.url || asset.kind === 'image') continue
         const active = t >= clip.start && t < clip.start + clip.duration
         const el = this.pool.get(clip, asset)
         const expected = clamp(this.sourceTime(clip, t), 0, Math.max(0, asset.duration - 0.01))
 
         if (active) {
+          // A pending seek must finish before the element is touched again. An
+          // interrupted seek restarts its decode, so a loop of interrupted
+          // seeks never yields a frame (black picture, no audio) even though
+          // the playhead keeps advancing. `seeking` covers real browsers; the
+          // map also carries fakes that never clear the flag. Inactive clips
+          // still fall through to the pause below.
+          if (this.trackingSeek(el)) continue
+
           if (clip.reverse) {
             // Reversed clips cannot play backwards in realtime: park the
             // element and seek to the mirrored source position (stepped
             // preview). Seeks walk backwards as the playhead advances.
             if (!el.paused) el.pause()
             if (forceSeek || Math.abs(el.currentTime - expected) > 1 / 60) {
-              try {
-                el.currentTime = expected
-              } catch {
-                // ignore
-              }
+              this.seekElement(el, expected)
             }
           } else if (el.paused) {
-            try {
-              el.currentTime = expected
-            } catch {
-              // seek before metadata — ignore
-            }
+            this.seekElement(el, expected)
             el.playbackRate = clamp(clip.speed ?? 1, 0.25, 4)
             void el.play().catch(() => undefined)
           } else if (forceSeek || Math.abs(el.currentTime - expected) > DRIFT_THRESHOLD) {
-            try {
-              el.currentTime = expected
-            } catch {
-              // ignore
-            }
+            this.seekElement(el, expected)
             // A speed edit while the clip already plays must reach the element
             // without a pause first (reversed clips stay stepped).
             applyPlaybackRate(el, clip)
@@ -285,9 +313,65 @@ export class PlaybackCore {
           this.applyGain(clip.id, el, gain, clip)
         } else if (!el.paused) {
           el.pause()
+          this.endSeek(el)
         }
       }
     }
+  }
+
+  /** True while the element has a seek in flight (and keeps tracking it). */
+  private trackingSeek(el: HTMLMediaElement): boolean {
+    if (el.seeking) return true
+    const entry = this.seekingEls.get(el)
+    if (!entry) return false
+    if (performance.now() - entry.started > SEEK_QUIET_MS) {
+      this.endSeek(el)
+      return false
+    }
+    return true
+  }
+
+  /**
+   * Assigns a new element position and tracks the seek until its decode lands.
+   * Real browsers fire `seeked` when the frame is ready; the fake elements in
+   * tests fire it synchronously on a value change, so only an assignment that
+   * actually moves the position is tracked. A no-op assignment (same value)
+   * never emits `seeked` there and must not leave a stale "seeking" entry.
+   */
+  private seekElement(el: HTMLMediaElement, expected: number): void {
+    // Track BEFORE the assignment: a synchronous `seeked` (fake elements, or a
+    // browser that completes instantly) then clears the entry within this call,
+    // and an async browser keeps it until the decode lands.
+    this.beginSeek(el)
+    const prev = el.currentTime
+    try {
+      el.currentTime = expected
+    } catch {
+      this.endSeek(el)
+      return // seek before metadata: nothing to track
+    }
+    if (Math.abs(prev - expected) <= 1e-9) this.endSeek(el)
+  }
+
+  private beginSeek(el: HTMLMediaElement): void {
+    // A superseded seek whose decode lands later must not leave its listener
+    // attached until the NEXT seek's `seeked`: the entry owns the handler and
+    // `endSeek` removes it, so a re-seek replaces both atomically. The timeout
+    // in `trackingSeek` stays only as a backstop for paths that never emit.
+    this.endSeek(el)
+    const entry: { started: number; onSeeked: () => void } = {
+      started: performance.now(),
+      onSeeked: () => this.endSeek(el),
+    }
+    this.seekingEls.set(el, entry)
+    el.addEventListener('seeked', entry.onSeeked)
+  }
+
+  private endSeek(el: HTMLMediaElement): void {
+    const entry = this.seekingEls.get(el)
+    if (!entry) return
+    el.removeEventListener('seeked', entry.onSeeked)
+    this.seekingEls.delete(el)
   }
 
   /** volume curve (animated or static gain) × clip mute × track mute × crossfade alpha; reversed clips are silent. */
@@ -414,6 +498,10 @@ export class PlaybackCore {
       for (const clip of track.clips) {
         const asset = findMedia(doc, clip.mediaId)
         if (!asset || asset.kind !== 'video') continue
+        // Missing assets have no URL: pool.get would materialize a phantom
+        // <video src=""> (decode error noise) for a still frame that can
+        // never render. Same skip rule as syncMedia.
+        if (asset.missing || !asset.url) continue
         const active = t >= clip.start && t < clip.start + clip.duration
         if (!active) continue
         const el = this.pool.get(clip, asset)
@@ -444,6 +532,9 @@ export class PlaybackCore {
     const asset = findMedia(doc, clip.mediaId)
     if (!asset) return undefined
     if (asset.kind === 'image') {
+      // Missing assets have no URL. An Image with src "" is a permanent
+      // decode failure; skip so the frame plan falls through cleanly.
+      if (asset.missing || !asset.url) return undefined
       let img = this.imageCache.get(asset.id)
       if (!img) {
         img = new Image()
@@ -456,6 +547,8 @@ export class PlaybackCore {
       return { asset, el: img.complete ? img : undefined }
     }
     if (asset.kind === 'video') {
+      // Missing (restored) assets have no URL: never build an element for them.
+      if (asset.missing || !asset.url) return undefined
       return { asset, el: this.pool.get(clip, asset) as HTMLVideoElement }
     }
     return { asset } // audio-only

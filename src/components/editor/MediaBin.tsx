@@ -18,10 +18,10 @@ import { Badge } from '@/components/ui/badge'
 import { toast } from '@/hooks/use-toast'
 
 import { importFile } from '@/lib/editor/media/probe'
+import { relinkPatchFrom } from '@/lib/editor/media/relink'
 import { commandsToAddMedia } from '@/lib/editor/actions'
 import { docDuration } from '@/lib/editor/factories'
-import { importMediaFiles } from '@/lib/editor/project-io'
-import { SAMPLES, filterNewSamples } from '@/lib/editor/sample-media'
+import { importMediaFiles, loadSampleMedia } from '@/lib/editor/project-io'
 import { useEditorStore } from '@/lib/editor/store'
 import type { MediaAsset } from '@/lib/editor/types'
 import { cn } from '@/lib/utils'
@@ -47,38 +47,23 @@ export function MediaBin({ className, heading = true }: { className?: string; he
   const loadSamples = useCallback(async () => {
     if (loadingSamplesRef.current) return
     loadingSamplesRef.current = true
+    setImporting((n) => n + 1)
     try {
-      // Idempotent: skip samples already in the bin so re-pressing the button
-      // never duplicates entries (user-facing bug report).
-      const existingNames = useEditorStore.getState().doc.media.map((m) => m.name)
-      const fresh = filterNewSamples(SAMPLES, existingNames)
-      if (fresh.length === 0) {
+      // Imports samples the bin lacks and refetches the ones that came back
+      // offline, so a restored session recovers its samples in one click
+      // instead of hitting a name-only "already loaded" dead end.
+      const result = await loadSampleMedia()
+      if (result.upToDate) {
         toast({
           title: 'Sample media already loaded',
           description: 'All samples are already in your media bin.',
         })
-        return
       }
-      const files: File[] = []
-      for (const sample of fresh) {
-        try {
-          const res = await fetch(sample.path)
-          if (!res.ok) throw new Error(`HTTP ${res.status}`)
-          const blob = await res.blob()
-          files.push(new File([blob], sample.name, { type: blob.type }))
-        } catch {
-          toast({
-            title: 'Sample unavailable',
-            description: sample.name,
-            variant: 'destructive',
-          })
-        }
-      }
-      if (files.length) await importFiles(files)
     } finally {
+      setImporting((n) => n - 1)
       loadingSamplesRef.current = false
     }
-  }, [importFiles])
+  }, [])
 
   const quickAdd = (asset: MediaAsset) => {
     const store = useEditorStore.getState()
@@ -105,15 +90,7 @@ export function MediaBin({ className, heading = true }: { className?: string; he
       useEditorStore.getState().apply({
         type: 'relinkMedia',
         mediaId: asset.id,
-        patch: {
-          url: fresh.url,
-          duration: fresh.duration,
-          width: fresh.width,
-          height: fresh.height,
-          thumbnail: fresh.thumbnail,
-          hasAudio: fresh.hasAudio,
-          waveformPeaks: fresh.waveformPeaks,
-        },
+        patch: relinkPatchFrom(fresh, 'manual'),
       })
       toast({ title: 'Media relinked', description: asset.name })
     } catch (error) {

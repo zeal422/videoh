@@ -255,8 +255,8 @@ describe('clipGainSchedule', () => {
   it('keeps the pre-start zero guard for later clips', () => {
     const events = clipGainSchedule(createClip({ id: 'c', start: 2, duration: 2 }))
     expect(events).toEqual([
-      { time: 2, value: 1, kind: 'set' },
       { time: 1.999, value: 0, kind: 'set' },
+      { time: 2, value: 1, kind: 'set' },
     ])
   })
 
@@ -273,11 +273,26 @@ describe('clipGainSchedule', () => {
       },
     })
     expect(clipGainSchedule(clip)).toEqual([
+      { time: 0, value: 1, kind: 'set' },
       { time: 1, value: 1, kind: 'ramp' },
       { time: 2, value: 0.2, kind: 'ramp' },
       { time: 4, value: 0.2, kind: 'ramp' },
-      { time: 0, value: 1, kind: 'set' },
     ])
+  })
+
+  it('returns events in chronological order even for a late-start keyframed clip', () => {
+    // Insertion order puts the set events (clip start, pre-start guard) last.
+    const clip = createClip({
+      id: 'c',
+      start: 2,
+      duration: 4,
+      keyframes: { volume: [{ time: 1, value: 0.5 }] },
+    })
+    const events = clipGainSchedule(clip)
+    for (let i = 1; i < events.length; i++) {
+      expect(events[i].time).toBeGreaterThanOrEqual(events[i - 1].time)
+    }
+    expect(events.map((e) => e.time)).toEqual([1.999, 2, 3, 6])
   })
 })
 

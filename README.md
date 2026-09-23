@@ -250,7 +250,7 @@ Known limitations:
 ## Persistence
 
 - **Project files** use the `.veproj.json` format (`version: 1`, plus a `savedAt` timestamp; see `serialization.ts`). `serializeDoc` strips object URLs (they are session-bound and can never persist) and the loader hydrates the clip's re-timing, shaping and keyframe fields, clamping and sanitizing them on the way in.
-- **Loading** hydrates every asset with an empty `url` and `missing: true`; clips whose media vanished entirely lose their `mediaId`. Offline assets render as "offline" in the media bin, and missing video shows black in the preview until relinked. Relinking is automatic when you re-import a file with a matching name, or manual via the relink button on each offline asset.
+- **Loading** hydrates every asset with an empty `url` and `missing: true`; clips whose media vanished entirely lose their `mediaId`. Offline assets render as "offline" in the media bin, and a frame that needs them paints **Media offline** over the monitor, naming the files it is missing, instead of showing silent black. Relinking is automatic when you re-import a file with a matching name (and for the bundled samples, which the app refetches itself on any load or restore), or manual via the relink button on each offline asset. Recovered samples are merged into the document itself, so a load or restore stays one undo step and the exporter keeps the source bytes it reads.
 - **Autosave** writes the serialized doc to `localStorage` (key `web-video-editor:autosave:v1`) with an **800 ms debounce**, after every committed change — transient drag frames are skipped, and the final commit triggers exactly one save. Quota or serialization errors surface in the status bar ("Autosave off").
 - **Restore** — on startup a valid autosave raises a banner: _Restore_ replaces the current doc (pushing the empty starter doc onto the undo stack) or _Discard_ clears the entry.
 
@@ -268,7 +268,7 @@ bun run format:check   # prettier check
 
 The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **453 tests across 36 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **488 tests across 37 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -307,6 +307,7 @@ src/
 │   ├── snap.ts                  # computeSnapPoints, applySnap, snapMove
 │   ├── keyframes.ts             # keyframe evaluation, sanitize/clamp, split redistribution
 │   ├── ducking.ts               # auto-duck keyframe analysis from waveform peaks
+│   ├── offline.ts               # offline-media detection for the monitor (pure)
 │   ├── clip-gesture.ts          # pure gesture decisions: move/trim/rate-stretch
 │   ├── transition.ts            # getTransitionSpan, transitionAlphas, maxTransitionDuration
 │   ├── links.ts                 # multi-selection + A/V link-group helpers
@@ -315,8 +316,8 @@ src/
 │   ├── menus.ts                 # menu bar model: structure, states, action ids
 │   ├── workspace.ts             # panel layout state: bounds, sanitize, persist
 │   ├── workspace-store.ts       # zustand wrapper over workspace.ts
-│   ├── project-io.ts            # shared save / open / import-media helpers
-│   ├── sample-media.ts          # bundled samples + idempotent filtering
+│   ├── project-io.ts            # shared save / open / import-media / sample helpers
+│   ├── sample-media.ts          # bundled samples + load plan (fresh adds, offline relinks)
 │   ├── timeline-drop.ts         # drop-target geometry (drop-between-tracks)
 │   ├── tracks.ts                # removes the tracks an edit leaves empty (prune)
 │   ├── timeline-scroll.ts       # drag edge auto-scroll geometry (pure)
@@ -325,6 +326,7 @@ src/
 │   ├── persistence.ts           # debounced localStorage autosave + restore
 │   ├── media/
 │   │   ├── probe.ts             # importFile: probe, thumbnail, waveform peaks, hasAudio
+│   │   ├── relink.ts            # relinkPatchFrom: the patch fields a relink carries
 │   │   └── elements.ts          # ClipMediaPool (per-clip elements + source nodes)
 │   ├── playback/
 │   │   ├── core.ts              # PlaybackCore: clock, pool, drift, Web Audio
@@ -335,7 +337,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 35 test files (429 tests) + src/lib/gate.test.ts; mocks/ = browser-mock harness
+│   └── __tests__/               # 37 test files (488 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs

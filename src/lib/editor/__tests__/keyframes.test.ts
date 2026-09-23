@@ -127,28 +127,38 @@ describe('staticPropertyValue', () => {
 })
 
 describe('splitKeyframeMap', () => {
+  // The boundary keyframe splitKeyframeMap inserts carries the curve's value
+  // at the cut, explicitly linear.
+  const bnd = (time: number, value: number): Keyframe => ({ time, value, interpolation: 'linear' })
+
   it('moves keyframes at or after the split into the right half, shifted', () => {
     const map = { volume: [kf(0, 0), kf(2, 1), kf(4, 2)] }
     const [l, r] = splitKeyframeMap(map, 3)
-    expect(l!.volume).toEqual([kf(0, 0), kf(2, 1)])
-    expect(r!.volume).toEqual([kf(1, 2)])
+    expect(l!.volume).toEqual([kf(0, 0), kf(2, 1), bnd(3, 1.5)])
+    expect(r!.volume).toEqual([bnd(0, 1.5), kf(1, 2)])
   })
 
-  it('returns undefined only when a half has no keyframes at all', () => {
-    // keyframes strictly before the split go left; none remain right
-    const [l, r] = splitKeyframeMap({ opacity: [kf(0, 1)] }, 1)
-    expect(l).toEqual({ opacity: [kf(0, 1)] })
-    expect(r).toBeUndefined()
-    const [l2, r2] = splitKeyframeMap(undefined, 1)
-    expect(l2).toBeUndefined()
-    expect(r2).toBeUndefined()
+  it('keeps the curve on a half that holds no other keyframes', () => {
+    // All keyframes after the cut: the left half used to lose the curve and
+    // fall back to the static value.
+    const [l, r] = splitKeyframeMap({ opacity: [kf(3, 0.25)] }, 1)
+    expect(l!.opacity).toEqual([bnd(1, 0.25)])
+    expect(r!.opacity).toEqual([bnd(0, 0.25), kf(2, 0.25)])
+    // All keyframes before the cut: same problem on the right half.
+    const [l2, r2] = splitKeyframeMap({ opacity: [kf(0, 0.25)] }, 1)
+    expect(l2!.opacity).toEqual([kf(0, 0.25), bnd(1, 0.25)])
+    expect(r2!.opacity).toEqual([bnd(0, 0.25)])
+    // No curve at all stays absent on both halves.
+    expect(splitKeyframeMap(undefined, 1)).toEqual([undefined, undefined])
   })
 
-  it('splits multiple properties independently', () => {
+  it('splits multiple properties independently and skips a duplicate boundary', () => {
     const map = { opacity: [kf(1, 0.5)], hue: [kf(2, 90)] }
     const [l, r] = splitKeyframeMap(map, 2)
-    expect(l!.opacity).toEqual([kf(1, 0.5)])
-    expect(l!.hue).toBeUndefined()
+    expect(l!.opacity).toEqual([kf(1, 0.5), bnd(2, 0.5)])
+    expect(l!.hue).toEqual([bnd(2, 90)])
+    expect(r!.opacity).toEqual([bnd(0, 0.5)])
+    // hue already has a keyframe exactly on the boundary: no extra dot.
     expect(r!.hue).toEqual([kf(0, 90)])
   })
 })

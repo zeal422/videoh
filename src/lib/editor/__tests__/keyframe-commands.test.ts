@@ -99,7 +99,7 @@ describe('setClipKeyframes', () => {
     ).toThrow(EditorCommandError)
   })
 
-  it('split redistributes curves: left keeps, right shifts, times stay clip-local', () => {
+  it('split redistributes curves and keeps the value at the cut on both halves', () => {
     const { doc, clipId } = baseDoc()
     const withKfs = applyCommand(doc, {
       type: 'setClipKeyframes',
@@ -112,8 +112,40 @@ describe('setClipKeyframes', () => {
     })
     const split = applyCommand(withKfs, { type: 'splitClip', clipId, atTime: 2 })
     const clips = split.project.tracks[0].clips
-    expect(clips[0].keyframes!.volume!.map((k) => [k.time, k.value])).toEqual([[1, 0]])
-    expect(clips[1].keyframes!.volume!.map((k) => [k.time, k.value])).toEqual([[1, 2]])
+    // The ramp crosses the cut at value 1, so both halves get that boundary.
+    expect(clips[0].keyframes!.volume!.map((k) => [k.time, k.value])).toEqual([
+      [1, 0],
+      [2, 1],
+    ])
+    expect(clips[1].keyframes!.volume!.map((k) => [k.time, k.value])).toEqual([
+      [0, 1],
+      [1, 2],
+    ])
+  })
+
+  it('split preserves the evaluated curve on both halves', () => {
+    const { doc, clipId } = baseDoc()
+    const withKfs = applyCommand(doc, {
+      type: 'setClipKeyframes',
+      clipId,
+      property: 'opacity',
+      keyframes: [
+        { time: 0, value: 1 },
+        { time: 4, value: 0 },
+      ],
+    })
+    const before = withKfs.project.tracks[0].clips[0]
+    const split = applyCommand(withKfs, { type: 'splitClip', clipId, atTime: 2 })
+    const [left, right] = split.project.tracks[0].clips
+    for (const t of [0.25, 1, 1.75, 2]) {
+      expect(animatedValue(left, 'opacity', t)).toBeCloseTo(animatedValue(before, 'opacity', t), 10)
+    }
+    for (const t of [0, 0.5, 1.25, 2]) {
+      expect(animatedValue(right, 'opacity', t)).toBeCloseTo(
+        animatedValue(before, 'opacity', 2 + t),
+        10,
+      )
+    }
   })
 })
 
@@ -253,11 +285,83 @@ describe('computeDuckingKeyframes', () => {
   it('ducks while dialogue is loud and releases after', () => {
     const { doc, music, dialogue } = duckSetup(0.8)
     const kfs = computeDuckingKeyframes(doc, music, [dialogue])
-    // One continuous loud window → unity, dip, unity.
+    // One continuous loud window: ramp down, HOLD the floor, then release.
     expect(kfs.map((k) => [k.time, k.value])).toEqual([
       [1.85, 1],
       [2, 0.4],
-      [6, 1],
+      [6, 0.4],
+      [6.15, 1],
+    ])
+  })
+
+  it('holds the floor through the dialogue instead of creeping back up', () => {
+    const { doc, music, dialogue } = duckSetup(0.8)
+    const ducked = {
+      ...music,
+      keyframes: { volume: computeDuckingKeyframes(doc, music, [dialogue]) },
+    }
+    // The old release started back at the duck, so the music was already
+    // climbing here; it must stay at the floor for the whole loud span.
+    for (const t of [2.5, 3, 4, 5.5]) expect(animatedValue(ducked, 'volume', t)).toBe(0.4)
+    // The release only happens after the dialogue ends, over attackRelease.
+    expect(animatedValue(ducked, 'volume', 6.07)).toBeGreaterThan(0.4)
+    expect(animatedValue(ducked, 'volume', 6.15)).toBe(1)
+  })
+
+  it('keeps holding the floor when a duck runs to the clip edge', () => {
+    const { doc, music, dialogue } = duckSetup(0.8)
+    // Dialogue ends exactly at the clip edge: no quiet span remains, so the
+    // duck holds the floor and no release keyframe is emitted at all.
+    const kfs = computeDuckingKeyframes(doc, music, [{ ...dialogue, duration: 6 }])
+    expect(kfs.map((k) => [k.time, k.value])).toEqual([
+      [1.85, 1],
+      [2, 0.4],
+      [8, 0.4],
+    ])
+    const ducked = { ...music, keyframes: { volume: kfs } }
+    expect(animatedValue(ducked, 'volume', 7.9)).toBe(0.4)
+    expect(animatedValue(ducked, 'volume', 8)).toBe(0.4)
+  })
+
+  it('clamps a release that would land beyond the clip edge', () => {
+    const { doc, music, dialogue } = duckSetup(0.8)
+    // Dialogue ends 0.1 s before the music: the quiet transition lands in the
+    // final sample region, so the release endpoint (quiet + 0.15) would fall
+    // past 8 s. The clamp pulls it to the clip edge.
+    const kfs = computeDuckingKeyframes(doc, music, [{ ...dialogue, start: 0, duration: 7.9 }])
+    const last = kfs[kfs.length - 1]
+    expect(last.time).toBe(8)
+    expect(last.value).toBe(1)
+    // The hold at the quiet transition is still at the floor.
+    expect(kfs[kfs.length - 2]).toEqual({ time: 7.917, value: 0.4 })
+    // No keyframe may sit beyond the clip: clipGainSchedule extends the gain
+    // with the LAST keyframe's value, so a past-edge release would leak unity
+    // into the clip-edge event instead of the floor.
+    for (const k of kfs) expect(k.time).toBeLessThanOrEqual(music.duration)
+  })
+
+  it('keeps a clamped release inside a fractional clip edge after rounding', () => {
+    const { doc, music, dialogue } = duckSetup(0.8)
+    // A duration that is NOT a round millisecond exposes the ordering: round3 of
+    // a value already clamped to 8.066666... lands at 8.067, i.e. past the clip,
+    // and clipGainSchedule extends the gain from the last keyframe. The clamp
+    // has to run after the rounding, so the last keyframe stays inside the clip.
+    const fractional = { ...music, duration: 8.066666 }
+    const kfs = computeDuckingKeyframes(doc, fractional, [{ ...dialogue, start: 0, duration: 7.9 }])
+    for (const k of kfs) expect(k.time).toBeLessThanOrEqual(fractional.duration)
+    const last = kfs[kfs.length - 1]
+    expect(last.time).toBe(fractional.duration)
+    expect(last.value).toBe(1)
+  })
+
+  it('releases normally when the quiet transition is before the clip edge', () => {
+    const { doc, music, dialogue } = duckSetup(0.8)
+    const kfs = computeDuckingKeyframes(doc, music, [dialogue])
+    expect(kfs.map((k) => [k.time, k.value])).toEqual([
+      [1.85, 1],
+      [2, 0.4],
+      [6, 0.4],
+      [6.15, 1],
     ])
   })
 

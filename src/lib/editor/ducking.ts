@@ -69,7 +69,10 @@ function dialogueCurve(doc: Doc, dialogueClips: Clip[], music: Clip): number[] {
 /**
  * Builds the ducked gain keyframes for `music` (clip-local times). Keyframes
  * are only produced where the level crosses the threshold; clean stretches
- * stay at unity via constant extension.
+ * stay at unity via constant extension. A duck holds the floor for as long as
+ * dialogue is loud, then releases over `attackRelease` after it ends. A duck
+ * still active at the clip edge just keeps holding (constant extension), since
+ * there is no quiet span left to release into.
  */
 export function computeDuckingKeyframes(
   doc: Doc,
@@ -95,16 +98,29 @@ export function computeDuckingKeyframes(
       keyframes.push({ time: round3(t), value: floor })
     } else if (!loud && ducking) {
       ducking = false
-      keyframes.push({ time: round3(t), value: 1 })
+      // Hold the floor at the release point, THEN ramp to unity. The hold is
+      // what makes this a release: a ramp interpolates from the previous
+      // keyframe, so without it the rise would start back at the duck instead
+      // of at the end of the dialogue.
+      keyframes.push({ time: round3(t), value: floor })
+      // The release endpoint is clamped to the clip edge: when the quiet
+      // transition lands at (or within attackRelease of) the end, the release
+      // would reach past the clip, and a keyframe beyond the clip leaks its
+      // value into clipGainSchedule's edge constant-extension. Round BEFORE
+      // the clamp: rounding a value already pinned to a fractional edge can
+      // push it back outside the clip (8.066666... -> 8.067), so the clamp has
+      // to be the last step. When it collapses the release onto the hold, skip
+      // it: the duck then just holds the floor to the edge, like a duck still
+      // active at the clip end.
+      const releaseTime = Math.min(round3(t + options.attackRelease), music.duration)
+      if (releaseTime > t) {
+        keyframes.push({ time: releaseTime, value: 1 })
+      }
     }
   }
   if (keyframes.length === 0) {
     // Nothing to duck: an empty curve clears any previous ducking.
     return []
-  }
-  if (ducking) {
-    // Still ducked at the end: release at the clip edge.
-    keyframes.push({ time: round3(music.duration), value: 1 })
   }
   return keyframes
 }
