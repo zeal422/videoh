@@ -67,6 +67,8 @@ export interface EditorState {
   replaceDoc: (doc: Doc) => void
   /** Reset to a single (primary) selection; null clears. */
   select: (clipId: string | null) => void
+  /** Marquee commit: set the selection to a whole id list (primary first). */
+  setSelections: (clipIds: string[]) => void
   /** Shift+click: ADD the clip's whole link group to the selection. */
   addSelection: (clipId: string) => void
   /** Ctrl+click: toggle the clip's whole link group in/out of the selection. */
@@ -215,6 +217,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   select: (clipId) =>
     set(clipId ? normalizeSelections(get().doc, [clipId]) : { selections: [], selection: null }),
+
+  setSelections: (clipIds) => set(normalizeSelections(get().doc, clipIds)),
 
   addSelection: (clipId) => {
     const { doc, selections } = get()

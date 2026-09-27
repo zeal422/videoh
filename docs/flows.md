@@ -11,6 +11,7 @@ Stable hooks used across flows and tests:
 - `[data-testid^="clip-"]`, `[data-testid="clip-link-badge"]`, `[data-testid="clip-context-menu"]`
 - `[data-testid="track-insert-line"]`, `[data-testid="track-insert-label"]`
 - `[data-testid="text-drag-outline"]`, `[data-testid="linked-av-hint"]`
+- `[data-testid="marquee-rect"]` (the live box while a marquee drag is in flight)
 - `[data-testid="track-header-<id>"]`, `[data-testid="track-context-menu"]`, `[data-testid^="track-menu-"]`
 - `[data-lane-kind]` on each lane and `[data-track-row]` on the newly inserted row
 - `[data-drop-blocked="true"]` — a lane marked as an illegal drop target for the duration of a drag
@@ -49,6 +50,11 @@ Stable hooks used across flows and tests:
 
 - Plain click selects a clip's link group; **Shift+click adds** another group; **Ctrl+click toggles**;
   **Ctrl+A** selects all; **Ctrl+Shift+A** deselects.
+- **Marquee (box) selection**: drag on empty lane space to select every clip the box covers, with
+  each hit clip's A/V link group expanding as one unit. **Shift** adds the covered groups, **Ctrl/Cmd**
+  toggles them, and a drag that crosses no clip clears the selection (replace mode). A click that
+  never moves keeps the old deselect behavior; modifier clicks leave the selection alone. Pushing the
+  box against the top/bottom or left/right edge auto-scrolls the timeline on both axes.
 - The status bar reads "N clips selected"; linked clips show a link badge and both halves highlight.
 - **Right-click** a clip for the context menu (Cut, Copy, Paste at playhead, Split at playhead,
   Duplicate, Link, Unlink, Ripple Delete, Delete). Right-click keeps an existing multi-selection.

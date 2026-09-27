@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.4] - 2026-09-27
+
+### Added
+
+- **Marquee (box) selection on the timeline.** Drag on empty lane space to select every clip the box
+  covers; each hit clip's A/V link group expands as one unit, **Shift** adds the covered groups,
+  **Ctrl/Cmd** toggles them, and a drag that crosses nothing clears the selection. A click that never
+  moves keeps the old deselect behavior. Pushing the box against an edge auto-scrolls the timeline on
+  both axes through the same 1px-to-14px ramp the clip drag uses. The hit math and the selection
+  resolution live in the pure `marquee.ts` (`marquee.test.ts`); the pointer and auto-scroll lifecycle
+  live in `TimelinePanel`. `marquee.ts` is part of the coverage gate, and the E2E battery covers the
+  gesture (box drag selects, empty-space click clears).
+
 ## [0.5.3] - 2026-09-23
 
 ### Fixed

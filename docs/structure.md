@@ -13,7 +13,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── robots.txt           # crawler policy
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
-│   └── battery.sh           # scripted UI battery (28 steps) driven by agent-browser
+│   └── battery.sh           # scripted UI battery (31 steps) driven by agent-browser
 ├── docs/                    # this documentation set
 ├── next.config.ts           # output: "standalone"
 ├── vitest.config.ts         # node env, @ alias, coverage include + thresholds
@@ -101,6 +101,7 @@ src/lib/editor/
 ├── commands.ts           # the 22 EditorCommand variants + applyCommand(s), direction-aware split spans
 ├── snap.ts               # snap-point computation and application
 ├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
+├── marquee.ts            # marquee (box) selection: lane-space rect math + group resolution (pure)
 ├── keyframes.ts          # keyframe evaluation, sanitize/clamp, split redistribution
 ├── ducking.ts            # auto-duck keyframe analysis from waveform peaks
 ├── offline.ts            # offline-media detection for the monitor (pure)
@@ -132,7 +133,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 37 test files, 488 tests (see testing.md; gate.test.ts in src/lib/)
+└── __tests__/            # 37 test files (503 tests) + src/lib/gate.test.ts: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / ResizeObserver
 ```

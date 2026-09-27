@@ -23,6 +23,9 @@
 #   click_clip() for clips — so results do not depend on the window height. This is
 #   why f03/f05 failed on a short viewport, and why enabling the crossfade (the new
 #   transition lane pushes the lower tracks down) could break the later audio steps.
+# - the marquee step needs empty lane space beyond the last clip: it computes its
+#   own points from live geometry and stays outside the 24px auto-scroll bands,
+#   so the box drag cannot scroll the view under the later steps.
 
 set -u
 BASE_URL="${BASE_URL:-http://localhost:3000}"
@@ -111,6 +114,100 @@ zoom_out() { # keep every quick-added clip inside the visible snapshot
   ab find role button click --name 'Zoom out (−)' >/dev/null && sleep 0.3
   ab find role button click --name 'Zoom out (−)' >/dev/null && sleep 0.4
   snap | grep -q 'Clip sample-audio'
+}
+
+# ————— F9 marquee (box) selection —————
+selected_ids() { # testids of clips wearing the selection ring (the a11y snapshot cannot see it)
+  # `:not([data-testid$=badge])` drops the link/speed/reverse badges nested in
+  # the clip element: only the clip root gets the selection ring.
+  evaln '[...document.querySelectorAll("[data-testid^=clip-]:not([data-testid$=badge]).ring-rose-400")].map((e) => e.dataset.testid).sort().join(",")'
+}
+# Points for a box that sweeps every clip: start on empty lane space in one
+# row beyond the last clip, release inside the row opposite the start (so the
+# rect spans every row). Computed from live geometry, so the window size cannot
+# break the step, and deliberately outside the 24px auto-scroll bands, so the
+# drag cannot scroll the view under the later steps. The start x is clamped to
+# the LANE's right edge (the lane element, not the scroll container), so the
+# first candidate is never past the content even when the content is narrower
+# than the viewport.
+marquee_points() {
+  evaln '(() => {
+    const sc = document.querySelector("[data-timeline-scroll]");
+    const lanes = [...document.querySelectorAll("[data-lane-id]")];
+    if (!sc || !lanes.length) return "none";
+    const sr = sc.getBoundingClientRect();
+    const rows = lanes.map((l) => l.getBoundingClientRect());
+    const boxes = [...document.querySelectorAll("[data-testid^=clip-]:not([data-testid$=badge])")].map((c) => c.getBoundingClientRect());
+    let start = null;
+    for (let i = 0; i < rows.length && !start; i++) {
+      const y = (rows[i].top + rows[i].bottom) / 2;
+      const laneRight = Math.min(sr.right - 30, rows[i].right - 30);
+      for (let x = laneRight; x > rows[i].left + 20; x -= 10) {
+        if (!boxes.some((b) => x > b.left - 4 && x < b.right + 4 && y > b.top - 4 && y < b.bottom + 4)) {
+          start = [x, y, i];
+          break;
+        }
+      }
+    }
+    if (!start) return "none";
+    const endRow = start[2] === 0 ? rows.length - 1 : 0;
+    const endY = Math.min(rows[endRow].bottom - 10, rows[endRow].top + 10);
+    return [Math.round(start[0]), Math.round(start[1]), Math.round(rows[0].left + 40), Math.round(endY)].join(",");
+  })()'
+}
+marquee_covered_ids() { # testids of timeline clips whose boxes overlap the drag rect, sorted
+  # Selector note: timeline clips carry a `clip-` testid; the Inspector's
+  # `Clip opacity/gain percent` sliders only LOOK like clips by aria-label.
+  # `:not([data-testid$=badge])` drops the link/speed/reverse badges nested in
+  # the clip element: only the clip root can be selected.
+  evaln "(() => {
+    const left = Math.min($1, $3), right = Math.max($1, $3);
+    const top = Math.min($2, $4), bottom = Math.max($2, $4);
+    return [...document.querySelectorAll(\"[data-testid^=clip-]:not([data-testid$=badge])\")].filter((c) => {
+      const b = c.getBoundingClientRect();
+      return right > b.left && left < b.right && bottom > b.top && top < b.bottom;
+    }).map((c) => c.dataset.testid).sort().join(\",\");
+  })()"
+}
+f09_marquee() {
+  local pts; pts=$(marquee_points)
+  [ "$pts" != "none" ] || { echo "f09: no empty lane space found for the box drag" >&2; return 1; }
+  local sx sy ex ey want got box
+  IFS=',' read -r sx sy ex ey <<<"$pts"
+  ab mouse move "$sx" "$sy" >/dev/null 2>&1
+  ab mouse down >/dev/null 2>&1
+  # Two moves: the first clears the 3px click threshold, the second spans the rows.
+  ab mouse move "$(((sx + ex) / 2))" "$(((sy + ey) / 2))" >/dev/null 2>&1
+  sleeps 0.2
+  ab mouse move "$ex" "$ey" >/dev/null 2>&1
+  sleeps 0.2
+  # The overlay must exist while the drag is live — checked BEFORE the release.
+  box=$(evaln 'document.querySelectorAll("[data-testid=marquee-rect]").length')
+  if [ "$box" != "1" ]; then
+    ab mouse up >/dev/null 2>&1 # never hand a dangling pressed pointer to later steps
+    echo "f09: marquee rectangle absent during the drag (box drawn: $box)" >&2
+    return 1
+  fi
+  ab mouse up >/dev/null 2>&1
+  sleeps 0.4
+  want=$(marquee_covered_ids "$sx" "$sy" "$ex" "$ey"); got=$(selected_ids)
+  local covered_n
+  covered_n=$(awk -F, '{print NF}' <<<"$want")
+  if [ "$got" != "$want" ] || [ -z "$want" ] || [ "$covered_n" -lt 3 ]; then
+    echo "f09: selection mismatch: selected [$got] vs covered [$want] (points $pts)" >&2
+    return 1
+  fi
+}
+f09_marquee_clear() {
+  local pts sx sy
+  pts=$(marquee_points)
+  [ "$pts" != "none" ] || return 1
+  IFS=',' read -r sx sy _ <<<"$pts"
+  ab mouse move "$sx" "$sy" >/dev/null 2>&1
+  ab mouse down >/dev/null 2>&1
+  ab mouse up >/dev/null 2>&1 # no movement: a plain click on empty space
+  sleeps 0.4
+  [ -z "$(selected_ids)" ]
 }
 
 # ————— F6 playback + compositing —————
@@ -312,6 +409,8 @@ step "s02 fresh: storage cleared, editor empty"    s02_fresh
 step "f01 import: sample media loads 3 assets"     f01_import
 step "f02 add: video+audio+image quick-added"      f02_add
 step "f02 zoom: all clips reachable in snapshot"   zoom_out
+step "f09 marquee: box drag selects every clip"    f09_marquee
+step "f09 marquee: empty-space click clears it"    f09_marquee_clear
 step "f06 play: transport runs, time advances"     f06_play
 step "f06 sync: preview canvas renders frames"     f06_canvas
 step "f02 split: select + 2.0s + Ctrl+K splits clip" f02_split

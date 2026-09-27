@@ -178,6 +178,19 @@ describe('multi-selection (Premiere shift/ctrl click)', () => {
     expect(useEditorStore.getState().selections).toEqual([])
   })
 
+  it('setSelections installs a whole list (marquee commit), dropping dangling ids', () => {
+    addTestClip()
+    addTestClip()
+    const clips = useEditorStore.getState().doc.project.tracks[0].clips
+    useEditorStore.getState().setSelections([clips[1].id, clips[0].id, clips[1].id, 'ghost'])
+    expect(useEditorStore.getState().selections).toEqual([clips[1].id, clips[0].id])
+    expect(useEditorStore.getState().selection).toBe(clips[1].id)
+
+    useEditorStore.getState().setSelections([])
+    expect(useEditorStore.getState().selections).toEqual([])
+    expect(useEditorStore.getState().selection).toBeNull()
+  })
+
   it('selectAll selects every clip; deselectAll clears both fields', () => {
     addTestClip()
     addTestClip()

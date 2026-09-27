@@ -29,6 +29,14 @@ import {
 } from '@/lib/editor/actions'
 import { previewTrackName } from '@/lib/editor/commands'
 import { computeTrackDropTarget, mediaKindFromDragEvent } from '@/lib/editor/timeline-drop'
+import {
+  marqueeHitClipIds,
+  normalizeMarquee,
+  resolveMarqueeSelection,
+  type MarqueeMode,
+  type MarqueeRect,
+} from '@/lib/editor/marquee'
+import { autoScrollStep, autoScrollStepX } from '@/lib/editor/timeline-scroll'
 import { docDuration, uid } from '@/lib/editor/factories'
 import { applySnap, computeSnapPoints } from '@/lib/editor/snap'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
@@ -72,8 +80,9 @@ type DropIndicator =
  * Stacking scale (all in the content div's stacking context) — the playhead
  * lives in CONTENT coordinates, so when the user scrolls it slides beneath
  * the sticky header column and must be PAINTED under it, never over:
- *   clips (auto, selected z-10) < snap guide z-15 < playhead line z-20
- *   < track headers z-30 < ruler row z-40 (corner cell z-50 inside it).
+ *   clips (auto, selected z-10) < marquee z-[12] < snap guide z-15
+ *   < playhead line z-20 < track headers z-30 < ruler row z-40 (corner cell
+ *   z-50 inside it).
  * The diamond marker lives INSIDE the ruler row (z-30 < corner z-50) so the
  * sticky corner cell covers it exactly like it covers the line.
  *
@@ -105,6 +114,31 @@ export function TimelinePanel() {
   const contentRef = useRef<HTMLDivElement>(null)
   const scrubbingRef = useRef(false)
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null)
+
+  // Marquee (box) selection: the live rect while dragging, null when idle.
+  // Deliberately component state, not store state: a drag in flight is not
+  // undoable and must not outlive the gesture.
+  const [marquee, setMarquee] = useState<MarqueeRect | null>(null)
+
+  /** Active marquee drag (null when idle). Listeners live on `window`, like
+   *  ClipView's, because the lanes re-render under the drag and element-bound
+   *  handlers (or pointer capture) would die with the element they started on. */
+  const marqueeRef = useRef<null | {
+    mode: MarqueeMode
+    /** Gesture anchor in lane coordinates: x after the header column, y after the ruler. */
+    anchorX: number
+    anchorY: number
+    lastX: number
+    lastY: number
+    startX: number
+    startY: number
+    moved: boolean
+    rect: MarqueeRect
+    raf: number | null
+    onMove: (ev: PointerEvent) => void
+    onUp: () => void
+    onCancel: () => void
+  }>(null)
 
   const duration = docDuration(doc)
   const contentWidth = Math.max(600, (duration + TAIL_PADDING_SEC) * pxPerSec)
@@ -163,6 +197,213 @@ export function TimelinePanel() {
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
+
+  // ----- marquee (box) selection -----
+
+  /**
+   * Pointer position in lane coordinates: x from the lanes' origin (after the
+   * sticky header column), y from the top of the first row (after the ruler).
+   * The content box is re-read on every call, so the mapping stays correct
+   * while the view auto-scrolls under a stationary pointer.
+   */
+  const lanePointFromClient = useCallback((clientX: number, clientY: number) => {
+    const contentEl = contentRef.current
+    if (!contentEl) return null
+    const rect = contentEl.getBoundingClientRect()
+    return {
+      x: clientX - rect.left - TRACK_HEADER_WIDTH,
+      y: clientY - rect.top - RULER_HEIGHT,
+    }
+  }, [])
+
+  /** Vertical span of every lane in lane coordinates, from the same row-height
+   *  constants the lanes render with. */
+  const laneBoxes = useCallback((tracks: Track[]) => {
+    let top = 0
+    return tracks.map((track) => {
+      const box = { trackId: track.id, top, height: TRACK_HEIGHT[track.kind] }
+      top += TRACK_HEIGHT[track.kind]
+      return box
+    })
+  }, [])
+
+  const updateMarqueeRect = (g: NonNullable<typeof marqueeRef.current>) => {
+    const point = lanePointFromClient(g.lastX, g.lastY)
+    if (!point) return
+    g.rect = normalizeMarquee(g.anchorX, g.anchorY, point.x, point.y)
+    setMarquee(g.rect)
+  }
+
+  /** The lane region's right edge: the scroll container's border box minus the
+   *  vertical scrollbar gutter, which `getBoundingClientRect` includes. */
+  const laneRightEdge = (el: HTMLDivElement, scrollRect: DOMRect) =>
+    scrollRect.right - (el.offsetWidth - el.clientWidth)
+
+  /**
+   * One frame of edge auto-scroll: move the view, then re-derive the rect,
+   * because the content slid under a stationary pointer and a scroll fires no
+   * pointermove.
+   */
+  const marqueeTick = () => {
+    const g = marqueeRef.current
+    const el = scrollRef.current
+    if (!g || !el) return
+    g.raf = null
+    const scrollRect = el.getBoundingClientRect()
+    const dy = autoScrollStep(g.lastY, scrollRect)
+    const dx = autoScrollStepX(g.lastX, {
+      left: scrollRect.left + TRACK_HEADER_WIDTH,
+      right: laneRightEdge(el, scrollRect),
+    })
+    if (dy === 0 && dx === 0) return
+    const beforeTop = el.scrollTop
+    const beforeLeft = el.scrollLeft
+    el.scrollTop += dy
+    el.scrollLeft += dx
+    if (el.scrollTop === beforeTop && el.scrollLeft === beforeLeft) return
+    // Queue the next frame before touching the overlay, so a re-entrant call
+    // cannot stack a second loop on top of this one.
+    g.raf = requestAnimationFrame(marqueeTick)
+    updateMarqueeRect(g)
+  }
+
+  /** Run the auto-scroll loop only while the pointer holds an edge band. */
+  const syncMarqueeAutoScroll = (g: NonNullable<typeof marqueeRef.current>) => {
+    const el = scrollRef.current
+    if (!el) return
+    const scrollRect = el.getBoundingClientRect()
+    const dy = autoScrollStep(g.lastY, scrollRect)
+    const dx = autoScrollStepX(g.lastX, {
+      left: scrollRect.left + TRACK_HEADER_WIDTH,
+      right: laneRightEdge(el, scrollRect),
+    })
+    if (dy === 0 && dx === 0) {
+      if (g.raf !== null) {
+        cancelAnimationFrame(g.raf)
+        g.raf = null
+      }
+      return
+    }
+    if (g.raf === null) g.raf = requestAnimationFrame(marqueeTick)
+  }
+
+  const moveMarquee = (clientX: number, clientY: number) => {
+    const g = marqueeRef.current
+    if (!g) return
+    g.lastX = clientX
+    g.lastY = clientY
+    // A tiny wobble stays a click, so deselecting on empty space remains easy.
+    if (!g.moved && Math.abs(clientX - g.startX) < 3 && Math.abs(clientY - g.startY) < 3) return
+    g.moved = true
+    updateMarqueeRect(g)
+    syncMarqueeAutoScroll(g)
+  }
+
+  /**
+   * A browser-cancelled gesture (touch pan, native drag) never completed as
+   * intended, so it must not rewrite the selection: tear the gesture down
+   * without committing. `pointerup` still commits via endMarquee.
+   */
+  const cancelMarquee = () => {
+    const g = marqueeRef.current
+    if (!g) return
+    window.removeEventListener('pointermove', g.onMove)
+    window.removeEventListener('pointerup', g.onUp, true)
+    window.removeEventListener('pointercancel', g.onCancel, true)
+    if (g.raf !== null) cancelAnimationFrame(g.raf)
+    marqueeRef.current = null
+    setMarquee(null)
+  }
+
+  const endMarquee = () => {
+    const g = marqueeRef.current
+    if (!g) return
+    window.removeEventListener('pointermove', g.onMove)
+    window.removeEventListener('pointerup', g.onUp, true)
+    window.removeEventListener('pointercancel', g.onCancel, true)
+    if (g.raf !== null) cancelAnimationFrame(g.raf)
+    marqueeRef.current = null
+    setMarquee(null)
+    const store = useEditorStore.getState()
+    if (!g.moved) {
+      // A click on empty space clears the selection (the pre-marquee
+      // behavior); a modifier click leaves it alone, since the user was
+      // aiming at a selection edit they never completed.
+      if (g.mode === 'replace') store.select(null)
+      return
+    }
+    const hits = marqueeHitClipIds(
+      store.doc,
+      laneBoxes(store.doc.project.tracks),
+      g.rect,
+      store.pxPerSec,
+    )
+    store.setSelections(resolveMarqueeSelection(store.doc, hits, store.selections, g.mode))
+  }
+
+  /**
+   * Pointer-down on empty lane space starts a box selection. Clips (their own
+   * gesture), the ruler (scrubbing) and the track headers are excluded. With
+   * the razor tool active a click on empty space keeps its old deselect
+   * behavior instead of arming a marquee.
+   */
+  const beginMarquee = (e: React.PointerEvent) => {
+    if (e.button !== 0) return
+    const target = e.target as HTMLElement
+    if (target.closest('[data-testid^="clip-"]')) return
+    if (target.closest('[data-ruler]')) return
+    if (target.closest('[data-testid^="track-header-"]')) return
+    if (target !== e.currentTarget && !target.dataset.laneId) return
+    const store = useEditorStore.getState()
+    if (store.activeTool !== 'select') {
+      if (!e.shiftKey && !e.ctrlKey && !e.metaKey) store.select(null)
+      return
+    }
+    // One gesture at a time, like ClipView: a marquee whose pointerup was lost
+    // (released outside the window) must not swallow the next drag. Close it
+    // first, then start this one.
+    if (marqueeRef.current) endMarquee()
+    const anchor = lanePointFromClient(e.clientX, e.clientY)
+    if (!anchor) return
+    const mode: MarqueeMode = e.shiftKey ? 'add' : e.ctrlKey || e.metaKey ? 'toggle' : 'replace'
+    const g = {
+      mode,
+      anchorX: anchor.x,
+      anchorY: anchor.y,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+      rect: normalizeMarquee(anchor.x, anchor.y, anchor.x, anchor.y),
+      raf: null as number | null,
+      onMove: (ev: PointerEvent) => moveMarquee(ev.clientX, ev.clientY),
+      onUp: () => endMarquee(),
+      onCancel: () => cancelMarquee(),
+    }
+    marqueeRef.current = g
+    // No overlay yet: a pointerdown that never travels must stay an invisible
+    // click, not a zero-size flash of the rect.
+    window.addEventListener('pointermove', g.onMove)
+    // Capture phase, like ClipView's drags: EditorShell's dangling-gesture net
+    // listens on bubble and must never pre-empt the owner's pointerup.
+    window.addEventListener('pointerup', g.onUp, true)
+    window.addEventListener('pointercancel', g.onCancel, true)
+  }
+
+  // Unmount safety net: never leave window listeners or a rAF loop behind.
+  useEffect(
+    () => () => {
+      const g = marqueeRef.current
+      if (!g) return
+      window.removeEventListener('pointermove', g.onMove)
+      window.removeEventListener('pointerup', g.onUp, true)
+      window.removeEventListener('pointercancel', g.onCancel, true)
+      if (g.raf !== null) cancelAnimationFrame(g.raf)
+      marqueeRef.current = null
+    },
+    [],
+  )
 
   // ————— media drop zones (onto a lane, or BETWEEN tracks) —————
 
@@ -310,10 +551,10 @@ export function TimelinePanel() {
         data-timeline-scroll
         className="editor-scroll relative min-h-0 flex-1 overflow-auto"
         onPointerDown={(e) => {
-          // click empty space deselects
-          if (e.target === e.currentTarget || (e.target as HTMLElement).dataset.laneId) {
-            useEditorStore.getState().select(null)
-          }
+          // A click on the bare scroll surface (outside the content box, e.g.
+          // right of a short timeline) deselects; lane clicks are owned by
+          // beginMarquee on the content div.
+          if (e.target === e.currentTarget) useEditorStore.getState().select(null)
         }}
       >
         <div
@@ -323,6 +564,7 @@ export function TimelinePanel() {
             width: TRACK_HEADER_WIDTH + contentWidth,
             minHeight: '100%',
           }}
+          onPointerDown={beginMarquee}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
@@ -422,11 +664,6 @@ export function TimelinePanel() {
                   activeTool === 'razor' && 'cursor-crosshair',
                 )}
                 style={{ width: contentWidth }}
-                onPointerDown={(e) => {
-                  if ((e.target as HTMLElement).dataset.laneId) {
-                    useEditorStore.getState().select(null)
-                  }
-                }}
               >
                 {track.clips.map((clip, i) => (
                   <ClipView
@@ -468,6 +705,23 @@ export function TimelinePanel() {
                 left: TRACK_HEADER_WIDTH + snapLine * pxPerSec,
                 top: RULER_HEIGHT,
                 height: tracksHeight,
+              }}
+            />
+          )}
+
+          {/* marquee (box) selection: rose like the selection ring, above the
+              clips (z-10) and under the snap guide (z-15). Pointer-events-none
+              so the drag that draws it stays on the background. */}
+          {marquee && (
+            <div
+              aria-hidden="true"
+              data-testid="marquee-rect"
+              className="pointer-events-none absolute z-[12] rounded-sm border border-rose-400/80 bg-rose-500/10"
+              style={{
+                left: TRACK_HEADER_WIDTH + marquee.left,
+                top: RULER_HEIGHT + marquee.top,
+                width: Math.max(0, marquee.right - marquee.left),
+                height: Math.max(0, marquee.bottom - marquee.top),
               }}
             />
           )}

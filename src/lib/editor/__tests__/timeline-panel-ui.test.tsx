@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
-import { TimelinePanel } from '@/components/editor/timeline/TimelinePanel'
+import { TimelinePanel, TRACK_HEADER_WIDTH } from '@/components/editor/timeline/TimelinePanel'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { editorStore, useEditorStore } from '../store'
-import { createDoc, createMediaAsset, createTrack } from '../factories'
+import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
 
 /**
@@ -77,6 +77,274 @@ describe('TimelinePanel render', () => {
     render(<TimelinePanel />)
     // createDoc ships starter lanes; they must be visible without any clips.
     expect(document.querySelectorAll('[data-lane-id]').length).toBeGreaterThan(0)
+  })
+})
+
+describe('marquee selection (box drag on empty lane space)', () => {
+  /** jsdom reports zero-size rects, so the content origin is (0, 0) and lane
+   *  coordinates map to client coordinates by adding the header/ruler offsets. */
+  const RULER_HEIGHT = 28
+  const LANE_Y = 10
+
+  function twoClipDoc() {
+    const asset = createMediaAsset({ kind: 'video', duration: 30, name: 'demo.mp4' })
+    const track = createTrack('video', 1)
+    const a = createClip({ id: 'clip_a', mediaId: asset.id, start: 0, duration: 1, inPoint: 0 })
+    const b = createClip({ id: 'clip_b', mediaId: asset.id, start: 2, duration: 1, inPoint: 0 })
+    track.clips = [a, b]
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [asset],
+    }
+    return { doc, a, b }
+  }
+
+  function laneEl(): Element {
+    const el = document.querySelector('[data-lane-id]')
+    if (!el) throw new Error('lane not rendered')
+    return el
+  }
+
+  function clientX(laneX: number) {
+    return TRACK_HEADER_WIDTH + laneX
+  }
+
+  function beginDrag(
+    fromLaneX: number,
+    opts: { shiftKey?: boolean; ctrlKey?: boolean; laneY?: number } = {},
+  ) {
+    const { laneY = LANE_Y, ...mods } = opts
+    fireEvent.pointerDown(laneEl(), {
+      button: 0,
+      clientX: clientX(fromLaneX),
+      clientY: RULER_HEIGHT + laneY,
+      ...mods,
+    })
+  }
+
+  function moveDrag(
+    toLaneX: number,
+    opts: { shiftKey?: boolean; ctrlKey?: boolean; laneY?: number } = {},
+  ) {
+    const { laneY = LANE_Y, ...mods } = opts
+    fireEvent.pointerMove(window, {
+      clientX: clientX(toLaneX),
+      clientY: RULER_HEIGHT + laneY,
+      ...mods,
+    })
+  }
+
+  function releaseDrag(
+    toLaneX: number,
+    opts: { shiftKey?: boolean; ctrlKey?: boolean; laneY?: number } = {},
+  ) {
+    const { laneY = LANE_Y, ...mods } = opts
+    fireEvent.pointerUp(window, {
+      clientX: clientX(toLaneX),
+      clientY: RULER_HEIGHT + laneY,
+      ...mods,
+    })
+  }
+
+  it('a drag across one clip selects exactly that clip (replace)', () => {
+    const { doc, a, b } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    useEditorStore.getState().select(a.id)
+    render(<TimelinePanel />)
+
+    beginDrag(100)
+    moveDrag(250)
+    releaseDrag(250)
+
+    expect(useEditorStore.getState().selections).toEqual([b.id])
+  })
+
+  it('a drag over the video half of a linked pair selects both halves', () => {
+    const asset = createMediaAsset({ kind: 'video', duration: 30, name: 'demo.mp4' })
+    const videoTrack = createTrack('video', 1)
+    const audioTrack = createTrack('audio', 1)
+    const video = createClip({
+      id: 'clip_v',
+      linkId: 'link_1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 2,
+      inPoint: 0,
+    })
+    const twin = createClip({
+      id: 'clip_a',
+      linkId: 'link_1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 2,
+      inPoint: 0,
+      audioOnly: true,
+    })
+    videoTrack.clips = [video]
+    audioTrack.clips = [twin]
+    const doc: Doc = {
+      project: {
+        tracks: [videoTrack, audioTrack],
+        id: 'p_test',
+        name: 'test',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      },
+      media: [asset],
+    }
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    // A rect inside the video clip's own span (0..2s at 80 pps).
+    beginDrag(40)
+    moveDrag(120)
+    releaseDrag(120)
+
+    expect(useEditorStore.getState().selections).toEqual([video.id, twin.id])
+  })
+
+  it('shift-drag adds the box contents to the selection', () => {
+    const { doc, a, b } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    useEditorStore.getState().select(a.id)
+    render(<TimelinePanel />)
+
+    beginDrag(150, { shiftKey: true })
+    moveDrag(250, { shiftKey: true })
+    releaseDrag(250, { shiftKey: true })
+
+    expect(useEditorStore.getState().selections).toEqual([a.id, b.id])
+  })
+
+  it('ctrl-drag toggles an already-selected clip out of the selection', () => {
+    const { doc, a, b } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    useEditorStore.getState().setSelections([a.id, b.id])
+    render(<TimelinePanel />)
+
+    beginDrag(150, { ctrlKey: true })
+    moveDrag(250, { ctrlKey: true })
+    releaseDrag(250, { ctrlKey: true })
+
+    expect(useEditorStore.getState().selections).toEqual([a.id])
+  })
+
+  it('a drag that hits no clip clears the selection (replace)', () => {
+    const { doc, a } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    useEditorStore.getState().select(a.id)
+    render(<TimelinePanel />)
+
+    beginDrag(500)
+    moveDrag(600)
+    releaseDrag(600)
+
+    expect(useEditorStore.getState().selections).toEqual([])
+  })
+
+  it('a drag in the empty strip below the rows selects nothing and still clears', () => {
+    const { doc, a } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    useEditorStore.getState().select(a.id)
+    render(<TimelinePanel />)
+
+    // The single video row spans y 0..64; 200 is the empty strip below it, the
+    // area a pointer lands on when the lanes leave room at the bottom.
+    beginDrag(100, { laneY: 200 })
+    moveDrag(250, { laneY: 200 })
+    expect(screen.getByTestId('marquee-rect')).toBeInTheDocument()
+    releaseDrag(250, { laneY: 200 })
+
+    expect(useEditorStore.getState().selections).toEqual([])
+    expect(screen.queryByTestId('marquee-rect')).toBeNull()
+  })
+
+  it('a click on empty space still deselects; a modifier click does not', () => {
+    const { doc, a } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    useEditorStore.getState().select(a.id)
+    beginDrag(300)
+    releaseDrag(300)
+    expect(useEditorStore.getState().selections).toEqual([])
+
+    useEditorStore.getState().select(a.id)
+    beginDrag(300, { shiftKey: true })
+    releaseDrag(300, { shiftKey: true })
+    expect(useEditorStore.getState().selections).toEqual([a.id])
+  })
+
+  it('draws the marquee rect during the drag and removes it on release', () => {
+    const { doc } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    beginDrag(100)
+    expect(screen.queryByTestId('marquee-rect')).toBeNull()
+    moveDrag(200)
+    expect(screen.getByTestId('marquee-rect')).toBeInTheDocument()
+    releaseDrag(200)
+    expect(screen.queryByTestId('marquee-rect')).toBeNull()
+  })
+
+  it('a second drag closes a stale gesture instead of being swallowed', () => {
+    const { doc, b } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    // First drag never releases (its pointerup was lost outside the window).
+    beginDrag(300)
+    moveDrag(400)
+    expect(useEditorStore.getState().selections).toEqual([])
+
+    // The next drag must not be ignored: it closes the stale gesture and wins.
+    beginDrag(100)
+    moveDrag(250)
+    releaseDrag(250)
+
+    expect(useEditorStore.getState().selections).toEqual([b.id])
+  })
+
+  it('pointercancel discards the box instead of committing the selection', () => {
+    const { doc, a, b } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    useEditorStore.getState().select(a.id)
+    render(<TimelinePanel />)
+
+    // Arm and move: the box is live and spans clip_b.
+    beginDrag(100)
+    moveDrag(250)
+    expect(screen.getByTestId('marquee-rect')).toBeInTheDocument()
+
+    // The browser cancels the gesture (touch pan, native drag): no commit.
+    fireEvent.pointerCancel(window)
+    expect(screen.queryByTestId('marquee-rect')).toBeNull()
+    expect(useEditorStore.getState().selections).toEqual([a.id])
+
+    // The cancelled gesture is gone: a fresh drag commits normally.
+    beginDrag(150)
+    moveDrag(250)
+    releaseDrag(250)
+    expect(useEditorStore.getState().selections).toEqual([b.id])
+  })
+
+  it('the razor tool does not arm a marquee', () => {
+    const { doc, a } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    useEditorStore.getState().select(a.id)
+    useEditorStore.getState().setActiveTool('razor')
+    render(<TimelinePanel />)
+
+    beginDrag(150)
+    moveDrag(250)
+    releaseDrag(250)
+
+    // A razor click on empty space keeps its pre-marquee deselect behavior;
+    // no box is ever drawn, so the drag cannot select either.
+    expect(useEditorStore.getState().selections).toEqual([])
+    expect(screen.queryByTestId('marquee-rect')).toBeNull()
   })
 })
 
