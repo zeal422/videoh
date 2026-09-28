@@ -16,7 +16,7 @@ describe('preview drag-to-position (text)', () => {
   const panel = read('src/components/editor/PreviewPanel.tsx')
 
   it('uses the transient gesture protocol (one undo step per drag)', () => {
-    expect(panel).toMatch(/beginTransient\(\)/)
+    expect(panel).toMatch(/beginTransient\(e\.pointerId\)/)
     expect(panel).toMatch(/applyTransient\(\{[^}]*type: 'setTextStyle'/)
     expect(panel).toMatch(/commitTransient\(\)/)
     expect(panel).toMatch(/cancelTransient\(\)/)
@@ -25,8 +25,8 @@ describe('preview drag-to-position (text)', () => {
   it('wires pointer down/move/up/cancel on the preview canvas', () => {
     expect(panel).toMatch(/onPointerDown=\{onCanvasPointerDown\}/)
     expect(panel).toMatch(/onPointerMove=\{onCanvasPointerMove\}/)
-    expect(panel).toMatch(/onPointerUp=\{\(\) => endTextDrag\(true\)\}/)
-    expect(panel).toMatch(/onPointerCancel=\{\(\) => endTextDrag\(false\)\}/)
+    expect(panel).toMatch(/onPointerUp=\{\(e\) => endTextDrag\(true, e\)\}/)
+    expect(panel).toMatch(/onPointerCancel=\{\(e\) => endTextDrag\(false, e\)\}/)
   })
 
   it('grab cursor only when a text clip is live at the playhead', () => {
@@ -289,7 +289,7 @@ describe('track operations are reachable from the timeline UI', () => {
     // transient base and beginTransient would overwrite it. The store's flag is
     // the shared truth, and the refusal still leaves the click selecting.
     const clip = read('src/components/editor/timeline/ClipView.tsx')
-    expect(clip).toMatch(/import \{ isTransientActive, useEditorStore \}/)
+    expect(clip).toMatch(/import \{ currentTransientToken, isTransientActive, useEditorStore \}/)
     expect(clip).toMatch(/const transientOwnedElsewhere = isTransientActive\(\)/)
     expect(clip).toMatch(/if \(transientOwnedElsewhere\) return/)
   })

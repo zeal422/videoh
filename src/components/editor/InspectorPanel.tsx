@@ -579,10 +579,13 @@ function ProjectInspector() {
             <Kbd>Space</Kbd> play / pause
           </li>
           <li>
-            <Kbd>S</Kbd> split at playhead · <Kbd>D</Kbd> duplicate
+            <Kbd>S</Kbd> snapping · <Kbd>D</Kbd> duplicate
           </li>
           <li>
-            <Kbd>Del</Kbd> delete clip · <Kbd>M</Kbd> mute
+            <Kbd>Ctrl+K</Kbd> split at playhead · <Kbd>M</Kbd> add marker
+          </li>
+          <li>
+            <Kbd>Del</Kbd> delete clip · <Kbd>Shift+E</Kbd> mute
           </li>
           <li>
             <Kbd>T</Kbd> add text · <Kbd>←→</Kbd> step frame

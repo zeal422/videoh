@@ -5,6 +5,114 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.5] - 2026-09-27
+
+### Fixed
+
+- **Split, duplicate and paste no longer share marker ids between copies.** All three clone a clip
+  whole, so two coexisting copies could hold markers with identical ids: deleting or editing a marker
+  on one left the twin behind (extending a split half later resurrected it) and snap exclusion, which
+  matches by id, dropped the twin from the targets. Every clone now re-ids its markers (`splitClip`,
+  duplicate, paste).
+- **A dragged clip no longer snaps to its own markers.** A clip's markers keep a constant offset to
+  its own edges during a move, so a snap that fired once stuck for the whole drag and the clip landed
+  away from the cursor. `computeSnapPoints` now skips markers of excluded clips alongside their
+  edges, and the clip-marker drag passes its own clip too.
+- **The snap guide no longer shows a snap the marker never took.** A clip-marker drag can snap at the
+  clip edge and then clamp back inside the span; the guide now appears only when the clamped position
+  is the snapped one (`snapGuide` in `snap.ts`).
+- **`createMarker` clamps NaN and infinities to 0** instead of passing them through, so a bad input
+  surfaces as a clamped marker rather than a thrown command error.
+- **A clip move no longer snaps to its LINKED PARTNERS either.** Partners shift by the same delta as
+  the dragged clip, so their edges and markers also keep a constant distance to it; the snap-point
+  computation now excludes every moving clip, not just the one under the pointer.
+- **A marker drag interrupted by an unmount no longer strands the store's transient state.** If the
+  owning clip is deleted while a tab drag is in flight, the component's unmount cleanup cancels the
+  gesture (guarded by an ownership flag so a lane-change remount never cancels a foreign drag).
+  Before, the stranded transient blocked autosave for the rest of the session.
+- **The menu bar stops re-scanning every marker on every playback frame.** `hasMarkers` is memoized
+  on the doc, whose identity is stable while only the playhead moves.
+- **A committed change during a drag gesture no longer corrupts the store.** `apply`, `undo` and
+  `redo` now end any live transient: before, the gesture's cleanup could restore its base snapshot
+  over the committed change, resurrecting a clip deleted mid-drag or reverting an undo, and the
+  gesture's commit folded the foreign change into its single undo step.
+- **The marker dialog no longer reopens on redo.** The dialog closes when its marker stops resolving
+  (undo while open) and now also clears its edit state, so redoing the marker back does not pop the
+  stale dialog open again.
+- **Trimming one half of a linked pair snaps to the other half again.** The sticky-snap fix had
+  over-excluded the selection partners for every drag mode; only a MOVE travels the partners, so the
+  exclusion is now move-mode only.
+- **The marker dialog's color swatches follow the radiogroup contract**: arrow keys move the
+  selection instead of forcing a keyboard user to tab through all eight, and a second pointerdown
+  during a marker drag cancels the abandoned drag instead of folding it into the new one. The
+  swatches' arrows also stop at the dialog now, so moving the selection no longer steps the playhead
+  (or jumps to the nearest edit point) at the same time.
+- **A clip marker parked on the clip's end handle stays reachable.** `M` with the playhead past the
+  clip end clamps the new marker to the clip's last frame, exactly where the end trim handle sits;
+  the marker tabs now render above the trim handles, so such a marker is still draggable, editable
+  and deletable instead of starting a trim.
+- **A drag resolves cleanly when a foreign commit lands mid-gesture.** `apply`, `undo` and `redo`
+  now roll the live gesture back to its base BEFORE taking the history snapshot, so drag frames
+  never leak into `past`/`future` (undo used to restore a mid-drag doc nobody committed to), and
+  every gesture slot carries a monotonic token: a drag whose slot was closed applies no further
+  pointermove frames, which previously mutated the doc with no undo entry behind them.
+- **One pointer owns a drag.** Every drag gesture (marker tabs, clip moves and trims, keyframe
+  dots, preview text positioning) captures its initiating `pointerId` and ignores other pointers'
+  move/up/cancel events, and the editor shell's dangling-commit safety net no longer ends a live
+  gesture because a different pointer lifted. That net's blur listener is registered and removed
+  with the same function object, so it cannot outlive the shell and commit a gesture after teardown.
+  The release handlers follow the same rule: a clip's `pointerup`/`pointercancel` and a keyframe
+  dot's both return early for a pointer that does not own the drag, so a second finger lifting can
+  no longer commit the clip or keyframe the user is still moving. The keyframe dot also gained a
+  `pointercancel` path that discards the drag without adding a history entry. The marquee box and
+  the ruler scrub follow the same rule: a second pointer over the lanes no longer steers the box or
+  resolves a partial selection when it lifts, and a second pointer on the ruler no longer ends the
+  scrub (the ruler hands ownership to the newest pointerdown, so a lost `pointerup` cannot leave it
+  unresponsive).
+- **A sequence marker can no longer be parked past the sequence end.** The playhead is clamped to
+  the sequence, so such a marker was unreachable: `Shift+M` returned it on every press and the
+  playhead sat at the end forever. Adding (`M`) or dragging a sequence marker now stops at the
+  sequence end, and navigation treats a marker already beyond it as a non-target (it stays visible on
+  the ruler and in the project, it just cannot be sought to). The Marker menu's Go to Next/Previous
+  Marker items use that same reachability predicate, so they grey out instead of offering a jump that
+  would do nothing.
+
+### Added
+
+- **Markers on the timeline and on clips.** `M` drops a marker at the playhead: on the primary
+  selected clip when one is selected (anchored to its SOURCE time and clamped into the visible span,
+  so trims, speed changes and reversal keep it on the same media frame), otherwise on the sequence
+  ruler. A marker carries a name, one of eight Premiere-style colors and notes (double-click a tab,
+  use its context menu, or pick Marker > Edit Selected Marker). `Shift+M` / `Ctrl+Shift+M` seek to
+  the next/previous reachable marker without wrapping, clicking a tab seeks and selects it, `Delete`
+  removes the selected marker, and markers are snap targets for clip moves and trims in both
+  directions (a dragged marker snaps to clips too). A trim that pushes a clip marker outside the
+  visible span hides it while keeping it in the project, and extending the clip brings it back. The
+  pure marker engine lives in `markers.ts` (`markers.test.ts`); the keyboard map, store selection and
+  timeline UI are locked by `markers-keyboard.test.tsx` and `markers-timeline-ui.test.tsx`, and the
+  E2E battery grew to 33 steps covering the sequence and clip flows.
+- **A Marker menu** (after Sequence) and the matching Help > Shortcuts rows. Clip mute moved from
+  `M` to `Shift+E`, the closest mapping to Premiere's clip enable on that key; the menu's displayed
+  shortcut follows the real keybinding, and the Inspector's shortcut list now matches the map too
+  (S snapping, Ctrl+K split, M add marker, Shift+E mute).
+- **The docs test-count lock now covers the per-file inventory, not just the totals.**
+  `docs-drift.test.ts` only checked the repo-wide headlines, so a row of `docs/testing.md` could
+  drift from its suite unnoticed, and two rows collapsed onto one physical line dropped both files
+  from the table while the headline total still matched. It now requires every row to name a real
+  test file with that file's real case count, one row per file, and rejects a row whose cells were
+  merged or whose first cell is not a backticked filename (only the header and separator rows are
+  skipped).
+
+### Changed
+
+- **Project files are version 2.** Sequence markers (`project.markers`, timeline seconds) and clip
+  markers (`clip.markers`, source seconds) serialize with the project; version 1 files still load
+  (with no markers), and a file written by a newer app version is refused instead of loaded
+  partially. The autosave key stays `web-video-editor:autosave:v1`, since the payload itself is
+  versioned.
+- **Timeline snapping now includes markers** (sequence markers plus visible clip markers), and a
+  dragged marker is excluded from snapping to itself.
+
 ## [0.5.4] - 2026-09-27
 
 ### Added

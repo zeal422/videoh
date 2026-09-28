@@ -59,8 +59,10 @@ describe('effect controls surface', () => {
     // One undo step: the dot snapshots the base on pointerdown and the release
     // commits, so the drag cannot leave a no-op history entry behind.
     expect(ec).toMatch(
-      /onPointerDown=\{\(e\) => \{\s*e\.stopPropagation\(\)\s*useEditorStore\.getState\(\)\.beginTransient\(\)/,
+      /onPointerDown=\{\(e\) => \{\s*e\.stopPropagation\(\)\s*tokenRef\.current = useEditorStore\.getState\(\)\.beginTransient\(e\.pointerId\)/,
     )
+    // The drag keeps the token so a foreign commit mid-drag refuses frames.
+    expect(ec).toMatch(/if \(currentTransientToken\(\) !== tokenRef\.current\) return/)
     expect(ec).toMatch(/commitTransient\(\)/)
   })
 

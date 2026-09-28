@@ -16,7 +16,8 @@
 
 import type { PanelId } from './workspace'
 
-export type MenuId = 'file' | 'edit' | 'clip' | 'sequence' | 'graphics' | 'view' | 'window' | 'help'
+export type MenuId =
+  'file' | 'edit' | 'clip' | 'sequence' | 'marker' | 'graphics' | 'view' | 'window' | 'help'
 
 /** Every menu action the MenuBar component knows how to execute. */
 export type MenuActionId =
@@ -44,6 +45,11 @@ export type MenuActionId =
   | 'sequence.addAudioTrack'
   | 'sequence.addTextTrack'
   | 'sequence.settings'
+  | 'marker.add'
+  | 'marker.edit'
+  | 'marker.delete'
+  | 'marker.next'
+  | 'marker.previous'
   | 'graphics.newText'
   | 'view.zoomIn'
   | 'view.zoomOut'
@@ -79,6 +85,10 @@ export interface MenuContext {
   /** ≥2 selected clips in distinct groups — "Link" would do something. */
   canLink: boolean
   snapEnabled: boolean
+  /** At least one reachable marker exists (sequence or visible clip marker). */
+  hasMarkers: boolean
+  /** A marker is selected (Edit/Delete Selected Marker are meaningful). */
+  hasSelectedMarker: boolean
   /** True = the panel is currently closed (Window menu checkboxes). */
   panelHidden: Record<PanelId, boolean>
   /** True when the layout differs from the default (hidden, collapsed, or resized). */
@@ -128,6 +138,8 @@ const hasAudioSelection: (ctx: MenuContext) => boolean = (ctx) => ctx.selectionH
 const canPaste: (ctx: MenuContext) => boolean = (ctx) => ctx.canPaste
 const selectionLinked: (ctx: MenuContext) => boolean = (ctx) => ctx.selectionLinked
 const canLink: (ctx: MenuContext) => boolean = (ctx) => ctx.canLink
+const hasMarkers: (ctx: MenuContext) => boolean = (ctx) => ctx.hasMarkers
+const hasSelectedMarker: (ctx: MenuContext) => boolean = (ctx) => ctx.hasSelectedMarker
 /** Reset makes sense as soon as the workspace deviates from its defaults. */
 const workspaceDirty: (ctx: MenuContext) => boolean = (ctx) => ctx.workspaceDirty
 
@@ -276,7 +288,7 @@ export const MENU_SPECS: MenuSpec[] = [
         kind: 'checkbox',
         label: 'Mute',
         action: 'clip.toggleMute',
-        shortcut: 'M',
+        shortcut: 'Shift+E',
         enabled: hasAudioSelection,
         checked: (ctx) => ctx.selectionMuted,
       },
@@ -317,6 +329,50 @@ export const MENU_SPECS: MenuSpec[] = [
         kind: 'item',
         label: 'Sequence Settings…',
         action: 'sequence.settings',
+      },
+    ],
+  },
+  {
+    id: 'marker',
+    label: 'Marker',
+    items: [
+      {
+        id: 'marker.add',
+        kind: 'item',
+        label: 'Add Marker',
+        action: 'marker.add',
+        shortcut: 'M',
+      },
+      {
+        id: 'marker.edit',
+        kind: 'item',
+        label: 'Edit Selected Marker…',
+        action: 'marker.edit',
+        enabled: hasSelectedMarker,
+      },
+      {
+        id: 'marker.delete',
+        kind: 'item',
+        label: 'Delete Selected Marker',
+        action: 'marker.delete',
+        enabled: hasSelectedMarker,
+      },
+      { id: 'marker.sep1', kind: 'separator' },
+      {
+        id: 'marker.next',
+        kind: 'item',
+        label: 'Go to Next Marker',
+        action: 'marker.next',
+        shortcut: 'Shift+M',
+        enabled: hasMarkers,
+      },
+      {
+        id: 'marker.previous',
+        kind: 'item',
+        label: 'Go to Previous Marker',
+        action: 'marker.previous',
+        shortcut: 'Ctrl+Shift+M',
+        enabled: hasMarkers,
       },
     ],
   },

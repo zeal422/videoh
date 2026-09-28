@@ -1,16 +1,20 @@
 import type { Doc } from './types'
 import { docDuration } from './factories'
+import { clipMarkerTimelineTime } from './markers'
 
 /**
  * Timeline snapping utilities.
  *
- * Snap targets: project start (0), timeline end, the playhead and every clip
- * edge on every track except the ones being dragged.
+ * Snap targets: project start (0), timeline end, the playhead, every clip
+ * edge on every track except the ones being dragged, and every reachable
+ * marker (sequence markers plus visible clip markers).
  */
 
 export interface SnapOptions {
   /** Clip ids whose edges should NOT act as snap targets (the ones being dragged). */
   excludeClipIds?: string[]
+  /** A marker being dragged must not snap to itself. */
+  excludeMarkerId?: string
   /** Optional playhead position (seconds) to snap against. */
   playhead?: number
   /** Also snap to the end of the timeline. */
@@ -26,6 +30,25 @@ export function computeSnapPoints(doc: Doc, opts: SnapOptions = {}): number[] {
       if (exclude.has(clip.id)) continue
       points.add(round6(clip.start))
       points.add(round6(clip.start + clip.duration))
+    }
+  }
+  for (const marker of doc.project.markers ?? []) {
+    if (marker.id !== opts.excludeMarkerId) points.add(round6(marker.time))
+  }
+  for (const track of doc.project.tracks) {
+    for (const clip of track.clips) {
+      // A dragged clip's own markers keep a constant offset to its edges for
+      // the whole move, so one snap would stick permanently: skip them along
+      // with the edges (see the edge loop above).
+      if (exclude.has(clip.id)) continue
+      // The target set is unordered, so read the markers directly instead of
+      // visibleClipMarkers (which allocates and sorts an array per clip, and
+      // this runs on every pointermove of a drag).
+      for (const marker of clip.markers ?? []) {
+        if (marker.id === opts.excludeMarkerId) continue
+        const timelineTime = clipMarkerTimelineTime(clip, marker)
+        if (timelineTime !== null) points.add(round6(timelineTime))
+      }
     }
   }
   if (opts.playhead !== undefined) points.add(round6(opts.playhead))
@@ -80,4 +103,15 @@ export function snapMove(
 
 function round6(n: number): number {
   return Math.round(n * 1e6) / 1e6
+}
+
+/**
+ * The snap-guide position for a drag that took the snap `snapped` but then
+ * realized (after clamping into a clip's span) at `position`. When clamping
+ * moved the marker off the snapped point, the guide would advertise a
+ * position the marker never took, so there is no guide.
+ */
+export function snapGuide(snapped: number | null, position: number): number | null {
+  if (snapped === null) return null
+  return round6(position) === round6(snapped) ? snapped : null
 }

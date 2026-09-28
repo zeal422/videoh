@@ -5,6 +5,7 @@ import {
   projectFileName,
   SerializationError,
   serializeDoc,
+  SERIALIZATION_VERSION,
 } from '../serialization'
 import { createClip, createDoc, createMediaAsset, createTextClip } from '../factories'
 
@@ -44,7 +45,10 @@ describe('serializeDoc', () => {
     expect(raw).not.toContain('blob:should-not-persist')
     expect(json.media[0].waveformPeaks).toEqual([0.1, 0.5, 0.9])
     expect(json.media[0].thumbnail).toBeTruthy()
-    expect(json.version).toBe(1)
+    // Pin the WIRE value, not the constant serializeDoc itself stamps: the
+    // round-trip contract is "this text is version 2", and a literal here
+    // notices a silent constant change instead of restating it.
+    expect(json.version).toBe(2)
     expect(json.project.tracks[0].clips[0].transitionOut).toEqual({
       type: 'crossfade',
       duration: 0.5,
@@ -146,6 +150,89 @@ describe('clip opacity serialization', () => {
     data.project.tracks[0].clips[0].opacity = 'x'
     const { doc: doc2 } = deserializeDoc(data)
     expect(doc2.project.tracks[0].clips[0].opacity).toBeUndefined()
+  })
+})
+
+describe('marker serialization (0.5.5)', () => {
+  function docWithMarkers() {
+    const doc = makeDoc()
+    doc.project.markers = [
+      { id: 'm_seq', time: 1.5, name: 'Cue', color: 'red', notes: 'fix audio' },
+      { id: 'm_plain', time: 4 },
+    ]
+    doc.project.tracks[0].clips[0].markers = [
+      { id: 'm_clip', time: 2.25, name: 'Beat' },
+      // green is the default and must collapse to an absent field
+      { id: 'm_green', time: 3, color: 'green' },
+    ]
+    return doc
+  }
+
+  it('round-trips sequence and clip markers with their fields', () => {
+    const { doc: restored } = deserializeDoc(
+      JSON.parse(JSON.stringify(serializeDoc(docWithMarkers()))),
+    )
+    expect(restored.project.markers).toEqual([
+      { id: 'm_seq', time: 1.5, name: 'Cue', color: 'red', notes: 'fix audio' },
+      { id: 'm_plain', time: 4 },
+    ])
+    const clip = restored.project.tracks[0].clips[0]
+    expect(clip.markers).toEqual([
+      { id: 'm_clip', time: 2.25, name: 'Beat' },
+      { id: 'm_green', time: 3 },
+    ])
+  })
+
+  it('loads v1 files with no markers attached', () => {
+    const v1 = {
+      version: 1,
+      project: {
+        tracks: [{ kind: 'video', clips: [{ id: 'c1', start: 0, duration: 1, inPoint: 0 }] }],
+      },
+    }
+    const { doc } = deserializeDoc(v1)
+    expect(doc.project.markers).toBeUndefined()
+    expect(doc.project.tracks[0].clips[0].markers).toBeUndefined()
+  })
+
+  it('drops malformed markers and invalid colors, dedupes ids per scope', () => {
+    const v2 = {
+      version: SERIALIZATION_VERSION,
+      project: {
+        markers: [
+          { id: 'm1', time: 1 },
+          { id: 'm1', time: 2 },
+          { id: 'm2', time: -1 },
+          { id: 'm3', time: 'x' },
+          { id: 'm4', time: 3, color: 'chartreuse', name: '  spaced  ' },
+          null,
+        ],
+        tracks: [
+          {
+            kind: 'video',
+            clips: [{ id: 'c1', start: 0, duration: 1, inPoint: 0, markers: 'nope' }],
+          },
+        ],
+      },
+    }
+    const { doc } = deserializeDoc(v2)
+    expect(doc.project.markers).toEqual([
+      { id: 'm1', time: 1 },
+      { id: 'm4', time: 3, name: 'spaced' },
+    ])
+    expect(doc.project.tracks[0].clips[0].markers).toBeUndefined()
+  })
+
+  it('collapses empty marker arrays to absent on load', () => {
+    const { doc } = deserializeDoc({
+      version: SERIALIZATION_VERSION,
+      project: { markers: [], tracks: [{ kind: 'video', clips: [] }] },
+    })
+    expect(doc.project.markers).toBeUndefined()
+  })
+
+  it('refuses files from a newer app version', () => {
+    expect(() => deserializeDoc({ version: SERIALIZATION_VERSION + 1 })).toThrow(SerializationError)
   })
 })
 

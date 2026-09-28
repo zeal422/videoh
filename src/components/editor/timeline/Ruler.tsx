@@ -22,6 +22,10 @@ export function Ruler({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const scrubbingRef = useRef(false)
+  /** Pointer that owns the scrub. Any pointer over the ruler may start one, but
+   *  only this one drives it: a second finger's move must not seek and its
+   *  release must not stop the scrub the first finger is still performing. */
+  const scrubPointerIdRef = useRef<number | null>(null)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -85,19 +89,35 @@ export function Ruler({
       className="relative h-7 shrink-0 cursor-ew-resize select-none"
       style={{ width: Math.min(width, 30000) }}
       onPointerDown={(e) => {
-        e.currentTarget.setPointerCapture(e.pointerId)
+        // The newest pointer owns the scrub. It RECLAIMS ownership rather than
+        // refusing a second pointer: without pointer capture (headless, or a
+        // release outside the window) a scrub can outlive its pointer, and a
+        // refusal would leave the ruler dead for the rest of the session.
+        // Synthetic pointer events (automation) carry an inactive pointerId,
+        // so capture is a UX nicety, not required for the scrub to work.
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId)
+        } catch {
+          /* headless/automation: proceed without capture */
+        }
         scrubbingRef.current = true
+        scrubPointerIdRef.current = e.pointerId
         onScrubStart(timeFromEvent(e.clientX))
       }}
       onPointerMove={(e) => {
+        if (e.pointerId !== scrubPointerIdRef.current) return
         if (scrubbingRef.current) onScrub(timeFromEvent(e.clientX))
       }}
-      onPointerUp={() => {
+      onPointerUp={(e) => {
+        if (e.pointerId !== scrubPointerIdRef.current) return
         scrubbingRef.current = false
+        scrubPointerIdRef.current = null
         onScrubEnd()
       }}
-      onPointerCancel={() => {
+      onPointerCancel={(e) => {
+        if (e.pointerId !== scrubPointerIdRef.current) return
         scrubbingRef.current = false
+        scrubPointerIdRef.current = null
         onScrubEnd()
       }}
     >

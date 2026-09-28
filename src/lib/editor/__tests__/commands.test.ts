@@ -699,3 +699,146 @@ describe('setClipOpacity', () => {
     ).toThrow(EditorCommandError)
   })
 })
+
+describe('markers (0.5.5)', () => {
+  function docWithClip(): { doc: Doc; clipId: string } {
+    const { doc, videoAsset } = makeDoc()
+    const withClip = applyCommand(doc, {
+      type: 'addClip',
+      trackId: videoTrack(doc).id,
+      clip: createClip({
+        id: 'clip_m1',
+        mediaId: videoAsset.id,
+        start: 2,
+        duration: 4,
+        inPoint: 1,
+      }),
+    })
+    return { doc: withClip, clipId: 'clip_m1' }
+  }
+
+  it('addSequenceMarker adds, sorts by time and rejects duplicates', () => {
+    const { doc } = docWithClip()
+    const next = applyCommand(doc, {
+      type: 'addSequenceMarker',
+      marker: { id: 'm_late', time: 9, name: '  Late  ' },
+    })
+    const sorted = applyCommand(next, {
+      type: 'addSequenceMarker',
+      marker: { id: 'm_early', time: 1 },
+    })
+    expect(sorted.project.markers!.map((m) => m.id)).toEqual(['m_early', 'm_late'])
+    expect(sorted.project.markers![1].name).toBe('Late')
+    expect(() =>
+      applyCommand(sorted, {
+        type: 'addSequenceMarker',
+        marker: { id: 'm_early', time: 5 },
+      }),
+    ).toThrow(EditorCommandError)
+    // Input doc untouched.
+    expect(doc.project.markers).toBeUndefined()
+  })
+
+  it('rejects negative, non-finite and id-less markers', () => {
+    const { doc } = docWithClip()
+    expect(() =>
+      applyCommand(doc, { type: 'addSequenceMarker', marker: { id: 'm', time: -1 } }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
+      applyCommand(doc, { type: 'addSequenceMarker', marker: { id: 'm', time: Number.NaN } }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
+      applyCommand(doc, { type: 'addSequenceMarker', marker: { id: '', time: 1 } }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('move/update/delete a sequence marker; deleting the last collapses the array', () => {
+    const { doc } = docWithClip()
+    const withTwo = applyCommands(doc, [
+      { type: 'addSequenceMarker', marker: { id: 'm1', time: 1 } },
+      { type: 'addSequenceMarker', marker: { id: 'm2', time: 2 } },
+    ])
+    const moved = applyCommand(withTwo, { type: 'moveSequenceMarker', markerId: 'm1', time: 5 })
+    expect(moved.project.markers!.map((m) => m.id)).toEqual(['m2', 'm1'])
+    const updated = applyCommand(moved, {
+      type: 'updateSequenceMarker',
+      markerId: 'm2',
+      patch: { name: 'Cue', color: 'red', notes: 'check' },
+    })
+    expect(updated.project.markers![0]).toMatchObject({ name: 'Cue', color: 'red', notes: 'check' })
+    const one = applyCommand(updated, { type: 'deleteSequenceMarker', markerId: 'm1' })
+    const none = applyCommand(one, { type: 'deleteSequenceMarker', markerId: 'm2' })
+    expect(none.project.markers).toBeUndefined()
+    expect(() => applyCommand(none, { type: 'deleteSequenceMarker', markerId: 'm2' })).toThrow(
+      EditorCommandError,
+    )
+  })
+
+  it('clip markers live on the clip and reject unknown clips/markers', () => {
+    const { doc, clipId } = docWithClip()
+    const withMarker = applyCommand(doc, {
+      type: 'addClipMarker',
+      clipId,
+      marker: { id: 'cm1', time: 3, name: 'Beat' },
+    })
+    expect(videoTrack(withMarker).clips[0].markers).toHaveLength(1)
+    const moved = applyCommand(withMarker, {
+      type: 'moveClipMarker',
+      clipId,
+      markerId: 'cm1',
+      time: 4.5,
+    })
+    expect(videoTrack(moved).clips[0].markers![0].time).toBe(4.5)
+    const updated = applyCommand(moved, {
+      type: 'updateClipMarker',
+      clipId,
+      markerId: 'cm1',
+      patch: { notes: 'here' },
+    })
+    expect(videoTrack(updated).clips[0].markers![0].notes).toBe('here')
+    const removed = applyCommand(updated, {
+      type: 'deleteClipMarker',
+      clipId,
+      markerId: 'cm1',
+    })
+    expect(videoTrack(removed).clips[0].markers).toBeUndefined()
+    expect(() =>
+      applyCommand(removed, {
+        type: 'addClipMarker',
+        clipId: 'nope',
+        marker: { id: 'x', time: 1 },
+      }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
+      applyCommand(removed, { type: 'moveClipMarker', clipId, markerId: 'cm1', time: 1 }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('split keeps source-relative markers on both halves, with FRESH ids on the right', () => {
+    const { doc, clipId } = docWithClip()
+    const withMarkers = applyCommands(doc, [
+      { type: 'addClipMarker', clipId, marker: { id: 'cm1', time: 2 } },
+      { type: 'addClipMarker', clipId, marker: { id: 'cm2', time: 4.5 } },
+    ])
+    const split = applyCommand(withMarkers, { type: 'splitClip', clipId, atTime: 4 })
+    const clips = videoTrack(split).clips
+    expect(clips).toHaveLength(2)
+    // Source-anchored: both halves keep the FULL marker data (hidden cues are
+    // data, not deleted, so extending a half brings them back) with unchanged
+    // source times; visibility filtering is render-time.
+    expect(clips.map((c) => c.markers!.map((m) => m.time).sort())).toEqual([
+      [2, 4.5],
+      [2, 4.5],
+    ])
+    // The halves coexist, so the ids must not collide: a delete/edit on one
+    // half would otherwise leave the twin behind (and extending the half
+    // later resurrects it), and snap exclusion matches by id alone.
+    const [left, right] = clips
+    expect(left.markers!.map((m) => m.id)).toEqual(['cm1', 'cm2'])
+    const rightIds = new Set(right.markers!.map((m) => m.id))
+    expect(rightIds.size).toBe(2)
+    for (const id of left.markers!.map((m) => m.id)) {
+      expect(rightIds.has(id)).toBe(false)
+    }
+  })
+})

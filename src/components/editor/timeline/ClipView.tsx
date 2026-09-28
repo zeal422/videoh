@@ -43,11 +43,12 @@ import {
   linkedClips,
   resolveSelectionGroups,
 } from '@/lib/editor/links'
-import { isTransientActive, useEditorStore } from '@/lib/editor/store'
+import { currentTransientToken, isTransientActive, useEditorStore } from '@/lib/editor/store'
 import type { Clip, Doc, MediaAsset, Track } from '@/lib/editor/types'
 import { toast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import { Waveform } from './Waveform'
+import { ClipMarkers } from './ClipMarkers'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -125,11 +126,18 @@ export function ClipView({
     /** Window listeners that drive this drag — see beginGesture for why the drag
      *  is not bound to the clip element. */
     onMove: (ev: PointerEvent) => void
-    onUp: () => void
+    /** Shared by the pointerup and pointercancel listeners, so it takes the
+     *  event and filters on the owning pointer. */
+    onUp: (ev: PointerEvent) => void
     /** Every OTHER selected clip: follows the move with the same time delta
      *  (and the same track-index offset when the dragged clip changes lane). */
     partners: { id: string; trackIndex: number; kind: string; origStart: number }[]
     moved: boolean
+    /** Store gesture token captured at pointerdown; a mismatch means the slot
+     *  was ended underneath us (foreign commit) and frames must stop. */
+    token: number
+    /** Initiating pointer; other pointers' events are ignored (multi-touch). */
+    pointerId: number
   }>(null)
 
   /**
@@ -234,8 +242,18 @@ export function ClipView({
     // die with it, which is what made a drag stop at the first lane it crossed,
     // leaving a one-lane move as the only thing that ever worked. These listeners
     // outlive the element and remove themselves when the gesture ends.
-    const onMove = (ev: PointerEvent) => moveTo(ev.clientX, ev.clientY)
-    const onUp = () => endGesture()
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== gesture.current?.pointerId) return
+      moveTo(ev.clientX, ev.clientY)
+    }
+    const onUp = (ev: PointerEvent) => {
+      // One pointer owns the gesture: a second pointer lifting (multi-touch)
+      // must not commit a clip the user is still dragging. Both the pointerup
+      // and the pointercancel listeners below are this same handler, so a
+      // foreign cancel is ignored for the same reason.
+      if (ev.pointerId !== gesture.current?.pointerId) return
+      endGesture()
+    }
     gesture.current = {
       mode,
       rateStretch: e.altKey && mode !== 'move',
@@ -249,10 +267,11 @@ export function ClipView({
       lastY: e.clientY,
       partners,
       moved: false,
+      token: useEditorStore.getState().beginTransient(e.pointerId),
+      pointerId: e.pointerId,
       onMove,
       onUp,
     }
-    useEditorStore.getState().beginTransient()
     window.addEventListener('pointermove', onMove)
     // Capture phase on purpose. EditorShell registers a "commit any dangling
     // gesture" safety net on window at mount, so in the BUBBLE order it is
@@ -335,13 +354,24 @@ export function ClipView({
     const liveDoc = store.doc
     const scale = store.pxPerSec || pxPerSec
     const snapping = store.snapEnabled
+    // A foreign commit (keyboard delete, undo) ended the gesture slot: further
+    // frames would mutate the doc with no undo entry. The next onUp is a no-op
+    // too, so the stale drag dies silently, exactly like the real world where
+    // the clip it was dragging no longer exists.
+    if (g.token !== currentTransientToken()) return
     if (!g.moved && Math.abs(clientX - g.startX) < 2 && Math.abs(clientY - g.startY) < 2) return
     g.moved = true
     g.lastX = clientX
     g.lastY = clientY
 
+    // Every clip that travels with the pointer must be excluded, not just the
+    // one under it: in a MOVE the partners shift by the same delta
+    // (decideMove), so their edges and markers keep a constant distance to the
+    // dragged clip's edges, and one snap against them would stick for the
+    // whole move. A TRIM leaves partners stationary, so their edges and
+    // markers stay legitimate targets — exclude them in move mode only.
     const points = computeSnapPoints(liveDoc, {
-      excludeClipIds: [clip.id],
+      excludeClipIds: g.mode === 'move' ? [clip.id, ...g.partners.map((p) => p.id)] : [clip.id],
       includeTimelineEnd: false,
     })
 
@@ -760,6 +790,9 @@ export function ClipView({
             }}
             onPointerDown={(e) => beginGesture(e, 'trim-end')}
           />
+
+          {/* clip markers: source-anchored tabs on the bottom strip */}
+          <ClipMarkers clip={clip} pxPerSec={pxPerSec} />
         </div>
       </ContextMenuTrigger>
 

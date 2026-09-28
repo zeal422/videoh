@@ -1,7 +1,23 @@
 import type { EditorCommand } from './commands'
-import { clipFitsTrack, createClip, createTextClip, firstCompatibleTrack, uid } from './factories'
+import {
+  clipFitsTrack,
+  createClip,
+  createTextClip,
+  docDuration,
+  findClip,
+  firstCompatibleTrack,
+  uid,
+} from './factories'
 import { DEFAULT_IMAGE_DURATION, DEFAULT_TEXT_DURATION, MIN_SPLIT_HEADROOM } from './constants'
 import { assetHasAudio, canLinkClips, linkedClips, resolveSelectionGroups } from './links'
+import {
+  createMarker,
+  markerFromSelection,
+  reIdMarkers,
+  sourceTimeForClipMarker,
+  type MarkerSelection,
+} from './markers'
+import { clamp } from './time'
 import type { Clip, Doc, MediaAsset, MediaKind, Track, TrackKind } from './types'
 
 /**
@@ -168,6 +184,46 @@ export function newTrackId(): string {
 /** (Re-exported for backwards compatibility with UI/tests.) */
 export { resolveSelectionGroups }
 
+// ————— marker operations (0.5.5) —————
+
+/**
+ * Adds a marker at the playhead: a clip marker on the primary selected clip
+ * (clamped into the clip's visible source span) when there is a selection,
+ * otherwise a sequence marker at the playhead.
+ */
+export function commandsToAddMarker(
+  doc: Doc,
+  playhead: number,
+  selectedIds: string[],
+): EditorCommand[] {
+  const primaryId = selectedIds[0]
+  const found = primaryId ? findClip(doc, primaryId) : undefined
+  if (found) {
+    return [
+      {
+        type: 'addClipMarker',
+        clipId: found.clip.id,
+        marker: createMarker(sourceTimeForClipMarker(found.clip, playhead)),
+      },
+    ]
+  }
+  // A sequence marker cannot live past the sequence end (the playhead cannot
+  // seek there, so navigation could never reach it).
+  return [{ type: 'addSequenceMarker', marker: createMarker(clamp(playhead, 0, docDuration(doc))) }]
+}
+
+/** The delete command for a selected marker, or null when it no longer exists. */
+export function commandsToDeleteMarker(
+  doc: Doc,
+  selection: MarkerSelection,
+): EditorCommand[] | null {
+  const marker = markerFromSelection(doc, selection)
+  if (!marker) return null
+  return selection.scope === 'sequence'
+    ? [{ type: 'deleteSequenceMarker', markerId: marker.id }]
+    : [{ type: 'deleteClipMarker', clipId: selection.clipId, markerId: marker.id }]
+}
+
 /**
  * Deletes the WHOLE link group of every selected clip. A linked A/V pair dies
  * together until the user explicitly unlinks it (Premiere behavior).
@@ -314,6 +370,10 @@ export function commandsToDuplicateClips(doc: Doc, clipIds: string[]): EditorCom
         id: uid('clip'),
         start: clip.start + clip.duration,
         ...(linkId ? { linkId } : {}),
+        // Fresh marker ids too: the original keeps its markers, and shared ids
+        // would make delete/edit on one copy leave the twin behind and drop
+        // the twin from snap exclusion (`excludeMarkerId` matches by id).
+        markers: reIdMarkers(clip.markers),
       },
     }
   })

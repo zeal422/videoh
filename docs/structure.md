@@ -13,7 +13,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── robots.txt           # crawler policy
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
-│   └── battery.sh           # scripted UI battery (31 steps) driven by agent-browser
+│   └── battery.sh           # scripted UI battery (33 steps) driven by agent-browser
 ├── docs/                    # this documentation set
 ├── next.config.ts           # output: "standalone"
 ├── vitest.config.ts         # node env, @ alias, coverage include + thresholds
@@ -61,6 +61,9 @@ src/components/
 │       ├── TimelinePanel.tsx     #   lanes, playhead, drop targets, zoom, track menu
 │       ├── Ruler.tsx             #   canvas time ruler + scrubbing
 │       ├── ClipView.tsx          #   clip: move/trim gestures, context menu, link badge
+│       ├── SequenceMarkers.tsx   #   ruler marker tabs + drag/edit menu
+│       ├── ClipMarkers.tsx       #   clip marker tabs (source-anchored)
+│       ├── MarkerDialog.tsx      #   marker name/color/notes editor
 │       └── Waveform.tsx          #   per-clip waveform canvas
 └── ui/                           # 18 shadcn/ui primitives (trimmed to what the editor uses)
 ```
@@ -98,10 +101,11 @@ src/lib/editor/
 ├── constants.ts          # all tuning constants and limits
 ├── factories.ts          # uid + create* constructors, finders, compatibility checks, sourceTimeAt
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
-├── commands.ts           # the 22 EditorCommand variants + applyCommand(s), direction-aware split spans
+├── commands.ts           # the 37 EditorCommand variants + applyCommand(s), direction-aware split spans
 ├── snap.ts               # snap-point computation and application
 ├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
 ├── marquee.ts            # marquee (box) selection: lane-space rect math + group resolution (pure)
+├── markers.ts            # markers: source-anchored clip mapping, navigation, colors, selection (pure)
 ├── keyframes.ts          # keyframe evaluation, sanitize/clamp, split redistribution
 ├── ducking.ts            # auto-duck keyframe analysis from waveform peaks
 ├── offline.ts            # offline-media detection for the monitor (pure)
@@ -110,7 +114,7 @@ src/lib/editor/
 ├── clipboard.ts          # copy / cut / paste (module memory, outside undo)
 ├── actions.ts            # multi-command UI actions (add media/text, group ops, ripple delete)
 ├── store.ts              # zustand store: doc, history, transients, selection, playhead, zoom
-├── serialization.ts      # .veproj.json v1: serialize / parse / hydrate
+├── serialization.ts      # .veproj.json v2 (v1 still loads): serialize / parse / hydrate
 ├── persistence.ts        # debounced localStorage autosave + restore
 ├── workspace.ts          # panel layout state (pure)
 ├── workspace-store.ts    # zustand wrapper over workspace.ts
@@ -133,7 +137,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 37 test files (503 tests) + src/lib/gate.test.ts: see testing.md
+└── __tests__/            # 42 test files (617 tests) + src/lib/gate.test.ts: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / ResizeObserver
 ```

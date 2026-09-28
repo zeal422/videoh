@@ -22,6 +22,7 @@ import { toast } from '@/hooks/use-toast'
 
 import { Ruler } from './Ruler'
 import { ClipView, computeFadeIn } from './ClipView'
+import { SequenceMarkers } from './SequenceMarkers'
 import {
   commandsToAddMedia,
   commandsToAddMediaInNewTrack,
@@ -38,6 +39,7 @@ import {
 } from '@/lib/editor/marquee'
 import { autoScrollStep, autoScrollStepX } from '@/lib/editor/timeline-scroll'
 import { docDuration, uid } from '@/lib/editor/factories'
+import { markersEnd } from '@/lib/editor/markers'
 import { applySnap, computeSnapPoints } from '@/lib/editor/snap'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { useEditorStore } from '@/lib/editor/store'
@@ -83,8 +85,9 @@ type DropIndicator =
  *   clips (auto, selected z-10) < marquee z-[12] < snap guide z-15
  *   < playhead line z-20 < track headers z-30 < ruler row z-40 (corner cell
  *   z-50 inside it).
- * The diamond marker lives INSIDE the ruler row (z-30 < corner z-50) so the
- * sticky corner cell covers it exactly like it covers the line.
+ * The diamond and the sequence marker tabs live INSIDE the ruler row (z-30
+ * and z-20, both under the corner z-50) so the sticky corner cell covers them
+ * exactly like it covers the line.
  *
  * Two more artifact rules learned the hard way (user screenshots):
  * - The line/guide are confined to the track rows (top: RULER_HEIGHT,
@@ -135,13 +138,21 @@ export function TimelinePanel() {
     moved: boolean
     rect: MarqueeRect
     raf: number | null
+    /** Initiating pointer; other pointers' events are ignored (multi-touch),
+     *  because their move would steer the box and their release would commit a
+     *  partial selection. */
+    pointerId: number
     onMove: (ev: PointerEvent) => void
-    onUp: () => void
-    onCancel: () => void
+    onUp: (ev: PointerEvent) => void
+    onCancel: (ev: PointerEvent) => void
   }>(null)
 
   const duration = docDuration(doc)
-  const contentWidth = Math.max(600, (duration + TAIL_PADDING_SEC) * pxPerSec)
+  // Sequence markers can sit past the last clip; the scrollable width must
+  // reach them or a marker would be parked off-screen with no way to scroll
+  // to it.
+  const markerEnd = useMemo(() => markersEnd(doc.project), [doc.project])
+  const contentWidth = Math.max(600, (Math.max(duration, markerEnd) + TAIL_PADDING_SEC) * pxPerSec)
   // Total pixel height of the track rows — bounds the playhead line and snap
   // guide so they never render in the empty strip below the last row.
   const tracksHeight = useMemo(
@@ -377,9 +388,19 @@ export function TimelinePanel() {
       moved: false,
       rect: normalizeMarquee(anchor.x, anchor.y, anchor.x, anchor.y),
       raf: null as number | null,
-      onMove: (ev: PointerEvent) => moveMarquee(ev.clientX, ev.clientY),
-      onUp: () => endMarquee(),
-      onCancel: () => cancelMarquee(),
+      pointerId: e.pointerId,
+      onMove: (ev: PointerEvent) => {
+        if (ev.pointerId !== marqueeRef.current?.pointerId) return
+        moveMarquee(ev.clientX, ev.clientY)
+      },
+      onUp: (ev: PointerEvent) => {
+        if (ev.pointerId !== marqueeRef.current?.pointerId) return
+        endMarquee()
+      },
+      onCancel: (ev: PointerEvent) => {
+        if (ev.pointerId !== marqueeRef.current?.pointerId) return
+        cancelMarquee()
+      },
     }
     marqueeRef.current = g
     // No overlay yet: a pointerdown that never travels must stay an invisible
@@ -605,7 +626,7 @@ export function TimelinePanel() {
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-            <div data-ruler className="border-b">
+            <div data-ruler className="relative border-b">
               <Ruler
                 width={contentWidth}
                 pxPerSec={pxPerSec}
@@ -623,6 +644,8 @@ export function TimelinePanel() {
                   scrubbingRef.current = false
                 }}
               />
+              {/* Sequence markers: DOM overlay above the ruler canvas */}
+              <SequenceMarkers pxPerSec={pxPerSec} />
             </div>
             {/* playhead diamond — inside the ruler row so the sticky corner
                 cell paints over it when the playhead scrolls under the header

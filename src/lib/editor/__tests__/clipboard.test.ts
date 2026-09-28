@@ -9,7 +9,7 @@ import {
   copyClips,
   hasClipboardContent,
 } from '../clipboard'
-import { createDoc, createMediaAsset } from '../factories'
+import { createClip, createDoc, createMediaAsset } from '../factories'
 import { linkedAudioTwin } from '../links'
 import type { MediaAsset } from '../types'
 
@@ -112,6 +112,32 @@ describe('clipboard copy/cut/paste', () => {
     expect(newAudio.audioOnly).toBe(true)
     expect(newVideo.duration).toBe(10)
     expect(newAudio.duration).toBe(10)
+  })
+
+  it('paste gives a clip copy FRESH marker ids', () => {
+    const doc = createDoc()
+    const asset = avAsset({ hasAudio: false })
+    doc.media = [asset]
+    const withClip = applyCommands(doc, [
+      {
+        type: 'addClip',
+        trackId: doc.project.tracks[0].id,
+        clip: createClip({ id: 'c1', mediaId: asset.id, start: 0, duration: 10 }),
+      },
+      { type: 'addClipMarker', clipId: 'c1', marker: { id: 'cm1', time: 3 } },
+    ])
+    const original = withClip.project.tracks[0].clips[0]
+    copyClips(withClip, ['c1'])
+
+    const next = applyCommands(withClip, commandsToPasteClips(withClip, 12)!)
+    const pasted = next.project.tracks[0].clips.find((c) => c.start === 12)!
+    // The paste coexists with the original: shared marker ids would make a
+    // delete/edit on one leave the twin behind while snap exclusion matches
+    // by id alone.
+    expect(pasted.markers).toHaveLength(1)
+    expect(pasted.markers![0].time).toBe(3)
+    expect(pasted.markers![0].id).not.toBe('cm1')
+    expect(original.markers!.map((m) => m.id)).toEqual(['cm1'])
   })
 
   it('paste prefers the original track, falling back to a compatible lane', () => {

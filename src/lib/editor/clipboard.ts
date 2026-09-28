@@ -1,6 +1,7 @@
 import type { EditorCommand } from './commands'
 import { findTrack, firstCompatibleTrack, uid } from './factories'
 import { resolveSelectionGroups } from './links'
+import { reIdMarkers } from './markers'
 import type { Clip, Doc, TrackKind } from './types'
 
 /**
@@ -95,6 +96,10 @@ export function commandsToPasteClips(doc: Doc, atTime: number): EditorCommand[] 
       id: uid('clip'),
       start: Math.max(0, atTime),
       ...(linkId ? { linkId } : {}),
+      // Fresh marker ids too: a pasted copy must not share marker ids with the
+      // original, or delete/edit on one leaves the twin behind and snap
+      // exclusion (`excludeMarkerId`) drops the twin from the targets.
+      markers: reIdMarkers(entry.clip.markers),
     }
     if (!targetTrackId) {
       // No compatible lane anywhere: create one of the entry's kind first.

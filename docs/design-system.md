@@ -51,8 +51,11 @@ The video surfaces stay dark regardless of the token theme, the way an NLE's mon
   - video → emerald, audio → amber, text → violet
   - selection ring and playhead → rose; snap guide → amber-300
   - drop indicators take the dragged media's kind colour (`+ V2` emerald, `+ A2` amber)
-- These kind colours are the only place non-token palette classes are expected; surfaces, text, and
-  controls still use tokens.
+- **Marker swatches** use the eight-colour Premiere palette (`MARKER_COLOR_VALUES` in
+  `markers.ts`, Tailwind 500-family values) applied as an inline `backgroundColor`. They are content
+  data (the colour the user picked) and stay fixed across themes.
+- The kind colours and the marker swatch palette are the only places non-token palette values are
+  expected; surfaces, text, and controls still use tokens.
 
 ## Layout conventions
 

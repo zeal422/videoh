@@ -2,8 +2,10 @@
 
 import { useEffect } from 'react'
 import {
+  commandsToAddMarker,
   commandsToAddText,
   commandsToDeleteClips,
+  commandsToDeleteMarker,
   commandsToDuplicateClips,
   commandsToLinkClips,
   commandsToRippleDeleteClips,
@@ -13,6 +15,7 @@ import {
 } from '@/lib/editor/actions'
 import { commandsToCutClips, commandsToPasteClips, copyClips } from '@/lib/editor/clipboard'
 import { audibleClipId, anySelectionLinked, canLinkClips } from '@/lib/editor/links'
+import { markerSelectionExists, neighborMarker } from '@/lib/editor/markers'
 import { docDuration } from '@/lib/editor/factories'
 import { FRAME_STEPS, PPS_MAX, PPS_MIN, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
@@ -47,7 +50,10 @@ import { useEditorStore } from '@/lib/editor/store'
  * | Ctrl+L                 | Link selection — or unlink when already linked     |
  * | Ctrl+Shift+/           | Duplicate selection                                |
  * | D                      | Duplicate selection                                |
- * | M                      | Mute / unmute the selected clip's audio side       |
+ * | M                      | Add marker (clip marker when a clip is selected)   |
+ * | Shift+M / Ctrl+Shift+M | Go to next / previous marker                       |
+ * | Shift+E                | Mute / unmute the selected clip's audio side (app   |
+ * |                        | mapping: Premiere uses Shift+E for clip enable)     |
  * | T                      | Add text clip at playhead (Premiere Type tool)     |
  * | G                      | Audio Gain dialog                                  |
  * | Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y | Undo / redo / redo                         |
@@ -58,6 +64,9 @@ import { useEditorStore } from '@/lib/editor/store'
 export function useEditorKeyboard(onSave: () => void): void {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // A focused control that already consumed the key (radiogroup arrows, a
+      // dialog's own shortcut) must not also drive the editor.
+      if (e.defaultPrevented) return
       const target = e.target as HTMLElement | null
       if (
         target &&
@@ -70,7 +79,7 @@ export function useEditorKeyboard(onSave: () => void): void {
       }
 
       const store = useEditorStore.getState()
-      const { doc, playhead, pxPerSec, selections, selection } = store
+      const { doc, playhead, pxPerSec, selections, selection, selectedMarker } = store
       // Multi-selection source of truth; falls back to the primary id.
       const selectedIds = selections.length > 0 ? selections : selection ? [selection] : []
       const primaryId = selectedIds[0] ?? null
@@ -152,6 +161,20 @@ export function useEditorKeyboard(onSave: () => void): void {
         }
         return
       }
+      if (mod && e.shiftKey && key === 'm') {
+        // Premiere Ctrl+Shift+M: go to the previous marker.
+        e.preventDefault()
+        const point = neighborMarker(doc, playhead, 'prev')
+        if (point) playbackRef.current?.seek(point.timelineTime)
+        return
+      }
+      if (!mod && e.shiftKey && key === 'm') {
+        // Premiere Shift+M: go to the next marker.
+        e.preventDefault()
+        const point = neighborMarker(doc, playhead, 'next')
+        if (point) playbackRef.current?.seek(point.timelineTime)
+        return
+      }
       if (mod && e.shiftKey && (e.key === '/' || e.key === '?')) {
         // Premiere "Duplicate" (Ctrl+Shift+/) — same as the D alias below.
         if (selectedIds.length > 0) {
@@ -177,6 +200,7 @@ export function useEditorKeyboard(onSave: () => void): void {
         }
         case 'Escape': {
           store.setActiveTool('select')
+          store.selectMarker(null)
           break
         }
         case ' ': {
@@ -203,6 +227,20 @@ export function useEditorKeyboard(onSave: () => void): void {
         }
         case 'Delete':
         case 'Backspace': {
+          // A LIVE selected marker owns the Delete key; clips otherwise. A
+          // stale selection (marker already gone) is dropped and the clip
+          // path runs, so a dangling selection can never eat the keypress.
+          if (selectedMarker) {
+            if (!markerSelectionExists(doc, selectedMarker)) {
+              store.selectMarker(null)
+            } else {
+              e.preventDefault()
+              const markerCommands = commandsToDeleteMarker(doc, selectedMarker)
+              if (markerCommands) store.apply(markerCommands)
+              store.selectMarker(null)
+              return
+            }
+          }
           if (selectedIds.length > 0) {
             e.preventDefault()
             if (e.shiftKey) {
@@ -234,6 +272,18 @@ export function useEditorKeyboard(onSave: () => void): void {
         }
         case 'm':
         case 'M': {
+          // Premiere M: add a marker — a clip marker on the primary selected
+          // clip when there is one (clamped into its visible span), otherwise
+          // a sequence marker at the playhead. Shift+M navigates (above).
+          e.preventDefault()
+          store.apply(commandsToAddMarker(doc, playhead, selectedIds))
+          break
+        }
+        case 'e':
+        case 'E': {
+          // Shift+E mutes: Premiere binds Shift+E to clip enable/disable, the
+          // closest match this app has (its mute only owns the audio side).
+          if (!e.shiftKey) break
           if (primaryId) {
             e.preventDefault()
             // Mute is an AUDIO property: for a linked pair it always targets

@@ -19,6 +19,7 @@ const EXPECTED_MENU_ORDER = [
   'Edit',
   'Clip',
   'Sequence',
+  'Marker',
   'Graphics',
   'View',
   'Window',
@@ -42,6 +43,9 @@ const REAL_SHORTCUTS = new Set([
   'Del',
   'Shift+Del',
   'M',
+  'Shift+M',
+  'Ctrl+Shift+M',
+  'Shift+E',
   'T',
   '+',
   '−',
@@ -61,6 +65,8 @@ function baseCtx(overrides: Partial<MenuContext> = {}): MenuContext {
     canPaste: false,
     selectionLinked: false,
     canLink: false,
+    hasMarkers: false,
+    hasSelectedMarker: false,
     snapEnabled: true,
     panelHidden: { media: false, preview: false, inspector: false, timeline: false },
     workspaceDirty: false,
@@ -155,7 +161,7 @@ describe('menu structure (Premiere Pro–style)', () => {
     expect(itemOf('Clip', 'clip.unlink').action).toBe('clip.unlink')
     expect(itemOf('Clip', 'clip.unlink').shortcut).toBe('Ctrl+L')
     expect(itemOf('Clip', 'clip.mute').kind).toBe('checkbox')
-    expect(itemOf('Clip', 'clip.mute').shortcut).toBe('M')
+    expect(itemOf('Clip', 'clip.mute').shortcut).toBe('Shift+E')
     expect(itemOf('Clip', 'clip.gain').action).toBe('clip.audioGain')
   })
 
@@ -350,5 +356,40 @@ describe('menu state resolution (buildMenus)', () => {
       .find((m) => m.spec.id === 'file')!
       .items.find((i) => i.spec.id === 'file.save')!
     expect(save.enabled).toBe(true)
+  })
+
+  it('Marker menu exposes add/edit/delete and navigation actions', () => {
+    expect(itemOf('Marker', 'marker.add').action).toBe('marker.add')
+    expect(itemOf('Marker', 'marker.add').shortcut).toBe('M')
+    expect(itemOf('Marker', 'marker.edit').action).toBe('marker.edit')
+    expect(itemOf('Marker', 'marker.delete').action).toBe('marker.delete')
+    expect(itemOf('Marker', 'marker.next').action).toBe('marker.next')
+    expect(itemOf('Marker', 'marker.next').shortcut).toBe('Shift+M')
+    expect(itemOf('Marker', 'marker.previous').action).toBe('marker.previous')
+    expect(itemOf('Marker', 'marker.previous').shortcut).toBe('Ctrl+Shift+M')
+  })
+
+  it('Marker menu enables edit/delete only with a selected marker', () => {
+    const none = buildMenus(baseCtx())
+    const markerMenu = none.find((m) => m.spec.id === 'marker')!
+    const enabledOf = (id: string) => markerMenu.items.find((i) => i.spec.id === id)!.enabled
+    expect(enabledOf('marker.add')).toBe(true) // add is always possible
+    expect(enabledOf('marker.edit')).toBe(false)
+    expect(enabledOf('marker.delete')).toBe(false)
+    expect(enabledOf('marker.next')).toBe(false)
+    expect(enabledOf('marker.previous')).toBe(false)
+
+    const selected = buildMenus(baseCtx({ hasSelectedMarker: true }))
+    const withMarker = selected.find((m) => m.spec.id === 'marker')!
+    const selectedEnabled = (id: string) => withMarker.items.find((i) => i.spec.id === id)!.enabled
+    expect(selectedEnabled('marker.edit')).toBe(true)
+    expect(selectedEnabled('marker.delete')).toBe(true)
+    expect(selectedEnabled('marker.next')).toBe(false) // no markers to visit yet
+
+    const withMarkers = buildMenus(baseCtx({ hasMarkers: true }))
+    const navigable = withMarkers.find((m) => m.spec.id === 'marker')!
+    const navEnabled = (id: string) => navigable.items.find((i) => i.spec.id === id)!.enabled
+    expect(navEnabled('marker.next')).toBe(true)
+    expect(navEnabled('marker.previous')).toBe(true)
   })
 })

@@ -13,12 +13,13 @@ import { MediaBin } from './MediaBin'
 import { PreviewPanel } from './PreviewPanel'
 import { InspectorPanel } from './InspectorPanel'
 import { TimelinePanel } from './timeline/TimelinePanel'
+import { MarkerDialog } from './timeline/MarkerDialog'
 import { StatusBar } from './StatusBar'
 import { ExportDialog } from './ExportDialog'
 import { useEditorKeyboard } from '@/hooks/editor/useEditorKeyboard'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { refreshPausedPreview } from '@/lib/editor/playback/preview'
-import { useEditorStore } from '@/lib/editor/store'
+import { activeTransientPointerId, useEditorStore } from '@/lib/editor/store'
 import { PANEL_BOUNDS, type PanelId, PANEL_IDS } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
 import {
@@ -110,16 +111,24 @@ export function EditorShell() {
 
     // Safety net: commit any dangling drag gesture (e.g. pointer released
     // outside the clip after capture loss) so history never stays open.
-    const commitDangling = () => {
+    // Pointer-scoped: a pointerup from a DIFFERENT pointer than the one that
+    // started the live gesture must not end it (multi-touch); pointerless
+    // events (blur) and pointerless synthetic events always apply.
+    const commitDangling = (ev?: PointerEvent) => {
       const state = useEditorStore.getState()
+      const owner = activeTransientPointerId()
+      if (ev && owner !== null && ev.pointerId !== owner) return
       state.commitTransient()
     }
+    // One function object for add + remove: two inline closures would never
+    // match, so the blur listener would leak past the unmount.
+    const onBlur = () => commitDangling()
     window.addEventListener('pointerup', commitDangling)
-    window.addEventListener('blur', commitDangling)
+    window.addEventListener('blur', onBlur)
     return () => {
       unsubscribe()
       window.removeEventListener('pointerup', commitDangling)
-      window.removeEventListener('blur', commitDangling)
+      window.removeEventListener('blur', onBlur)
     }
   }, [])
 
@@ -329,6 +338,7 @@ export function EditorShell() {
       )}
 
       <StatusBar />
+      <MarkerDialog />
       <ExportDialog open={exportOpen} onOpenChange={setExportOpen} />
     </div>
   )

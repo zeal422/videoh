@@ -19,7 +19,7 @@ import { formatTime } from '@/lib/editor/time'
 import { attachPreviewEngine, detachPreviewEngine } from '@/lib/editor/playback/preview'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { clamp01, measureTextBox } from '@/lib/editor/playback/text-box'
-import { useEditorStore } from '@/lib/editor/store'
+import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
 import { cn } from '@/lib/utils'
 
 /**
@@ -41,6 +41,11 @@ export function PreviewPanel() {
   const [volume, setVolume] = useState(1)
   const [draggingText, setDraggingText] = useState(false)
   const dragOrigin = useRef<{ px: number; py: number; x: number; y: number } | null>(null)
+  /** Initiating pointer of the active text drag (multi-touch: ignore others). */
+  const textDragPointerId = useRef<number | null>(null)
+  /** Gesture token from beginTransient: a foreign commit bumps it and the
+   *  drag then refuses further frames (they would carry no undo entry). */
+  const textDragToken = useRef(-1)
 
   // Attach the engine once; canvas resolution follows project settings.
   useEffect(() => {
@@ -102,14 +107,20 @@ export function PreviewPanel() {
       x: textClip.style.x,
       y: textClip.style.y,
     }
-    store.beginTransient()
+    textDragToken.current = store.beginTransient(e.pointerId)
+    textDragPointerId.current = e.pointerId
     setDraggingText(true)
   }
 
   const onCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // Only the initiating pointer drives the drag (multi-touch).
+    if (dragOrigin.current && e.pointerId !== textDragPointerId.current) return
     const origin = dragOrigin.current
     const canvas = canvasRef.current
     if (!origin || !canvas) return
+    // A foreign commit (keyboard delete, undo) ended the gesture slot: applying
+    // further frames would mutate the doc with no undo entry behind them.
+    if (currentTransientToken() !== textDragToken.current) return
     const rect = canvas.getBoundingClientRect()
     if (rect.width === 0 || rect.height === 0) return
     // Client-pixel delta ÷ displayed canvas size = normalized project delta
@@ -123,9 +134,12 @@ export function PreviewPanel() {
     })
   }
 
-  const endTextDrag = (commit: boolean) => {
+  const endTextDrag = (commit: boolean, e?: React.PointerEvent<HTMLCanvasElement>) => {
     if (!dragOrigin.current) return
+    // A second pointer must not end a drag it did not start (multi-touch).
+    if (e && e.pointerId !== textDragPointerId.current) return
     dragOrigin.current = null
+    textDragPointerId.current = null
     const store = useEditorStore.getState()
     if (commit) store.commitTransient()
     else store.cancelTransient()
@@ -162,8 +176,8 @@ export function PreviewPanel() {
             title={canDragText ? 'Drag to reposition the selected text' : undefined}
             onPointerDown={onCanvasPointerDown}
             onPointerMove={onCanvasPointerMove}
-            onPointerUp={() => endTextDrag(true)}
-            onPointerCancel={() => endTextDrag(false)}
+            onPointerUp={(e) => endTextDrag(true, e)}
+            onPointerCancel={(e) => endTextDrag(false, e)}
           />
           {textBox && (
             <div

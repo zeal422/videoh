@@ -20,8 +20,8 @@ undo, project save/load) is covered and not repeated here.
    still open.
 4. **DONE (0.5.0).** Basic color pass (Tier 1): exposure, contrast, saturation,
    brightness, hue via `ctx.filter`. Temperature and LUTs are still open.
-5. **PARTLY DONE (marquee).** Marquee (box) selection (Tier 2) shipped; markers are the
-   remaining half and stay next up.
+5. **DONE (0.5.5).** Tier 2 workflow accelerators: marquee (box) selection (0.5.4) and markers
+   on the timeline and on clips (0.5.5), with a Marker menu, navigation keys and snapping.
 6. More transitions (Tier 3). Incremental on the existing span/alpha model.
 
 Remaining from the 0.5.0 bundle, not done: speed ramps (curves), keyframe
@@ -39,8 +39,8 @@ ease/bezier interpolation, noise reduction, temperature/tint, LUTs, scopes.
 
 ## Tier 2: workflow accelerators (longer edits)
 
-- Markers on timeline and clips.
-- Track targeting and select-by-lane (marquee/box selection shipped).
+- Markers on timeline and clips (shipped in 0.5.5).
+- Track targeting and select-by-lane (marquee/box selection shipped in 0.5.4).
 - Three-point editing: in/out on source, insert/overwrite into the sequence.
   Currently only drag-and-drop exists.
 - Nested sequences / compound clips (group clips into one reusable unit).

@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event'
 
 import { InspectorPanel } from '@/components/editor/InspectorPanel'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
-import { useEditorStore } from '../store'
+import { isTransientActive, useEditorStore } from '../store'
 import { createClip, createMediaAsset, createTrack } from '../factories'
 import type { Clip, Doc } from '../types'
 
@@ -130,6 +130,195 @@ describe('InspectorPanel tabs', () => {
     const undone =
       useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity?.[0].time
     expect(undone).toBe(1)
+  })
+
+  it('a foreign commit mid-drag makes the dot refuse its remaining frames', async () => {
+    const { doc, clipId } = docWithSelectedVideoClip()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.keyframes = {
+      opacity: [
+        { time: 1, value: 1 },
+        { time: 3, value: 1 },
+      ],
+    }
+    useEditorStore.setState({ doc: structuredClone(doc) })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    const graph = screen.getByTestId('kf-graph-opacity')
+    graph.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 200,
+        bottom: 40,
+        width: 200,
+        height: 40,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect
+
+    const pastBefore = useEditorStore.getState().past.length
+    fireEvent(
+      screen.getByTestId('kf-dot-opacity-0'),
+      new MouseEvent('pointerdown', { bubbles: true, clientX: 33 }),
+    )
+    fireEvent(window, new MouseEvent('pointermove', { clientX: 50 })) // 1.5 s
+    // A foreign commit (keyboard delete, menu action, ...) resolves the gesture
+    // first: the drag's in-flight frame rolls back before the history snapshot.
+    useEditorStore.getState().apply({ type: 'setClipMuted', clipId, muted: true })
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+    const keyframeTime = () =>
+      useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity?.[0].time
+    expect(keyframeTime()).toBe(1)
+
+    // The stale drag's next frame must be refused, or it would mutate the doc
+    // with no undo entry behind it (unreachable by undoing the history).
+    fireEvent(window, new MouseEvent('pointermove', { clientX: 150 })) // would be 4.5 s
+    expect(keyframeTime()).toBe(1)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+    fireEvent(window, new MouseEvent('pointerup'))
+  })
+
+  it('a foreign pointer release does not end the keyframe drag it does not own', async () => {
+    const { doc } = docWithSelectedVideoClip()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.keyframes = {
+      opacity: [
+        { time: 1, value: 1 },
+        { time: 3, value: 1 },
+      ],
+    }
+    useEditorStore.setState({ doc: structuredClone(doc) })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    const graph = screen.getByTestId('kf-graph-opacity')
+    graph.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 200,
+        bottom: 40,
+        width: 200,
+        height: 40,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect
+
+    fireEvent.pointerDown(screen.getByTestId('kf-dot-opacity-0'), {
+      bubbles: true,
+      pointerId: 5,
+      clientX: 33,
+    })
+    fireEvent.pointerMove(window, { pointerId: 5, clientX: 50 }) // 1.5 s
+    expect(isTransientActive()).toBe(true)
+
+    // A second finger lifts (multi-touch): it must not commit the drag the
+    // first pointer still owns.
+    fireEvent.pointerUp(window, { pointerId: 9 })
+    expect(isTransientActive()).toBe(true)
+
+    fireEvent.pointerUp(window, { pointerId: 5 })
+    expect(isTransientActive()).toBe(false)
+    const time =
+      useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity?.[0].time
+    expect(time).toBeCloseTo(1.5, 5)
+  })
+
+  it('a second pointer re-grabbing the same dot takes the drag over', async () => {
+    const { doc } = docWithSelectedVideoClip()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.keyframes = {
+      opacity: [
+        { time: 1, value: 1 },
+        { time: 3, value: 1 },
+      ],
+    }
+    useEditorStore.setState({ doc: structuredClone(doc) })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    const graph = screen.getByTestId('kf-graph-opacity')
+    graph.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 200,
+        bottom: 40,
+        width: 200,
+        height: 40,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect
+    const dot = screen.getByTestId('kf-dot-opacity-0')
+    const dotTime = () =>
+      useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity?.[0].time
+
+    fireEvent.pointerDown(dot, { bubbles: true, pointerId: 5, clientX: 33 })
+    fireEvent.pointerMove(window, { pointerId: 5, clientX: 50 }) // 1.5 s
+    expect(dotTime()).toBeCloseTo(1.5, 5)
+
+    // The same dot is grabbed by another pointer: ownership transfers, so the
+    // handlers must read the CURRENT pointerId (the effect re-runs) instead of
+    // keeping the first pointer's and ignoring every later frame. The dot is
+    // re-queried because its React key carries the time, so a transient frame
+    // remounts the element (the drag itself rides on window listeners).
+    fireEvent.pointerDown(screen.getByTestId('kf-dot-opacity-0'), {
+      bubbles: true,
+      pointerId: 9,
+      clientX: 33,
+    })
+    fireEvent.pointerMove(window, { pointerId: 9, clientX: 100 }) // 3.0 s
+    expect(dotTime()).toBeCloseTo(3, 5)
+    fireEvent.pointerUp(window, { pointerId: 9 })
+  })
+
+  it('a pointercancel discards the keyframe drag instead of stranding its transient', async () => {
+    const { doc } = docWithSelectedVideoClip()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.keyframes = {
+      opacity: [
+        { time: 1, value: 1 },
+        { time: 3, value: 1 },
+      ],
+    }
+    useEditorStore.setState({ doc: structuredClone(doc) })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    const graph = screen.getByTestId('kf-graph-opacity')
+    graph.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 200,
+        bottom: 40,
+        width: 200,
+        height: 40,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect
+
+    const pastBefore = useEditorStore.getState().past.length
+    fireEvent.pointerDown(screen.getByTestId('kf-dot-opacity-0'), {
+      bubbles: true,
+      pointerId: 7,
+      clientX: 33,
+    })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 50 })
+    expect(isTransientActive()).toBe(true)
+
+    // The browser took the pointer: the gesture is discarded, not committed.
+    fireEvent.pointerCancel(window, { pointerId: 7 })
+    expect(isTransientActive()).toBe(false)
+    const after = useEditorStore.getState()
+    expect(after.past.length).toBe(pastBefore)
+    expect(after.doc.project.tracks[0].clips[0].keyframes?.opacity?.[0].time).toBe(1)
   })
 
   it('routes audio edits to the linked audio twin, the pair sound carrier', async () => {

@@ -12,6 +12,9 @@ Stable hooks used across flows and tests:
 - `[data-testid="track-insert-line"]`, `[data-testid="track-insert-label"]`
 - `[data-testid="text-drag-outline"]`, `[data-testid="linked-av-hint"]`
 - `[data-testid="marquee-rect"]` (the live box while a marquee drag is in flight)
+- `[data-testid="sequence-marker"]` / `[data-testid="clip-marker"]` (with `data-marker-id`,
+  `data-marker-time`, `data-marker-selected`), `[data-testid="marker-dialog"]`,
+  `[data-testid="marker-context-menu"]`, `[data-testid^="marker-menu-"]`
 - `[data-testid="track-header-<id>"]`, `[data-testid="track-context-menu"]`, `[data-testid^="track-menu-"]`
 - `[data-lane-kind]` on each lane and `[data-track-row]` on the newly inserted row
 - `[data-drop-blocked="true"]` — a lane marked as an illegal drop target for the duration of a drag
@@ -85,8 +88,8 @@ asset.duration` invariant), images and text are unbounded.
 - **Duplicate (`Ctrl+Shift+/`)** copies the group butt-to-tail with an independent fresh link.
 - **Delete** removes the whole link group; **Ripple Delete (`Shift+Del`)** also closes the gap on each
   affected track (merged removed intervals, so crossfade overlaps never double-count).
-- **Snapping (`S`)** toggles snapping to clip edges, the playhead, and timeline bounds
-  (`SNAP_THRESHOLD_PX = 8`).
+- **Snapping (`S`)** toggles snapping to clip edges, the playhead, timeline bounds and every
+  reachable marker (`SNAP_THRESHOLD_PX = 8`).
 
 ## A/V links
 
@@ -96,6 +99,33 @@ asset.duration` invariant), images and text are unbounded.
 - The pair selects, moves, splits, duplicates, deletes, cuts/copies/pastes as one unit. `Ctrl+L` or the
   context menu unlinks, after which each half is independent.
 - The inspector shows a "Linked with the audio clip…" hint and routes gain/mute to the twin.
+
+## Markers
+
+- `M` adds a marker: with a primary selected clip it lands on that clip in **source seconds**,
+  clamped into its visible span, so a playhead before or after the clip still lands on screen; with
+  no live clip selection it lands on the sequence ruler at the playhead (clamped to the sequence
+  span).
+- Click a marker tab to seek to it and select it; a marker selection and the clip selection are
+  mutually exclusive. `Delete`/`Backspace` prefers the selected marker, `Escape` clears it. Dragging
+  a tab moves it (one drag = one undo step, through the transient gesture protocol); a click that
+  never moves only selects and seeks.
+- Double-click a tab, use its context menu, or pick Marker › Edit Selected Marker… to open the
+  dialog (name, one of eight colors, notes, delete). `Shift+M` / `Ctrl+Shift+M` seek to the
+  next/previous reachable marker, never wrapping. Reachable means inside the sequence: the playhead
+  cannot seek past the sequence end, so a marker beyond it stays visible and editable yet is not a
+  target (the Marker menu greys that jump out). On an empty sequence that end is 0, so the marker
+  `M` places (clamped to the span) sits exactly at the playhead and there is nowhere to walk.
+  Markers that share a time are one stop: navigation is by time, so the extra tabs stay reachable
+  by click.
+- Markers are snap targets for clip moves and trims, and a dragged marker snaps to other clips'
+  edges, the playhead and other markers (a clip marker never snaps to its own clip, whose edges it
+  can never cross).
+- A clip marker is anchored to its SOURCE time: trimming, rate-stretching or reversing keeps it on
+  the same media frame. A trim that moves it outside the visible span hides it from the timeline
+  while keeping it in the project, and extending the clip brings it back. A split gives both halves
+  the full marker list, and each half renders only what its own span contains.
+- Markers never affect playback or export (no burn-in, no chapter metadata).
 
 ## Crossfade
 
@@ -157,8 +187,8 @@ asset.duration` invariant), images and text are unbounded.
 
 ## Save, load, autosave, restore
 
-- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 1) and downloads it; object URLs are
-  stripped and never persisted.
+- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 2; version 1 files still load) and
+  downloads it; object URLs are stripped and never persisted.
 - **Open** hydrates every asset with `missing: true`. Bundled samples then refetch themselves
   (`hydrateSampleMedia(doc)`), which the restore path shares: their bytes are the app's own. The merge
   lands BEFORE the doc is installed, so the load is ONE undo step; relink commands applied afterwards

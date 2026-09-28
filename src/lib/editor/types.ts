@@ -15,6 +15,28 @@
 export type TrackKind = 'video' | 'audio' | 'text'
 export type MediaKind = 'video' | 'audio' | 'image'
 
+/** Marker colors (content data, not theme tokens). Green is the default. */
+export type MarkerColor =
+  'green' | 'red' | 'orange' | 'yellow' | 'blue' | 'cyan' | 'purple' | 'magenta'
+
+/**
+ * A timeline or clip marker. `time` is in seconds, and its basis depends on
+ * the owner: sequence markers (`Project.markers`) use timeline seconds, clip
+ * markers (`Clip.markers`) use SOURCE seconds, the same basis as
+ * `Clip.inPoint`, so they stay pinned to the media through trims, speed
+ * changes and reversal. Both are point positions.
+ */
+export interface Marker {
+  id: string
+  time: number
+  name?: string
+  color?: MarkerColor
+  notes?: string
+}
+
+/** Fields a marker update command may patch. */
+export type MarkerPatch = Partial<Pick<Marker, 'name' | 'color' | 'notes'>>
+
 /** Styling options for a text clip. Font size is expressed in project-space pixels. */
 export interface TextStyle {
   /** Font size in project-space pixels (e.g. 64 at 1080p). */
@@ -126,6 +148,8 @@ export interface Clip {
   style?: TextStyle
   /** Cross-dissolve into the next clip on the same track. */
   transitionOut?: Transition
+  /** Clip markers, `time` in source seconds (see {@link Marker}). */
+  markers?: Marker[]
   /**
    * Static values for animatable properties without keyframes (position,
    * scale, the color set). Absent fields mean neutral defaults. opacity and
@@ -151,6 +175,8 @@ export interface Project {
   width: number
   height: number
   fps: number
+  /** Sequence markers, `time` in timeline seconds (see {@link Marker}). */
+  markers?: Marker[]
   /** Index 0 = topmost layer. Conventional order: text tracks, video tracks, audio tracks. */
   tracks: Track[]
 }

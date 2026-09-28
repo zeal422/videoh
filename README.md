@@ -10,6 +10,7 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/
 - **Multi-track timeline** — move clips (including across compatible tracks, with the whole selection following), trim either edge, split at the playhead, duplicate, delete, and snapping to clip edges, the playhead, and timeline bounds. Add video/audio/text tracks from the `+` button in the timeline's corner cell (or the toolbar `+` and the menus) — new tracks stack per the convention text → video → audio, and `tracks[0]` renders on top.
 - **Manageable layers** — each track header has a context menu (or double-click the name) to **rename**, **mute** or **delete** the layer; delete is disabled for the last remaining lane. A layer the edit leaves **empty is removed with it**, in the same undo step, so a lane never lingers with nothing on it (a lane that was already empty is kept, which is what makes "add a layer, then fill it" work). Dragging a clip near the top or bottom edge of the tracks **scrolls the timeline** so it can reach a lane that is off-screen, and dropping it on a lane of the wrong kind marks that lane, and the drop is rolled back whole — the clip returns to where it started rather than keeping the part of the gesture that happened to be legal.
 - **Multi-selection + manual A/V linking** — plain click selects a clip (its link group), **Shift+click adds** another clip's group, **Ctrl+click toggles** it, **Ctrl+A** selects everything; every group op (move, delete, cut/copy/paste, split, duplicate) acts on the whole selection. **Drag a box (marquee)** on empty timeline space to select every clip it covers (Shift adds the covered groups, Ctrl toggles them), with edge auto-scroll while dragging. Select a video clip and an audio clip with Shift+click, then **right-click → Link** (or `Ctrl+L`) to bond them Premiere-style; `Ctrl+L` on a linked selection unlinks it again. A **Razor tool** (`C`) cuts a clip exactly where you click; **Shift+Delete ripple-deletes** the selection and closes the gap.
+- **Markers** — press `M` to drop a marker at the playhead: on the primary selected clip when one is selected (source-anchored, so trims, speed changes and reversal keep it on the same media frame), otherwise on the sequence ruler. Markers take a name, one of eight colors and notes (double-click one or use Marker › Edit Selected Marker); `Shift+M` / `Ctrl+Shift+M` jump between markers, markers are snap targets for clip drags and trims, and `Delete` removes the selected one. Sequence markers live in `project.markers`, clip markers in `clip.markers` (source seconds); both persist in the project file.
 - **A/V linked clips** — dropping a video that HAS audio places it as a linked pair: the video part on the video track and an audio-only twin on the audio track (waveform included). The pair selects, moves, splits, duplicates and deletes together, and the audio twin is the sole sound carrier (no double audio). **Right-click any clip** for the Premiere-style menu — Cut, Copy, Paste at playhead, Split, Duplicate, **Link / Unlink Audio/Video**, Delete, **Ripple Delete** — and after unlinking, each half is fully independent.
 - **Drop-between-tracks** — drag media from the bin onto the middle of a row to drop it onto that track, or onto a row's edge (or the empty strip below the tracks) to insert a brand-new layer at exactly that z-position: a kind-colored insertion line with a `+ V2` / `+ A2` preview shows where the layer will land — the Premiere-style way to build stacked compositions (put one video above/below/between others in one gesture).
 - **Cross-dissolve transitions** — per-clip `transitionOut` with real overlap; the compositor and audio mixer both ramp.
@@ -24,7 +25,7 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/
 - **Undo/redo** — up to 100 steps of whole-document snapshots; drag gestures collapse into a single undo entry.
 - **Save/load project JSON** — `.veproj.json` files; media references survive, object URLs do not.
 - **Autosave/restore** — debounced localStorage writes with a restore-or-discard banner on the next visit.
-- **Premiere-style menu bar** — File · Edit · Clip · Sequence · Graphics · View · Window · Help, driven by a pure, unit-tested menu model; items whose preconditions are unmet render disabled (no dead entries).
+- **Premiere-style menu bar** — File · Edit · Clip · Sequence · Marker · Graphics · View · Window · Help, driven by a pure, unit-tested menu model; items whose preconditions are unmet render disabled (no dead entries).
 - **Resizable workspace** — every panel (Media, Program Monitor, Inspector, Timeline) is user-resizable and collapsible; sizes, collapsed strips, and panel visibility persist across sessions. Window menu toggles panels, double-click a resize handle to reset its neighbor, and small screens fall back to a fixed stacked layout.
 
 ## Quick start
@@ -42,33 +43,35 @@ Use a current Chromium-based browser for the full feature set (WebCodecs + Web A
 
 The map mirrors Adobe Premiere Pro's default keybindings (verified against Adobe's shortcut docs); app-specific extensions where the browser MVP cannot map 1:1 are marked.
 
-| Key                       | Action                                                          |
-| ------------------------- | --------------------------------------------------------------- |
-| `V` / `C`                 | Selection tool / Razor tool (click a clip to cut it)            |
-| `Space`                   | Play / pause                                                    |
-| `J` / `K` / `L`           | Shuttle stop / stop / play (no reverse playback in the browser) |
-| `←` / `→`                 | Step 1 frame (`Shift`: 5 frames)                                |
-| `↑` / `↓`                 | Previous / next edit point (clip boundary)                      |
-| `Home` / `End`            | Jump to start / end of timeline                                 |
-| `S`                       | Toggle snapping                                                 |
-| `Ctrl+K`                  | Add Edit — split selection (or all tracks) at the playhead      |
-| `Delete` / `Backspace`    | Delete the selection (whole link groups)                        |
-| `Shift+Delete`            | Ripple delete — delete AND close the gap                        |
-| `Ctrl+X` / `Ctrl+C`       | Cut (copy + delete) / copy the selection (multi-clip aware)     |
-| `Ctrl+V`                  | Paste the clipboard at the playhead                             |
-| `Ctrl+A` / `Ctrl+Shift+A` | Select all / deselect all                                       |
-| `Shift+click`             | Add a clip's link group to the selection (multi-select)         |
-| `Ctrl+click`              | Toggle a clip's link group in the selection                     |
-| `Ctrl+L`                  | Link the selection — or unlink when it is already linked        |
-| `D` / `Ctrl+Shift+/`      | Duplicate the selection (link group)                            |
-| `M`                       | Mute / unmute the selected clip's audio side                    |
-| `G`                       | Audio Gain dialog                                               |
-| `T`                       | Add a text clip at the playhead (Premiere Type tool)            |
-| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo                                                     |
-| `Ctrl+Y`                  | Redo                                                            |
-| `Ctrl+S`                  | Save project JSON                                               |
-| `+` / `-`                 | Zoom timeline in / out                                          |
-| `\`                       | Zoom the timeline to fit the whole sequence                     |
+| Key                        | Action                                                             |
+| -------------------------- | ------------------------------------------------------------------ |
+| `V` / `C`                  | Selection tool / Razor tool (click a clip to cut it)               |
+| `Space`                    | Play / pause                                                       |
+| `J` / `K` / `L`            | Shuttle stop / stop / play (no reverse playback in the browser)    |
+| `←` / `→`                  | Step 1 frame (`Shift`: 5 frames)                                   |
+| `↑` / `↓`                  | Previous / next edit point (clip boundary)                         |
+| `Home` / `End`             | Jump to start / end of timeline                                    |
+| `S`                        | Toggle snapping                                                    |
+| `Ctrl+K`                   | Add Edit — split selection (or all tracks) at the playhead         |
+| `Delete` / `Backspace`     | Delete the selection (whole link groups)                           |
+| `Shift+Delete`             | Ripple delete — delete AND close the gap                           |
+| `Ctrl+X` / `Ctrl+C`        | Cut (copy + delete) / copy the selection (multi-clip aware)        |
+| `Ctrl+V`                   | Paste the clipboard at the playhead                                |
+| `Ctrl+A` / `Ctrl+Shift+A`  | Select all / deselect all                                          |
+| `Shift+click`              | Add a clip's link group to the selection (multi-select)            |
+| `Ctrl+click`               | Toggle a clip's link group in the selection                        |
+| `Ctrl+L`                   | Link the selection — or unlink when it is already linked           |
+| `D` / `Ctrl+Shift+/`       | Duplicate the selection (link group)                               |
+| `M`                        | Add a marker at the playhead (clip marker when a clip is selected) |
+| `Shift+M` / `Ctrl+Shift+M` | Go to next / previous marker                                       |
+| `Shift+E`                  | Mute / unmute the selected clip's audio side                       |
+| `G`                        | Audio Gain dialog                                                  |
+| `T`                        | Add a text clip at the playhead (Premiere Type tool)               |
+| `Ctrl+Z` / `Ctrl+Shift+Z`  | Undo / redo                                                        |
+| `Ctrl+Y`                   | Redo                                                               |
+| `Ctrl+S`                   | Save project JSON                                                  |
+| `+` / `-`                  | Zoom timeline in / out                                             |
+| `\`                        | Zoom the timeline to fit the whole sequence                        |
 
 Shortcuts are ignored while typing in inputs, textareas, selects, or content-editable elements (see `src/hooks/editor/useEditorKeyboard.ts`).
 
@@ -123,6 +126,10 @@ The entire edit is one serializable document (`Doc = { project, media }`). All t
     "width": 1920, // 64..3840
     "height": 1080, // 64..2160
     "fps": 30, // 1..60
+    "markers": [
+      // sequence markers: `time` is timeline seconds; color defaults to green
+      { "id": "marker_…", "time": 1.5, "name": "Cue", "color": "red", "notes": "…" },
+    ],
     "tracks": [
       {
         "id": "track_…",
@@ -144,6 +151,10 @@ The entire edit is one serializable document (`Doc = { project, media }`). All t
             "text": "Your text here", // text clips only
             "style": { "fontSize": 64, "color": "#ffffff", "…": "…" },
             "transitionOut": { "type": "crossfade", "duration": 1 },
+            "markers": [
+              // clip markers: `time` is SOURCE seconds (same basis as inPoint)
+              { "id": "marker_…", "time": 2.25, "name": "Beat", "color": "red", "notes": "…" },
+            ],
           },
         ],
       },
@@ -175,34 +186,42 @@ Time model conventions:
 
 ## Command pattern
 
-All mutations flow through 22 named commands in `src/lib/editor/commands.ts`, applied with `applyCommand(doc, command)` / `applyCommands(doc, commands[])`. Each command validates its input (throwing `EditorCommandError` on unknown ids, out-of-bounds trims, and so on) and returns a **new** doc — the input is never mutated.
+All mutations flow through 37 named commands in `src/lib/editor/commands.ts`, applied with `applyCommand(doc, command)` / `applyCommands(doc, commands[])`. Each command validates its input (throwing `EditorCommandError` on unknown ids, out-of-bounds trims, and so on) and returns a **new** doc — the input is never mutated.
 
-| Command              | Description                                                                                                                                              |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `addMediaAsset`      | Register an imported media asset in the bin.                                                                                                             |
-| `removeMediaAsset`   | Remove an asset; clips keep a dangling `mediaId`.                                                                                                        |
-| `relinkMedia`        | Patch an asset (usually a fresh `url`) and clear `missing`.                                                                                              |
-| `addTrack`           | Append a track and re-sort to the text/video/audio order — or, with `atIndex`, insert at that exact z-position without re-sorting (drop-between-tracks). |
-| `removeTrack`        | Remove a track (the last remaining track is protected).                                                                                                  |
-| `renameTrack`        | Rename a track (empty names are ignored).                                                                                                                |
-| `toggleTrackMute`    | Flip a track's `muted` flag.                                                                                                                             |
-| `addClip`            | Add a clip to a track (kind-checked, clamped to source).                                                                                                 |
-| `moveClip`           | Move a clip to a new track and/or `start` position.                                                                                                      |
-| `trimClip`           | Set `start`, `inPoint`, and `duration` (bounds-checked).                                                                                                 |
-| `splitClip`          | Split a clip at a time into two adjacent clips; the right half starts a fresh link group (the group-split action re-links the right halves together).    |
-| `deleteClip`         | Remove a clip from its track.                                                                                                                            |
-| `unlinkClip`         | Break the A/V link bond on every member of the group.                                                                                                    |
-| `linkClips`          | Bond 2+ selected clips into ONE link group (merge-safe: groups that extend beyond the selection merge whole).                                            |
-| `setClipGain`        | Set linear gain, clamped to `GAIN_MIN..GAIN_MAX`.                                                                                                        |
-| `setClipMuted`       | Set a clip's `muted` flag.                                                                                                                               |
-| `setClipOpacity`     | Set visual opacity, clamped to `OPACITY_MIN..OPACITY_MAX`; omitted at 1 when saved.                                                                      |
-| `setTextContent`     | Change a text clip's content.                                                                                                                            |
-| `setTextStyle`       | Merge a partial `TextStyle` into a text clip.                                                                                                            |
-| `addTransition`      | Add a crossfade by pulling the next clip left to overlap.                                                                                                |
-| `removeTransition`   | Clear a clip's `transitionOut` (the overlap remains).                                                                                                    |
-| `setProjectSettings` | Patch project name/width/height/fps (clamped).                                                                                                           |
+| Command                | Description                                                                                                                                              |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `addMediaAsset`        | Register an imported media asset in the bin.                                                                                                             |
+| `removeMediaAsset`     | Remove an asset; clips keep a dangling `mediaId`.                                                                                                        |
+| `relinkMedia`          | Patch an asset (usually a fresh `url`) and clear `missing`.                                                                                              |
+| `addTrack`             | Append a track and re-sort to the text/video/audio order — or, with `atIndex`, insert at that exact z-position without re-sorting (drop-between-tracks). |
+| `removeTrack`          | Remove a track (the last remaining track is protected).                                                                                                  |
+| `renameTrack`          | Rename a track (empty names are ignored).                                                                                                                |
+| `toggleTrackMute`      | Flip a track's `muted` flag.                                                                                                                             |
+| `addClip`              | Add a clip to a track (kind-checked, clamped to source).                                                                                                 |
+| `moveClip`             | Move a clip to a new track and/or `start` position.                                                                                                      |
+| `trimClip`             | Set `start`, `inPoint`, and `duration` (bounds-checked).                                                                                                 |
+| `splitClip`            | Split a clip at a time into two adjacent clips; the right half starts a fresh link group (the group-split action re-links the right halves together).    |
+| `deleteClip`           | Remove a clip from its track.                                                                                                                            |
+| `unlinkClip`           | Break the A/V link bond on every member of the group.                                                                                                    |
+| `linkClips`            | Bond 2+ selected clips into ONE link group (merge-safe: groups that extend beyond the selection merge whole).                                            |
+| `setClipGain`          | Set linear gain, clamped to `GAIN_MIN..GAIN_MAX`.                                                                                                        |
+| `setClipMuted`         | Set a clip's `muted` flag.                                                                                                                               |
+| `setClipOpacity`       | Set visual opacity, clamped to `OPACITY_MIN..OPACITY_MAX`; omitted at 1 when saved.                                                                      |
+| `setTextContent`       | Change a text clip's content.                                                                                                                            |
+| `setTextStyle`         | Merge a partial `TextStyle` into a text clip.                                                                                                            |
+| `addTransition`        | Add a crossfade by pulling the next clip left to overlap.                                                                                                |
+| `removeTransition`     | Clear a clip's `transitionOut` (the overlap remains).                                                                                                    |
+| `addSequenceMarker`    | Add a sequence marker (time-sorted; duplicate ids rejected).                                                                                             |
+| `moveSequenceMarker`   | Move a sequence marker and re-sort.                                                                                                                      |
+| `updateSequenceMarker` | Patch a sequence marker's name/color/notes.                                                                                                              |
+| `deleteSequenceMarker` | Remove a sequence marker (the array collapses to absent when empty).                                                                                     |
+| `addClipMarker`        | Add a source-anchored clip marker.                                                                                                                       |
+| `moveClipMarker`       | Move a clip marker and re-sort.                                                                                                                          |
+| `updateClipMarker`     | Patch a clip marker's name/color/notes.                                                                                                                  |
+| `deleteClipMarker`     | Remove a clip marker (the array collapses to absent when empty).                                                                                         |
+| `setProjectSettings`   | Patch project name/width/height/fps (clamped).                                                                                                           |
 
-**Undo/redo.** The store pushes a whole-`Doc` snapshot onto `past` before each committed command; `undo` pops it and moves the current doc to `future`. Doc JSON is small (kilobytes), so full snapshots are cheap and make every command trivially reversible. The stack is capped at `HISTORY_LIMIT = 100` entries, and undo/redo drop the selection if the clip no longer exists in the restored doc.
+**Undo/redo.** The store pushes a whole-`Doc` snapshot onto `past` before each committed command; `undo` pops it and moves the current doc to `future`. Doc JSON is small (kilobytes), so full snapshots are cheap and make every command trivially reversible. The stack is capped at `HISTORY_LIMIT = 100` entries, and undo/redo drop a selection (clip or marker) whose target no longer exists in the restored doc.
 
 **Transient gestures.** Timeline drags must not spam the history. A gesture calls `beginTransient()` (snapshot the base doc), applies every pointermove via `applyTransient()` (no history; invalid mid-drag states are swallowed), and finishes with `commitTransient()` — which pushes exactly one history entry if the doc actually changed — or `cancelTransient()` to restore the base. Result: one undo step per drag, regardless of how many frames it spanned.
 
@@ -249,7 +268,7 @@ Known limitations:
 
 ## Persistence
 
-- **Project files** use the `.veproj.json` format (`version: 1`, plus a `savedAt` timestamp; see `serialization.ts`). `serializeDoc` strips object URLs (they are session-bound and can never persist) and the loader hydrates the clip's re-timing, shaping and keyframe fields, clamping and sanitizing them on the way in.
+- **Project files** use the `.veproj.json` format (`version: 2`, plus a `savedAt` timestamp; see `serialization.ts`). `serializeDoc` strips object URLs (they are session-bound and can never persist) and the loader hydrates the clip's re-timing, shaping, keyframe and marker fields, clamping and sanitizing them on the way in. Version 1 files (pre-markers) still load; files from a newer app version are refused instead of loading partially.
 - **Loading** hydrates every asset with an empty `url` and `missing: true`; clips whose media vanished entirely lose their `mediaId`. Offline assets render as "offline" in the media bin, and a frame that needs them paints **Media offline** over the monitor, naming the files it is missing, instead of showing silent black. Relinking is automatic when you re-import a file with a matching name (and for the bundled samples, which the app refetches itself on any load or restore), or manual via the relink button on each offline asset. Recovered samples are merged into the document itself, so a load or restore stays one undo step and the exporter keeps the source bytes it reads.
 - **Autosave** writes the serialized doc to `localStorage` (key `web-video-editor:autosave:v1`) with an **800 ms debounce**, after every committed change — transient drag frames are skipped, and the final commit triggers exactly one save. Quota or serialization errors surface in the status bar ("Autosave off").
 - **Restore** — on startup a valid autosave raises a banner: _Restore_ replaces the current doc (pushing the empty starter doc onto the undo stack) or _Discard_ clears the entry.
@@ -268,13 +287,13 @@ bun run format:check   # prettier check
 
 The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **527 tests across 38 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **641 tests across 43 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
 ### Menu bar
 
-The top menu bar mirrors Adobe Premiere Pro's menu structure (File · Edit · Clip · Sequence · Graphics · View · Window · Help), adapted to the features this editor has. Two design rules keep it honest:
+The top menu bar mirrors Adobe Premiere Pro's menu structure (File · Edit · Clip · Sequence · Marker · Graphics · View · Window · Help), adapted to the features this editor has. Two design rules keep it honest:
 
 - **No dead items.** Every visible entry maps to a real action (`src/lib/editor/menus.ts` defines the structure; `MenuBar.tsx` maps action ids to editor operations). Anything the MVP cannot perform is not rendered.
 - **No fake shortcuts.** The shortcut column only lists keybindings that are actually wired in `useEditorKeyboard.ts`.
@@ -303,12 +322,14 @@ src/
 │   ├── constants.ts             # all tuning constants and limits
 │   ├── factories.ts             # uid, create*, docDuration, finders, compatibility
 │   ├── time.ts                  # clamp, formatTime(Timecode), frame stepping, rulerStep
-│   ├── commands.ts              # 22 command variants, applyCommand(s), validation
+│   ├── commands.ts              # 37 command variants, applyCommand(s), validation
 │   ├── snap.ts                  # computeSnapPoints, applySnap, snapMove
 │   ├── keyframes.ts             # keyframe evaluation, sanitize/clamp, split redistribution
 │   ├── ducking.ts               # auto-duck keyframe analysis from waveform peaks
 │   ├── offline.ts               # offline-media detection for the monitor (pure)
 │   ├── clip-gesture.ts          # pure gesture decisions: move/trim/rate-stretch
+│   ├── marquee.ts               # box-selection rect math + group resolution
+│   ├── markers.ts               # sequence/clip marker math, colors, navigation, selection
 │   ├── transition.ts            # getTransitionSpan, transitionAlphas, maxTransitionDuration
 │   ├── links.ts                 # multi-selection + A/V link-group helpers
 │   ├── clipboard.ts             # copy / cut / paste (module memory, outside undo)
@@ -322,7 +343,7 @@ src/
 │   ├── tracks.ts                # removes the tracks an edit leaves empty (prune)
 │   ├── timeline-scroll.ts       # drag edge auto-scroll geometry (pure)
 │   ├── store.ts                 # zustand store: history, transients, selection, playhead
-│   ├── serialization.ts         # .veproj.json (v1): serialize/parse/hydrate
+│   ├── serialization.ts         # .veproj.json (v2, v1 loads): serialize/parse/hydrate
 │   ├── persistence.ts           # debounced localStorage autosave + restore
 │   ├── media/
 │   │   ├── probe.ts             # importFile: probe, thumbnail, waveform peaks, hasAudio
@@ -337,7 +358,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 38 test files (527 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
+│   └── __tests__/               # 43 test files (641 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs
@@ -354,6 +375,9 @@ src/
 │       ├── TimelinePanel.tsx    # track lanes, playhead, drop targets, zoom, track menu
 │       ├── Ruler.tsx            # canvas time ruler + scrubbing
 │       ├── ClipView.tsx         # move/trim gestures across lanes, snapping, fade overlays
+│       ├── SequenceMarkers.tsx  # ruler marker tabs, drag/select, edit/delete menu
+│       ├── ClipMarkers.tsx      # clip marker tabs (source-anchored)
+│       ├── MarkerDialog.tsx     # marker name/color/notes editor
 │       └── Waveform.tsx         # per-clip waveform canvas
 └── hooks/editor/
     └── useEditorKeyboard.ts     # global keyboard shortcuts
@@ -367,6 +391,7 @@ Limitations, all observable in the current code:
 - **Export requires WebCodecs**: the MP4 pipeline replaced MediaRecorder/WebM, so very old browsers cannot export (playback still works). HEVC and ProRes are out of scope: no reliable browser encoders.
 - **Keyframe interpolation is linear**: ease presets and bezier curves are a later increment; the schema already carries an `interpolation` field so they land without a migration.
 - **Reverse preview is stepped**, `<video>` cannot play backwards in realtime; the export is frame-accurate but playback shows a stepped approximation. Rate stretch on one half of a linked A/V pair does not re-time the twin (link groups still move/delete/split together).
+- **Markers are editor-only**: they render in the timeline and never affect the export (no visual burn-in, no MP4 chapter metadata), and a clip marker that a trim moves out of the visible span is kept in the data but hidden until the clip is extended back. There are no marker spans or marker types.
 - **No noise reduction**, EQ and compression are native Web Audio nodes; spectral noise reduction is out of scope. Gain is linear 0–2 (+6 dB max).
 - **Ripple delete is explicit** — plain Delete leaves the gap; `Shift+Del` closes it. `removeTransition` leaves the overlap behind (harmless: the later clip wins visually).
 - **Trim bounds** — video/audio clips are bounded by their source; images and text are unbounded (images have no intrinsic length; they default to 4 s).
@@ -378,7 +403,7 @@ Roadmap candidates, roughly in order of impact:
 1. More transitions (wipe, slide, dip-to-black) reusing the span/alpha model in `transition.ts`.
 2. Eased keyframe curves (ease in/out, bezier) on top of the existing `interpolation` field.
 3. Speed ramps (keyframed rate) beyond the fixed per-clip speed shipped in 0.5.0.
-4. Marquee/box selection and track-level operations.
+4. Track targeting and track-level operations (marquee and markers shipped).
 5. Track grouping and compound clips.
 6. A `StreamTarget` export path once files grow past the in-memory buffer.
 

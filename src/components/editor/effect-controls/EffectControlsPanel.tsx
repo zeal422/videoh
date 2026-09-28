@@ -32,7 +32,7 @@ import {
 } from '@/lib/editor/ducking'
 import { findMedia } from '@/lib/editor/factories'
 import { linkedAudioTwin } from '@/lib/editor/links'
-import { useEditorStore } from '@/lib/editor/store'
+import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
 import type { Clip, Keyframe } from '@/lib/editor/types'
 
 /**
@@ -295,11 +295,19 @@ function KeyframeGraph({ clip, property }: { clip: Clip; property: KeyframePrope
   const keyframes = clip.keyframes?.[property] ?? []
   const wrapRef = useRef<HTMLDivElement>(null)
   const [dragIndex, setDragIndex] = useState<number | null>(null)
+  // Initiating pointer of the active keyframe drag (multi-touch: ignore others).
+  const [pointerId, setPointerId] = useState<number | null>(null)
+  // Gesture token from beginTransient: a foreign commit bumps it and the drag
+  // then refuses further frames (they would carry no undo entry).
+  const tokenRef = useRef(-1)
 
   useEffect(() => {
     if (dragIndex === null) return
     const store = useEditorStore.getState()
     const onMove = (e: PointerEvent) => {
+      // Only the initiating pointer drives the drag (multi-touch).
+      if (e.pointerId !== pointerId) return
+      if (currentTransientToken() !== tokenRef.current) return
       const rect = wrapRef.current?.getBoundingClientRect()
       if (!rect || rect.width <= 0) return
       const t = ((e.clientX - rect.left) / rect.width) * clip.duration
@@ -312,7 +320,12 @@ function KeyframeGraph({ clip, property }: { clip: Clip; property: KeyframePrope
       )
       store.applyTransient({ type: 'setClipKeyframes', clipId: clip.id, property, keyframes: next })
     }
-    const onUp = () => {
+    const onUp = (e: PointerEvent) => {
+      // Only the initiating pointer ends this drag (multi-touch): a second
+      // pointer lifting anywhere would otherwise commit a drag it does not own.
+      // Capture phase, so this keeps the first word over the shell's
+      // dangling-commit net (the marker and clip gestures work the same way).
+      if (e.pointerId !== pointerId) return
       // The transparent base was snapshotted by the dot's pointerdown; committing
       // here turns the whole drag into exactly one undo step.
       try {
@@ -321,14 +334,28 @@ function KeyframeGraph({ clip, property }: { clip: Clip; property: KeyframePrope
         useEditorStore.getState().cancelTransient()
       }
       setDragIndex(null)
+      setPointerId(null)
+    }
+    const onCancel = (e: PointerEvent) => {
+      if (e.pointerId !== pointerId) return
+      // The browser took the pointer (touch pan, native drag): discard the drag
+      // rather than leaving its transient live, which would block autosave.
+      useEditorStore.getState().cancelTransient()
+      setDragIndex(null)
+      setPointerId(null)
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp, true)
+    window.addEventListener('pointercancel', onCancel, true)
     return () => {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp, true)
+      window.removeEventListener('pointercancel', onCancel, true)
     }
-  }, [dragIndex, clip.id, clip.duration, property])
+    // `pointerId` is a dependency because the handlers read it: a re-grab of the
+    // same dot by a second pointer must hand ownership over instead of leaving
+    // the listeners filtering for the first one.
+  }, [dragIndex, clip.id, clip.duration, property, pointerId])
 
   const bounds = KEYFRAME_PROPERTY_BOUNDS[property]
   const span = Math.max(1e-6, bounds.max - bounds.min)
@@ -357,7 +384,8 @@ function KeyframeGraph({ clip, property }: { clip: Clip; property: KeyframePrope
             style={{ left: `${left}%`, bottom: `${Math.max(0, Math.min(100, bottom))}%` }}
             onPointerDown={(e) => {
               e.stopPropagation()
-              useEditorStore.getState().beginTransient()
+              tokenRef.current = useEditorStore.getState().beginTransient(e.pointerId)
+              setPointerId(e.pointerId)
               setDragIndex(i)
             }}
           />

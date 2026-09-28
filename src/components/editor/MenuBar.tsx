@@ -25,8 +25,10 @@ import {
 } from '@/components/ui/menubar'
 
 import {
+  commandsToAddMarker,
   commandsToAddText,
   commandsToDeleteClips,
+  commandsToDeleteMarker,
   commandsToDuplicateClips,
   commandsToLinkClips,
   commandsToRippleDeleteClips,
@@ -51,6 +53,8 @@ import { EditorCommandError } from '@/lib/editor/commands'
 import { createDoc, docDuration, uid } from '@/lib/editor/factories'
 import { GAIN_MAX, GAIN_MIN, PPS_MAX, PPS_MIN, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
 import { buildMenus, type MenuActionId, type MenuContext } from '@/lib/editor/menus'
+import { hasNavigableMarkers, markerSelectionExists, neighborMarker } from '@/lib/editor/markers'
+import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import {
   downloadProjectJSON,
   importMediaFiles,
@@ -64,7 +68,7 @@ import { useEditorStore } from '@/lib/editor/store'
 
 /**
  * Application menu bar (Premiere Pro–style): File · Edit · Clip · Sequence ·
- * Graphics · View · Window · Help.
+ * Marker · Graphics · View · Window · Help.
  *
  * The structure lives in `menus.ts` (pure + unit-tested); this component only
  * maps action ids to real editor operations. Items whose precondition is not
@@ -82,6 +86,7 @@ export function MenuBar({
   const past = useEditorStore((s) => s.past)
   const future = useEditorStore((s) => s.future)
   const selections = useEditorStore((s) => s.selections)
+  const selectedMarker = useEditorStore((s) => s.selectedMarker)
   const playhead = useEditorStore((s) => s.playhead)
   const snapEnabled = useEditorStore((s) => s.snapEnabled)
   const pxPerSec = useEditorStore((s) => s.pxPerSec)
@@ -111,6 +116,14 @@ export function MenuBar({
     [doc],
   )
 
+  // The doc identity is stable during playback (only `playhead` changes), and
+  // this component re-renders on every frame through its playhead subscription:
+  // without the memo, a full clip-and-marker walk plus a sort would run per
+  // animation frame while playing. "Navigable" is the same predicate marker
+  // navigation uses, so a marker past the sequence end does not light up a
+  // jump that cannot happen.
+  const hasMarkers = useMemo(() => hasNavigableMarkers(doc), [doc])
+
   const ctx: MenuContext = {
     canUndo: past.length > 0,
     canRedo: future.length > 0,
@@ -126,6 +139,8 @@ export function MenuBar({
     canPaste: hasClipboardContent(),
     selectionLinked: selections.length > 0 && anySelectionLinked(doc, selections),
     canLink: canLinkClips(doc, selections),
+    hasMarkers,
+    hasSelectedMarker: !!selectedMarker && markerSelectionExists(doc, selectedMarker),
     snapEnabled,
     panelHidden,
     workspaceDirty:
@@ -327,6 +342,32 @@ export function MenuBar({
             break
           }
 
+          case 'marker.add': {
+            store.apply(commandsToAddMarker(store.doc, store.playhead, selectedIds))
+            break
+          }
+          case 'marker.edit':
+            window.dispatchEvent(new CustomEvent('editor:marker-edit'))
+            break
+          case 'marker.delete': {
+            if (!store.selectedMarker) return
+            const deleteMarkerCommands = commandsToDeleteMarker(store.doc, store.selectedMarker)
+            if (!deleteMarkerCommands) return
+            store.apply(deleteMarkerCommands)
+            store.selectMarker(null)
+            break
+          }
+          case 'marker.next': {
+            const point = neighborMarker(store.doc, store.playhead, 'next')
+            if (point) playbackRef.current?.seek(point.timelineTime)
+            break
+          }
+          case 'marker.previous': {
+            const point = neighborMarker(store.doc, store.playhead, 'prev')
+            if (point) playbackRef.current?.seek(point.timelineTime)
+            break
+          }
+
           case 'graphics.newText':
             store.apply(commandsToAddText(store.doc, store.playhead))
             break
@@ -520,7 +561,9 @@ const SHORTCUT_ROWS: [string, string][] = [
   ['Shift+click / Ctrl+click', 'Add / toggle clip (its link group) in the selection'],
   ['Ctrl+L', 'Link selection — or unlink when already linked'],
   ['D / Ctrl+Shift+/', 'Duplicate selection'],
-  ['M', 'Mute / unmute the selected clip’s audio side'],
+  ['M', 'Add marker at playhead (clip marker when a clip is selected)'],
+  ['Shift+M / Ctrl+Shift+M', 'Go to next / previous marker'],
+  ['Shift+E', 'Mute / unmute the selected clip’s audio side'],
   ['G', 'Audio Gain dialog'],
   ['T', 'Add text clip at playhead (Type tool)'],
   ['Ctrl+Z / Ctrl+Shift+Z', 'Undo / redo'],

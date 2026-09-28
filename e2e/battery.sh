@@ -26,6 +26,12 @@
 # - the marquee step needs empty lane space beyond the last clip: it computes its
 #   own points from live geometry and stays outside the 24px auto-scroll bands,
 #   so the box drag cannot scroll the view under the later steps.
+# - the marker steps run before any split/trim work: the sequence flow clears the
+#   clip selection (so M targets the timeline), adds at 1.0s, checks Shift+M and
+#   Ctrl+Shift+M against the transport, drags the tab and undoes the drag; the
+#   clip flow selects the video clip and edits the marker through the Marker menu.
+#   Every delete is undone and redone, so no marker is left behind for the
+#   snapping-sensitive steps that follow.
 
 set -u
 BASE_URL="${BASE_URL:-http://localhost:3000}"
@@ -210,6 +216,161 @@ f09_marquee_clear() {
   [ -z "$(selected_ids)" ]
 }
 
+# ————— F10 markers —————
+seq_marker_time() {
+  evaln 'document.querySelector("[data-testid=sequence-marker]")?.dataset.markerTime ?? "none"'
+}
+between() { awk -v t="$1" -v lo="$2" -v hi="$3" 'BEGIN { exit !(t > lo && t < hi) }'; }
+# The transport shows "<playhead> / <duration>", so compare a prefix.
+time_display_is() {
+  evaln "document.querySelector('[data-testid=time-display]').innerText.trim().startsWith('$1')"
+}
+f10_markers_sequence() {
+  ab press Control+Shift+a >/dev/null 2>&1   # no live clip selection -> M targets the timeline
+  ab find role button click --name 'Go to start (Home)' >/dev/null && sleep 0.4
+  for i in $(seq 1 30); do ab press ArrowRight >/dev/null 2>&1; done # 30 frames = 1.0s
+  sleeps 0.3
+  ab press m >/dev/null 2>&1 && sleeps 0.5
+  local n tm
+  n=$(evaln 'document.querySelectorAll("[data-testid=sequence-marker]").length')
+  [ "$n" = "1" ] || { echo "f10: sequence marker not added (count=$n)" >&2; return 1; }
+  [ "$(evaln 'document.querySelectorAll("[data-testid=clip-marker]").length')" = "0" ] || {
+    echo "f10: a marker with no clip selected landed on a clip" >&2
+    return 1
+  }
+  tm=$(seq_marker_time)
+  between "$tm" 0.99 1.01 || { echo "f10: marker at $tm, expected 1.0" >&2; return 1; }
+  # Shift+M from the start and Ctrl+Shift+M from the end both land on the marker.
+  ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
+  ab press Shift+m >/dev/null 2>&1 && sleeps 0.4
+  [ "$(time_display_is '0:01.')" = "true" ] || {
+    echo "f10: Shift+M did not land on the marker" >&2
+    return 1
+  }
+  ab find role button click --name 'Go to end (End)' >/dev/null && sleeps 0.4
+  ab press Control+Shift+m >/dev/null 2>&1 && sleeps 0.4
+  [ "$(time_display_is '0:01.')" = "true" ] || {
+    echo "f10: Ctrl+Shift+M did not land on the marker" >&2
+    return 1
+  }
+  # Drag the tab 60px: one undo entry, so Ctrl+Z restores the time.
+  local rect x y
+  rect=$(evaln '(() => {
+    const el = document.querySelector("[data-testid=sequence-marker]");
+    if (!el) return "none";
+    const r = el.getBoundingClientRect();
+    return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)].join(",");
+  })()')
+  [ "$rect" != "none" ] || { echo "f10: marker tab missing before the drag" >&2; return 1; }
+  IFS=',' read -r x y <<<"$rect"
+  ab mouse move "$x" "$y" >/dev/null 2>&1
+  ab mouse down >/dev/null 2>&1
+  ab mouse move "$((x + 20))" "$y" >/dev/null 2>&1
+  ab mouse move "$((x + 60))" "$y" >/dev/null 2>&1
+  sleeps 0.2
+  ab mouse up >/dev/null 2>&1
+  sleeps 0.4
+  tm=$(seq_marker_time)
+  between "$tm" 1.3 5 || { echo "f10: drag left the marker at $tm" >&2; return 1; }
+  ab press Control+z >/dev/null 2>&1 && sleeps 0.5
+  tm=$(seq_marker_time)
+  between "$tm" 0.99 1.01 || { echo "f10: undo did not restore the marker time ($tm)" >&2; return 1; }
+  # Click selects, Delete removes; undo restores it and redo removes it for good.
+  ab mouse move "$x" "$y" >/dev/null 2>&1
+  ab mouse down >/dev/null 2>&1
+  ab mouse up >/dev/null 2>&1
+  sleeps 0.4
+  ab press Delete >/dev/null 2>&1 && sleeps 0.5
+  [ "$(evaln 'document.querySelectorAll("[data-testid=sequence-marker]").length')" = "0" ] || {
+    echo "f10: Delete did not remove the selected marker" >&2
+    return 1
+  }
+  ab press Control+z >/dev/null 2>&1 && sleeps 0.5
+  [ "$(evaln 'document.querySelectorAll("[data-testid=sequence-marker]").length')" = "1" ] || {
+    echo "f10: undo did not restore the deleted marker" >&2
+    return 1
+  }
+  ab press Control+Shift+z >/dev/null 2>&1 && sleeps 0.5
+  [ "$(evaln 'document.querySelectorAll("[data-testid=sequence-marker]").length')" = "0" ] || {
+    echo "f10: redo did not remove the marker again" >&2
+    return 1
+  }
+}
+f10_markers_clip() {
+  click_clip 'sample-video' || { echo "f10: video clip not found" >&2; return 1; }
+  ab find role button click --name 'Go to start (Home)' >/dev/null && sleep 0.4
+  for i in $(seq 1 30); do ab press ArrowRight >/dev/null 2>&1; done # 1.0s inside the clip
+  sleeps 0.3
+  ab press m >/dev/null 2>&1 && sleeps 0.5
+  local n tm rect x y
+  n=$(evaln 'document.querySelectorAll("[data-testid=clip-marker]").length')
+  [ "$n" = "1" ] || { echo "f10: clip marker not added (count=$n)" >&2; return 1; }
+  [ "$(evaln 'document.querySelectorAll("[data-testid=sequence-marker]").length')" = "0" ] || {
+    echo "f10: a marker with a clip selected landed on the timeline" >&2
+    return 1
+  }
+  tm=$(evaln 'document.querySelector("[data-testid=clip-marker]").dataset.markerTime')
+  between "$tm" 0.99 1.01 || { echo "f10: clip marker at $tm, expected source 1.0" >&2; return 1; }
+  # Adding does not select, so click the tab (seek + select), then edit through
+  # the Marker menu: name, red swatch, notes.
+  rect=$(evaln '(() => {
+    const el = document.querySelector("[data-testid=clip-marker]");
+    if (!el) return "none";
+    const r = el.getBoundingClientRect();
+    return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)].join(",");
+  })()')
+  [ "$rect" != "none" ] || { echo "f10: clip marker tab missing before the edit" >&2; return 1; }
+  IFS=',' read -r x y <<<"$rect"
+  ab mouse move "$x" "$y" >/dev/null 2>&1
+  ab mouse down >/dev/null 2>&1
+  ab mouse up >/dev/null 2>&1
+  sleeps 0.4
+  ab find role menuitem click --name 'Marker' >/dev/null 2>&1 && sleeps 0.4
+  ab find role menuitem click --name 'Edit Selected Marker' >/dev/null 2>&1 && sleeps 0.6
+  n=$(evaln 'document.querySelectorAll("[data-testid=marker-dialog]").length')
+  [ "$n" = "1" ] || {
+    echo "f10: marker dialog did not open (count=$n)" >&2
+    ab press Escape >/dev/null 2>&1
+    return 1
+  }
+  ab fill '[data-testid=marker-name-input]' 'Beat' >/dev/null 2>&1
+  ab find role radio click --name 'Marker color red' >/dev/null 2>&1 && sleeps 0.2
+  [ "$(evaln 'document.querySelector("[data-testid=marker-color-red]").getAttribute("aria-checked")')" = "true" ] || {
+    echo "f10: the red swatch did not become the checked color" >&2
+    ab press Escape >/dev/null 2>&1
+    return 1
+  }
+  ab fill '[data-testid=marker-notes-input]' 'First hit' >/dev/null 2>&1
+  # Save by testid: find-by-name also matches the toolbar's "Save project" behind
+  # the modal, and that outside click just dismisses the dialog without saving.
+  ab click '[data-testid=marker-save]' >/dev/null 2>&1 && sleeps 0.5
+  [ "$(evaln 'document.querySelectorAll("[data-testid=marker-dialog]").length')" = "0" ] || {
+    echo "f10: the marker dialog did not close on Save" >&2
+    return 1
+  }
+  [ "$(evaln '(() => {
+    const el = document.querySelector("[data-testid=clip-marker]");
+    const label = el ? el.getAttribute("aria-label") : "";
+    return label.includes("Beat") && label.includes("First hit");
+  })()')" = "true" ] || { echo "f10: the saved name/notes are not on the clip marker" >&2; return 1; }
+  # Delete (the marker owns the key while selected), undo, redo.
+  ab press Delete >/dev/null 2>&1 && sleeps 0.5
+  [ "$(evaln 'document.querySelectorAll("[data-testid=clip-marker]").length')" = "0" ] || {
+    echo "f10: Delete did not remove the selected clip marker" >&2
+    return 1
+  }
+  ab press Control+z >/dev/null 2>&1 && sleeps 0.5
+  [ "$(evaln 'document.querySelectorAll("[data-testid=clip-marker]").length')" = "1" ] || {
+    echo "f10: undo did not restore the clip marker" >&2
+    return 1
+  }
+  ab press Control+Shift+z >/dev/null 2>&1 && sleeps 0.5
+  [ "$(evaln 'document.querySelectorAll("[data-testid=clip-marker]").length')" = "0" ] || {
+    echo "f10: redo did not remove the clip marker again" >&2
+    return 1
+  }
+}
+
 # ————— F6 playback + compositing —————
 f06_play() {
   local t0 t1
@@ -312,12 +473,15 @@ f05_gain() {
 # ————— Menus —————
 menus_open() {
   local ok=0
-  for m in File Edit Clip Sequence Graphics View Window Help; do
-    ab find role menuitem click --name "$m" >/dev/null 2>&1 && sleep 0.3
+  for m in File Edit Clip Sequence Marker Graphics View Window Help; do
+    # A failed click must skip the increment, or the 9-item assertion can
+    # never fail and the step advertises a check it does not perform.
+    ab find role menuitem click --name "$m" >/dev/null 2>&1 || continue
+    sleep 0.3
     ab press Escape >/dev/null 2>&1 && sleep 0.2
     ok=$((ok + 1))
   done
-  [ "$ok" = "8" ]
+  [ "$ok" = "9" ]
 }
 menu_snapping() { # snapping starts ON → one toggle must show "Snapping off"
   sleep 0.5
@@ -411,6 +575,8 @@ step "f02 add: video+audio+image quick-added"      f02_add
 step "f02 zoom: all clips reachable in snapshot"   zoom_out
 step "f09 marquee: box drag selects every clip"    f09_marquee
 step "f09 marquee: empty-space click clears it"    f09_marquee_clear
+step "f10 markers: sequence add/nav/drag/delete"    f10_markers_sequence
+step "f10 markers: clip marker + dialog edit"        f10_markers_clip
 step "f06 play: transport runs, time advances"     f06_play
 step "f06 sync: preview canvas renders frames"     f06_canvas
 step "f02 split: select + 2.0s + Ctrl+K splits clip" f02_split
@@ -422,7 +588,7 @@ step "f04 text: T adds a text clip"                f04_text_add
 step "f04 text: content edited via Inspector"      f04_text_edit
 step "f05 audio: mute switch works"                f05_mute
 step "f05 audio: gain slider reaches 200%"         f05_gain
-step "menus: all 8 application menus open"         menus_open
+step "menus: all 9 application menus open"         menus_open
 step "menus: View > Snapping toggles off"          menu_snapping
 step "panels: collapse Media panel (strip shown)"  panels_collapse
 step "panels: Window > Reset Workspace Layout"     panels_reset

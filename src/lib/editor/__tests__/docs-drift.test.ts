@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 
 /**
  * docs-drift.test.ts — locks the documentation's test-count claims to reality.
@@ -16,6 +16,11 @@ import { join, resolve } from 'node:path'
  *   consistent (files <= tests) and to not accidentally equal a stale
  *   repo-wide total. They cannot be validated against disk without parsing
  *   the tree layout they annotate.
+ * - Every row of testing.md's per-file inventory table must name a real test
+ *   file with that file's real case count, one row per file. The headline
+ *   total alone would hide a row that drifted, and a row that loses its cells
+ *   (two rows collapsed onto one line) drops both files from the table while
+ *   still summing to the same total.
  */
 
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
@@ -125,6 +130,62 @@ function checkScoped(doc: string, total: number): string | null {
   return null
 }
 
+/**
+ * Validate the per-file inventory table in testing.md: one row per real test
+ * file, a numeric count that matches `countCases`, and no malformed rows. Rows
+ * are read by their cell shape ('' | file | tests | focus | ''), so a row whose
+ * cells were merged onto another line fails BOTH as a malformed row and as two
+ * missing files.
+ */
+function checkTestingTableRows(files: string[]): string[] {
+  const doc = 'docs/testing.md'
+  const text = readFileSync(join(ROOT, doc), 'utf8')
+  const byName = new Map(files.map((f) => [basename(f), f]))
+  const seen = new Set<string>()
+  const problems: string[] = []
+  text.split('\n').forEach((line, i) => {
+    const at = `${doc}:${i + 1}`
+    if (!line.startsWith('|')) return
+    const cells = line.split('|').map((c) => c.trim())
+    // '' | file | tests | focus | ''.
+    if (cells.length !== 5) {
+      problems.push(`${at} table row has ${cells.length - 2} cells, expected 3`)
+      return
+    }
+    // ONLY the header and the |---| separator may carry a first cell that is not
+    // a backticked filename, and each must match WHOLE: matching on the first
+    // cell alone would also skip a decoy data row whose filename cell reads
+    // "File", and a partial separator (dash cells plus a junk one) would slip
+    // through the dash check on its way to the same silent skip.
+    const head = cells[1]
+    if (head === 'File' && cells[2] === 'Tests' && cells[3] === 'Focus') return
+    if (cells.slice(1, -1).every((c) => /^:?-{3,}:?$/.test(c))) return
+    const file = /^`([^`]+)`$/.exec(head)?.[1]
+    if (!file) {
+      problems.push(`${at} row "${head}" has no backticked test filename`)
+      return
+    }
+    const claimed = Number(cells[2])
+    if (!Number.isInteger(claimed)) {
+      problems.push(`${at} "${file}" has no numeric count ("${cells[2]}")`)
+      return
+    }
+    const real = byName.get(file)
+    if (!real) {
+      problems.push(`${at} "${file}" matches no test file on disk`)
+      return
+    }
+    if (seen.has(file)) problems.push(`${at} "${file}" is listed twice`)
+    seen.add(file)
+    const actual = countCases(real)
+    if (claimed !== actual) problems.push(`${at} "${file}" claims ${claimed}, suite has ${actual}`)
+  })
+  for (const f of files) {
+    if (!seen.has(basename(f))) problems.push(`${doc}: no inventory row for ${basename(f)}`)
+  }
+  return problems
+}
+
 describe('docs test-count claims match the real suite', () => {
   const files = realTestFiles()
   const total = files.reduce((sum, f) => sum + countCases(f), 0)
@@ -145,5 +206,9 @@ describe('docs test-count claims match the real suite', () => {
 
   it('every doc scoped directory count is internally consistent', () => {
     expect(DOCS.map((doc) => checkScoped(doc, total)).filter((f) => f !== null)).toEqual([])
+  })
+
+  it('every per-file row in the testing.md inventory matches its suite', () => {
+    expect(checkTestingTableRows(files)).toEqual([])
   })
 })

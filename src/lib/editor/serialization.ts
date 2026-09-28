@@ -1,5 +1,6 @@
 import { EQ_DB_MAX, EQ_DB_MIN, KEYFRAME_PROPERTY_BOUNDS, SPEED_MAX, SPEED_MIN } from './constants'
 import { clampPropertyValue, isAnimatableProperty, sanitizeKeyframes } from './keyframes'
+import { applyMarkerPatch, isMarkerColor } from './markers'
 import { clamp } from './time'
 import type {
   Clip,
@@ -7,6 +8,7 @@ import type {
   Keyframe,
   KeyframeMap,
   KeyframeProperty,
+  Marker,
   MediaAsset,
   Project,
 } from './types'
@@ -19,7 +21,12 @@ import type {
  * and rendered as "offline" in the UI until the user relinks them.
  */
 
-export const SERIALIZATION_VERSION = 1
+/**
+ * v2 added markers (0.5.5). The loader accepts every version from 1 up to the
+ * current one, so v1 files and autosaves load with no markers attached; only
+ * files from a NEWER app version are refused.
+ */
+export const SERIALIZATION_VERSION = 2
 export const PROJECT_FILE_EXTENSION = '.veproj.json'
 
 export interface SerializedMedia {
@@ -92,7 +99,12 @@ export function deserializeDoc(data: unknown): {
     throw new SerializationError('Invalid project file: root is not an object')
   }
   const obj = data as Record<string, unknown>
-  if (obj.version !== SERIALIZATION_VERSION) {
+  if (
+    typeof obj.version !== 'number' ||
+    !Number.isInteger(obj.version) ||
+    obj.version < 1 ||
+    obj.version > SERIALIZATION_VERSION
+  ) {
     throw new SerializationError(`Unsupported project version: ${String(obj.version)}`)
   }
   const projectRaw = obj.project as Record<string, unknown> | undefined
@@ -104,12 +116,14 @@ export function deserializeDoc(data: unknown): {
     hydrateMedia(raw as Record<string, unknown>),
   )
 
+  const projectMarkers = hydrateMarkers(projectRaw.markers)
   const project: Project = {
     id: typeof projectRaw.id === 'string' ? projectRaw.id : 'proj_loaded',
     name: typeof projectRaw.name === 'string' ? projectRaw.name : 'Imported Project',
     width: numOr(projectRaw.width, 1920),
     height: numOr(projectRaw.height, 1080),
     fps: numOr(projectRaw.fps, 30),
+    ...(projectMarkers ? { markers: projectMarkers } : {}),
     tracks: (projectRaw.tracks as Record<string, unknown>[]).map((t) => ({
       id: typeof t.id === 'string' ? t.id : `track_${Math.random().toString(36).slice(2)}`,
       kind: (t.kind === 'audio' || t.kind === 'text'
@@ -228,7 +242,42 @@ function hydrateClip(raw: Record<string, unknown>): Clip {
       duration: (raw.transitionOut as { duration: number }).duration,
     }
   }
+  const markers = hydrateMarkers(raw.markers)
+  if (markers) clip.markers = markers
   return clip
+}
+
+/**
+ * Validates a serialized marker array. Malformed entries are dropped, as are
+ * negative or non-finite times, unknown colors fall back to the default
+ * (absent), duplicate ids in the same scope are dropped, and an empty result
+ * stays undefined so hydrated docs (and the files saved from them) stay clean.
+ */
+function hydrateMarkers(raw: unknown): Marker[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const seen = new Set<string>()
+  const markers: Marker[] = []
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const rec = entry as Record<string, unknown>
+    if (typeof rec.time !== 'number' || !Number.isFinite(rec.time) || rec.time < 0) continue
+    const id =
+      typeof rec.id === 'string' && rec.id
+        ? rec.id
+        : `marker_${Math.random().toString(36).slice(2)}`
+    if (seen.has(id)) continue
+    seen.add(id)
+    const marker: Marker = { id, time: rec.time }
+    applyMarkerPatch(marker, {
+      ...(typeof rec.name === 'string' ? { name: rec.name } : {}),
+      ...(isMarkerColor(rec.color) ? { color: rec.color } : {}),
+      ...(typeof rec.notes === 'string' ? { notes: rec.notes } : {}),
+    })
+    markers.push(marker)
+  }
+  if (markers.length === 0) return undefined
+  markers.sort((a, b) => a.time - b.time)
+  return markers
 }
 
 /** Animatable properties that keep a static field (opacity/volume have their own). */

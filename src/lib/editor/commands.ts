@@ -26,9 +26,11 @@ import {
   findMedia,
   findTrack,
   nextClipOnTrack,
+  uid,
 } from './factories'
 import { clamp } from './time'
 import { isAnimatableProperty, sanitizeKeyframes, splitKeyframeMap } from './keyframes'
+import { applyMarkerPatch, reIdMarkers } from './markers'
 import { maxTransitionDuration } from './transition'
 import type {
   Clip,
@@ -36,6 +38,8 @@ import type {
   Keyframe,
   KeyframeMap,
   KeyframeProperty,
+  Marker,
+  MarkerPatch,
   MediaAsset,
   Project,
   TextStyle,
@@ -112,6 +116,15 @@ export type EditorCommand =
   // transitions
   | { type: 'addTransition'; clipId: string; duration: number }
   | { type: 'removeTransition'; clipId: string }
+  // markers (0.5.5)
+  | { type: 'addSequenceMarker'; marker: Marker }
+  | { type: 'moveSequenceMarker'; markerId: string; time: number }
+  | { type: 'updateSequenceMarker'; markerId: string; patch: MarkerPatch }
+  | { type: 'deleteSequenceMarker'; markerId: string }
+  | { type: 'addClipMarker'; clipId: string; marker: Marker }
+  | { type: 'moveClipMarker'; clipId: string; markerId: string; time: number }
+  | { type: 'updateClipMarker'; clipId: string; markerId: string; patch: MarkerPatch }
+  | { type: 'deleteClipMarker'; clipId: string; markerId: string }
   // project
   | {
       type: 'setProjectSettings'
@@ -290,6 +303,12 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
         transitionOut: clip.transitionOut,
         keyframes: rightKeyframes,
       }
+      // Markers are source-anchored, so both halves still show every cue that
+      // falls inside their own span — but the ids must be FRESH on the right
+      // half. Shared ids would make delete/edit on one half leave the twin
+      // behind (extending the half later resurrects it) and drop the twin
+      // from snap exclusion (`excludeMarkerId` matches by id).
+      right.markers = reIdMarkers(right.markers)
       // Premiere split semantics: the right half is a SEPARATE link group. The
       // group-split action passes one shared `rightLinkId` so all right halves
       // of an A/V pair re-link with each other; a bare linked split gets a
@@ -491,6 +510,75 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       return
     }
 
+    case 'addSequenceMarker': {
+      const marker = sanitizeMarker(command.marker)
+      const list = doc.project.markers ?? (doc.project.markers = [])
+      if (list.some((m) => m.id === marker.id)) {
+        throw new EditorCommandError(`Marker ${marker.id} already exists`)
+      }
+      list.push(marker)
+      list.sort((a, b) => a.time - b.time)
+      return
+    }
+
+    case 'moveSequenceMarker': {
+      const marker = requireSequenceMarker(doc, command.markerId)
+      marker.time = markerTime(command.time)
+      doc.project.markers!.sort((a, b) => a.time - b.time)
+      return
+    }
+
+    case 'updateSequenceMarker': {
+      applyMarkerPatch(requireSequenceMarker(doc, command.markerId), command.patch)
+      return
+    }
+
+    case 'deleteSequenceMarker': {
+      const list = doc.project.markers
+      const index = list?.findIndex((m) => m.id === command.markerId) ?? -1
+      if (!list || index === -1) throw new EditorCommandError('Unknown marker')
+      list.splice(index, 1)
+      // Empty arrays are omitted so saved files stay clean.
+      if (list.length === 0) doc.project.markers = undefined
+      return
+    }
+
+    case 'addClipMarker': {
+      const { clip } = requireClip(doc, command.clipId)
+      const marker = sanitizeMarker(command.marker)
+      const list = clip.markers ?? (clip.markers = [])
+      if (list.some((m) => m.id === marker.id)) {
+        throw new EditorCommandError(`Marker ${marker.id} already exists`)
+      }
+      list.push(marker)
+      list.sort((a, b) => a.time - b.time)
+      return
+    }
+
+    case 'moveClipMarker': {
+      const { clip } = requireClip(doc, command.clipId)
+      const marker = requireClipMarker(clip, command.markerId)
+      marker.time = markerTime(command.time)
+      clip.markers!.sort((a, b) => a.time - b.time)
+      return
+    }
+
+    case 'updateClipMarker': {
+      const { clip } = requireClip(doc, command.clipId)
+      applyMarkerPatch(requireClipMarker(clip, command.markerId), command.patch)
+      return
+    }
+
+    case 'deleteClipMarker': {
+      const { clip } = requireClip(doc, command.clipId)
+      const list = clip.markers
+      const index = list?.findIndex((m) => m.id === command.markerId) ?? -1
+      if (!list || index === -1) throw new EditorCommandError('Unknown marker')
+      list.splice(index, 1)
+      if (list.length === 0) clip.markers = undefined
+      return
+    }
+
     case 'setProjectSettings': {
       const p = doc.project
       if (command.patch.name !== undefined) p.name = command.patch.name.trim() || p.name
@@ -519,6 +607,35 @@ function requireClip(doc: Doc, clipId: string) {
   const found = findClip(doc, clipId)
   if (!found) throw new EditorCommandError('Unknown clip')
   return found
+}
+
+function markerTime(time: number): number {
+  if (!Number.isFinite(time) || time < 0) {
+    throw new EditorCommandError('Marker time must be a non-negative number')
+  }
+  return time
+}
+
+/** Validated copy of an incoming marker (id required, time finite, patch trimmed). */
+function sanitizeMarker(marker: Marker): Marker {
+  if (typeof marker.id !== 'string' || !marker.id) {
+    throw new EditorCommandError('Marker id is required')
+  }
+  const next: Marker = { id: marker.id, time: markerTime(marker.time) }
+  applyMarkerPatch(next, marker)
+  return next
+}
+
+function requireSequenceMarker(doc: Doc, markerId: string): Marker {
+  const marker = (doc.project.markers ?? []).find((m) => m.id === markerId)
+  if (!marker) throw new EditorCommandError('Unknown marker')
+  return marker
+}
+
+function requireClipMarker(clip: Clip, markerId: string): Marker {
+  const marker = clip.markers?.find((m) => m.id === markerId)
+  if (!marker) throw new EditorCommandError('Unknown marker')
+  return marker
 }
 
 function requireTrack(doc: Doc, trackId: string) {
