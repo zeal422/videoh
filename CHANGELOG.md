@@ -5,6 +5,55 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.6] - 2026-09-28
+
+### Fixed
+
+- **File > Open (and the toolbar's open button) never actually loaded a saved project.** The
+  picker handed the file's raw JSON TEXT to the validator, which validates an already-parsed
+  object, so every real open failed with "Invalid project file: root is not an object". The bug
+  was as old as the project-file feature itself (0.3.0) and invisible to the unit tests, which
+  call the validator with parsed objects; only the autosave restore (which parses correctly)
+  ever worked. The picker path now runs through the same `parseSerializedDoc` the restore path
+  uses, and a new regression test round-trips a real File object. Found by the extended battery:
+  the save/open roundtrip step surfaced the silent failure.
+- **The menu bar no longer shows a native vertical scrollbar at its right edge.** The bar is 32px
+  tall (h-8) while the menu primitive pads 4px vertically and the labels stand 28px (h-7): 36px of
+  content in a 32px box, so the bar overflowed by 4 invisible pixels. With the bar declared
+  `overflow-x-auto` (for narrow windows), CSS promoted the vertical axis to auto too, and Chromium
+  painted a full scrollbar with up/down arrows for an overflow nobody could see. The bar now
+  collapses the primitive's vertical padding (py-0, the labels center in the 32px band) and forces
+  `overflow-y-hidden`; horizontal scrolling on narrow windows is untouched. Locked by
+  `menubar.test.tsx`.
+- **The menu bar shows the running version at its right edge.** A small muted `v0.5.6` label sits
+  where the stray scrollbar used to be, fed from `releases.ts` (the same gate-locked source as the
+  welcome modal, so it cannot drift from package.json). It is static text, not a button.
+
+### Added
+
+- **A welcome modal greets you with what changed recently.** After login, the editor opens a
+  release-notes modal once per new version: the last five versions, each with at least four short
+  highlights, the newest chip filled emerald and the older ones outlined. The greeting is
+  recorded in localStorage (`releases:lastSeen`), so it appears again only when the version
+  changes, and it waits until the restore-session prompt is resolved (accepted, discarded, or
+  never present) so two prompts never stack.
+- **Help > What's new opens the same modal any time.** The menu label follows the running
+  version, the row carries a light emerald tint (deeper when highlighted) so it stands out, and
+  the entry sits next to Keyboard Shortcuts in the Help menu. Both entry points
+  render one shared component (`ReleaseNotesModal`); the version blocks stagger in with a
+  short slide and fade that is fully wrapped in `motion-safe:`, so reduced-motion users get
+  an instant list.
+- **The notes are hand-curated and gate-locked.** `src/lib/releases.ts` holds the compact
+  text, distilled at release time, and `releases.test.ts` fails `bun run check` when the top
+  entry falls behind package.json, when an entry loses a highlight, or when the versions stop
+  ordering newest-first.
+- **The E2E battery grew to 42 steps.** New coverage: the welcome modal (Help > What's new opens
+  it, a recorded version stays silent on reload), a real non-bundled file import through the
+  media bin's hidden input, duplicate (D), copy/paste, unlink (Ctrl+L) and ripple delete
+  (Shift+Delete), a save-to-file capture plus File > New and reopening the saved `.veproj.json`
+  end to end, and a welcome-modal dismissal in every fresh-start step (the greeting hid the app
+  from the accessibility snapshot the battery drives with).
+
 ## [0.5.5] - 2026-09-27
 
 ### Fixed

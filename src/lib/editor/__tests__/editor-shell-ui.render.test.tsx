@@ -9,6 +9,7 @@ import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { isTransientActive, useEditorStore } from '../store'
 import { createClip, createMediaAsset, createTrack } from '../factories'
 import type { Doc } from '../types'
+import { CURRENT_VERSION } from '../../releases'
 
 /**
  * jsdom render tests for the editor shell's dangling-gesture safety net: a
@@ -83,6 +84,9 @@ describe('EditorShell dangling-gesture safety net', () => {
     }
     useEditorStore.setState({ doc })
     const user = userEvent.setup()
+    // The welcome modal would open over this menu interaction (fresh visitor);
+    // record the version so the shell stays silent for this test.
+    window.localStorage.setItem('releases:lastSeen', CURRENT_VERSION)
     render(<EditorShell />)
 
     const trigger = screen.getByRole('menuitem', { name: 'Marker' })

@@ -51,8 +51,10 @@ import {
 } from '@/lib/editor/links'
 import { EditorCommandError } from '@/lib/editor/commands'
 import { createDoc, docDuration, uid } from '@/lib/editor/factories'
+import { cn } from '@/lib/utils'
 import { GAIN_MAX, GAIN_MIN, PPS_MAX, PPS_MIN, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
 import { buildMenus, type MenuActionId, type MenuContext } from '@/lib/editor/menus'
+import { CURRENT_VERSION } from '@/lib/releases'
 import { hasNavigableMarkers, markerSelectionExists, neighborMarker } from '@/lib/editor/markers'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import {
@@ -77,11 +79,15 @@ import { useEditorStore } from '@/lib/editor/store'
 export function MenuBar({
   onOpenExport,
   onResetLayout,
+  onOpenReleaseNotes,
 }: {
   onOpenExport: () => void
   /** Full reset: clears the workspace store AND imperatively resizes the live
    * panels (mounted panels never re-read defaultSize on their own). */
   onResetLayout: () => void
+  /** Opens the shell's single ReleaseNotesModal. One instance lives in
+   * EditorShell so the auto-open greeting and the menu entry share it. */
+  onOpenReleaseNotes: () => void
 }) {
   const past = useEditorStore((s) => s.past)
   const future = useEditorStore((s) => s.future)
@@ -402,6 +408,9 @@ export function MenuBar({
             toast({ title: 'Workspace layout reset' })
             break
 
+          case 'help.releaseNotes':
+            onOpenReleaseNotes()
+            break
           case 'help.shortcuts':
             setShortcutsOpen(true)
             break
@@ -417,7 +426,15 @@ export function MenuBar({
         }
       }
     },
-    [onOpenExport, onResetLayout, openGainDialog, setHidden, showError, toggleHidden],
+    [
+      onOpenExport,
+      onOpenReleaseNotes,
+      onResetLayout,
+      openGainDialog,
+      setHidden,
+      showError,
+      toggleHidden,
+    ],
   )
 
   const menus = buildMenus(ctx)
@@ -426,7 +443,7 @@ export function MenuBar({
       <Menubar
         role="menubar"
         aria-label="Application menu"
-        className="bg-card h-8 w-full max-w-full overflow-x-auto rounded-none border-x-0 border-t-0 px-1 shadow-none"
+        className="bg-card h-8 w-full max-w-full overflow-x-auto overflow-y-hidden rounded-none border-x-0 border-t-0 px-1 py-0 shadow-none"
       >
         {menus.map((menu) => (
           <MenubarMenu key={menu.spec.id}>
@@ -456,6 +473,15 @@ export function MenuBar({
                     key={item.spec.id}
                     disabled={!item.enabled}
                     onSelect={() => item.spec.action && execute(item.spec.action)}
+                    className={cn(
+                      item.spec.tinted &&
+                        // Release-notes row: light emerald at rest, deeper when
+                        // highlighted. The /focus classes also override the
+                        // primitive's focus:bg-accent via tailwind-merge, so the
+                        // highlight stays green instead of switching to the
+                        // neutral accent.
+                        'bg-emerald-500/15 focus:bg-emerald-500/25 focus:text-emerald-50',
+                    )}
                   >
                     {item.spec.label}
                     {item.spec.shortcut && <MenubarShortcut>{item.spec.shortcut}</MenubarShortcut>}
@@ -465,6 +491,17 @@ export function MenuBar({
             </MenubarContent>
           </MenubarMenu>
         ))}
+
+        {/* Running version, static muted label at the right edge: the space
+            the stray scrollbar used to occupy. The value comes from
+            releases.ts, the same gate-locked source as the welcome modal, so
+            it cannot drift from package.json. */}
+        <span
+          data-testid="menubar-version"
+          className="text-muted-foreground ml-auto shrink-0 pr-2 text-[11px] tabular-nums"
+        >
+          v{CURRENT_VERSION}
+        </span>
       </Menubar>
 
       <AudioGainDialog

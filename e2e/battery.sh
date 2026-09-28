@@ -32,12 +32,34 @@
 #   clip flow selects the video clip and edits the marker through the Marker menu.
 #   Every delete is undone and redone, so no marker is left behind for the
 #   snapping-sensitive steps that follow.
+# - the 0.5.6 welcome modal greets a fresh visitor and, while open, Radix hides
+#   the whole app from the a11y snapshot. Both fresh-start steps dismiss it like
+#   a user would (Escape) before asserting, and two steps lock the greeting
+#   itself (Help > What's new opens; a recorded version stays silent on reload).
+# - the real-file steps feed bytes the app does not own: a generated PNG goes
+#   through `agent-browser upload` into the media bin's hidden import input
+#   (probe, dedup, thumbnail path), and the save/open roundtrip captures the
+#   toolbar's .veproj.json download with `agent-browser download`, starts a NEW
+#   project, and reopens the file through the toolbar's hidden input. Since
+#   0.5.6 the open path hydrates the bundled samples itself, so the reopened
+#   project comes back ONLINE (the step asserts no offline overlay).
+# - the clipboard/link steps run after f05 and respect link-group semantics:
+#   duplicate and paste move exactly the clicked clip's link group, read LIVE
+#   from the selection ring, and Shift+Delete ripples the pasted copy away.
 
 set -u
 BASE_URL="${BASE_URL:-http://localhost:3000}"
 SESSION="${SESSION:-battery}"
 OUT="${OUT:-results.txt}"
 : > "$OUT"
+
+# The project-file capture (f08_capture_project) lives at a unique mktemp path
+# and is normally consumed by f07_open_project. Any step's early return between
+# the two must not leak the file, so an EXIT/INT/TERM trap removes it — by the
+# VARIABLE, never a glob: a glob could delete a PARALLEL battery run's capture
+# (the runner documents A/B runs against two trees).
+PROJECT_CAPTURE=''
+trap '[ -n "$PROJECT_CAPTURE" ] && rm -f "$PROJECT_CAPTURE"' INT TERM EXIT
 
 ab() { agent-browser --session "$SESSION" "$@"; }
 snap() { ab snapshot -i -c 2>/dev/null; }
@@ -67,6 +89,22 @@ click_clip() { # click_clip <name-regex>
   ab scrollintoview "@$r" >/dev/null 2>&1 && sleeps 0.2
   ab click "@$r" >/dev/null 2>&1 && sleeps 0.5
 }
+
+# The 0.5.6 welcome modal greets every fresh visit; while it is open the rest
+# of the app is aria-hidden (Radix) and invisible to the a11y snapshot. Close
+# it the way a user does before touching anything else. A failed eval MUST
+# abort the step, not fall through as "no modal": the script runs without
+# set -e, so an empty result would leave the modal open and fail later at a
+# confusing step (same class as the menus_open fix in 0.5.5).
+dismiss_greeting() {
+  local n
+  n=$(evaln 'document.querySelectorAll("[data-testid=release-notes-modal]").length')
+  [ -n "$n" ] || { echo "dismiss_greeting: eval failed, refusing to guess" >&2; return 1; }
+  if [ "$n" = "1" ]; then
+    ab press Escape >/dev/null 2>&1
+    sleeps 0.5
+  fi
+}
 fill_timing() { # fill_timing <start> <duration> — Timing spinbuttons of a selected clip
   local n; n=$(snap | grep -c -- '- spinbutton')
   if [ "$n" != "2" ]; then
@@ -95,13 +133,41 @@ g0_login() {
     ab press Enter >/dev/null
     sleep 2.5
   fi
+  dismiss_greeting || return 1 # fresh visitor: the welcome modal hides the app until closed
   snap | grep -q 'Load sample media'
 }
 
 s02_fresh() {
   ab eval 'localStorage.clear()' >/dev/null
   ab reload >/dev/null && sleep 2.5
+  dismiss_greeting || return 1
   snap | grep -q 'Load sample media'
+}
+
+# ————— 0.5.6 welcome modal (Help > What's new) —————
+f11_whatsnew_opens() {
+  local r; r=$(firstref 'menuitem "Help"')
+  [ -n "$r" ] || return 1
+  ab click "@$r" >/dev/null && sleeps 0.4
+  local entry; entry=$(firstref "menuitem \"What's new in")
+  [ -n "$entry" ] || { ab press Escape >/dev/null 2>&1; return 1; }
+  ab click "@$entry" >/dev/null && sleeps 0.5
+  local ok
+  ok=$(evaln 'document.querySelectorAll("[data-testid=release-notes-modal]").length')
+  ab press Escape >/dev/null 2>&1
+  [ "$ok" = "1" ]
+}
+f11_whatsnew_once() {
+  # The version was recorded by the greeting earlier in the run, so a reload
+  # must NOT greet again. The reload surfaces the autosave restore banner
+  # (edits happened); the banner must not bring the greeting back, and the
+  # session must continue on the RESTORED doc for the steps that follow.
+  ab reload >/dev/null && sleep 2.5
+  local n
+  n=$(evaln 'document.querySelectorAll("[data-testid=release-notes-modal]").length')
+  [ "$n" = "0" ] || return 1
+  ab find role button click --name 'Restore' >/dev/null 2>&1 && sleep 1.5
+  [ "$(clipcount)" -ge 3 ]
 }
 
 # ————— F1 import —————
@@ -371,6 +437,24 @@ f10_markers_clip() {
   }
 }
 
+# ————— F1b real file import (bytes the app does not bundle) —————
+# A tiny valid PNG (1x1, embedded as base64 and PIL-verified equivalent) goes
+# through the media bin's hidden multi-file input: the same importFile probe,
+# dedup and thumbnail path a user's file picker feeds. Success = a 4th
+# "Add to timeline" asset.
+f01b_import_real_file() {
+  local png; png="${TMPDIR:-/tmp}/battery-pixel-$$.png"
+  printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' | base64 -d > "$png"
+  ab upload 'aside[aria-label="Media bin"] input[type=file][multiple]' "$png" >/dev/null 2>&1 || {
+    echo "f01b: upload into the media bin failed" >&2
+    rm -f "$png"
+    return 1
+  }
+  sleep 2.5
+  rm -f "$png"
+  [ "$(ab get count '[aria-label="Add to timeline"]')" = "4" ]
+}
+
 # ————— F6 playback + compositing —————
 f06_play() {
   local t0 t1
@@ -470,6 +554,110 @@ f05_gain() {
   [ "$(evaln 'document.querySelector("aside[aria-label=Inspector]").innerText.includes("200%")')" = "true" ]
 }
 
+# ————— F2/F8 clipboard, duplicate, ripple —————
+# Group semantics (actions.ts): duplicate/copy/ripple expand the selection to
+# its link groups, and a plain click selects ONE clip (the ring is group-aware
+# but resolveSelectionGroups of one unlinked member is that member). The
+# expected delta is therefore read LIVE from the selection ring at action
+# time. No hardcoded +1/+2 that depends on which clip earlier steps left
+# behind. ring_count is also the click-actually-selected guard.
+clip_named_count() { # clip_named_count <name-regex> — snapshot buttons matching one clip name
+  snap | grep -cE "button \"Clip $1"
+}
+ring_count() {
+  evaln '[...document.querySelectorAll("[data-testid^=clip-]:not([data-testid$=badge])")].filter((c) => c.className.includes("ring-rose-400")).length'
+}
+select_named() { # select_named <name-regex> — click by name, retry once, report ring
+  click_clip "$1" || return 1
+  [ "$(ring_count)" -ge 1 ] && return 0
+  click_clip "$1" || return 1
+  [ "$(ring_count)" -ge 1 ]
+}
+f02_duplicate() {
+  # A first D after earlier steps has been observed to drop silently (the
+  # keydown arrives, the handler runs, no clone lands). Press D ONCE, check
+  # the count, and only retry (Escape, D) when nothing moved: Escape does not
+  # clear the clip selection, so a blind second D would clone the clone and
+  # fail the exact-count assertion. The assertion stays strict either way:
+  # the count must rise by exactly the selection's group size.
+  local before after n
+  before=$(clipcount)
+  select_named 'sample-audio' || { echo "f02: audio clip did not select" >&2; return 1; }
+  n=$(ring_count)
+  # NOTE: sleeps are unconditional, the count must settle before it is read.
+  ab press d >/dev/null 2>&1; sleeps 0.6
+  after=$(clipcount)
+  if [ "$after" -ne "$((before + n))" ]; then
+    ab press Escape >/dev/null 2>&1; sleeps 0.3
+    ab press d >/dev/null 2>&1; sleeps 0.6
+    after=$(clipcount)
+  fi
+  [ "$after" -eq "$((before + n))" ] || {
+    echo "f02: D moved $((after - before)) clips, selection ring held $n" >&2
+    return 1
+  }
+  ab press Control+z >/dev/null 2>&1; sleeps 0.6
+  [ "$(clipcount)" -eq "$before" ]
+}
+f02_copy_paste() {
+  # Paste at the sequence END (End key first): the audio sample is 8s long, so
+  # a paste at the earlier playhead would OVERLAP the original on the same
+  # lane and a later coordinate click could hit either clip. At the end the
+  # copy starts at a distinctive label time (22.00) and overlaps nothing.
+  local before after n
+  before=$(clipcount)
+  select_named 'sample-audio' || { echo "f02: audio clip did not select for copy" >&2; return 1; }
+  n=$(ring_count)
+  ab press Control+c >/dev/null 2>&1; sleeps 0.3
+  ab find role button click --name 'Go to end (End)' >/dev/null 2>&1 && sleeps 0.4
+  ab press Control+v >/dev/null 2>&1; sleeps 0.6
+  after=$(clipcount)
+  [ "$after" -eq "$((before + n))" ] || {
+    echo "f02: paste moved $((after - before)) clips, copied group held $n" >&2
+    return 1
+  }
+}
+f08_ripple_delete() {
+  # The pasted copy starts at the sequence end (22.00s, set by copy_paste),
+  # so target it by that distinctive label. The honest assertions: the pasted
+  # clip is GONE and the clip count dropped (the exact gap math on
+  # overlapping neighbors is locked in commands.test.ts).
+  local before target
+  before=$(clipcount)
+  target=$(firstref 'button "Clip sample-audio.mp3 from 22.00')
+  [ -n "$target" ] || { echo "f08: the pasted 22.00s copy is missing" >&2; return 1; }
+  ab scrollintoview "@$target" >/dev/null 2>&1 && sleeps 0.2
+  ab click "@$target" >/dev/null 2>&1; sleeps 0.5
+  [ "$(ring_count)" -ge 1 ] || { echo "f08: the pasted copy did not select" >&2; return 1; }
+  ab press Shift+Delete >/dev/null 2>&1; sleeps 0.6
+  [ "$(clipcount)" -lt "$before" ] || {
+    echo "f08: Shift+Delete removed nothing" >&2
+    return 1
+  }
+  snap | grep -q 'Clip sample-audio.mp3 from 22.00' && {
+    echo "f08: the pasted 22.00s copy survived Shift+Delete" >&2
+    return 1
+  }
+  true
+}
+f02_link_unlink() {
+  # Quick-add births the video sample as a linked A/V pair (actions.ts), so the
+  # video clip wears the link badge. Ctrl+L drops the bond, Ctrl+Z restores it
+  # (the manual two-group Link selection needs Shift+click, which agent-browser
+  # cannot dispatch; the command-level behavior is locked in av-links.test.ts).
+  local badges
+  badges=$(evaln 'document.querySelectorAll("[data-testid=clip-link-badge]").length')
+  [ "$badges" -ge 1 ] || { echo "f02: no linked pair to unlink (badges=$badges)" >&2; return 1; }
+  click_clip 'sample-video' || return 1
+  ab press Control+l >/dev/null 2>&1 && sleeps 0.5
+  [ "$(evaln 'document.querySelectorAll("[data-testid=clip-link-badge]").length')" -lt "$badges" ] || {
+    echo "f02: Ctrl+L did not drop the link badge" >&2
+    return 1
+  }
+  ab press Control+z >/dev/null 2>&1 && sleeps 0.5
+  [ "$(evaln 'document.querySelectorAll("[data-testid=clip-link-badge]").length')" -eq "$badges" ]
+}
+
 # ————— Menus —————
 menus_open() {
   local ok=0
@@ -516,9 +704,23 @@ panels_expand_after_reset() {
 f08_autosave() {
   sleep 1.5
   ab reload >/dev/null && sleep 2.5
+  dismiss_greeting || return 1
   snap | grep -q '"Restore"' || { echo "no restore banner" >&2; return 1; }
   ab find role button click --name 'Restore' >/dev/null && sleep 1.5
   [ "$(clipcount)" -ge 4 ]
+}
+f08_capture_project() {
+  # Capture the toolbar's Save download to a UNIQUE temp path (mktemp), so a
+  # pre-existing file at some fixed path can never be clobbered. f07_open_project
+  # removes the file after consuming it; the EXIT/INT/TERM trap (top of script)
+  # catches every earlier exit path, including this function's own failure.
+  PROJECT_CAPTURE=$(mktemp /tmp/battery-project.XXXXXX.veproj.json)
+  ab download 'button[aria-label="Save project (Ctrl+S)"]' "$PROJECT_CAPTURE" >/dev/null 2>&1 || {
+    echo "f08: save download failed" >&2
+    rm -f "$PROJECT_CAPTURE"
+    return 1
+  }
+  [ -s "$PROJECT_CAPTURE" ]
 }
 f08_save() {
   ab find role button click --name 'Save project (Ctrl+S)' >/dev/null && sleep 1
@@ -541,6 +743,32 @@ f07_prep() { # normalize every aux clip to 0-1s; drop the video tail (label shif
   delete_clip 'sample-video.mp4 from 1'
   return 0
 }
+f07_open_project() {
+  # File > New drops the editor to a bare 4-track doc (toast confirms).
+  ab find role menuitem click --name 'File' >/dev/null 2>&1 && sleeps 0.4
+  ab find role menuitem click --name 'New Project' >/dev/null 2>&1 && sleeps 0.8
+  ab wait --text 'New project created' --timeout 5000 >/dev/null 2>&1 || return 1
+  [ "$(clipcount)" = "0" ] || { echo "f07: New Project left clips behind" >&2; return 1; }
+  # Open the captured .veproj.json through the toolbar's hidden input (the
+  # real File > Open plumbing minus the OS picker), then clean it up.
+  ab upload 'header input[type=file][accept=".json,application/json"]' "$PROJECT_CAPTURE" >/dev/null 2>&1 || {
+    echo "f07: project upload failed" >&2
+    rm -f "$PROJECT_CAPTURE"
+    return 1
+  }
+  rm -f "$PROJECT_CAPTURE"
+  sleep 2.5
+  [ "$(clipcount)" -ge 4 ] || { echo "f07: reopened project lost its clips" >&2; return 1; }
+  # Since 0.5.6 the open path hydrates the bundled samples BEFORE install, so
+  # the reopened project's samples come back ONLINE by themselves: park on the
+  # first clip and the offline overlay must NOT appear.
+  ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1 && sleeps 0.4
+  [ "$(evaln 'document.querySelectorAll("[data-testid=media-offline-overlay]").length')" = "0" ] || {
+    echo "f07: reopened project still shows media offline" >&2
+    return 1
+  }
+}
+
 f07_export() {
   ab find role button click --name 'Export' >/dev/null && sleep 0.8
   ab find role button click --name 'Start export' >/dev/null && sleep 1
@@ -571,30 +799,39 @@ step "s01 boot: page loads and renders"            s01_boot
 step "g0  gate: login accepts the access password"   g0_login
 step "s02 fresh: storage cleared, editor empty"    s02_fresh
 step "f01 import: sample media loads 3 assets"     f01_import
+step "f01b import: a real (non-bundled) file imports" f01b_import_real_file
 step "f02 add: video+audio+image quick-added"      f02_add
 step "f02 zoom: all clips reachable in snapshot"   zoom_out
 step "f09 marquee: box drag selects every clip"    f09_marquee
 step "f09 marquee: empty-space click clears it"    f09_marquee_clear
+step "f11 whats-new: Help > What's new opens the modal" f11_whatsnew_opens
+step "f11 whats-new: a recorded version stays silent on reload" f11_whatsnew_once
 step "f10 markers: sequence add/nav/drag/delete"    f10_markers_sequence
-step "f10 markers: clip marker + dialog edit"        f10_markers_clip
+step "f10 markers: clip marker + dialog edit"       f10_markers_clip
 step "f06 play: transport runs, time advances"     f06_play
 step "f06 sync: preview canvas renders frames"     f06_canvas
 step "f02 split: select + 2.0s + Ctrl+K splits clip" f02_split
 step "f08 undo: Ctrl+Z removes the split"          f08_undo
 step "f08 redo: Ctrl+Shift+Z re-applies it"        f08_redo
 step "f02 trim: first video part -> 1.50s"         f02_trim
+step "f02 duplicate: D clones the selected audio clip" f02_duplicate
+step "f02 clipboard: Ctrl+C / Ctrl+V pastes a copy"  f02_copy_paste
+step "f02 link: Ctrl+L drops the A/V bond, Ctrl+Z restores it" f02_link_unlink
 step "f03 crossfade: enable on first clip"         f03_crossfade
 step "f04 text: T adds a text clip"                f04_text_add
 step "f04 text: content edited via Inspector"      f04_text_edit
 step "f05 audio: mute switch works"                f05_mute
 step "f05 audio: gain slider reaches 200%"         f05_gain
+step "f08 ripple: Shift+Delete removes the pasted copy" f08_ripple_delete
 step "menus: all 9 application menus open"         menus_open
 step "menus: View > Snapping toggles off"          menu_snapping
 step "panels: collapse Media panel (strip shown)"  panels_collapse
 step "panels: Window > Reset Workspace Layout"     panels_reset
 step "panels: reset expanded Media again"          panels_expand_after_reset
 step "f08 autosave: reload -> restore session"     f08_autosave
+step "f08 save: capture the .veproj.json download"  f08_capture_project
 step "f08 save: project download toast"            f08_save
+step "f07 roundtrip: New Project + reopen the saved file" f07_open_project
 step "f07 export prep: normalize aux clips"        f07_prep
 step "f07 export: renders to completion"           f07_export
 step "f07 export: dialog closes cleanly"           f07_close_dialog

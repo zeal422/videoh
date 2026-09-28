@@ -10,7 +10,7 @@ import {
   type SampleFile,
   type SampleLoadPlan,
 } from './sample-media'
-import { deserializeDoc, projectFileName, serializeDoc } from './serialization'
+import { parseSerializedDoc, projectFileName, serializeDoc } from './serialization'
 import { useEditorStore } from './store'
 import type { Doc, MediaAsset } from './types'
 
@@ -41,10 +41,13 @@ export function downloadProjectJSON(): string {
   return filename
 }
 
-/** Parse a saved project file into a Doc (throws on invalid JSON/version). */
+/** Parse + validate a saved project file into a Doc (throws on invalid JSON/version). */
 export async function loadProjectFile(file: File): Promise<Doc> {
   const text = await file.text()
-  const { doc } = deserializeDoc(text)
+  // Parse the text HERE: deserializeDoc validates an already-parsed value, and
+  // feeding it the raw string failed every real open with "root is not an
+  // object" (autosave restore used parseSerializedDoc and worked).
+  const { doc } = parseSerializedDoc(text)
   return doc
 }
 

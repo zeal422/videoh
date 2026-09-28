@@ -16,6 +16,8 @@ import { TimelinePanel } from './timeline/TimelinePanel'
 import { MarkerDialog } from './timeline/MarkerDialog'
 import { StatusBar } from './StatusBar'
 import { ExportDialog } from './ExportDialog'
+import { ReleaseNotesModal } from './ReleaseNotesModal'
+import { CURRENT_VERSION } from '@/lib/releases'
 import { useEditorKeyboard } from '@/hooks/editor/useEditorKeyboard'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { refreshPausedPreview } from '@/lib/editor/playback/preview'
@@ -45,6 +47,10 @@ import { toast } from '@/hooks/use-toast'
  */
 export function EditorShell() {
   const [exportOpen, setExportOpen] = useState(false)
+  const [releaseNotesOpen, setReleaseNotesOpen] = useState(false)
+  // False until the mount effect finished the autosave discovery; the greeting
+  // effect holds back until this flips (see the scan comment below).
+  const [autosaveScanned, setAutosaveScanned] = useState(false)
   const isMobile = useIsMobile()
   const doc = useEditorStore((s) => s.doc)
   const pendingRestore = useEditorStore((s) => s.pendingRestore)
@@ -108,6 +114,12 @@ export function EditorShell() {
     const unsubscribe = initAutosave()
     const saved = readValidAutosave()
     if (saved) useEditorStore.getState().setPendingRestore(saved)
+    // Effect order is not a memory barrier: the greeting effect below shares
+    // this commit and would read its stale pendingRestore (null) closure,
+    // greeting over a discovered restore before the banner ever renders. Flip
+    // the scan flag in a microtask so the greeting re-runs AFTER the scan with
+    // fresh state (a microtask also keeps the cascading-render lint happy).
+    queueMicrotask(() => setAutosaveScanned(true))
 
     // Safety net: commit any dangling drag gesture (e.g. pointer released
     // outside the clip after capture loss) so history never stays open.
@@ -136,6 +148,33 @@ export function EditorShell() {
   useEffect(() => {
     refreshPausedPreview()
   }, [doc])
+
+  // Welcome: once per new version, AFTER the autosave scan finished AND the
+  // restore prompt resolved, so two dialogs never stack. The restore banner is
+  // inline (not a dialog), but the same one-decision-at-a-time rule applies:
+  // while it waits, the release notes hold back; the moment it is gone
+  // (restored, discarded, or never there), a version the user has not been
+  // greeted with opens the modal once and is recorded. Help > What's new opens
+  // the same modal any time.
+  useEffect(() => {
+    if (!autosaveScanned || pendingRestore) return
+    let seen: string | null = null
+    try {
+      seen = window.localStorage.getItem('releases:lastSeen')
+    } catch {
+      /* private mode: greet every visit rather than crash */
+    }
+    if (seen === CURRENT_VERSION) return
+    // Defer the setState out of the effect body: opening synchronously inside
+    // the effect trips the cascading-render lint rule, and a microtask keeps
+    // the greeting one paint later without observable difference.
+    queueMicrotask(() => setReleaseNotesOpen(true))
+    try {
+      window.localStorage.setItem('releases:lastSeen', CURRENT_VERSION)
+    } catch {
+      /* storage unavailable: the greeting just repeats, harmless */
+    }
+  }, [pendingRestore, autosaveScanned])
 
   const handleSave = useCallback(() => {
     const state = useEditorStore.getState()
@@ -199,7 +238,11 @@ export function EditorShell() {
     /* Theme lives on <html> (layout.tsx) so Radix portals — menubar dropdowns,
        dialogs, selects, toasts — inherit the dark tokens too, not just this div. */
     <div className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
-      <MenuBar onOpenExport={() => setExportOpen(true)} onResetLayout={handleResetLayout} />
+      <MenuBar
+        onOpenExport={() => setExportOpen(true)}
+        onResetLayout={handleResetLayout}
+        onOpenReleaseNotes={() => setReleaseNotesOpen(true)}
+      />
       <Toolbar onOpenExport={() => setExportOpen(true)} />
 
       {pendingRestore && (
@@ -340,6 +383,7 @@ export function EditorShell() {
       <StatusBar />
       <MarkerDialog />
       <ExportDialog open={exportOpen} onOpenChange={setExportOpen} />
+      <ReleaseNotesModal open={releaseNotesOpen} onOpenChange={setReleaseNotesOpen} />
     </div>
   )
 }

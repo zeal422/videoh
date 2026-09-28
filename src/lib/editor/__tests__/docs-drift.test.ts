@@ -84,7 +84,7 @@ function checkHeadline(doc: string, files: string[], total: number): string | nu
  * the directory, the claim is checked EXACTLY against a real directory count;
  * unnamed claims fall back to the internal-sanity range.
  */
-function checkScoped(doc: string, total: number): string | null {
+function checkScoped(doc: string, files: string[], total: number): string | null {
   const text = readFileSync(join(ROOT, doc), 'utf8')
   const patterns = [
     /(\d+)\s+test files\s*\((\d+)\s+tests\)/g,
@@ -125,6 +125,18 @@ function checkScoped(doc: string, total: number): string | null {
       if (Number(m[1]) !== dirFiles.length || Number(m[2]) !== dirTests) {
         return `${doc}: "${m[0]}" != ${dirFiles.length} files / ${dirTests} tests in src/lib/editor/__tests__`
       }
+    }
+  }
+  // The README tree line names the SAME directory but counts the REPO:
+  // "N test files (M tests) incl. gate.test.ts in src/lib/". N and M must
+  // equal the repo-wide totals, or a stale count hides behind the scoped
+  // shape (checkHeadline strips "N test files (M tests)" before its bare
+  // checks, so without this pattern such a line is never validated).
+  for (const m of text.matchAll(
+    /(\d+)\s+test files\s*\((\d+)\s+tests?\)\s*incl\.\s*gate\.test\.ts/g,
+  )) {
+    if (Number(m[1]) !== files.length || Number(m[2]) !== total) {
+      return `${doc}: "${m[0]}" != ${files.length} files / ${total} tests repo-wide (incl. gate.test.ts)`
     }
   }
   return null
@@ -205,7 +217,7 @@ describe('docs test-count claims match the real suite', () => {
   })
 
   it('every doc scoped directory count is internally consistent', () => {
-    expect(DOCS.map((doc) => checkScoped(doc, total)).filter((f) => f !== null)).toEqual([])
+    expect(DOCS.map((doc) => checkScoped(doc, files, total)).filter((f) => f !== null)).toEqual([])
   })
 
   it('every per-file row in the testing.md inventory matches its suite', () => {

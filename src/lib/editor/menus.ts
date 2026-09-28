@@ -15,6 +15,7 @@
  */
 
 import type { PanelId } from './workspace'
+import { CURRENT_VERSION } from '../releases'
 
 export type MenuId =
   'file' | 'edit' | 'clip' | 'sequence' | 'marker' | 'graphics' | 'view' | 'window' | 'help'
@@ -61,6 +62,7 @@ export type MenuActionId =
   | 'window.toggleTimeline'
   | 'window.resetLayout'
   | 'help.shortcuts'
+  | 'help.releaseNotes'
   | 'help.about'
 
 /** Snapshot of editor/workspace facts the menu states are derived from. */
@@ -109,6 +111,8 @@ export interface MenuItemSpec {
   enabled?: (ctx: MenuContext) => boolean
   /** Checkbox tick state (checkbox rows only). */
   checked?: (ctx: MenuContext) => boolean
+  /** Render the row with the release-notes emerald tint (Help > What's new). */
+  tinted?: boolean
 }
 
 export interface MenuSpec {
@@ -471,6 +475,13 @@ export const MENU_SPECS: MenuSpec[] = [
     id: 'help',
     label: 'Help',
     items: [
+      {
+        id: 'help.releaseNotes',
+        kind: 'item',
+        label: `What's new in ${CURRENT_VERSION}…`,
+        action: 'help.releaseNotes',
+        tinted: true,
+      },
       {
         id: 'help.shortcuts',
         kind: 'item',

@@ -13,7 +13,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── robots.txt           # crawler policy
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
-│   └── battery.sh           # scripted UI battery (33 steps) driven by agent-browser
+│   └── battery.sh           # scripted UI battery (42 steps) driven by agent-browser
 ├── docs/                    # this documentation set
 ├── next.config.ts           # output: "standalone"
 ├── vitest.config.ts         # node env, @ alias, coverage include + thresholds
@@ -48,8 +48,9 @@ src/app/
 ```text
 src/components/
 ├── editor/                       # editor UI (see architecture.md for responsibilities)
-│   ├── EditorShell.tsx           #   panel workspace layout + autosave/restore + gesture safety net
-│   ├── MenuBar.tsx               #   Premiere-style menu bar + dialogs
+│   ├── EditorShell.tsx           #   panel workspace layout + autosave/restore + gesture safety net + release-notes auto-open
+│   ├── MenuBar.tsx               #   Premiere-style menu bar + dialogs + right-edge version label
+│   ├── ReleaseNotesModal.tsx     #   welcome modal: last five versions, Help > What is new
 │   ├── PanelShell.tsx            #   resizable/collapsible panel frame
 │   ├── Toolbar.tsx               #   tools, history, tracks, save/open, export
 │   ├── MediaBin.tsx              #   import, samples, relink, drag source
@@ -79,6 +80,14 @@ src/hooks/
 ├── editor/useEditorKeyboard.ts   # global keyboard map (Premiere-verified); see README
 ├── use-mobile.ts                 # responsive breakpoint hook (shadcn)
 └── use-toast.ts                  # toast store (shadcn)
+```
+
+## `src/lib/` — outside the editor core
+
+```text
+src/lib/
+├── releases.ts           # hand-curated release notes for the welcome modal (gate-locked to package.json)
+└── gate.ts, gate-env.ts  # the access gate primitives (section below)
 ```
 
 ## `src/lib/gate.ts` — the access gate primitives
@@ -137,7 +146,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 42 test files (617 tests) + src/lib/gate.test.ts: see testing.md
+└── __tests__/            # 46 test files (636 tests) + src/lib/gate.test.ts: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / ResizeObserver
 ```

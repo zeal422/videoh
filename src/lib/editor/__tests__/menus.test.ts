@@ -190,6 +190,12 @@ describe('menu structure (Premiere Pro–style)', () => {
     expect(itemOf('Window', 'window.reset').action).toBe('window.resetLayout')
   })
 
+  it('only the release-notes entry is tinted (green highlight in the Help menu)', () => {
+    const tinted = MENU_SPECS.flatMap((m) => m.items.filter((i) => i.tinted))
+    expect(tinted.map((i) => i.id)).toEqual(['help.releaseNotes'])
+    expect(itemOf('Help', 'help.releaseNotes').label).toMatch(/What's new in .+…$/)
+  })
+
   it('collectMenuActions returns one entry per actionable item', () => {
     const actions = collectMenuActions()
     const expected = MENU_SPECS.flatMap((m) =>

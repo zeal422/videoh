@@ -36,6 +36,7 @@ export default defineConfig({
         'src/lib/editor/persistence.ts',
         'src/lib/editor/workspace.ts',
         'src/lib/editor/menus.ts',
+        'src/lib/releases.ts',
       ],
       thresholds: {
         statements: 70,
