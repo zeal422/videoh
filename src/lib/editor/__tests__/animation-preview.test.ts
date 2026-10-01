@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { applyCommand } from '../commands'
 import { animatedValue } from '../keyframes'
-import { buildFilter } from '../playback/compositor'
+import { buildColorFilter, COLOR_NEUTRAL } from '../color'
 import { createClip, createTrack } from '../factories'
 import type { Clip, Doc } from '../types'
 
@@ -69,13 +69,24 @@ describe('position/scale evaluation', () => {
   })
 })
 
-describe('buildFilter (color stack)', () => {
+describe('buildColorFilter (color stack)', () => {
+  // The builder moved to color.ts so both render paths share it; these cases
+  // keep the compositor-side contracts (order, elision, exposure gamma).
+  const filter = (
+    exposure: number,
+    contrast: number,
+    saturation: number,
+    brightness: number,
+    hue: number,
+  ) => buildColorFilter({ exposure, contrast, saturation, brightness, hue })
+
   it('is none when all parameters are neutral', () => {
-    expect(buildFilter(1, 1, 1, 1, 0)).toBe('none')
+    expect(filter(1, 1, 1, 1, 0)).toBe('none')
+    expect(filter(COLOR_NEUTRAL.exposure, 1, 1, 1, 0)).toBe('none')
   })
 
   it('emits only the non-neutral parts', () => {
-    const f = buildFilter(1, 1.2, 0.5, 1, 90)
+    const f = filter(1, 1.2, 0.5, 1, 90)
     expect(f).toContain('contrast(1.2)')
     expect(f).toContain('saturate(0.5)')
     expect(f).toContain('hue-rotate(90deg)')
@@ -83,7 +94,7 @@ describe('buildFilter (color stack)', () => {
   })
 
   it('exposure applies as a gamma-shaped brightness', () => {
-    expect(buildFilter(4, 1, 1, 1, 0)).toBe('brightness(2)')
+    expect(filter(4, 1, 1, 1, 0)).toBe('brightness(2)')
   })
 })
 

@@ -11,8 +11,8 @@ import {
   ChevronRight,
 } from 'lucide-react'
 
+import { NamedSlider } from '@/components/editor/NamedSlider'
 import { Button } from '@/components/ui/button'
-import { Slider } from '@/components/ui/slider'
 import { docDuration, findClip } from '@/lib/editor/factories'
 import { offlineMediaAt } from '@/lib/editor/offline'
 import { formatTime } from '@/lib/editor/time'
@@ -21,6 +21,7 @@ import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { clamp01, measureTextBox } from '@/lib/editor/playback/text-box'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
 import { cn } from '@/lib/utils'
+import { ScopesPanel } from './ScopesPanel'
 
 /**
  * Center panel: the program monitor (canvas composited by the playback engine)
@@ -39,6 +40,10 @@ export function PreviewPanel() {
   const playing = useEditorStore((s) => s.playing)
   const selection = useEditorStore((s) => s.selection)
   const [volume, setVolume] = useState(1)
+  const [monitor, setMonitor] = useState<HTMLCanvasElement | null>(null)
+  // Local to this panel by design: scopes are a view option, not workspace
+  // state, so they add no PanelId, no sanitize case and no menu entry.
+  const [scopesOpen, setScopesOpen] = useState(false)
   const [draggingText, setDraggingText] = useState(false)
   const dragOrigin = useRef<{ px: number; py: number; x: number; y: number } | null>(null)
   /** Initiating pointer of the active text drag (multi-touch: ignore others). */
@@ -47,9 +52,12 @@ export function PreviewPanel() {
    *  drag then refuses further frames (they would carry no undo entry). */
   const textDragToken = useRef(-1)
 
-  // Attach the engine once; canvas resolution follows project settings.
+  // Attach the engine once; canvas resolution follows project settings. The
+  // element is mirrored into state so the scopes get a real node (a ref's
+  // `.current` is null during the first render and never triggers one).
   useEffect(() => {
     if (!canvasRef.current) return
+    setMonitor(canvasRef.current)
     attachPreviewEngine(canvasRef.current)
     return () => detachPreviewEngine()
   }, [])
@@ -219,6 +227,10 @@ export function PreviewPanel() {
         </div>
       </div>
 
+      {/* Scopes sit between the monitor and the transport: the meters read the
+          monitor canvas, and the transport stays pinned at the bottom. */}
+      <ScopesPanel canvas={monitor} open={scopesOpen} onToggle={() => setScopesOpen((v) => !v)} />
+
       {/* transport — shrink-0 so it stays visible at any panel height; the
           canvas area above is the only part that gives up space. */}
       <div className="flex h-12 min-w-0 shrink-0 items-center justify-center gap-1 overflow-hidden border-t border-zinc-800 bg-zinc-900/60 px-3">
@@ -275,7 +287,7 @@ export function PreviewPanel() {
 
         <div className="ml-4 hidden items-center gap-2 @lg:flex">
           <Volume2 className="size-4 text-zinc-400" aria-hidden="true" />
-          <Slider
+          <NamedSlider
             aria-label="Master volume"
             value={[volume]}
             min={0}

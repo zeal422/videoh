@@ -98,5 +98,10 @@ The video surfaces stay dark regardless of the token theme, the way an NLE's mon
   primitives.
 - The keyboard map is documented in the [README](../README.md); shortcuts are ignored while typing in
   inputs, textareas, selects, and content-editable elements.
-- Radix renders some `aria-label`s on the slider root rather than the thumb; tests target those via CSS
-  selectors instead of role+name.
+- **Sliders are named on the thumb.** Radix reads a thumb's accessible name from the thumb's own
+  props (the element with `role="slider"` is the thumb, not the labelled root), and the generated
+  shadcn Slider spreads root props onto the root only. The editor's `NamedSlider` composes the
+  primitive with the same markup and puts the caller's `aria-label` on the thumb of a single-value
+  slider, so `src/components/ui/slider.tsx` stays untouched. Tests and the E2E battery address those
+  sliders by role and name; a CSS walk into the root would pass even while the control stayed
+  unnamed.

@@ -1,4 +1,5 @@
-import { findMedia } from './factories'
+import { findMedia, sourceTimeAt } from './factories'
+import { linkGroupHasRamp } from './links'
 import { clampPropertyValue } from './keyframes'
 import type { Clip, Doc, Keyframe } from './types'
 
@@ -51,9 +52,18 @@ function dialogueCurve(doc: Doc, dialogueClips: Clip[], music: Clip): number[] {
     let level = 0
     for (const d of dialogueClips) {
       if (t < d.start || t >= d.start + d.duration) continue
+      // A clip whose link group carries a `timeScale` ramp is SILENT in both
+      // render paths (variable-rate audio has no resampler), and so is a
+      // REVERSED clip (both paths drop its audio); neither may drive the duck
+      // either, or the music would dip against source that is never heard.
+      if (d.reverse || linkGroupHasRamp(doc, d)) continue
       const asset = findMedia(doc, d.mediaId)
       if (!asset?.waveformPeaks) continue
-      const sourceTime = d.inPoint + (t - d.start) * (d.speed ?? 1)
+      // The single source-time mapping (speed, reverse, ramp integral), the
+      // same one the preview and the export read. The old inline
+      // `inPoint + local * speed` ignored a ramp and sampled the wrong part
+      // of the waveform.
+      const sourceTime = sourceTimeAt(d, t - d.start)
       level = Math.max(level, peakAt(asset.waveformPeaks, sourceTime, asset.duration))
     }
     samples.push(level)

@@ -3,10 +3,10 @@
 import { useRef } from 'react'
 import { Crosshair, Link2, Loader2 } from 'lucide-react'
 
+import { NamedSlider } from '@/components/editor/NamedSlider'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -23,7 +23,14 @@ import { EditorCommandError } from '@/lib/editor/commands'
 import { findMedia, nextClipOnTrack } from '@/lib/editor/factories'
 import { linkedAudioTwin } from '@/lib/editor/links'
 import { formatTime } from '@/lib/editor/time'
-import { TRANSITION_MAX, TRANSITION_MIN } from '@/lib/editor/constants'
+import {
+  TEMPERATURE_MAX,
+  TEMPERATURE_MIN,
+  TINT_MAX,
+  TINT_MIN,
+  TRANSITION_MAX,
+  TRANSITION_MIN,
+} from '@/lib/editor/constants'
 import { useEditorStore } from '@/lib/editor/store'
 import type { Clip, TextStyle } from '@/lib/editor/types'
 import { useState } from 'react'
@@ -100,6 +107,12 @@ function ClipPanel({ clip, trackKind }: { clip: Clip; trackKind: string }) {
     </div>
   )
 }
+
+/** The two static color-grade controls and their bounds (0 = neutral). */
+const GRADE_CONTROLS = [
+  { key: 'temperature', label: 'Temperature', min: TEMPERATURE_MIN, max: TEMPERATURE_MAX },
+  { key: 'tint', label: 'Tint', min: TINT_MIN, max: TINT_MAX },
+] as const
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -203,6 +216,9 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                   start: clip.start,
                   inPoint: clip.inPoint,
                   duration: v,
+                  // The start stays put, so this is the tail edge gaining or
+                  // giving back source (see TrimEdge).
+                  edge: 'tail',
                 }),
               )
             }
@@ -223,7 +239,7 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                   {Math.round((clip.opacity ?? 1) * 100)}%
                 </span>
               </div>
-              <Slider
+              <NamedSlider
                 id="opacity"
                 aria-label="Clip opacity percent"
                 value={[Math.round((clip.opacity ?? 1) * 100)]}
@@ -252,6 +268,56 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
             </div>
           </Section>
           <Separator />
+
+          <Section title="Color grade">
+            <div className="space-y-3">
+              {GRADE_CONTROLS.map(({ key, label, min, max }) => {
+                const value = clip[key] ?? 0
+                const setGrade = (next: number, commit: boolean) => {
+                  const values = {
+                    temperature: clip.temperature ?? 0,
+                    tint: clip.tint ?? 0,
+                    [key]: next,
+                  }
+                  const command = {
+                    type: 'setClipColorParams' as const,
+                    clipId: clip.id,
+                    ...values,
+                  }
+                  if (commit) apply(command)
+                  else useEditorStore.getState().applyTransient(command)
+                }
+                return (
+                  <div key={key}>
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <Label htmlFor={`grade-${key}`} className="text-xs">
+                        {label}
+                      </Label>
+                      <span className="text-xs tabular-nums text-muted-foreground">
+                        {value > 0 ? `+${Math.round(value)}` : Math.round(value)}
+                      </span>
+                    </div>
+                    <NamedSlider
+                      id={`grade-${key}`}
+                      aria-label={label}
+                      value={[value]}
+                      min={min}
+                      max={max}
+                      step={1}
+                      onValueChange={([v]) => setGrade(v, false)}
+                      onValueCommit={([v]) => setGrade(v, true)}
+                    />
+                  </div>
+                )
+              })}
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                Temperature warms (right) or cools (left) the picture; tint shifts it between green
+                and magenta. Both grade the preview and the export through one shared SVG matrix, so
+                what you see is what renders.
+              </p>
+            </div>
+          </Section>
+          <Separator />
         </>
       )}
 
@@ -268,7 +334,7 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                     {Math.round((audioClip.gain ?? 1) * 100)}%
                   </span>
                 </div>
-                <Slider
+                <NamedSlider
                   id="gain"
                   aria-label="Clip gain percent"
                   value={[Math.round((audioClip.gain ?? 1) * 100)]}
@@ -352,7 +418,7 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                     {clip.transitionOut.duration.toFixed(2)}s
                   </span>
                 </div>
-                <Slider
+                <NamedSlider
                   id="transition-duration"
                   aria-label="Transition duration seconds"
                   value={[clip.transitionOut.duration]}
@@ -493,7 +559,7 @@ function TextFields({ clip }: { clip: Clip }) {
               <Label className="text-xs">Position X</Label>
               <span className="text-xs text-muted-foreground">{Math.round(style.x * 100)}%</span>
             </div>
-            <Slider
+            <NamedSlider
               aria-label="Text position X percent"
               value={[style.x]}
               min={0}
@@ -505,7 +571,7 @@ function TextFields({ clip }: { clip: Clip }) {
               <Label className="text-xs">Position Y</Label>
               <span className="text-xs text-muted-foreground">{Math.round(style.y * 100)}%</span>
             </div>
-            <Slider
+            <NamedSlider
               aria-label="Text position Y percent"
               value={[style.y]}
               min={0}

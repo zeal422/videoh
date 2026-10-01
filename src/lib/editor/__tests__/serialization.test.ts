@@ -8,6 +8,14 @@ import {
   SERIALIZATION_VERSION,
 } from '../serialization'
 import { createClip, createDoc, createMediaAsset, createTextClip } from '../factories'
+import {
+  FPS_MAX,
+  FPS_MIN,
+  PROJECT_MAX_H,
+  PROJECT_MAX_W,
+  PROJECT_MIN_H,
+  PROJECT_MIN_W,
+} from '../constants'
 
 function makeDoc() {
   const doc = createDoc()
@@ -82,6 +90,38 @@ describe('deserializeDoc', () => {
     data.media = []
     const { doc } = deserializeDoc(data)
     expect(doc.project.tracks[0].clips[0].mediaId).toBeUndefined()
+  })
+
+  it('clamps hostile fps and dimensions to the command-layer bounds', () => {
+    const { doc } = deserializeDoc({
+      version: 1,
+      project: {
+        fps: 1e308,
+        width: 100000,
+        height: 50000,
+        tracks: [{ kind: 'video', clips: [] }],
+      },
+    })
+    // The same clamp `setProjectSettings` applies: a file can never install a
+    // value the UI could not set (a huge fps makes the export frame count
+    // Infinity, which hangs the render loop).
+    expect(doc.project.fps).toBe(FPS_MAX)
+    expect(doc.project.width).toBe(PROJECT_MAX_W)
+    expect(doc.project.height).toBe(PROJECT_MAX_H)
+
+    // Values below the bounds clamp too, and non-finite junk falls back.
+    const low = deserializeDoc({
+      version: 1,
+      project: { fps: 0, width: 8, height: 8, tracks: [{ kind: 'video', clips: [] }] },
+    }).doc.project
+    expect(low.fps).toBe(FPS_MIN)
+    expect(low.width).toBe(PROJECT_MIN_W)
+    expect(low.height).toBe(PROJECT_MIN_H)
+    const junk = deserializeDoc({
+      version: 1,
+      project: { fps: 'x', tracks: [{ kind: 'video', clips: [] }] },
+    }).doc.project
+    expect(junk.fps).toBe(30)
   })
 
   it('survives partial/corrupt payloads with defaults', () => {
@@ -298,9 +338,12 @@ describe('A/V link serialization', () => {
       ...track.clips[0],
       speed: 2,
       reverse: true,
+      temperature: 35,
+      tint: -12,
       pan: -0.4,
       eq: { low: 3, mid: -6, high: 1.5 },
       compressor: true,
+      denoise: true,
       animStatics: { scale: 1.25, positionX: 40 },
       keyframes: {
         volume: [
@@ -314,9 +357,12 @@ describe('A/V link serialization', () => {
     const clip = restored.project.tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip_fixed')!
     expect(clip.speed).toBe(2)
     expect(clip.reverse).toBe(true)
+    expect(clip.temperature).toBe(35)
+    expect(clip.tint).toBe(-12)
     expect(clip.pan).toBe(-0.4)
     expect(clip.eq).toEqual({ low: 3, mid: -6, high: 1.5 })
     expect(clip.compressor).toBe(true)
+    expect(clip.denoise).toBe(true)
     expect(clip.animStatics).toEqual({ scale: 1.25, positionX: 40 })
     expect(clip.keyframes?.volume).toEqual([
       { time: 0, value: 1, interpolation: 'linear' },
@@ -343,15 +389,113 @@ describe('A/V link serialization', () => {
     saved.pan = 5
     saved.eq = { low: 100, mid: -100, high: 0 }
     saved.keyframes = { volume: [{ time: 0, value: 999 }], bogus: [{ time: 0, value: 1 }] }
+    saved.temperature = 400
+    saved.tint = -400
+    // A truthy non-boolean is not a switch: the flag is dropped, not coerced.
+    saved.denoise = 'yes'
 
     const { doc: restored } = deserializeDoc(json)
     const clip = restored.project.tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip_fixed')!
     expect(clip.speed).toBe(4)
+    // The grade clamps into its documented bounds too.
+    expect(clip.temperature).toBe(100)
+    expect(clip.tint).toBe(-100)
     expect(clip.pan).toBe(1)
     expect(clip.eq).toEqual({ low: 24, mid: -24, high: 0 })
+    expect(clip.denoise).toBeUndefined()
     expect(clip.animStatics).toBeUndefined()
     expect(clip.keyframes?.volume).toEqual([{ time: 0, value: 2, interpolation: 'linear' }])
     expect(Object.keys(clip.keyframes ?? {})).toEqual(['volume'])
+  })
+
+  it('round-trips the exact easeOut quad and drops a malformed one', () => {
+    // The subdivided bezier data (see ease-segment.ts) must survive save/load:
+    // losing it would silently re-approximate every split curve on reopen.
+    const doc = makeDoc()
+    const track = doc.project.tracks.find((t) => t.kind === 'video')!
+    track.clips[0] = {
+      ...track.clips[0],
+      keyframes: {
+        opacity: [
+          { time: 0, value: 1, interpolation: 'easeInOut', easeOut: [0.31, 0.05, 0.67, 0.44] },
+          { time: 2, value: 0.2, interpolation: 'linear', easeOut: [1.5, 0, 0.5, 2] as never },
+        ],
+      },
+    }
+    const json = JSON.parse(JSON.stringify(serializeDoc(doc))) as {
+      project: { tracks: { clips: Record<string, unknown>[] }[] }
+    }
+    const raw = (
+      json.project.tracks.flatMap((t) => t.clips)[0].keyframes as {
+        opacity: { easeOut?: number[] }[]
+      }
+    ).opacity
+    // A valid quad rides along on the save side.
+    expect(raw[0].easeOut).toEqual([0.31, 0.05, 0.67, 0.44])
+
+    const { doc: restored } = deserializeDoc(json)
+    const clip = restored.project.tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip_fixed')!
+    const kfs = clip.keyframes!.opacity!
+    // The valid quad survives the round-trip; the malformed one is dropped
+    // (the segment then reads through the preset name, which is linear here).
+    expect(kfs[0].easeOut).toEqual([0.31, 0.05, 0.67, 0.44])
+    expect(kfs[1].easeOut).toBeUndefined()
+  })
+
+  it('round-trips eased keyframe interpolation and falls back on unknown names', () => {
+    const doc = makeDoc()
+    const track = doc.project.tracks.find((t) => t.kind === 'video')!
+    track.clips[0] = {
+      ...track.clips[0],
+      keyframes: {
+        opacity: [
+          { time: 0, value: 1, interpolation: 'easeInOut' },
+          { time: 2, value: 0.2, interpolation: 'easeOut' },
+        ],
+      },
+    }
+    const json = JSON.parse(JSON.stringify(serializeDoc(doc))) as {
+      project: { tracks: { clips: Record<string, unknown>[] }[] }
+    }
+    // The save side keeps the field, so easing is not silently lost on save.
+    expect(json.project.tracks.flatMap((t) => t.clips)[0].keyframes).toEqual({
+      opacity: [
+        { time: 0, value: 1, interpolation: 'easeInOut' },
+        { time: 2, value: 0.2, interpolation: 'easeOut' },
+      ],
+    })
+
+    const { doc: restored } = deserializeDoc(json)
+    const clip = restored.project.tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip_fixed')!
+    expect(clip.keyframes?.opacity).toEqual([
+      { time: 0, value: 1, interpolation: 'easeInOut' },
+      { time: 2, value: 0.2, interpolation: 'easeOut' },
+    ])
+
+    // A name from a future build must not break the load: it reads as linear.
+    const future = JSON.parse(JSON.stringify(serializeDoc(doc))) as typeof json
+    future.project.tracks.flatMap((t) => t.clips)[0].keyframes = {
+      opacity: [{ time: 0, value: 1, interpolation: 'wobble' }],
+    }
+    const { doc: futureRestored } = deserializeDoc(future)
+    const futureClip = futureRestored.project.tracks
+      .flatMap((t) => t.clips)
+      .find((c) => c.id === 'clip_fixed')!
+    expect(futureClip.keyframes?.opacity).toEqual([{ time: 0, value: 1, interpolation: 'linear' }])
+  })
+
+  it('drops an animStatics entry for timeScale (its static source is clip.speed)', () => {
+    const doc = makeDoc()
+    const track = doc.project.tracks.find((t) => t.kind === 'video')!
+    track.clips[0] = { ...track.clips[0], animStatics: { scale: 1.5 } }
+    const json = JSON.parse(JSON.stringify(serializeDoc(doc))) as {
+      project: { tracks: { clips: Record<string, unknown>[] }[] }
+    }
+    json.project.tracks.flatMap((t) => t.clips)[0].animStatics = { scale: 1.5, timeScale: 2 }
+
+    const { doc: restored } = deserializeDoc(json)
+    const clip = restored.project.tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip_fixed')!
+    expect(clip.animStatics).toEqual({ scale: 1.5 })
   })
 
   it('omits hasAudio when the asset never probed audio', () => {

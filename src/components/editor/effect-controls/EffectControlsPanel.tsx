@@ -1,12 +1,12 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { ChevronDown, ChevronUp, Diamond, Plus } from 'lucide-react'
 
+import { NamedSlider } from '@/components/editor/NamedSlider'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { Separator } from '@/components/ui/separator'
 import {
@@ -19,9 +19,12 @@ import {
 
 import { EditorCommandError } from '@/lib/editor/commands'
 import { KEYFRAME_PROPERTY_BOUNDS, SPEED_MAX, SPEED_MIN } from '@/lib/editor/constants'
+import { presetControls } from '@/lib/editor/ease-segment'
 import {
+  KEYFRAME_INTERPOLATIONS,
   animatedValue,
   clampPropertyValue,
+  hasTimeScaleCurve,
   staticPropertyValue,
   type KeyframeProperty,
 } from '@/lib/editor/keyframes'
@@ -33,7 +36,7 @@ import {
 import { findMedia } from '@/lib/editor/factories'
 import { linkedAudioTwin } from '@/lib/editor/links'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
-import type { Clip, Keyframe } from '@/lib/editor/types'
+import type { Clip, Keyframe, KeyframeInterpolation } from '@/lib/editor/types'
 
 /**
  * Effect Controls, the keyframe + audio-shaping surface (0.5.0).
@@ -61,6 +64,38 @@ const COLOR_PROPS: { key: KeyframeProperty; label: string }[] = [
 ]
 
 const AUDIO_PROPS: { key: KeyframeProperty; label: string }[] = [{ key: 'volume', label: 'Volume' }]
+
+/** The time-remap ramp row (0.6.0): a curve of speed multipliers. */
+const TIME_PROPS: { key: KeyframeProperty; label: string }[] = [
+  { key: 'timeScale', label: 'Time remapping' },
+]
+
+/**
+ * Swallows the four arrow keys. The easing swatches and the keyframe-graph dots
+ * are plain focusable elements, so the global editor shortcut handler (which
+ * only skips form fields) would read an arrow as frame-step / jump-to-edit.
+ * Their wrappers call this, the same guard the marker dialog's color group uses.
+ */
+function swallowArrows(e: ReactKeyboardEvent): void {
+  if (
+    e.key !== 'ArrowLeft' &&
+    e.key !== 'ArrowRight' &&
+    e.key !== 'ArrowUp' &&
+    e.key !== 'ArrowDown'
+  ) {
+    return
+  }
+  e.preventDefault()
+  e.stopPropagation()
+}
+
+/** Menu labels for the per-keyframe easing picker (interpolation of the next segment). */
+const INTERPOLATION_LABELS: Record<KeyframeInterpolation, string> = {
+  linear: 'Linear',
+  easeIn: 'Ease in',
+  easeOut: 'Ease out',
+  easeInOut: 'Ease in/out',
+}
 
 export function EffectControlsPanel({ clip, trackKind }: { clip: Clip; trackKind: string }) {
   const doc = useEditorStore((s) => s.doc)
@@ -148,7 +183,7 @@ function formatValue(property: KeyframeProperty, value: number): string {
   ) {
     return `${Math.round(value * 100)}%`
   }
-  if (property === 'scale') return `${value.toFixed(2)}×`
+  if (property === 'scale' || property === 'timeScale') return `${value.toFixed(2)}×`
   if (property === 'volume') return `${Math.round(value * 100)}%`
   if (property === 'hue') return `${Math.round(value)}°`
   if (property === 'positionX' || property === 'positionY') return `${Math.round(value)} px`
@@ -174,6 +209,12 @@ function sliderConfig(property: KeyframeProperty): { min: number; max: number; s
       return { min: 0.25, max: 4, step: 0.01 }
     case 'hue':
       return { min: -180, max: 180, step: 1 }
+    case 'timeScale':
+      return {
+        min: KEYFRAME_PROPERTY_BOUNDS.timeScale.min,
+        max: KEYFRAME_PROPERTY_BOUNDS.timeScale.max,
+        step: 0.01,
+      }
     default:
       return { min: 0, max: 2, step: 0.01 }
   }
@@ -193,7 +234,15 @@ function PropertyRow({
   const apply = useEditorStore((s) => s.apply)
   const keyframes = clip.keyframes?.[property] ?? []
   const animated = keyframes.length > 0
-  const current = animatedValue(clip, property, playheadLocal)
+  // A reversed clip reads its `timeScale` curve in MIRRORED source-side local
+  // time (`sourceTimeAt` integrates at duration - local), so that row's whole
+  // axis is flipped to match: a dot at the playhead then means the rate the
+  // engine actually applies there. `axis` is its own inverse. Every other
+  // property is evaluated at the plain clip-local time, so this is timeScale
+  // only.
+  const mirrored = property === 'timeScale' && !!clip.reverse
+  const axis = (t: number) => (mirrored ? clip.duration - t : t)
+  const current = animatedValue(clip, property, axis(playheadLocal))
   const cfg = sliderConfig(property)
 
   const setCurve = (next: Keyframe[]) =>
@@ -201,25 +250,29 @@ function PropertyRow({
 
   const toggleKeyframe = () => {
     if (animated) {
-      // Remove the keyframe at (or nearest) the playhead; clear when it is the last.
+      // Remove the keyframe at (or nearest) the playhead, measured on the row's
+      // own axis (mirrored for a reversed clip's timeScale, like the seed and the
+      // slider write below); clear when it is the last.
+      const at = axis(playheadLocal)
       const nearest = keyframes.reduce<Keyframe | null>((best, k) => {
         if (!best) return k
-        return Math.abs(k.time - playheadLocal) < Math.abs(best.time - playheadLocal) ? k : best
+        return Math.abs(k.time - at) < Math.abs(best.time - at) ? k : best
       }, null)
       if (!nearest) return
       const next = keyframes.filter((k) => k !== nearest)
       setCurve(next)
     } else {
       // First keyframe: pin the current static value at the playhead.
-      setCurve([{ time: playheadLocal, value: staticPropertyValue(clip, property) }])
+      setCurve([{ time: axis(playheadLocal), value: staticPropertyValue(clip, property) }])
     }
   }
 
   const onSlider = (v: number, commit: boolean) => {
     if (animated) {
       // Editing an animated property writes/updates a keyframe at the playhead.
-      const next = keyframes.filter((k) => Math.abs(k.time - playheadLocal) > 1e-6)
-      next.push({ time: playheadLocal, value: clampPropertyValue(property, v) })
+      const at = axis(playheadLocal)
+      const next = keyframes.filter((k) => Math.abs(k.time - at) > 1e-6)
+      next.push({ time: at, value: clampPropertyValue(property, v) })
       const store = useEditorStore.getState()
       if (commit) setCurve(next)
       else {
@@ -242,6 +295,13 @@ function PropertyRow({
     if (property === 'volume') {
       if (commit) apply({ type: 'setClipGain', clipId: clip.id, gain: v })
       else store.applyTransient({ type: 'setClipGain', clipId: clip.id, gain: v })
+      return
+    }
+    // timeScale's static source is the clip's speed field (the ramp is only
+    // created by the diamond; while it exists the slider writes keyframes).
+    if (property === 'timeScale') {
+      if (commit) apply({ type: 'setClipSpeed', clipId: clip.id, speed: v })
+      else store.applyTransient({ type: 'setClipSpeed', clipId: clip.id, speed: v })
       return
     }
     if (commit) {
@@ -276,7 +336,7 @@ function PropertyRow({
           </Button>
         </div>
       </div>
-      <Slider
+      <NamedSlider
         aria-label={`${label} value`}
         value={[current]}
         min={cfg.min}
@@ -285,14 +345,57 @@ function PropertyRow({
         onValueChange={([v]) => onSlider(v, false)}
         onValueCommit={([v]) => onSlider(v, true)}
       />
-      {animated && <KeyframeGraph clip={clip} property={property} />}
+      {animated && (
+        <KeyframeGraph
+          clip={clip}
+          property={property}
+          playheadLocal={playheadLocal}
+          mirrored={mirrored}
+        />
+      )}
     </div>
   )
 }
 
 /** Light graph: keyframe dots over the clip duration; drag a dot to move it. */
-function KeyframeGraph({ clip, property }: { clip: Clip; property: KeyframeProperty }) {
+function KeyframeGraph({
+  clip,
+  property,
+  playheadLocal,
+  mirrored,
+}: {
+  clip: Clip
+  property: KeyframeProperty
+  playheadLocal: number
+  /** True for a reversed clip's `timeScale` row: the x axis is flipped. */
+  mirrored: boolean
+}) {
+  const apply = useEditorStore((s) => s.apply)
+  // One frame in the project's frame grid: the keyboard nudge's unit.
+  const fps = useEditorStore((s) => s.doc.project.fps)
   const keyframes = clip.keyframes?.[property] ?? []
+  // Curve time -> on-screen axis time (its own inverse); see PropertyRow.
+  const axis = (t: number) => (mirrored ? clip.duration - t : t)
+  // Arrow nudging of the FOCUSED dot (the dots are the thumbs of the row's
+  // `role="slider"` contract): one frame in the project's own frame grid, in
+  // AXIS space so a reversed row's Left moves the dot left on screen. Each
+  // dot carries its own handler (it knows its index), commits as one undo
+  // step, and steps while the key is held the way a native slider thumb
+  // does. Without this the wrapper's guard swallowed the keys and the
+  // contract promised a keyboard path the dots did not have.
+  const frame = 1 / fps
+  const nudgeDot = (index: number, key: string) => {
+    const delta = (key === 'ArrowRight' ? 1 : -1) * frame
+    const next = keyframes.map((k, i) => {
+      if (i !== index) return k
+      // Nudge in AXIS space (screen), clamp there, then convert back: `axis`
+      // is its own inverse, and a mirrored row's time runs opposite to the
+      // screen position the user sees and the clamps promise.
+      const screen = Math.max(0, Math.min(clip.duration, axis(k.time) + delta))
+      return { ...k, time: axis(screen) }
+    })
+    apply({ type: 'setClipKeyframes', clipId: clip.id, property, keyframes: next })
+  }
   const wrapRef = useRef<HTMLDivElement>(null)
   const [dragIndex, setDragIndex] = useState<number | null>(null)
   // Initiating pointer of the active keyframe drag (multi-touch: ignore others).
@@ -316,7 +419,7 @@ function KeyframeGraph({ clip, property }: { clip: Clip; property: KeyframePrope
       const kfs = clipNow?.keyframes?.[property]
       if (!kfs || !kfs[dragIndex]) return
       const next = kfs.map((k, i) =>
-        i === dragIndex ? { ...k, time: Math.max(0, Math.min(clip.duration, t)) } : k,
+        i === dragIndex ? { ...k, time: Math.max(0, Math.min(clip.duration, axis(t))) } : k,
       )
       store.applyTransient({ type: 'setClipKeyframes', clipId: clip.id, property, keyframes: next })
     }
@@ -360,37 +463,115 @@ function KeyframeGraph({ clip, property }: { clip: Clip; property: KeyframePrope
   const bounds = KEYFRAME_PROPERTY_BOUNDS[property]
   const span = Math.max(1e-6, bounds.max - bounds.min)
 
+  // The easing picker targets the keyframe nearest the playhead, the same one
+  // the diamond toggle removes: both measure on the row's own axis, mirrored for
+  // a reversed clip's timeScale. The interpolation belongs to the segment that
+  // STARTS at a keyframe, so editing the last keyframe changes nothing visible
+  // until another keyframe follows it.
+  const at = axis(playheadLocal)
+  const activeIndex = keyframes.reduce(
+    (best, k, i) => (Math.abs(k.time - at) < Math.abs(keyframes[best].time - at) ? i : best),
+    0,
+  )
+  const activeInterpolation = keyframes[activeIndex]?.interpolation ?? 'linear'
+  const setInterpolation = (interpolation: KeyframeInterpolation) => {
+    apply({
+      type: 'setClipKeyframes',
+      clipId: clip.id,
+      property,
+      keyframes: keyframes.map((k, i) => {
+        if (i !== activeIndex) return k
+        // A BOUNDED segment carries its exact sub-curve in `easeOut`, and the
+        // picker renders its `interpolation` NAME as the pressed button. Picking
+        // that same name must be a no-op: the name is a display shorthand, so
+        // overwriting the data with the full-span preset would silently
+        // un-subdivide a split/trimmed curve on a click that looks inert.
+        if (interpolation === k.interpolation && k.easeOut) return k
+        // Stamp the preset's exact bezier data: a later split/trim that
+        // subdivides this segment then starts from the real shape, and the
+        // name stays the UI's display shorthand.
+        const controls = presetControls(interpolation)
+        const next: Keyframe = { ...k, interpolation }
+        if (controls) next.easeOut = [...controls]
+        else delete next.easeOut
+        return next
+      }),
+    })
+  }
+
   return (
-    <div
-      ref={wrapRef}
-      data-testid={`kf-graph-${property}`}
-      className="relative h-10 w-full rounded border border-border bg-muted/30"
-    >
-      {keyframes.map((k, i) => {
-        const left =
-          (Math.max(0, Math.min(clip.duration, k.time)) / Math.max(1e-6, clip.duration)) * 100
-        const bottom = ((k.value - bounds.min) / span) * 100
-        return (
-          <div
-            key={`${i}-${k.time}`}
-            data-testid={`kf-dot-${property}-${i}`}
-            role="slider"
-            tabIndex={0}
-            aria-label={`${property} keyframe ${i + 1}`}
-            aria-valuenow={Number(k.time.toFixed(2))}
-            aria-valuemin={0}
-            aria-valuemax={clip.duration}
-            className="absolute size-2.5 -translate-x-1/2 translate-y-1/2 cursor-ew-resize rounded-full border border-amber-600 bg-amber-400"
-            style={{ left: `${left}%`, bottom: `${Math.max(0, Math.min(100, bottom))}%` }}
-            onPointerDown={(e) => {
-              e.stopPropagation()
-              tokenRef.current = useEditorStore.getState().beginTransient(e.pointerId)
-              setPointerId(e.pointerId)
-              setDragIndex(i)
-            }}
-          />
-        )
-      })}
+    <div className="space-y-1">
+      <div
+        className="flex items-center gap-1"
+        role="group"
+        aria-label={`${property} easing`}
+        data-testid={`kf-ease-${property}`}
+        onKeyDown={swallowArrows}
+      >
+        {KEYFRAME_INTERPOLATIONS.map((value) => (
+          <Button
+            key={value}
+            size="sm"
+            variant={value === activeInterpolation ? 'secondary' : 'ghost'}
+            className="h-5 px-1.5 text-[10px]"
+            aria-pressed={value === activeInterpolation}
+            data-testid={`kf-ease-${property}-${value}`}
+            onClick={() => setInterpolation(value)}
+          >
+            {INTERPOLATION_LABELS[value]}
+          </Button>
+        ))}
+      </div>
+      <div
+        ref={wrapRef}
+        data-testid={`kf-graph-${property}`}
+        className="relative h-10 w-full rounded border border-border bg-muted/30"
+        onKeyDown={swallowArrows}
+      >
+        {keyframes.map((k, i) => {
+          const left =
+            (Math.max(0, Math.min(clip.duration, axis(k.time))) / Math.max(1e-6, clip.duration)) *
+            100
+          const bottom = ((k.value - bounds.min) / span) * 100
+          const eased = (k.interpolation ?? 'linear') !== 'linear'
+          return (
+            <div
+              // Index key, not `time`: a time-bearing key remounts the dot on
+              // every nudge/drag frame, which drops keyboard focus mid-use
+              // (the next press would fall through to the global shortcut).
+              key={i}
+              data-testid={`kf-dot-${property}-${i}`}
+              data-interpolation={k.interpolation ?? 'linear'}
+              role="slider"
+              tabIndex={0}
+              aria-label={`${property} keyframe ${i + 1}`}
+              aria-valuenow={Number(k.time.toFixed(2))}
+              aria-valuemin={0}
+              aria-valuemax={clip.duration}
+              className={`absolute size-2.5 -translate-x-1/2 translate-y-1/2 cursor-ew-resize rounded-full border bg-amber-400 ${
+                eased ? 'border-dashed border-amber-700' : 'border-amber-600'
+              }`}
+              style={{ left: `${left}%`, bottom: `${Math.max(0, Math.min(100, bottom))}%` }}
+              onPointerDown={(e) => {
+                e.stopPropagation()
+                tokenRef.current = useEditorStore.getState().beginTransient(e.pointerId)
+                setPointerId(e.pointerId)
+                setDragIndex(i)
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+                // One frame per keydown, OS repeat included: the same
+                // step-on-hold behavior a native slider thumb has. The graph
+                // wrapper's guard stops anything from reaching the global
+                // shortcut either way (the wrapper runs first by bubbling).
+                e.preventDefault()
+                e.stopPropagation()
+                nudgeDot(i, e.key)
+              }}
+            />
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -427,7 +608,7 @@ function AudioShaping({ clip }: { clip: Clip }) {
                 : `R${Math.round(clip.pan * 100)}`}
           </span>
         </div>
-        <Slider
+        <NamedSlider
           aria-label="Clip pan"
           value={[clip.pan ?? 0]}
           min={-1}
@@ -466,7 +647,7 @@ function AudioShaping({ clip }: { clip: Clip }) {
                     {eq[band]} dB
                   </span>
                 </div>
-                <Slider
+                <NamedSlider
                   aria-label={`EQ ${band} dB`}
                   value={[eq[band]]}
                   min={-24}
@@ -488,6 +669,17 @@ function AudioShaping({ clip }: { clip: Clip }) {
           checked={!!clip.compressor}
           onCheckedChange={(checked) =>
             apply({ type: 'setClipCompressor', clipId: clip.id, enabled: checked })
+          }
+        />
+      </div>
+
+      <div className="flex items-center justify-between">
+        <Label className="text-xs">Reduce noise</Label>
+        <Switch
+          aria-label="Reduce noise"
+          checked={!!clip.denoise}
+          onCheckedChange={(checked) =>
+            apply({ type: 'setClipDenoise', clipId: clip.id, enabled: checked })
           }
         />
       </div>
@@ -562,10 +754,23 @@ function AutoDuck({
 
 function SpeedSection({ clip }: { clip: Clip }) {
   const apply = useEditorStore((s) => s.apply)
+  const playhead = useEditorStore((s) => s.playhead)
   const track = useEditorStore((s) =>
     s.doc.project.tracks.find((t) => t.clips.some((c) => c.id === clip.id)),
   )
   const kind = track?.kind
+  const local = Math.min(Math.max(0, playhead - clip.start), clip.duration)
+  // The curve, not the static rate, sets a ramped clip's speed, so the static
+  // control is disabled rather than pretending to change something.
+  const ramped = hasTimeScaleCurve(clip)
+  // Time remapping and reverse are picture-only. A ramp drops its link group's
+  // audio in both render paths, so on an audio-only clip the row could only ever
+  // silence the pair (the curve's twin reads its OWN keyframes, so nothing else
+  // changes), while the static Speed slider below still re-times the audio
+  // element. `audioOnly` sits next to the video-track test because the A/V twin
+  // still fits a video track (clipFitsTrack), where the picture-only rows must
+  // stay hidden too.
+  const pictureBearing = kind === 'video' && !clip.audioOnly
 
   return (
     <>
@@ -581,12 +786,13 @@ function SpeedSection({ clip }: { clip: Clip }) {
               {(clip.speed ?? 1).toFixed(2)}×
             </span>
           </div>
-          <Slider
+          <NamedSlider
             aria-label="Clip speed"
             value={[clip.speed ?? 1]}
             min={SPEED_MIN}
             max={SPEED_MAX}
             step={0.05}
+            disabled={ramped}
             onValueChange={([v]) =>
               useEditorStore
                 .getState()
@@ -594,8 +800,14 @@ function SpeedSection({ clip }: { clip: Clip }) {
             }
             onValueCommit={([v]) => apply({ type: 'setClipSpeed', clipId: clip.id, speed: v })}
           />
+          {ramped && (
+            <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+              A time remapping curve sets this clip's speed. Edit its keyframes in the Time
+              remapping row below to re-time the clip.
+            </p>
+          )}
         </div>
-        {kind === 'video' && (
+        {pictureBearing && (
           <div className="flex items-center justify-between">
             <Label className="text-xs">Reverse (picture only)</Label>
             <Switch
@@ -608,9 +820,31 @@ function SpeedSection({ clip }: { clip: Clip }) {
           </div>
         )}
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          Alt-drag a clip edge on the timeline to rate-stretch. Reversed clips play stepped in the
-          preview and frame-accurate in the export; their audio is dropped.
+          Alt-drag a clip edge on the timeline to rate-stretch (a clip with a time remapping curve
+          trims instead; its rate comes from the curve). Reversed clips play stepped in the preview
+          and frame-accurate in the export; their audio is dropped.
         </p>
+        {pictureBearing && (
+          <>
+            {TIME_PROPS.map(({ key, label }) => (
+              <PropertyRow
+                key={key}
+                clip={clip}
+                property={key}
+                label={label}
+                playheadLocal={local}
+              />
+            ))}
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              Time remapping keyframes ramp the clip's speed without changing its timeline length:
+              the diamond seeds a curve at the playhead, the slider then edits that keyframe. While
+              no curve exists, the slider sets the clip's static speed instead, which may shorten
+              the clip so it never needs source past the asset's end (it never grows). Ramped clips
+              play stepped in the preview, render frame-accurate in the export, and drop their audio
+              (both halves of a linked pair), like reversed clips.
+            </p>
+          </>
+        )}
       </div>
     </>
   )

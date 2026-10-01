@@ -70,9 +70,35 @@ export const BRIGHTNESS_MAX = 2
 export const HUE_MIN = -180
 export const HUE_MAX = 180
 
+/** Temperature/tint grading bounds (relative units, 0 = neutral). */
+export const TEMPERATURE_MIN = -100
+export const TEMPERATURE_MAX = 100
+export const TINT_MIN = -100
+export const TINT_MAX = 100
+
 /** EQ band gain limits (dB) for the three-band biquad stack. */
 export const EQ_DB_MIN = -24
 export const EQ_DB_MAX = 24
+
+/**
+ * Noise-reduction chain (0.6.0), shared by the preview mixer and the export
+ * mix so the two stay identical: a rumble high-pass, a hiss low-pass and a
+ * gentle narrow cut over the hiss band. Deliberately fixed (no user tuning).
+ */
+export const DENOISE_HIGHPASS_HZ = 80
+export const DENOISE_LOWPASS_HZ = 12000
+export const DENOISE_HISS_HZ = 6000
+export const DENOISE_HISS_DB = -6
+export const DENOISE_HISS_Q = 1
+
+/**
+ * The high-pass/low-pass corner Q, in DECIBELS. Web Audio reads Q as dB for
+ * lowpass/highpass (linear for every other type), so 0.7 dB is really a linear
+ * Q of 1.084, which rings the passband +1.7 dB over the voice fundamental.
+ * -3.0103 dB is the Butterworth corner (linear 1/sqrt(2)): flat up to the
+ * corner, so the denoiser never boosts what it is meant to clean.
+ */
+export const DENOISE_CORNER_Q_DB = 20 * Math.log10(1 / Math.SQRT2)
 
 /** Crossfade/automation epsilon for time comparisons. */
 export const TIME_EPSILON = 1e-6
@@ -98,4 +124,6 @@ export const KEYFRAME_PROPERTY_BOUNDS: Record<
   saturation: { min: SATURATION_MIN, max: SATURATION_MAX, default: 1 },
   brightness: { min: BRIGHTNESS_MIN, max: BRIGHTNESS_MAX, default: 1 },
   hue: { min: HUE_MIN, max: HUE_MAX, default: 0 },
+  // A time-remap ramp: the curve is in speed multipliers (1 = normal).
+  timeScale: { min: SPEED_MIN, max: SPEED_MAX, default: 1 },
 }

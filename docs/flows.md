@@ -82,7 +82,10 @@ Stable hooks used across flows and tests:
   same history entry, so one undo restores both. A lane that was already empty is kept, and the last lane
   always survives ([architecture.md](architecture.md#invariants), rule 17).
 - **Trim** — drag either edge; video/audio clips are bounded by their source (the `inPoint + duration ≤
-asset.duration` invariant), images and text are unbounded.
+asset.duration` invariant), images and text are unbounded. A reversed clip keeps the same two-sided
+  behavior: its head shows the span's HIGH source end and its tail the LOW one, so a head move holds the
+  low anchor and a tail move holds the high one, and either edge reveals the source on its own side
+  rather than sliding the picture under the drag.
 - **Split** — `Ctrl+K` (Add Edit) splits every clip the playhead crosses; with a selection it splits
   only the selected groups. Both halves of a link group re-pair with a single fresh `linkId`.
 - **Duplicate (`Ctrl+Shift+/`)** copies the group butt-to-tail with an independent fresh link.
@@ -160,10 +163,20 @@ asset.duration` invariant), images and text are unbounded.
 - **Keyframes and Effect Controls**: selecting a clip shows the Clip / Effect Controls tabs. Each
   animatable property row has a keyframe diamond (add/remove at the playhead) and, once animated, a
   light graph whose dots drag in time (one drag = one undo step). Keyframe times are clip-local, so
-  moves and duplicates carry their animation along and splitting redistributes the curves.
+  moves and duplicates carry their animation along and splitting redistributes the curves (exact
+  for every easing: an eased segment carries the exact bezier data of its shape, and a cut
+  subdivides that bezier with de Casteljau so both halves re-time the original). A head trim of a
+  ramped clip rebases the curve the same way, so the kept span keeps reading the frames it read
+  before the cut. A reversed clip's time-remapping row mirrors its axis (the value, the dots, and
+  the keyframe the easing picker and the diamond target all measure on the mirrored time
+  `sourceTimeAt` reads), and the picture-only rows stay hidden for a clip that carries no picture.
 - **Rate stretch (Alt-drag a clip edge)** keeps the source span fixed and re-derives the speed from
-  the new duration (clamped 0.25x to 4x); the Inspector's Speed section does the same numerically and
-  carries the Reverse toggle.
+  the new duration (clamped 0.25x to 4x); a clip left over-consuming a shorter relinked asset has the
+  span clamped to the readable tail so the drag still applies (when even the minimum span cannot fit,
+  the drag changes nothing and says why). The Inspector's Speed section does the same numerically and
+  carries the Reverse toggle. A clip with a `timeScale` curve is skipped, because the curve (not the
+  static rate) sets its speed: the drag falls through to a plain trim, and the Speed slider and the
+  clip's speed badge stay off while the curve exists.
 - **Play / pause (Space)**, `J`/`K`/`L` shuttle (browsers cannot play backwards, so `J` stops like `K`),
   frame stepping, Home/End, and Up/Down edit-point navigation. Transport state mirrors into
   `[data-testid="play-pause"]` and `[data-testid="time-display"]`.

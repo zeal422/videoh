@@ -59,20 +59,37 @@ export interface Transition {
   duration: number
 }
 
-/** Interpolation between two keyframes. Only linear ships in 0.5.0; the field exists so eased curves can be added without a schema break. */
-export type KeyframeInterpolation = 'linear'
+/**
+ * Interpolation of the segment that STARTS at a keyframe (the curve runs from
+ * this keyframe to the next one). The named easings are Premiere's defaults;
+ * see bezier.ts for their control points. Unknown values read as 'linear'.
+ */
+export type KeyframeInterpolation = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut'
 
 /** One keyframe: clip-local time (seconds from clip start) and clamped value. */
 export interface Keyframe {
   time: number
   value: number
   interpolation?: KeyframeInterpolation
+  /**
+   * Exact shape of the segment that STARTS here, as cubic-bezier(x1, y1,
+   * x2, y2) control data (see `ease-segment.ts`). Absent means the preset
+   * `interpolation` names (linear when that is absent too), so files written
+   * before the field existed read identically. Written by the split and trim
+   * rebases, which subdivide an eased segment at the cut instead of
+   * re-approximating it from the preset name.
+   */
+  easeOut?: readonly [number, number, number, number]
 }
 
 /**
  * The animatable per-clip properties (0.5.0): opacity, position, scale,
  * volume and the ctx.filter color set. A property is animated when its
  * keyframe array exists and is non-empty; otherwise the static value wins.
+ *
+ * `timeScale` (0.6.0) is the odd one out: its curve is a time-remap ramp, so
+ * it is read through `sourceTimeAt`'s integral rather than as a per-frame
+ * value, and its static source is the clip's `speed` field.
  */
 export type KeyframeProperty =
   | 'opacity'
@@ -85,6 +102,14 @@ export type KeyframeProperty =
   | 'saturation'
   | 'brightness'
   | 'hue'
+  | 'timeScale'
+
+/**
+ * Animatable properties that keep a static value in `clip.animStatics`.
+ * opacity and volume have dedicated fields and timeScale's static source is
+ * `clip.speed`, so none of the three belongs here.
+ */
+export type AnimStaticProperty = Exclude<KeyframeProperty, 'opacity' | 'volume' | 'timeScale'>
 
 /**
  * A clip is an occurrence of media (or text) on a track.
@@ -136,6 +161,12 @@ export interface Clip {
   eq?: { low: number; mid: number; high: number }
   /** DynamicsCompressor with fixed musical defaults (threshold -24 dB, ratio 4). */
   compressor?: boolean
+  /**
+   * Broadband noise reduction (0.6.0): a rumble high-pass, a hiss low-pass and
+   * a narrow cut in the hiss band, all fixed Web Audio biquads. Undefined = off.
+   * Both render paths build the same chain from the DENOISE_* constants.
+   */
+  denoise?: boolean
   muted?: boolean
   /**
    * Visual opacity, 0..1 (default 1). Multiplies into every draw of this clip
@@ -155,9 +186,20 @@ export interface Clip {
    * scale, the color set). Absent fields mean neutral defaults. opacity and
    * volume keep their dedicated fields as the static source.
    */
-  animStatics?: Partial<Record<Exclude<KeyframeProperty, 'opacity' | 'volume'>, number>>
+  animStatics?: Partial<Record<AnimStaticProperty, number>>
   /** Per-property keyframe curves, when animated. See keyframes.ts. */
   keyframes?: KeyframeMap
+  /**
+   * White-balance grade, -100 (cool/blue) .. 100 (warm/orange), 0 = neutral
+   * (0.6.0). Static, and not part of the ctx.filter chain: it compiles to an
+   * SVG feColorMatrix (`color.ts`) that both render paths reference by id.
+   */
+  temperature?: number
+  /**
+   * Green/magenta grade, -100 (magenta) .. 100 (green), 0 = neutral (0.6.0).
+   * Static, same SVG matrix path as `temperature`.
+   */
+  tint?: number
 }
 
 export interface Track {

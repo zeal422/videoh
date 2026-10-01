@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import {
   clipCrossfadeSchedule,
@@ -9,9 +9,21 @@ import {
   planVideoFrame,
   videoAssetIds,
 } from '../export/offline'
-import { closeDecodedFrames, pickAudioCodec, preloadImage } from '../export/mp4'
-import { createClip, createTextClip, createTrack } from '../factories'
+import { closeDecodedFrames, pickAudioCodec, preloadImage, renderAudioMix } from '../export/mp4'
+import { clampSourceTime, createClip, createTextClip, createTrack } from '../factories'
+import { animatedValue } from '../keyframes'
 import type { Clip, Doc, MediaAsset } from '../types'
+
+/** Minimal AudioBuffer stand-in for the OfflineAudioContext stub. */
+function fakeBuffer(): AudioBuffer {
+  return {
+    sampleRate: 48000,
+    length: 48000,
+    duration: 1,
+    numberOfChannels: 1,
+    getChannelData: () => new Float32Array(48000),
+  } as unknown as AudioBuffer
+}
 
 function doc(
   tracks: { kind: 'video' | 'audio' | 'text'; clips: Clip[] }[],
@@ -213,6 +225,90 @@ describe('planAudioFrame', () => {
   })
 })
 
+describe('time-remap ramps', () => {
+  /** Linear 1x → 2x over 4 s: rate(t) = 1 + t/4, so I(x) = x + x²/8. */
+  const ramp = [
+    { time: 0, value: 1 },
+    { time: 4, value: 2 },
+  ]
+
+  it('plans ramped source times without changing the clip or the frame count', () => {
+    const a = asset()
+    const d = doc([{ kind: 'video', clips: [videoClip({ keyframes: { timeScale: ramp } })] }], [a])
+    expect(planVideoFrame(d, 2).draws[0].sourceTime).toBeCloseTo(2.5, 6)
+    expect(planVideoFrame(d, 4 - 1 / 30).draws[0].sourceTime).toBeLessThan(6)
+    // Timeline length (and therefore the export's frame count) is untouched.
+    expect(exportFrameTimes(d)).toHaveLength(120)
+  })
+
+  it('clamps an over-consuming ramp to the last readable frame', () => {
+    const a = asset({ duration: 3 })
+    const d = doc(
+      [
+        {
+          kind: 'video',
+          clips: [videoClip({ keyframes: { timeScale: [{ time: 0, value: 4 }] } })],
+        },
+      ],
+      [a],
+    )
+    // 4x over 4 s asks for 16 s of a 3 s asset: the plan reports the raw value,
+    // and both render paths read it through the same clamp.
+    expect(planVideoFrame(d, 3.9).draws[0].sourceTime).toBeCloseTo(15.6, 6)
+    expect(clampSourceTime(15.6, a)).toBeCloseTo(2.99, 6)
+    expect(clampSourceTime(-1, a)).toBe(0)
+    expect(clampSourceTime(5, undefined)).toBe(5)
+  })
+
+  it('keeps a flat timeScale curve (identity seed or constant) audible in the mix', () => {
+    // The audio policy keys on the curve SHAPE: a flat curve is a constant
+    // rate the buffer source resamples, so it is not "ramped" for the audio
+    // decision. The identity diamond seed used to mute the pair for nothing.
+    const a = asset({ id: 'ma', kind: 'audio', duration: 60 })
+    const flat = [{ time: 0, value: 1 }]
+    const d = doc([{ kind: 'audio', clips: [audioClip({ keyframes: { timeScale: flat } })] }], [a])
+    expect(planAudioFrame(d, 1).audible.length).toBe(1)
+
+    // A REAL ramp still drops the clip.
+    const ramp = [
+      { time: 0, value: 1 },
+      { time: 4, value: 2 },
+    ]
+    const d2 = doc([{ kind: 'audio', clips: [audioClip({ keyframes: { timeScale: ramp } })] }], [a])
+    expect(planAudioFrame(d2, 1).audible.length).toBe(0)
+  })
+
+  it('drops a ramped clip from the audio plan', () => {
+    const a = asset()
+    const d = doc([{ kind: 'video', clips: [videoClip({ keyframes: { timeScale: ramp } })] }], [a])
+    expect(planAudioFrame(d, 2).audible).toHaveLength(0)
+  })
+
+  it('silences BOTH halves of a ramped A/V pair', () => {
+    const a = asset()
+    const base = { linkId: 'L1', start: 0, duration: 4 }
+    const d = doc(
+      [
+        {
+          kind: 'video',
+          clips: [videoClip({ ...base, id: 'cv', keyframes: { timeScale: ramp } })],
+        },
+        { kind: 'audio', clips: [audioClip({ ...base, id: 'ca', mediaId: 'ma' })] },
+      ],
+      [a, asset({ id: 'ma', kind: 'audio', name: 'a.wav' })],
+    )
+    // The twin carries NO curve of its own, so only the link-group predicate
+    // can keep it silent; a per-clip ramp check would let it play at the old rate.
+    expect(d.project.tracks[1].clips[0].keyframes).toBeUndefined()
+    expect(planAudioFrame(d, 2).audible).toHaveLength(0)
+
+    // Control: with the video's ramp gone the twin is audible again.
+    const noRamp = structuredClone(d)
+    noRamp.project.tracks[0].clips[0].keyframes = undefined
+    expect(planAudioFrame(noRamp, 2).audible.map((c) => c.clip.id)).toEqual(['ca'])
+  })
+})
+
 describe('reversed source reads', () => {
   it('mirrors the source span (local 0 shows the span end)', () => {
     const a = asset()
@@ -278,6 +374,156 @@ describe('clipGainSchedule', () => {
       { time: 2, value: 0.2, kind: 'ramp' },
       { time: 4, value: 0.2, kind: 'ramp' },
     ])
+  })
+
+  it('samples eased data even when the keyframe is NAMED linear', () => {
+    // The gate must be the SEGMENT SHAPE (segmentControls), not the display
+    // name: sanitizeKeyframes normalizes an absent name to linear while KEEPING
+    // a valid easeOut quad, so a project file can carry real easing under the
+    // linear name. The preview evaluates the shape, so the export must too.
+    const clip = createClip({
+      id: 'c',
+      start: 0,
+      duration: 4,
+      keyframes: {
+        volume: [
+          {
+            time: 0,
+            value: 0,
+            interpolation: 'linear',
+            easeOut: [0.3, 0.9, 0.5, 1],
+          },
+          { time: 4, value: 1 },
+        ],
+      },
+    })
+    const events = clipGainSchedule(clip)
+    // 16 samples + both keyframes + the end hold.
+    expect(events.filter((e) => e.kind === 'ramp').length).toBe(18)
+    // And the sampled values follow the SHAPE (the preview's curve), which for
+    // this quad sits far above the straight line at the quarter point.
+    const quarter = events.find((e) => Math.abs(e.time - 1) < 1e-9)
+    expect(quarter).toBeDefined()
+    expect(quarter!.value).toBeCloseTo(animatedValue(clip, 'volume', 1), 6)
+  })
+
+  it('decodes a shared audio asset once per export, not once per clip', async () => {
+    // 20 placements of one music file: decodeAudioData must run once for the
+    // asset, not once per clip (each call allocates a full float32 buffer).
+    const file = new File([new Uint8Array([1, 2, 3])], 'm.mp3', { type: 'audio/mpeg' })
+    const music = { ...asset({ id: 'ma', kind: 'audio', duration: 60, url: 'blob:m' }), file }
+    const placements = Array.from({ length: 20 }, (_, i) =>
+      audioClip({ id: `ca${i}`, start: i, duration: 1 }),
+    )
+    const d = doc([{ kind: 'audio', clips: placements }], [music])
+
+    let decodes = 0
+    class FakeParam {
+      value = 1
+      setValueAtTime = () => undefined
+      linearRampToValueAtTime = () => undefined
+    }
+    class FakeOfflineContext {
+      destination = {}
+      sampleRate = 48000
+      currentTime = 0
+      createGain() {
+        return { gain: new FakeParam(), connect: () => undefined }
+      }
+      createStereoPanner() {
+        return { pan: new FakeParam(), connect: () => undefined }
+      }
+      createBiquadFilter() {
+        return {
+          type: '',
+          frequency: new FakeParam(),
+          Q: new FakeParam(),
+          gain: new FakeParam(),
+          connect: () => undefined,
+        }
+      }
+      createDynamicsCompressor() {
+        return {
+          threshold: new FakeParam(),
+          knee: new FakeParam(),
+          ratio: new FakeParam(),
+          attack: new FakeParam(),
+          release: new FakeParam(),
+          connect: () => undefined,
+        }
+      }
+      createBufferSource() {
+        return {
+          buffer: null,
+          playbackRate: new FakeParam(),
+          connect: () => undefined,
+          start: () => undefined,
+        }
+      }
+      decodeAudioData(): Promise<AudioBuffer> {
+        decodes++
+        return Promise.resolve(fakeBuffer())
+      }
+      startRendering(): Promise<AudioBuffer> {
+        return Promise.resolve(fakeBuffer())
+      }
+    }
+    vi.stubGlobal('OfflineAudioContext', FakeOfflineContext)
+    try {
+      const buffer = await renderAudioMix(d, 20)
+      expect(buffer).not.toBeNull()
+      expect(decodes).toBe(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('follows an eased segment instead of flattening it', () => {
+    // Web Audio has no easing primitive, so mp4.ts schedules one `linearRamp`
+    // per event. An eased segment must therefore be SAMPLED, or the export
+    // would render a straight line where the preview eases: the exact
+    // preview/export divergence the shared color filter exists to prevent.
+    const clip = createClip({
+      id: 'c',
+      start: 0,
+      duration: 4,
+      keyframes: {
+        volume: [
+          { time: 0, value: 0, interpolation: 'easeIn' },
+          { time: 4, value: 1 },
+        ],
+      },
+    })
+    const events = clipGainSchedule(clip)
+    // Replay the schedule the way the exporter feeds the AudioParam: a `set`
+    // jumps, a `ramp` interpolates linearly from the previous event.
+    const gainAt = (t: number) => {
+      let lastT = 0
+      let lastV = 1
+      for (const ev of events) {
+        if (ev.kind === 'set') {
+          if (ev.time > t) return lastV
+          lastV = ev.value
+          lastT = ev.time
+        } else {
+          if (ev.time >= t) {
+            const span = ev.time - lastT
+            return span <= 0 ? ev.value : lastV + (ev.value - lastV) * ((t - lastT) / span)
+          }
+          lastV = ev.value
+          lastT = ev.time
+        }
+      }
+      return lastV
+    }
+    let worst = 0
+    for (let t = 0; t <= clip.duration; t += 0.017) {
+      worst = Math.max(worst, Math.abs(animatedValue(clip, 'volume', t) - gainAt(t)))
+    }
+    // 16 samples per segment land within half a percent of gain everywhere,
+    // where the un-sampled schedule diverges by up to 18 points on this curve.
+    expect(worst).toBeLessThan(0.005)
+    expect(events.length).toBeGreaterThan(2) // the segment really was sampled
   })
 
   it('returns events in chronological order even for a late-start keyframed clip', () => {
@@ -346,6 +592,15 @@ describe('text in the export', () => {
   it('renders text through the shared compositor drawer (static lock)', () => {
     const src = readFileSync(new URL('../export/mp4.ts', import.meta.url), 'utf8')
     expect(src).toMatch(/drawTextClip\(ctx, draw\.clip/)
+  })
+
+  it('releases the encoder on cancel/error through Output.cancel in the finally (static lock)', () => {
+    const src = readFileSync(new URL('../export/mp4.ts', import.meta.url), 'utf8')
+    // The finally must call output.cancel() guarded by the finalize flag:
+    // mediabunny releases encoders only via cancel() or finalize().
+    expect(src).toMatch(/let finalized = false/)
+    expect(src).toMatch(/finalized = true/)
+    expect(src).toMatch(/if \(!finalized\) \{\s*try \{\s*await output\.cancel\(\)/)
   })
 })
 

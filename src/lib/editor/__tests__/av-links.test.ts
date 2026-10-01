@@ -21,6 +21,7 @@ import {
   distinctLinkGroupCount,
   groupSelected,
   hasLinkedAudioTwin,
+  linkGroupHasRamp,
   linkedAudioTwin,
   linkedClips,
 } from '../links'
@@ -195,6 +196,44 @@ describe('link-group operations', () => {
     // relies on that) — but the engine's shadow rule never applies to it.
     expect(linkedAudioTwin(doc, audio)?.id).toBe(audio.id)
     expect(hasLinkedAudioTwin(doc, audio)).toBe(false)
+  })
+
+  it('linkGroupHasRamp sees a REAL ramp on either member, and only timeScale', () => {
+    const { doc, video, audio } = docWithPair()
+    expect(linkGroupHasRamp(doc, video)).toBe(false)
+
+    // An IDENTITY seed is not a ramp: the flat curve is resamplable at a
+    // constant rate, so the group keeps its audio (the diamond's first click
+    // used to mute the pair for nothing).
+    video.keyframes = { timeScale: [{ time: 0, value: 1 }] }
+    expect(linkGroupHasRamp(doc, video)).toBe(false)
+
+    // A real ramp on the VIDEO half makes the whole group ramped, so the
+    // twin's audio goes silent with it (the derived predicate is the reason).
+    video.keyframes = {
+      timeScale: [
+        { time: 0, value: 1 },
+        { time: 4, value: 2 },
+      ],
+    }
+    expect(linkGroupHasRamp(doc, video)).toBe(true)
+    expect(linkGroupHasRamp(doc, audio)).toBe(true)
+
+    // Other curves are not ramps.
+    video.keyframes = { opacity: [{ time: 0, value: 1 }] }
+    expect(linkGroupHasRamp(doc, video)).toBe(false)
+
+    // An unlinked clip is its own group.
+    const solo = createClip({ id: 'solo', duration: 4 })
+    doc.project.tracks[0].clips.push(solo)
+    expect(linkGroupHasRamp(doc, solo)).toBe(false)
+    solo.keyframes = {
+      timeScale: [
+        { time: 0, value: 1 },
+        { time: 4, value: 2 },
+      ],
+    }
+    expect(linkGroupHasRamp(doc, solo)).toBe(true)
   })
 
   it('audibleClipId routes audio edits to the twin from either side', () => {

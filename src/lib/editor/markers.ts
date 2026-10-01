@@ -102,15 +102,43 @@ export function applyMarkerPatch(marker: Marker, patch: MarkerPatch): void {
 /**
  * The inverse of `sourceTimeAt`: the clip-local timeline offset (seconds from
  * the clip's start) where a source time renders, or null when it falls outside
- * the clip's visible span. Speed scales the offset, reverse mirrors it; marker
- * times on the exact boundary clamp inside it.
+ * the clip's visible span. A constant rate scales the offset and reverse
+ * mirrors it; a `timeScale` ramp has no closed form once `sourceTimeAt`
+ * integrates the curve, so it is inverted by bisection. Marker times on the
+ * exact boundary clamp inside it.
  */
 export function clipMarkerLocalTime(clip: Clip, sourceTime: number): number | null {
-  const speed = clip.speed ?? 1
-  const offset = (sourceTime - clip.inPoint) / speed
-  if (offset < -TIME_EPSILON || offset > clip.duration + TIME_EPSILON) return null
-  const local = clip.reverse ? clip.duration - offset : offset
-  return clamp(local, 0, clip.duration)
+  const ramp = clip.keyframes?.timeScale
+  if (!ramp || ramp.length === 0) {
+    const speed = clip.speed ?? 1
+    const offset = (sourceTime - clip.inPoint) / speed
+    if (offset < -TIME_EPSILON || offset > clip.duration + TIME_EPSILON) return null
+    const local = clip.reverse ? clip.duration - offset : offset
+    return clamp(local, 0, clip.duration)
+  }
+  // Ramped clip: dividing by the static speed would misplace the marker (the
+  // curve decides how much source each timeline second consumes) and drop any
+  // marker past `duration * speed` of source. `sourceTimeAt` is monotone here
+  // (timeScale values are positive), so bisect for the local time that maps
+  // back to `sourceTime`; reverse is already folded into `sourceTimeAt`.
+  const atStart = sourceTimeAt(clip, 0)
+  const atEnd = sourceTimeAt(clip, clip.duration)
+  if (
+    sourceTime < Math.min(atStart, atEnd) - TIME_EPSILON ||
+    sourceTime > Math.max(atStart, atEnd) + TIME_EPSILON
+  ) {
+    return null
+  }
+  const rising = atEnd >= atStart
+  let below = 0
+  let above = clip.duration
+  for (let i = 0; i < 32; i++) {
+    const mid = (below + above) / 2
+    const value = sourceTimeAt(clip, mid)
+    if (rising ? value < sourceTime : value > sourceTime) below = mid
+    else above = mid
+  }
+  return clamp((below + above) / 2, 0, clip.duration)
 }
 
 /** Timeline seconds for a clip marker, or null when it is outside the span. */

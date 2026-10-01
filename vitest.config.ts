@@ -22,6 +22,10 @@ export default defineConfig({
       provider: 'v8',
       reportsDirectory: 'coverage',
       include: [
+        'src/lib/editor/bezier.ts',
+        'src/lib/editor/ease-segment.ts',
+        'src/lib/editor/color.ts',
+        'src/lib/editor/playback/denoise.ts',
         'src/lib/editor/commands.ts',
         'src/lib/editor/factories.ts',
         'src/lib/editor/snap.ts',

@@ -175,6 +175,7 @@ describe('setClipSpeed', () => {
         start: 0,
         inPoint: 3,
         duration: 4,
+        edge: 'tail',
       }),
     ).toThrow(EditorCommandError) // 3 + 4*2 = 11 > 10
     const ok = applyCommand(spedUp, {
@@ -183,8 +184,80 @@ describe('setClipSpeed', () => {
       start: 0,
       inPoint: 2,
       duration: 4,
+      edge: 'tail',
     })
     expect(ok.project.tracks[0].clips[0].inPoint).toBe(2)
+  })
+
+  it('leaves a ramped clip length alone: the curve, not the rate, consumes source', () => {
+    const { doc, clipId } = baseDoc()
+    const srcAsset = makeAsset()
+    doc.project.tracks[0].clips[0].mediaId = srcAsset.id
+    // A flat 0.5x ramp consumes 2s of the 10s asset over the clip's 4s length,
+    // so there is 8s of headroom. `speed` is only the no-curve fallback, so
+    // changing it must not re-derive the duration: the old formula saw
+    // (10 - 0) / 4 = 2.5s and destroyed 1.5s of timeline for an edit that has
+    // no effect on a clip the curve governs.
+    doc.project.tracks[0].clips[0].keyframes = {
+      timeScale: [
+        { time: 0, value: 0.5 },
+        { time: 4, value: 0.5 },
+      ],
+    }
+    const withMedia: Doc = { ...doc, media: [srcAsset] }
+    const ramped = applyCommand(withMedia, { type: 'setClipSpeed', clipId, speed: 4 })
+    expect(ramped.project.tracks[0].clips[0].duration).toBe(4)
+    expect(ramped.project.tracks[0].clips[0].speed).toBe(4)
+
+    // Control: with no curve the same edit still re-derives the duration.
+    const plain = structuredClone(withMedia)
+    plain.project.tracks[0].clips[0].keyframes = undefined
+    const shrunk = applyCommand(plain, { type: 'setClipSpeed', clipId, speed: 4 })
+    expect(shrunk.project.tracks[0].clips[0].duration).toBe(2.5)
+  })
+
+  it('adding a ramped clip ignores a stale static speed, like setClipSpeed', () => {
+    const { doc, trackId } = baseDoc()
+    const srcAsset = makeAsset()
+    // The curve consumes 0.25 * 3 = 0.75s of the 6s left after inPoint 4, so the
+    // clip fits. The old add path divided by the stale static rate instead and
+    // truncated it to (10 - 4) / 4 = 1.5s, while setClipSpeed kept it: the two
+    // paths now share one ramp predicate.
+    const added = applyCommand(
+      { ...doc, media: [srcAsset] },
+      {
+        type: 'addClip',
+        trackId,
+        clip: createClip({
+          id: 'clip_ramp_add',
+          mediaId: srcAsset.id,
+          start: 0,
+          inPoint: 4,
+          duration: 3,
+          speed: 4,
+          keyframes: { timeScale: [{ time: 0, value: 0.25 }] },
+        }),
+      },
+    )
+    expect(added.project.tracks[0].clips.find((c) => c.id === 'clip_ramp_add')!.duration).toBe(3)
+
+    // Control: the same clip without a curve is still clamped by the static rate.
+    const plain = applyCommand(
+      { ...doc, media: [srcAsset] },
+      {
+        type: 'addClip',
+        trackId,
+        clip: createClip({
+          id: 'clip_plain_add',
+          mediaId: srcAsset.id,
+          start: 0,
+          inPoint: 4,
+          duration: 3,
+          speed: 4,
+        }),
+      },
+    )
+    expect(plain.project.tracks[0].clips.find((c) => c.id === 'clip_plain_add')!.duration).toBe(1.5)
   })
 
   it('rejects text clips', () => {
@@ -368,6 +441,98 @@ describe('computeDuckingKeyframes', () => {
   it('returns an empty curve when dialogue never crosses the threshold', () => {
     const { doc, music, dialogue } = duckSetup(0.05)
     expect(computeDuckingKeyframes(doc, music, [dialogue])).toEqual([])
+  })
+
+  it('skips a dialogue clip whose link group carries a timeScale ramp', () => {
+    // A ramped clip is SILENT in both render paths (no variable-rate audio),
+    // so it must not drive the duck. The duck curve for ramped-only dialogue
+    // is empty, the same as dialogue with no audible material.
+    const { doc, music, dialogue } = duckSetup(0.8)
+    const ramped = applyCommand(doc, {
+      type: 'setClipKeyframes',
+      clipId: dialogue.id,
+      property: 'timeScale',
+      keyframes: [
+        { time: 0, value: 1 },
+        { time: 4, value: 2 },
+      ],
+    })
+    const rampedClip = ramped.project.tracks[1].clips[0]
+    expect(computeDuckingKeyframes(ramped, music, [rampedClip])).toEqual([])
+  })
+
+  it('skips a reversed dialogue clip, which both render paths drop', () => {
+    // Reversed clips are silent in the preview and the export (Premiere drops
+    // reversed audio too), so a reversed dialogue clip must not drive the duck,
+    // the same way a ramped link group is skipped. Without the guard the duck
+    // dipped the music against source that is never heard.
+    const { doc, music, dialogue } = duckSetup(0.8)
+    const reversed = applyCommand(doc, {
+      type: 'setClipReverse',
+      clipId: dialogue.id,
+      reverse: true,
+    })
+    const reversedClip = reversed.project.tracks[1].clips[0]
+    expect(computeDuckingKeyframes(reversed, music, [reversedClip])).toEqual([])
+  })
+
+  it('samples a ramped dialogue clip through the curve integral, not local * speed', () => {
+    // The MUTE test above locks the ramp skip. This one locks the sampling
+    // formula with NON-uniform peaks, so the two mappings produce DIFFERENT
+    // duck windows: a loud band at source 3..4 of a 10s asset. A 1x->2x ramp
+    // over the 4s clip consumes source u + u²/8, crossing the band at local
+    // ~2.33..2.92; the old inline formula (local * speed = local) reaches it
+    // at local 3..4, i.e. a full 0.67s later. The duck windows below ARE the
+    // assertion: under the old formula the attack lands at 2.85, not 2.183.
+    const band = Array.from({ length: WAVEFORM_BUCKETS }, (_, i) => {
+      const t = (i / WAVEFORM_BUCKETS) * 10
+      return t >= 3 && t <= 4 ? 0.9 : 0.02
+    })
+    const dialogueAsset = makeAsset({ id: 'media_d', kind: 'audio', waveformPeaks: band })
+    const musicAsset = makeAsset({ id: 'media_m', kind: 'audio', waveformPeaks: peaks(0) })
+    const music = createClip({ id: 'clip_m', mediaId: 'media_m', start: 0, duration: 8 })
+    const dialogue = createClip({
+      id: 'clip_d',
+      mediaId: 'media_d',
+      audioOnly: true,
+      start: 0,
+      duration: 4,
+    })
+    // An out-of-tree clip list: the sampling path runs BEFORE the mute, so this
+    // exercises sourceTimeAt itself; the mute test above covers the skip.
+    const doc: Doc = {
+      project: {
+        id: 'p',
+        name: 'n',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [createTrack('audio', 1, { clips: [music] })],
+      },
+      media: [dialogueAsset, musicAsset],
+    }
+    const ramped: Clip = {
+      ...dialogue,
+      keyframes: {
+        timeScale: [
+          { time: 0, value: 1 },
+          { time: 4, value: 2 },
+        ],
+      },
+    }
+    expect(computeDuckingKeyframes(doc, music, [ramped]).map((k) => [k.time, k.value])).toEqual([
+      [2.183, 1],
+      [2.333, 0.4],
+      [3, 0.4],
+      [3.15, 1],
+    ])
+    // The control: a static clip reads the band a full 0.67s later.
+    expect(computeDuckingKeyframes(doc, music, [dialogue]).map((k) => [k.time, k.value])).toEqual([
+      [2.85, 1],
+      [3, 0.4],
+      [4, 0.4],
+      [4.15, 1],
+    ])
   })
 
   it('sanitizes options', () => {

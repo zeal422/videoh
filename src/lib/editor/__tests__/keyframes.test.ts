@@ -1,16 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
   ANIMATABLE_PROPERTIES,
+  KEYFRAME_INTERPOLATIONS,
   animatedValue,
   clampPropertyValue,
   evaluateKeyframes,
+  isKeyframeInterpolation,
   sanitizeKeyframes,
   splitKeyframeMap,
   staticPropertyValue,
 } from '../keyframes'
+import { TIMING_FUNCTIONS } from '../bezier'
 import { KEYFRAME_PROPERTY_BOUNDS } from '../constants'
 import { createClip } from '../factories'
-import type { Clip, Keyframe, KeyframeProperty } from '../types'
+import type { Clip, Keyframe, KeyframeInterpolation, KeyframeProperty } from '../types'
 
 function clip(overrides: Partial<Clip> = {}): Clip {
   const c = createClip()
@@ -51,6 +54,76 @@ describe('evaluateKeyframes', () => {
   })
 })
 
+describe('eased interpolation', () => {
+  /** A 0..1 ramp over one second; p is the linear progress through it. */
+  const ramp = (interpolation: KeyframeInterpolation): Keyframe[] => [
+    { time: 0, value: 0, interpolation },
+    { time: 1, value: 1 },
+  ]
+
+  // Oracles computed independently (bisection on the parametric bezier form).
+  it('eases each named curve at the quarter, midpoint and three-quarter marks', () => {
+    expect(evaluateKeyframes(ramp('easeIn'), 0.25, 0)).toBeCloseTo(0.093465, 3)
+    expect(evaluateKeyframes(ramp('easeIn'), 0.5, 0)).toBeCloseTo(0.315357, 3)
+    expect(evaluateKeyframes(ramp('easeIn'), 0.75, 0)).toBeCloseTo(0.621862, 3)
+    expect(evaluateKeyframes(ramp('easeOut'), 0.25, 0)).toBeCloseTo(0.378138, 3)
+    expect(evaluateKeyframes(ramp('easeOut'), 0.5, 0)).toBeCloseTo(0.684643, 3)
+    expect(evaluateKeyframes(ramp('easeOut'), 0.75, 0)).toBeCloseTo(0.906535, 3)
+    expect(evaluateKeyframes(ramp('easeInOut'), 0.25, 0)).toBeCloseTo(0.129162, 3)
+    expect(evaluateKeyframes(ramp('easeInOut'), 0.5, 0)).toBeCloseTo(0.5, 6)
+    expect(evaluateKeyframes(ramp('easeInOut'), 0.75, 0)).toBeCloseTo(0.870838, 3)
+  })
+
+  it('reads an absent or linear interpolation as the old linear math', () => {
+    expect(evaluateKeyframes(ramp('linear'), 0.25, 0)).toBe(0.25)
+    expect(evaluateKeyframes([kf(0, 0), kf(1, 1)], 0.25, 0)).toBe(0.25)
+  })
+
+  it('keeps every segment endpoint exact when eased', () => {
+    const kfs = ramp('easeIn')
+    expect(evaluateKeyframes(kfs, 0, 0.5)).toBe(0)
+    expect(evaluateKeyframes(kfs, 1, 0.5)).toBe(1)
+    // Constant extension is unaffected by the easing.
+    expect(evaluateKeyframes(kfs, -2, 0.5)).toBe(0)
+    expect(evaluateKeyframes(kfs, 9, 0.5)).toBe(1)
+  })
+
+  it('uses the OUTGOING keyframe of each segment independently', () => {
+    const kfs: Keyframe[] = [
+      { time: 0, value: 0, interpolation: 'easeIn' },
+      { time: 1, value: 1, interpolation: 'linear' },
+      { time: 2, value: 2, interpolation: 'linear' },
+    ]
+    // First segment eases (0.315357 of the 0..1 span), the second stays linear.
+    expect(evaluateKeyframes(kfs, 0.5, 0)).toBeCloseTo(0.315357, 3)
+    expect(evaluateKeyframes(kfs, 1.5, 0)).toBeCloseTo(1.5, 6)
+  })
+
+  it('normalizes interpolation on sanitize: legal names survive, unknown reads linear', () => {
+    for (const name of KEYFRAME_INTERPOLATIONS) {
+      const out = sanitizeKeyframes('opacity', [{ time: 0, value: 1, interpolation: name }])
+      expect(out[0].interpolation).toBe(name)
+    }
+    const unknown = sanitizeKeyframes('opacity', [
+      { time: 0, value: 1, interpolation: 'wobble' as KeyframeInterpolation },
+    ])
+    expect(unknown[0].interpolation).toBe('linear')
+  })
+
+  it('predicates interpolation names', () => {
+    expect(isKeyframeInterpolation('easeInOut')).toBe(true)
+    expect(isKeyframeInterpolation('linear')).toBe(true)
+    expect(isKeyframeInterpolation('wobble')).toBe(false)
+    expect(isKeyframeInterpolation(undefined)).toBe(false)
+  })
+
+  it('has a timing function for every interpolation name', () => {
+    for (const name of KEYFRAME_INTERPOLATIONS) {
+      expect(typeof TIMING_FUNCTIONS[name]).toBe('function')
+    }
+  })
+})
+
 describe('animatedValue and statics', () => {
   it('uses the static value when no keyframes exist', () => {
     const c = clip({ gain: 0.5, animStatics: { scale: 2 } })
@@ -65,8 +138,8 @@ describe('animatedValue and statics', () => {
     expect(animatedValue(c, 'volume', 2)).toBe(1)
   })
 
-  it('exposes ten animatable properties', () => {
-    expect(ANIMATABLE_PROPERTIES).toHaveLength(10)
+  it('exposes eleven animatable properties', () => {
+    expect(ANIMATABLE_PROPERTIES).toHaveLength(11)
   })
 })
 

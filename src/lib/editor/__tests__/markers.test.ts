@@ -28,7 +28,7 @@ import {
   staggerMarkerPositions,
   visibleClipMarkers,
 } from '../markers'
-import { createClip, createDoc, createTextClip } from '../factories'
+import { createClip, createDoc, createTextClip, sourceTimeAt } from '../factories'
 import type { Clip } from '../types'
 
 /** Forward reference clip: starts at 2s, 4s long, reading source 1..5. */
@@ -62,6 +62,28 @@ describe('clip marker mapping (source seconds -> clip-local timeline)', () => {
     expect(clipMarkerLocalTime(c, 1)).toBe(4)
     expect(clipMarkerLocalTime(c, 3)).toBe(2)
     expect(clipMarkerLocalTime(c, 5)).toBe(0)
+  })
+
+  it('inverts a timeScale ramp through its integral, not the static speed', () => {
+    // 1x -> 2x over 4s consumes 6s of source, so source 5 is INSIDE the span.
+    // Dividing by the speed would put it past `duration * speed` of source and
+    // drop the marker, and every other placement drifted by the curve's area.
+    const c = clip({
+      inPoint: 0,
+      keyframes: {
+        timeScale: [
+          { time: 0, value: 1 },
+          { time: 4, value: 2 },
+        ],
+      },
+    })
+    for (const sourceTime of [0.5, 2, 3, 4, 5, 6]) {
+      const local = clipMarkerLocalTime(c, sourceTime)
+      expect(local).not.toBeNull()
+      expect(sourceTimeAt(c, local!)).toBeCloseTo(sourceTime, 6)
+    }
+    expect(clipMarkerLocalTime(c, 6.5)).toBeNull()
+    expect(clipMarkerLocalTime(c, -0.5)).toBeNull()
   })
 
   it('treats text clips as clip-local (inPoint 0, speed fixed)', () => {

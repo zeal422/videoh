@@ -5,10 +5,12 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
 import { TimelinePanel, TRACK_HEADER_WIDTH } from '@/components/editor/timeline/TimelinePanel'
 import { Ruler } from '@/components/editor/timeline/Ruler'
+import { applyCommands } from '@/lib/editor/commands'
+import * as commandsModule from '@/lib/editor/commands'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { editorStore, useEditorStore } from '../store'
 import { PPS_DEFAULT } from '@/lib/editor/constants'
-import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
+import { createClip, createDoc, createMediaAsset, createTrack, sourceTimeAt } from '../factories'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
 
 /**
@@ -79,6 +81,276 @@ describe('TimelinePanel render', () => {
     render(<TimelinePanel />)
     // createDoc ships starter lanes; they must be visible without any clips.
     expect(document.querySelectorAll('[data-lane-id]').length).toBeGreaterThan(0)
+  })
+})
+
+describe('speed badge gating', () => {
+  function clipDoc(over: Partial<Clip>) {
+    const asset = createMediaAsset({ kind: 'video', duration: 30, name: 'demo.mp4' })
+    const track = createTrack('video', 1)
+    track.clips = [createClip({ id: 'clip_s', mediaId: asset.id, start: 0, duration: 4, ...over })]
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [asset],
+    }
+    return doc
+  }
+
+  it('a 2x clip shows the speed badge, a 1x clip does not', () => {
+    useEditorStore.setState({ doc: clipDoc({ speed: 2 }) })
+    const { unmount } = render(<TimelinePanel />)
+    expect(screen.getByTestId('clip-speed-badge')).toBeInTheDocument()
+    unmount()
+    useEditorStore.setState({ doc: clipDoc({}) })
+    render(<TimelinePanel />)
+    expect(screen.queryByTestId('clip-speed-badge')).not.toBeInTheDocument()
+  })
+
+  it('a clip with a timeScale curve hides the badge even with a stale static speed', () => {
+    // The curve, not the static rate, decides a ramped clip's speed, so the
+    // badge would advertise a rate that is not in effect.
+    useEditorStore.setState({
+      doc: clipDoc({
+        speed: 2,
+        keyframes: { timeScale: [{ time: 0, value: 1 }] },
+      }),
+    })
+    render(<TimelinePanel />)
+    expect(screen.queryByTestId('clip-speed-badge')).not.toBeInTheDocument()
+  })
+})
+
+describe('alt-drag rate stretch', () => {
+  const RULER_HEIGHT = 28
+
+  it('applies neither half of the pair when the trim is rejected', () => {
+    // A relink to shorter media can leave LESS than the minimum window
+    // readable (0.01s here, against a 0.025s floor), so no span clamp can make
+    // the pair legal. The speed half used to land alone with no feedback:
+    // `applyTransient` swallows command errors (slider previews rely on it),
+    // so the gesture's catch was unreachable and the drag silently slowed the
+    // clip and cut its duration. Rejected pairs must still change nothing.
+    const asset = createMediaAsset({ kind: 'video', duration: 3.5, name: 'short.mp4' })
+    const track = createTrack('video', 1)
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [asset],
+    }
+    doc.project.tracks[0].clips = [
+      createClip({ id: 'clip_x', mediaId: asset.id, start: 0, duration: 3, inPoint: 3.49 }),
+    ]
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    // +80px at 80px/s re-times the 3s span to 4s; the window cannot fit the
+    // 0.01s the 3.5s asset has left, so the pair is rejected.
+    fireEvent.pointerDown(screen.getByLabelText('Trim clip end'), {
+      button: 0,
+      altKey: true,
+      pointerId: 3,
+      clientX: 240,
+      clientY: RULER_HEIGHT + 10,
+    })
+    fireEvent.pointerMove(window, { pointerId: 3, clientX: 320, clientY: RULER_HEIGHT + 10 })
+    fireEvent.pointerUp(window, { pointerId: 3 })
+
+    const clip = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(clip.speed ?? 1).toBe(1) // the speed half never landed
+    expect(clip.duration).toBe(3) // and the duration was never re-derived
+    expect(useEditorStore.getState().past).toHaveLength(0)
+  })
+
+  it('a well-fitting alt-drag pays NO validation clone (the !fits gate stays shut)', () => {
+    // Locks the gate structurally: hoisting the validation out of the `!s.fits`
+    // branch (or dropping `fits` entirely) would clone the whole document on
+    // EVERY pointermove of EVERY rate stretch, and only this spy notices. The
+    // outcome-only tests below stay green through such a regression.
+    vi.spyOn(commandsModule, 'applyCommands')
+    const asset = createMediaAsset({ kind: 'video', duration: 30, name: 'demo.mp4' })
+    const track = createTrack('video', 1)
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [asset],
+    }
+    doc.project.tracks[0].clips = [
+      createClip({ id: 'clip_x', mediaId: asset.id, start: 0, duration: 3, inPoint: 0 }),
+    ]
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    fireEvent.pointerDown(screen.getByLabelText('Trim clip end'), {
+      button: 0,
+      altKey: true,
+      pointerId: 3,
+      clientX: 240,
+      clientY: RULER_HEIGHT + 10,
+    })
+    fireEvent.pointerMove(window, { pointerId: 3, clientX: 320, clientY: RULER_HEIGHT + 10 })
+    fireEvent.pointerUp(window, { pointerId: 3 })
+
+    const clip = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(clip.speed).toBeCloseTo(3 / 4, 10)
+    expect(commandsModule.applyCommands).not.toHaveBeenCalled()
+  })
+
+  it('the !fits corner validates ONCE per drag, not per move', () => {
+    // The corner's outcome cannot change mid-drag (the clamped span is
+    // pointer-independent), so the second move must not pay another
+    // whole-document clone. Used to be one `applyCommands` per pointermove.
+    vi.spyOn(commandsModule, 'applyCommands')
+    const asset = createMediaAsset({ kind: 'video', duration: 3.5, name: 'short.mp4' })
+    const track = createTrack('video', 1)
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [asset],
+    }
+    doc.project.tracks[0].clips = [
+      createClip({ id: 'clip_x', mediaId: asset.id, start: 0, duration: 3, inPoint: 3.49 }),
+    ]
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    fireEvent.pointerDown(screen.getByLabelText('Trim clip end'), {
+      button: 0,
+      altKey: true,
+      pointerId: 3,
+      clientX: 240,
+      clientY: RULER_HEIGHT + 10,
+    })
+    fireEvent.pointerMove(window, { pointerId: 3, clientX: 300, clientY: RULER_HEIGHT + 10 })
+    fireEvent.pointerMove(window, { pointerId: 3, clientX: 320, clientY: RULER_HEIGHT + 10 })
+    fireEvent.pointerUp(window, { pointerId: 3 })
+
+    expect(commandsModule.applyCommands).toHaveBeenCalledTimes(1)
+    // The pair still never lands: the rejection applies neither half.
+    const clip = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(clip.speed ?? 1).toBe(1)
+    expect(clip.duration).toBe(3)
+  })
+
+  it('recovers a readable-but-over-consuming clip instead of doing nothing', () => {
+    // The same relink fixture one step less extreme: 1.5s of source is still
+    // readable, so the decision clamps the span to the asset's tail and the
+    // drag changes the pair instead of toasting from every pointer position.
+    const asset = createMediaAsset({ kind: 'video', duration: 3.5, name: 'short.mp4' })
+    const track = createTrack('video', 1)
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [asset],
+    }
+    doc.project.tracks[0].clips = [
+      createClip({ id: 'clip_x', mediaId: asset.id, start: 0, duration: 3, inPoint: 2 }),
+    ]
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    fireEvent.pointerDown(screen.getByLabelText('Trim clip end'), {
+      button: 0,
+      altKey: true,
+      pointerId: 3,
+      clientX: 240,
+      clientY: RULER_HEIGHT + 10,
+    })
+    fireEvent.pointerMove(window, { pointerId: 3, clientX: 320, clientY: RULER_HEIGHT + 10 })
+    fireEvent.pointerUp(window, { pointerId: 3 })
+
+    const clip = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    // The 4s drag re-times the readable 1.5s of source (asset 3.5 from inPoint 2).
+    expect(clip.speed).toBeCloseTo(1.5 / 4, 10)
+    expect(clip.duration).toBeCloseTo(4, 10)
+    expect(clip.inPoint).toBe(2)
+    expect(clip.inPoint + clip.duration * (clip.speed ?? 1)).toBeLessThanOrEqual(3.5 + 1e-6)
+  })
+})
+
+describe('reversed clip edges', () => {
+  const RULER_HEIGHT = 28
+
+  /** A reversed clip (source 0..4 of a 10s asset), end edge at 4s x 80px/s. */
+  function reversedDoc(over: Partial<Clip> = {}) {
+    const asset = createMediaAsset({ kind: 'video', duration: 10, name: 'demo.mp4' })
+    const track = createTrack('video', 1)
+    track.clips = [
+      createClip({
+        id: 'clip_r',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        reverse: true,
+        ...over,
+      }),
+    ]
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [asset],
+    }
+    useEditorStore.setState({ doc })
+    return doc
+  }
+
+  it('the tail edge cuts source off the low end instead of sliding the picture', () => {
+    // The wiring end to end (ClipView's dispatch through trimClip): a reversed
+    // clip's tail shows the span's LOW source end, so the tail move has to hold
+    // the high end the head displays. Pinning inPoint instead slid every kept
+    // frame up the source by the trimmed second, since the reversed read maps
+    // local time to `duration - local`.
+    reversedDoc()
+    render(<TimelinePanel />)
+    const before = useEditorStore.getState().doc.project.tracks[0].clips[0]
+
+    fireEvent.pointerDown(screen.getByLabelText('Trim clip end'), {
+      button: 0,
+      pointerId: 5,
+      clientX: 4 * PPS_DEFAULT,
+      clientY: RULER_HEIGHT + 10,
+    })
+    fireEvent.pointerMove(window, {
+      pointerId: 5,
+      clientX: 3 * PPS_DEFAULT,
+      clientY: RULER_HEIGHT + 10,
+    })
+    fireEvent.pointerUp(window, { pointerId: 5 })
+
+    const after = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(after.duration).toBeCloseTo(3, 6)
+    expect(after.inPoint).toBeCloseTo(1, 6) // the low anchor moved up by the cut
+    for (const local of [0, 0.5, 1, 1.5, 2, 3]) {
+      expect(sourceTimeAt(after, local)).toBeCloseTo(sourceTimeAt(before, local), 6)
+    }
+  })
+
+  it('the head edge extends into the source above the span', () => {
+    // The mirrored head room. This clip sits at 2s with inPoint 0, so the head
+    // it shows (source 2) has the asset's remaining 8s above it: pulling the head
+    // 1s left must extend the clip to 3s. The forward formula floored the pull at
+    // inPoint, which is 0 here, and refused the move outright.
+    reversedDoc({ start: 2, duration: 2 })
+    render(<TimelinePanel />)
+    const before = useEditorStore.getState().doc.project.tracks[0].clips[0]
+
+    fireEvent.pointerDown(screen.getByLabelText('Trim clip start'), {
+      button: 0,
+      pointerId: 6,
+      clientX: 2 * PPS_DEFAULT,
+      clientY: RULER_HEIGHT + 10,
+    })
+    fireEvent.pointerMove(window, {
+      pointerId: 6,
+      clientX: 1 * PPS_DEFAULT,
+      clientY: RULER_HEIGHT + 10,
+    })
+    fireEvent.pointerUp(window, { pointerId: 6 })
+
+    const after = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(after.start).toBeCloseTo(1, 6)
+    expect(after.duration).toBeCloseTo(3, 6)
+    // The old locals shifted one slot later, and the new first second reads the
+    // source the extension revealed (one step further up the span's high end).
+    for (const local of [0, 0.5, 1, 2]) {
+      expect(sourceTimeAt(after, local + 1)).toBeCloseTo(sourceTimeAt(before, local), 6)
+    }
+    expect(sourceTimeAt(after, 0)).toBeCloseTo(3, 6)
   })
 })
 

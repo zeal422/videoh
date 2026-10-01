@@ -138,7 +138,10 @@ describe('A/V linked clips (Premiere-style split + unlink)', () => {
 
   it('the playback engine shadows the video part while its twin exists', () => {
     expect(core).toMatch(/hasLinkedAudioTwin\(doc, clip\)/)
-    expect(core).toMatch(/import \{ hasLinkedAudioTwin \} from '\.\.\/links'/)
+    // The link helpers (shadow rule + the derived ramp-silence predicate) come
+    // from links.ts, so both render paths share one definition.
+    expect(core).toMatch(/import \{ hasLinkedAudioTwin, linkGroupHasRamp \} from '\.\.\/links'/)
+    expect(core).toMatch(/linkGroupHasRamp\(doc, clip\)/)
   })
 
   it('splitClip re-links right halves (fresh group), keeping A/V pairing', () => {

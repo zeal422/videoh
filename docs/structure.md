@@ -13,7 +13,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── robots.txt           # crawler policy
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
-│   └── battery.sh           # scripted UI battery (42 steps) driven by agent-browser
+│   └── battery.sh           # scripted UI battery (45 steps) driven by agent-browser
 ├── docs/                    # this documentation set
 ├── next.config.ts           # output: "standalone"
 ├── vitest.config.ts         # node env, @ alias, coverage include + thresholds
@@ -110,12 +110,14 @@ src/lib/editor/
 ├── constants.ts          # all tuning constants and limits
 ├── factories.ts          # uid + create* constructors, finders, compatibility checks, sourceTimeAt
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
-├── commands.ts           # the 37 EditorCommand variants + applyCommand(s), direction-aware split spans
+├── commands.ts           # the 39 EditorCommand variants + applyCommand(s), direction-aware split spans
 ├── snap.ts               # snap-point computation and application
 ├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
 ├── marquee.ts            # marquee (box) selection: lane-space rect math + group resolution (pure)
 ├── markers.ts            # markers: source-anchored clip mapping, navigation, colors, selection (pure)
-├── keyframes.ts          # keyframe evaluation, sanitize/clamp, split redistribution
+├── keyframes.ts          # keyframe evaluation (linear + eased, from exact data or preset names), sanitize/clamp, split redistribution
+├── ease-segment.ts       # per-segment easing DATA: bezier quad storage + exact de Casteljau subdivision
+├── bezier.ts             # pure cubic-bezier timing solver for the easing presets
 ├── ducking.ts            # auto-duck keyframe analysis from waveform peaks
 ├── offline.ts            # offline-media detection for the monitor (pure)
 ├── transition.ts         # crossfade span + alpha math
@@ -140,13 +142,14 @@ src/lib/editor/
 ├── playback/
 │   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate
 │   ├── compositor.ts     # drawFrame + drawTextClip (shared with the exporter): compositing, contain-fit, scale-from-center, text, crossfade, opacity
+│   ├── denoise.ts        # noise-reduction biquad chain, shared by the preview mixer and the export mix
 │   ├── preview.ts        # preview engine singleton (attach/detach)
 │   ├── engine-ref.ts     # PlaybackController ref shared by all UI
 │   └── text-box.ts       # text-box measurement (twins the compositor's text renderer)
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 46 test files (636 tests) + src/lib/gate.test.ts: see testing.md
+└── __tests__/            # 52 test files (815 tests) + src/lib/gate.test.ts: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / ResizeObserver
 ```

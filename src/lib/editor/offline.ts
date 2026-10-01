@@ -15,6 +15,15 @@ import type { Doc } from './types'
  *   to name and no asset the Media bin could relink.
  * - Names are deduplicated, so an A/V pair of the same file reports once.
  */
+/**
+ * True when any asset is offline (a restored session's url-less entry): the
+ * condition `offlineMediaAt` reports for the preview, shared with the export
+ * gate so both paths warn on exactly the same state.
+ */
+export function hasOfflineMedia(doc: Doc): boolean {
+  return doc.media.some((m) => m.missing || !m.url)
+}
+
 export function offlineMediaAt(doc: Doc, time: number): string[] {
   const names: string[] = []
   const seen = new Set<string>()

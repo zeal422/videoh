@@ -169,29 +169,77 @@ export function decideMove(args: {
 }
 
 /**
+ * The source each trim edge can still draw on, in TIMELINE seconds: the two
+ * rooms the decisions below clamp against. A FORWARD clip's head shows `inPoint`
+ * itself and its tail the source the asset holds after the span; a REVERSED clip
+ * reads the same window the other way round (its head shows the span's HIGH end,
+ * its tail the LOW one), so both rooms are mirrored. A timeline second consumes
+ * `speed` source seconds, which is what turns a source room into timeline
+ * seconds. Unbounded material (an image or text clip) reports Infinity for both.
+ *
+ * `speed` is the clip's STATIC rate, so for a span that a `timeScale` curve
+ * re-times these rooms are an approximation: a drag can stop short of the source
+ * or reach past it and be rejected, since `trimClip` integrates the curve itself
+ * and is the exact check.
+ */
+export function trimRooms(args: {
+  /** False for images and text: neither has a source window to run out of. */
+  bounded: boolean
+  reverse: boolean
+  inPoint: number
+  duration: number
+  speed: number
+  assetDuration: number
+}): { head: number; maxDuration: number } {
+  const { bounded, reverse, inPoint, duration, speed, assetDuration } = args
+  if (!bounded) return { head: Infinity, maxDuration: Infinity }
+  if (reverse) {
+    return {
+      head: Math.max(0, (assetDuration - inPoint - duration * speed) / speed),
+      maxDuration: Math.max(MIN_CLIP_DURATION, duration + inPoint / speed),
+    }
+  }
+  return {
+    // A forward head shows inPoint itself, so its timeline room is that many
+    // source seconds divided by the rate the span reads at; the tail room is
+    // the source held after the span end, converted the same way.
+    head: inPoint / speed,
+    maxDuration: Math.max(MIN_CLIP_DURATION, (assetDuration - inPoint) / speed),
+  }
+}
+
+/**
  * The TRIM-START decision. Bounded media (audio/video) cannot reveal source
- * before 0 (inPoint floors the pull) and cannot shrink below MIN_CLIP_DURATION.
- * Images and text are unbounded: inPoint stays 0, the clip just shrinks or
- * grows from the left, and cannot push its start below 0.
+ * behind the head (`headRoom` floors the pull) and cannot shrink below
+ * MIN_CLIP_DURATION. Images and text are unbounded: inPoint stays 0, the clip
+ * just shrinks or grows from the left, and cannot push its start below 0.
+ *
+ * `headRoom` is TIMELINE seconds, because a head's source room has to be divided
+ * by the rate the span reads at: a REVERSED clip's head shows the span's HIGH
+ * source end, and how much source sits above it depends on the asset length,
+ * which only the caller knows; a FORWARD clip's head shows `inPoint`, which a
+ * 2x clip burns two source seconds per timeline second of reveal. `trimRooms`
+ * owns both conversions.
  */
 export function decideTrimStart(args: {
   orig: Clip
   isUnbounded: boolean
+  /** Timeline seconds the head may move left; ignored while unbounded. */
+  headRoom: number
   clientX: number
   startX: number
   scale: number
   snapping: boolean
   snapPoints: number[]
 }): { start: number; inPoint: number; duration: number; snapped: number | null } {
-  const { orig, isUnbounded, clientX, startX, scale, snapping, snapPoints } = args
+  const { orig, isUnbounded, headRoom, clientX, startX, scale, snapping, snapPoints } = args
   const dxSec = (clientX - startX) / scale
   const thr = snapping ? snapThreshold(scale) : 0
 
   let delta = dxSec
-  const minDelta = -orig.inPoint // media cannot reveal source before 0
   const maxDelta = orig.duration - MIN_CLIP_DURATION
   delta = Math.min(
-    Math.max(delta, isUnbounded ? -(orig.start + orig.duration - MIN_CLIP_DURATION) : minDelta),
+    Math.max(delta, isUnbounded ? -(orig.start + orig.duration - MIN_CLIP_DURATION) : -headRoom),
     maxDelta,
   )
   let newStart = Math.max(0, orig.start + delta)
@@ -201,10 +249,10 @@ export function decideTrimStart(args: {
   if (snapping) {
     const s = applySnap(newStart, snapPoints, thr)
     // Legal start window after the same clamps the raw path went through:
-    // the head cannot reveal source before 0 (bounded media), start cannot
+    // the head cannot reveal source behind it (bounded media), start cannot
     // go below 0, and duration cannot shrink below MIN_CLIP_DURATION. A snap
     // point outside this window is rejected so the clamped values survive.
-    const minStart = isUnbounded ? 0 : Math.max(0, orig.start - orig.inPoint)
+    const minStart = isUnbounded ? 0 : Math.max(0, orig.start - headRoom)
     const maxStart = orig.start + orig.duration - MIN_CLIP_DURATION
     const snappedIn = isUnbounded ? 0 : Math.max(0, orig.inPoint + (s.time - orig.start))
     const snappedDuration = Math.max(MIN_CLIP_DURATION, orig.start + orig.duration - s.time)
@@ -273,6 +321,13 @@ export function snapThreshold(scale: number): number {
  * moves the free end, the start edge keeps the right edge anchored. Speed is
  * clamped to SPEED_MIN..SPEED_MAX; the duration is re-derived from the clamped
  * speed so the two never disagree.
+ *
+ * A clip can over-consume its asset (a relink to shorter media replaces the
+ * asset and leaves clip windows untouched), and a fixed span then cannot fit:
+ * the span is clamped to the asset's readable tail so the pair the gesture
+ * dispatches is satisfiable, which is what lets such a clip recover instead of
+ * rejecting every pointer position. `fits` is false only when even the minimum
+ * span overruns the asset; the caller must then reject, not apply half a pair.
  */
 export function decideRateStretch(args: {
   mode: 'trim-start' | 'trim-end'
@@ -283,16 +338,35 @@ export function decideRateStretch(args: {
   clientX: number
   startX: number
   scale: number
-}): { start: number; inPoint: number; duration: number; speed: number } {
-  const { mode, origStart, origDuration, origInPoint, origSpeed, clientX, startX, scale } = args
+  /** The asset's readable length; the source window is clamped to it. */
+  assetDuration: number
+}): { start: number; inPoint: number; duration: number; speed: number; fits: boolean } {
+  const {
+    mode,
+    origStart,
+    origDuration,
+    origInPoint,
+    origSpeed,
+    clientX,
+    startX,
+    scale,
+    assetDuration,
+  } = args
   const dxSec = (clientX - startX) / scale
-  const sourceSpan = Math.max(MIN_CLIP_DURATION * SPEED_MIN, origDuration * origSpeed)
+  const sourceSpan = Math.max(
+    MIN_CLIP_DURATION * SPEED_MIN,
+    Math.min(origDuration * origSpeed, assetDuration - origInPoint),
+  )
+  // The returned window is always [origInPoint, origInPoint + sourceSpan]. The
+  // span floor above can push it back over the asset when almost nothing
+  // readable remains, which is exactly the non-recoverable corner.
+  const fits = origInPoint + sourceSpan <= assetDuration + 1e-6
 
   if (mode === 'trim-end') {
     const rawDuration = Math.max(MIN_CLIP_DURATION, origDuration + dxSec)
     const speed = clampSpeed(sourceSpan / rawDuration)
     const duration = Math.max(MIN_CLIP_DURATION, sourceSpan / speed)
-    return { start: origStart, inPoint: origInPoint, duration, speed: sourceSpan / duration }
+    return { start: origStart, inPoint: origInPoint, duration, speed: sourceSpan / duration, fits }
   }
 
   // trim-start: anchor the right edge, move start and duration together.
@@ -305,6 +379,7 @@ export function decideRateStretch(args: {
     inPoint: origInPoint,
     duration,
     speed: sourceSpan / duration,
+    fits,
   }
 }
 

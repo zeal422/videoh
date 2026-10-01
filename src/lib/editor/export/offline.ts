@@ -1,7 +1,9 @@
+import { clipFilter } from '../color'
 import { docDuration, findMedia, sourceTimeAt } from '../factories'
 import { getTransitionSpan, transitionAlphas } from '../transition'
 import { animatedValue } from '../keyframes'
-import { hasLinkedAudioTwin } from '../links'
+import { segmentControls } from '../ease-segment'
+import { hasLinkedAudioTwin, linkGroupHasRamp } from '../links'
 import { clamp } from '../time'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
 
@@ -44,22 +46,10 @@ export interface AudioFramePlan {
   audible: AudioContribution[]
 }
 
-export const COLOR_NEUTRAL = { exposure: 1, contrast: 1, saturation: 1, brightness: 1, hue: 0 }
-
-export function clipFilter(clip: Clip, local: number): string {
-  const exposure = animatedValue(clip, 'exposure', local)
-  const contrast = animatedValue(clip, 'contrast', local)
-  const saturation = animatedValue(clip, 'saturation', local)
-  const brightness = animatedValue(clip, 'brightness', local)
-  const hue = animatedValue(clip, 'hue', local)
-  const parts: string[] = []
-  if (brightness !== 1) parts.push(`brightness(${brightness})`)
-  if (contrast !== 1) parts.push(`contrast(${contrast})`)
-  if (saturation !== 1) parts.push(`saturate(${saturation})`)
-  if (hue !== 0) parts.push(`hue-rotate(${hue}deg)`)
-  if (exposure !== 1) parts.push(`brightness(${Math.pow(exposure, 0.5)})`)
-  return parts.length === 0 ? 'none' : parts.join(' ')
-}
+// The filter string comes from the ONE shared builder in color.ts, so the plan
+// and the preview compositor cannot drift apart (see the static lock and the
+// cross-path agreement test in color.test.ts).
+export { COLOR_NEUTRAL } from '../color'
 
 function clipTransform(
   clip: Clip,
@@ -133,7 +123,10 @@ export function planAudioFrame(doc: Doc, t: number): AudioFramePlan {
       const audioBearing = asset.kind === 'audio' || clip.audioOnly
       const videoSilent = asset.kind === 'video' && hasLinkedAudioTwin(doc, clip)
       if (!audioBearing || videoSilent) continue
-      if (clip.muted || track.muted || clip.reverse) continue
+      // The ramp skip is DERIVED from the link group's curve (linkGroupHasRamp),
+      // so both halves of an A/V pair go silent together; the reverse skip it
+      // mirrors is a plain stored flag.
+      if (clip.muted || track.muted || clip.reverse || linkGroupHasRamp(doc, clip)) continue
 
       const local = t - clip.start
       let gain = animatedValue(clip, 'volume', local)
@@ -168,12 +161,18 @@ export interface GainEvent {
   kind: 'set' | 'ramp'
 }
 
+/** Samples per eased segment: enough to follow the curve, cheap to schedule. */
+const GAIN_EASE_SAMPLES = 16
+
 /**
  * The gain automation a clip's volume needs in the offline mix, in timeline
  * seconds. Keyframed clips ramp through the curve and constant-extend at the
  * clip edges; static clips hold one value. A clip that starts at 0:00 gets no
  * pre-start zero event: the event would land on the same instant as the clip's
- * own gain and silence the whole clip.
+ * own gain and silence the whole clip. A segment whose outgoing keyframe eases
+ * is sampled into short linear ramps, because the Web Audio automation the
+ * exporter schedules has no easing primitive: without the samples the export
+ * would flatten every eased volume curve the preview plays.
  *
  * Returned in chronological order. The Web Audio spec keeps a time-ordered
  * event list, so browsers normalize insertion order, but the contract is
@@ -183,7 +182,29 @@ export function clipGainSchedule(clip: Clip): GainEvent[] {
   const events: GainEvent[] = []
   const kfs = clip.keyframes?.volume
   if (kfs && kfs.length > 0) {
-    for (const k of kfs) events.push({ time: clip.start + k.time, value: k.value, kind: 'ramp' })
+    for (let i = 0; i < kfs.length; i++) {
+      const k = kfs[i]
+      events.push({ time: clip.start + k.time, value: k.value, kind: 'ramp' })
+      const next = kfs[i + 1]
+      // `linearRampToValueAtTime` cannot express a preset easing, so an eased
+      // segment is sampled into short linear ramps: the export then follows the
+      // same `animatedValue` curve the preview plays instead of flattening it.
+      // The gate is the SEGMENT SHAPE (segmentControls), not the keyframe's
+      // display name: sanitizeKeyframes normalizes an absent name to linear
+      // while KEEPING a valid easeOut quad, so a project file can carry real
+      // easing under the linear name, and the preview evaluates that shape.
+      if (next && segmentControls(k) !== undefined) {
+        const span = next.time - k.time
+        for (let s = 1; s < GAIN_EASE_SAMPLES; s++) {
+          const local = k.time + (span * s) / GAIN_EASE_SAMPLES
+          events.push({
+            time: clip.start + local,
+            value: animatedValue(clip, 'volume', local),
+            kind: 'ramp',
+          })
+        }
+      }
+    }
     const last = kfs[kfs.length - 1]
     events.push({ time: clip.start + clip.duration, value: last.value, kind: 'ramp' })
     events.push({ time: clip.start, value: kfs[0].value, kind: 'set' })

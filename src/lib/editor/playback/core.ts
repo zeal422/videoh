@@ -1,7 +1,9 @@
-import { docDuration, findMedia, sourceTimeAt } from '../factories'
+import { clampSourceTime, docDuration, findMedia, sourceTimeAt } from '../factories'
+import { denoiseFilters } from './denoise'
+import { EQ_DB_MAX, EQ_DB_MIN, SPEED_MAX, SPEED_MIN } from '../constants'
 import { getTransitionSpan } from '../transition'
-import { hasLinkedAudioTwin } from '../links'
-import { animatedValue } from '../keyframes'
+import { hasLinkedAudioTwin, linkGroupHasRamp } from '../links'
+import { animatedValue, constantTimeScaleRate, hasTimeScaleCurve } from '../keyframes'
 import { ClipMediaPool } from '../media/elements'
 import { clamp } from '../time'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
@@ -18,7 +20,8 @@ import { drawFrame } from './compositor'
  *   destination for export). Per-frame gain computes clip gain × mute ×
  *   track mute × crossfade alpha.
  * - Drift correction: element position is compared with the expected source
- *   time every frame; drift > 120 ms triggers a resync.
+ *   time every frame; a gap wider than DRIFT_THRESHOLD (0.4 s) triggers a
+ *   resync. Reversed and ramped clips are stepped instead (see syncMedia).
  */
 
 export interface PlaybackCoreOptions {
@@ -49,20 +52,40 @@ const DRIFT_THRESHOLD = 0.4
  */
 const SEEK_QUIET_MS = 350
 
+/**
+ * True when the clip carries a REAL time-remap curve (no constant rate can
+ * follow it): the stepped-preview and audio-drop case. A flat curve (the
+ * identity diamond seed, or a constant) is resampled at its constant rate
+ * instead, exactly like a plain speed.
+ */
+function hasRamp(clip: Clip): boolean {
+  return hasTimeScaleCurve(clip) && constantTimeScaleRate(clip) === undefined
+}
+
+/**
+ * The clip's effective CONSTANT rate, for elements that can follow one: the
+ * static speed when no curve exists, the curve's flat value when it has one
+ * (the curve overrides the static field). A real ramp returns undefined: no
+ * constant rate can follow it, which is why ramped clips are stepped.
+ */
+function constantRateOf(clip: Clip): number {
+  return constantTimeScaleRate(clip) ?? clamp(clip.speed ?? 1, SPEED_MIN, SPEED_MAX)
+}
+
 /** Applies a clip's clamped speed to its element (reversed clips are stepped). */
 function applyPlaybackRate(el: HTMLMediaElement, clip: Clip): void {
-  const rate = clamp(clip.speed ?? 1, 0.25, 4)
+  const rate = constantRateOf(clip)
   if (el.playbackRate !== rate) el.playbackRate = rate
 }
 
 /**
- * The shaping settings a clip's audio chain bakes in. EQ bands, compressor and
- * pan are node parameters set at build time, so a change to any of them means
- * the chain must be rebuilt for the edit to be audible.
+ * The shaping settings a clip's audio chain bakes in. EQ bands, compressor,
+ * denoise and pan are node parameters set at build time, so a change to any of
+ * them means the chain must be rebuilt for the edit to be audible.
  */
 function shapingSignature(clip: Clip): string {
   const eq = clip.eq ? `${clip.eq.low}|${clip.eq.mid}|${clip.eq.high}` : ''
-  return `${eq}/${clip.compressor ? 'c' : ''}/${clip.pan ?? 0}`
+  return `${eq}/${clip.compressor ? 'c' : ''}/${clip.denoise ? 'n' : ''}/${clip.pan ?? 0}`
 }
 
 export class PlaybackCore {
@@ -76,9 +99,14 @@ export class PlaybackCore {
   /**
    * Per-clip gain node plus the shaping signature it was built for. EQ,
    * compressor and pan bake their settings into the node chain, so an edit
-   * after the chain exists rebuilds it (see `applyGain`).
+   * after the chain exists rebuilds it (see `applyGain`). `el` records the
+   * element the chain was built from: a relink swaps the element under the
+   * same clip id and signature, and the chain must follow it.
    */
-  private clipGains = new Map<string, { gain: GainNode; sig: string; nodes: AudioNode[] }>()
+  private clipGains = new Map<
+    string,
+    { gain: GainNode; sig: string; nodes: AudioNode[]; el: HTMLMediaElement }
+  >()
   private masterVolume = 1
   /** EQ band frequencies for the three-band biquad stack. */
   private static readonly EQ_LO = 200
@@ -264,9 +292,55 @@ export class PlaybackCore {
     this.raf = requestAnimationFrame(this.tick)
   }
 
+  /**
+   * Releases everything the engine still holds for clip ids that are no longer
+   * in the doc (Delete, cut, undo, project replace): the doc iteration in
+   * `syncMedia` only ever touches clips that ARE there, so without this a
+   * deleted clip's element keeps playing audibly and its nodes keep feeding
+   * masterGain for the rest of the session.
+   */
+  private releaseMissingClips(): void {
+    const doc = this.opts.getDoc()
+    const live = new Set<string>()
+    for (const track of doc.project.tracks) {
+      for (const clip of track.clips) live.add(clip.id)
+    }
+    for (const id of this.pool.ids()) {
+      if (live.has(id)) continue
+      const el = this.pool.peek(id)
+      if (el) {
+        if (!el.paused) el.pause()
+        this.endSeek(el)
+      }
+      const entry = this.clipGains.get(id)
+      if (entry) {
+        try {
+          this.pool.getSourceNode(el!, this.audio!).disconnect()
+        } catch {
+          // already detached, or audio closed mid-teardown
+        }
+        for (const n of entry.nodes) {
+          try {
+            n.disconnect()
+          } catch {
+            // already detached
+          }
+        }
+        try {
+          entry.gain.disconnect() // the chain's edge into masterGain
+        } catch {
+          // already detached
+        }
+        this.clipGains.delete(id)
+      }
+      this.pool.release(id)
+    }
+  }
+
   /** Starts/stops elements, corrects drift, and updates per-clip gain. */
   private syncMedia(t: number, forceSeek = false): void {
     const doc = this.opts.getDoc()
+    this.releaseMissingClips()
     for (const track of doc.project.tracks) {
       if (track.kind === 'text') continue
       for (const clip of track.clips) {
@@ -278,7 +352,9 @@ export class PlaybackCore {
         if (!asset || asset.missing || !asset.url || asset.kind === 'image') continue
         const active = t >= clip.start && t < clip.start + clip.duration
         const el = this.pool.get(clip, asset)
-        const expected = clamp(this.sourceTime(clip, t), 0, Math.max(0, asset.duration - 0.01))
+        // Clamped into the asset: a ramp may over-consume its source, and the
+        // excess freezes on the last readable frame (mp4.ts clamps identically).
+        const expected = clampSourceTime(this.sourceTime(clip, t), asset)
 
         if (active) {
           // A pending seek must finish before the element is touched again. An
@@ -289,17 +365,23 @@ export class PlaybackCore {
           // still fall through to the pause below.
           if (this.trackingSeek(el)) continue
 
-          if (clip.reverse) {
-            // Reversed clips cannot play backwards in realtime: park the
-            // element and seek to the mirrored source position (stepped
-            // preview). Seeks walk backwards as the playhead advances.
+          if (clip.reverse || hasRamp(clip)) {
+            // Two cases park the element and seek to the exact source position
+            // every tick (stepped preview): a reversed clip cannot play
+            // backwards in realtime, and a ramped clip's source position is a
+            // curve integral that a constant playbackRate cannot follow (the
+            // element would drift up to DRIFT_THRESHOLD behind the ramp, which
+            // reads as the wrong speed for seconds). A flat curve is NOT
+            // parked: its constant rate is applied below like a plain speed.
+            // Neither case writes the curve into playbackRate; reverse's seek
+            // walks backwards as the playhead advances.
             if (!el.paused) el.pause()
             if (forceSeek || Math.abs(el.currentTime - expected) > 1 / 60) {
               this.seekElement(el, expected)
             }
           } else if (el.paused) {
             this.seekElement(el, expected)
-            el.playbackRate = clamp(clip.speed ?? 1, 0.25, 4)
+            el.playbackRate = constantRateOf(clip)
             void el.play().catch(() => undefined)
           } else if (forceSeek || Math.abs(el.currentTime - expected) > DRIFT_THRESHOLD) {
             this.seekElement(el, expected)
@@ -381,8 +463,20 @@ export class PlaybackCore {
     // A/V pairs: the audio twin is the group's sole sound carrier. The video
     // part keeps PLAYING (its element feeds the compositor frames) but its
     // embedded audio must be shadowed or the pair would double-play.
-    // Reversed clips drop their audio (Premiere drops it too).
-    if (clip.muted || track.muted || clip.reverse || hasLinkedAudioTwin(doc, clip)) return 0
+    // Reversed clips drop their audio (Premiere drops it too), and so does a
+    // clip whose link group carries a timeScale ramp: variable-rate audio needs
+    // varispeed or a resampler, neither of which exists here. The ramp check is
+    // DERIVED from the curve (linkGroupHasRamp), so it can never go stale the
+    // way a stored flag could; it covers both members of an A/V pair.
+    if (
+      clip.muted ||
+      track.muted ||
+      clip.reverse ||
+      linkGroupHasRamp(doc, clip) ||
+      hasLinkedAudioTwin(doc, clip)
+    ) {
+      return 0
+    }
 
     // Crossfade audio ramp when inside a transition span on this track.
     const clips = [...track.clips].sort((a, b) => a.start - b.start)
@@ -404,15 +498,24 @@ export class PlaybackCore {
       const node = this.pool.getSourceNode(el, this.audio)
       const sig = shapingSignature(clip)
       let entry = this.clipGains.get(clipId)
-      if (entry && entry.sig !== sig) {
-        // Shaping changed (EQ / compressor / pan edit): tear the chain down so
-        // the new settings are audible without restarting playback.
+      if (entry && (entry.sig !== sig || entry.el !== el)) {
+        // Shaping changed (EQ / compressor / pan edit), or the ELEMENT changed:
+        // a relink gives the asset a new url, `pool.get` swaps the element
+        // under the same clip id, and the cached chain would keep feeding
+        // masterGain from the old element's source node while the compositor
+        // reads the new one. Tear the chain down so the new element (or the
+        // new settings) are audible without restarting playback.
         for (const n of entry.nodes) {
           try {
             n.disconnect()
           } catch {
             // already detached
           }
+        }
+        try {
+          entry.gain.disconnect() // the old chain's edge into masterGain
+        } catch {
+          // already detached
         }
         try {
           node.disconnect()
@@ -431,21 +534,28 @@ export class PlaybackCore {
           const low = this.audio.createBiquadFilter()
           low.type = 'lowshelf'
           low.frequency.value = PlaybackCore.EQ_LO
-          low.gain.value = clamp(clip.eq.low, -24, 24)
+          low.gain.value = clamp(clip.eq.low, EQ_DB_MIN, EQ_DB_MAX)
           const mid = this.audio.createBiquadFilter()
           mid.type = 'peaking'
           mid.frequency.value = PlaybackCore.EQ_MID
           mid.Q.value = 1
-          mid.gain.value = clamp(clip.eq.mid, -24, 24)
+          mid.gain.value = clamp(clip.eq.mid, EQ_DB_MIN, EQ_DB_MAX)
           const high = this.audio.createBiquadFilter()
           high.type = 'highshelf'
           high.frequency.value = PlaybackCore.EQ_HIGH
-          high.gain.value = clamp(clip.eq.high, -24, 24)
+          high.gain.value = clamp(clip.eq.high, EQ_DB_MIN, EQ_DB_MAX)
           head.connect(low)
           low.connect(mid)
           mid.connect(high)
           head = high
           nodes.push(low, mid, high)
+        }
+        if (clip.denoise) {
+          for (const filter of denoiseFilters(this.audio)) {
+            head.connect(filter)
+            head = filter
+            nodes.push(filter)
+          }
         }
         if (clip.compressor) {
           const comp = this.audio.createDynamicsCompressor()
@@ -467,7 +577,7 @@ export class PlaybackCore {
         }
         head.connect(gain)
         gain.connect(this.masterGain)
-        entry = { gain, sig, nodes }
+        entry = { gain, sig, nodes, el }
         this.clipGains.set(clipId, entry)
       }
       entry.gain.gain.setTargetAtTime(value, this.audio.currentTime, 0.02)
@@ -505,7 +615,9 @@ export class PlaybackCore {
         const active = t >= clip.start && t < clip.start + clip.duration
         if (!active) continue
         const el = this.pool.get(clip, asset)
-        const expected = clamp(this.sourceTime(clip, t), 0, Math.max(0, asset.duration - 0.01))
+        // Clamped into the asset: a ramp may over-consume its source, and the
+        // excess freezes on the last readable frame (mp4.ts clamps identically).
+        const expected = clampSourceTime(this.sourceTime(clip, t), asset)
         if (Math.abs(el.currentTime - expected) > 0.02) {
           try {
             el.currentTime = expected

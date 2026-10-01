@@ -6,6 +6,7 @@ import {
   decideTrimStart,
   resolveLaneDrop,
   snapThreshold,
+  trimRooms,
   type LaneBox,
 } from '../clip-gesture'
 import { MIN_CLIP_DURATION, SNAP_THRESHOLD_PX, SPEED_MAX, SPEED_MIN } from '../constants'
@@ -158,9 +159,12 @@ describe('decideMove', () => {
 })
 
 describe('decideTrimStart', () => {
+  // headRoom is the caller's (see trimRooms): a forward clip's head shows its
+  // inPoint, so these fixtures hand in exactly that.
   const base = {
     orig: clip({ start: 2, duration: 4 }),
     isUnbounded: false,
+    headRoom: 0,
     startX: 100,
     scale: 10,
     snapping: false,
@@ -178,10 +182,26 @@ describe('decideTrimStart', () => {
     const d = decideTrimStart({
       ...base,
       orig: clip({ start: 2, duration: 4, inPoint: 1 }),
+      headRoom: 1,
       clientX: 0,
     })
     expect(d.inPoint).toBe(0)
     expect(d.start).toBe(1)
+  })
+
+  it('grows the head into the room the caller reports, not into inPoint', () => {
+    // A REVERSED clip's head shows the span's HIGH source end, so its room has
+    // nothing to do with inPoint: with a room of 3 the head may move 3s left even
+    // though inPoint is 0. The decision's own inPoint output is the forward-math
+    // artifact the command replaces for a reversed clip.
+    const d = decideTrimStart({
+      ...base,
+      orig: clip({ start: 4, duration: 2, inPoint: 0, reverse: true }),
+      headRoom: 3,
+      clientX: 60, // -4s raw, clamped to the 3s room
+    })
+    expect(d.start).toBe(1)
+    expect(d.duration).toBe(5)
   })
 
   it('cannot shrink below MIN_CLIP_DURATION', () => {
@@ -215,12 +235,71 @@ describe('decideTrimStart', () => {
     const d = decideTrimStart({
       ...base,
       orig: clip({ start: 2, duration: 4, inPoint: 1 }),
+      headRoom: 1,
       clientX: 164, // raw delta 6.4 → clamped to maxDelta 5.9
       snapping: true,
       snapPoints: [6.5],
     })
     expect(d.start).toBeCloseTo(5.9, 10)
     expect(d.snapped).toBeNull()
+  })
+})
+
+describe('trimRooms', () => {
+  // 10s asset, a 3s span starting at source 2: the numbers are deliberately
+  // asymmetric so a mirrored room cannot coincidentally equal its forward twin.
+  const base = {
+    bounded: true,
+    reverse: false,
+    inPoint: 2,
+    duration: 3,
+    speed: 1,
+    assetDuration: 10,
+  }
+
+  it('a forward clip draws on inPoint at the head and the rest of the asset at the tail', () => {
+    const rooms = trimRooms(base)
+    expect(rooms.head).toBe(2)
+    expect(rooms.maxDuration).toBe(8)
+  })
+
+  it('mirrors both rooms for a reversed clip, whose head shows the HIGH source end', () => {
+    const rooms = trimRooms({ ...base, reverse: true })
+    // Head: what the asset holds above the span (10 - 2 - 3). Tail: the source
+    // below the low anchor (2), i.e. the span may grow to 3 + 2 seconds.
+    expect(rooms.head).toBe(5)
+    expect(rooms.maxDuration).toBe(5)
+  })
+
+  it('turns source seconds into timeline seconds through the rate', () => {
+    // At 2x a timeline second consumes two source seconds, so the mirrored head
+    // room halves (10 - 2 - 6) / 2 and the tail room becomes 2 / 2.
+    const rooms = trimRooms({ ...base, reverse: true, speed: 2 })
+    expect(rooms.head).toBe(1)
+    expect(rooms.maxDuration).toBe(4)
+  })
+
+  it('scales the forward rooms by the rate too', () => {
+    // Forward at 2x: the head room is the source below inPoint in timeline
+    // seconds (2 / 2), and the tail room is the source after the span end
+    // (10 - 2) divided by the same rate: 4s, not 8.
+    const rooms = trimRooms({ ...base, speed: 2 })
+    expect(rooms.head).toBe(1)
+    expect(rooms.maxDuration).toBe(4)
+  })
+
+  it('reports no limit at all for unbounded material', () => {
+    expect(trimRooms({ ...base, bounded: false })).toEqual({
+      head: Infinity,
+      maxDuration: Infinity,
+    })
+  })
+
+  it('floors the tail room at MIN_CLIP_DURATION even for an exhausted source', () => {
+    // A clip sitting on the last sliver of its asset: the maximum duration can
+    // never drop below the smallest legal clip.
+    const rooms = trimRooms({ ...base, inPoint: 9.95, duration: 0.05, assetDuration: 10 })
+    expect(rooms.maxDuration).toBe(MIN_CLIP_DURATION)
   })
 })
 
@@ -289,6 +368,7 @@ describe('decideRateStretch (Alt-drag on an edge)', () => {
     origSpeed: 1,
     startX: 100,
     scale: 10,
+    assetDuration: 100,
   }
 
   it('end edge: source span is fixed, speed re-derives from the new duration', () => {
@@ -333,5 +413,36 @@ describe('decideRateStretch (Alt-drag on an edge)', () => {
     const d = decideRateStretch({ ...base, origSpeed: 2, clientX: 100 })
     expect(d.duration).toBe(4)
     expect(d.speed).toBeCloseTo(2, 10)
+  })
+
+  it('clamps an over-consuming window to the asset so the drag still applies', () => {
+    // A relink to shorter media replaces the asset and leaves clip windows
+    // untouched, so a span can overrun what the asset can still read. Holding
+    // that span fixed made every pointer position illegal (the trim's own
+    // guard rejected the pair); clamping the span to the readable tail makes
+    // the pair satisfiable, and the drag recovers the clip.
+    const d = decideRateStretch({
+      ...base,
+      origInPoint: 8,
+      assetDuration: 11, // only 3s of source remain, the span was 4s
+      clientX: 140, // raw duration 8
+    })
+    expect(d.inPoint).toBe(8)
+    expect(d.speed).toBeCloseTo(3 / 8, 10)
+    expect(d.duration).toBeCloseTo(8, 10)
+    expect(d.fits).toBe(true)
+    expect(d.inPoint + d.duration * d.speed).toBeLessThanOrEqual(11 + 1e-6)
+  })
+
+  it('reports fits false when even the minimum window overruns the asset', () => {
+    // Less than MIN_CLIP_DURATION * SPEED_MIN of source remains, so the span
+    // floor still overruns: the caller must reject rather than half-apply.
+    const d = decideRateStretch({
+      ...base,
+      origInPoint: 10.99,
+      assetDuration: 11,
+      clientX: 140,
+    })
+    expect(d.fits).toBe(false)
   })
 })

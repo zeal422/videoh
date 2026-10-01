@@ -19,6 +19,7 @@ import {
   createTrack,
   uid,
 } from '../factories'
+import { DENOISE_HIGHPASS_HZ, DENOISE_HISS_DB } from '../constants'
 import type { Clip, Doc, MediaAsset } from '../types'
 
 /**
@@ -147,6 +148,18 @@ describe('PlaybackCore (mocked browser)', () => {
     expect(ctx.shapingNodes).toHaveLength(11)
     expect(ctx.shapingNodes[9].constructor.name).toBe('FakeDynamicsCompressorNode')
     expect((ctx.shapingNodes[10] as FakeStereoPannerNode).pan.value).toBe(0.5)
+
+    // Noise reduction is a shaping setting too: toggling it rebuilds the chain
+    // with the three biquads denoiseFilters builds (denoise.test.ts locks their
+    // parameters; this proves the mixer actually wires them in).
+    doc.project.tracks[0].clips[0].denoise = true
+    await h.pump.pump(1)
+    // EQ (3) + denoise (3) + compressor + panner.
+    expect(ctx.shapingNodes).toHaveLength(19)
+    const denoiseNodes = ctx.shapingNodes.slice(14, 17) as FakeBiquadFilterNode[]
+    expect(denoiseNodes.map((n) => n.type)).toEqual(['highpass', 'lowpass', 'peaking'])
+    expect(denoiseNodes[0].frequency.value).toBe(DENOISE_HIGHPASS_HZ)
+    expect(denoiseNodes[2].gain.value).toBe(DENOISE_HISS_DB)
   })
 
   it('applies a speed change to an element that is already playing', async () => {
@@ -168,6 +181,112 @@ describe('PlaybackCore (mocked browser)', () => {
     doc.project.tracks[0].clips[0].reverse = true
     await h.pump.pump(1)
     expect(el.paused).toBe(true)
+  })
+
+  it('steps a ramped clip: parked element, per-tick seek, no rate from the curve', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+
+    const el = document.querySelector('video') as HTMLVideoElement
+    expect(el.paused).toBe(false)
+
+    doc.project.tracks[0].clips[0].keyframes = {
+      timeScale: [
+        { time: 0, value: 1 },
+        { time: 4, value: 2 },
+      ],
+    }
+    // One second of clock: the ramp's integral (1.125 s of source) is far past
+    // the 1/60 seek threshold, so the element must be PARKED and seeked rather
+    // than left playing at a rate it cannot follow.
+    h.lastAudioContext().currentTime += 1
+    await h.pump.pump(1)
+    expect(el.paused).toBe(true)
+    expect(el.playbackRate).toBe(1) // the curve never reaches playbackRate
+    expect(el.currentTime).toBeCloseTo(1.125, 5)
+
+    // The next tick seeks again (stepped preview), still parked.
+    h.lastAudioContext().currentTime += 1
+    await h.pump.pump(1)
+    expect(el.paused).toBe(true)
+    expect(el.currentTime).toBeCloseTo(2.5, 5)
+  })
+
+  it('silences both halves of a ramped A/V pair in the preview mixer', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0, linkId: 'L1' })
+    doc.project.tracks[1].clips.push(
+      createClip({
+        id: 'twin',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        linkId: 'L1',
+        audioOnly: true,
+        gain: 0.8,
+      }),
+    )
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const gains = () =>
+      masterGainOf(h.lastAudioContext()).inputs.map(
+        (n) => (n as FakeGainNode).gain.last?.value ?? 1,
+      )
+    // Control: the twin is the pair's sole sound carrier.
+    expect(gains().some((g) => Math.abs(g - 0.8) < 1e-5)).toBe(true)
+
+    // A ramp on the VIDEO half only. The twin holds no curve of its own, so
+    // only the derived link-group predicate can silence it: without that the
+    // pair would play at the old rate against a re-timed picture.
+    doc.project.tracks[0].clips[0].keyframes = {
+      timeScale: [
+        { time: 0, value: 1 },
+        { time: 4, value: 2 },
+      ],
+    }
+    await h.pump.pump(1)
+    expect(gains()).toEqual([0, 0])
+  })
+
+  it('plays an identity-seeded curve and resamples a flat 2x (not ramps)', async () => {
+    // The diamond's first click seeds [{time, value: 1}]: a flat curve a
+    // constant playbackRate follows exactly. It must neither park the element
+    // nor drop the audio, or one click would silence the clip for nothing.
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    clip.keyframes = { timeScale: [{ time: 0, value: clip.speed ?? 1 }] }
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const el = document.querySelector('video') as HTMLVideoElement
+    expect(el.paused).toBe(false) // playing, not parked
+    expect(el.playbackRate).toBe(1)
+    core.dispose()
+
+    // A flat 2x curve retimes the picture at a constant 2x: resamplable.
+    const doc2 = makeDoc().doc
+    const clip2 = addVideoClip(doc2, {
+      mediaId: doc2.media[0].id,
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+    })
+    clip2.keyframes = { timeScale: [{ time: 0, value: 2 }] }
+    const core2 = new PlaybackCore({
+      canvas: document.createElement('canvas'),
+      getDoc: () => doc2,
+    })
+    await core2.play()
+    await h.pump.pump(1)
+    const el2 = document.querySelector('video') as HTMLVideoElement
+    expect(el2.paused).toBe(false)
+    expect(el2.playbackRate).toBe(2) // the flat curve's rate drives the element
+    core2.dispose()
   })
 
   it('leaves the chain alone when only the gain value changes', async () => {
@@ -216,14 +335,15 @@ describe('PlaybackCore (mocked browser)', () => {
     expect(el.currentTime).toBeCloseTo(0.5, 5) // positioned at inPoint
 
     // One second of audio-clock time: the element "drifted" (stayed at 0.5),
-    // so the >120ms drift guard must resync it to the expected source time.
+    // so the DRIFT_THRESHOLD (0.4 s) guard must resync it to the expected
+    // source time.
     h.lastAudioContext().currentTime += 1
     await h.pump.pump(1)
     expect(core.currentTime).toBeCloseTo(1, 5)
     expect(frames.at(-1)).toBeCloseTo(1, 5)
     expect(el.currentTime).toBeCloseTo(1.5, 5) // inPoint 0.5 + 1s
 
-    // Small drift inside the 120ms threshold must NOT be corrected.
+    // Small drift inside the threshold must NOT be corrected.
     el.currentTime = 1.45
     await h.pump.pump(1)
     expect(el.currentTime).toBeCloseTo(1.45, 5)
@@ -570,5 +690,83 @@ describe('PlaybackCore (mocked browser)', () => {
     expect(document.querySelectorAll('video, audio').length).toBe(0)
     expect(ctx.calls.some((c) => c.op === 'fillText' && c.args[0] === 'Hi')).toBe(true)
     void core
+  })
+
+  it('silences and releases a clip deleted while it plays', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 6, inPoint: 0 })
+    const music = createMediaAsset({ kind: 'audio', name: 'm.mp3', duration: 60, url: 'blob:m' })
+    doc.media.push(music)
+    const musicClip = createClip({ id: 'twin-music', mediaId: music.id, start: 0, duration: 60 })
+    doc.project.tracks[1].clips.push(musicClip)
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+
+    const musicEl = core['pool'].peek('twin-music')!
+    expect(musicEl.paused).toBe(false)
+    const musicSrc = core['pool'].getSourceNode(musicEl, h.lastAudioContext() as never)
+
+    // Delete the playing clip (the Delete command replaces the doc's tracks).
+    doc.project.tracks[1].clips = doc.project.tracks[1].clips.filter((c) => c.id !== 'twin-music')
+    await h.pump.pump(2)
+
+    expect(musicEl.paused).toBe(true) // no longer audible
+    expect(core['pool'].peek('twin-music')).toBeUndefined() // released
+    expect(core['clipGains'].has('twin-music')).toBe(false) // chain torn down
+    expect(masterGainOf(h.lastAudioContext()).inputs.length).toBe(1) // only the video chain remains
+    expect((musicSrc as unknown as { inputs: unknown[] }).inputs.length).toBe(0) // source disconnected
+
+    // The growth path stays flat: repeated add/delete cycles must not accumulate.
+    for (let i = 0; i < 5; i++) {
+      const c = createClip({ id: `burst-${i}`, mediaId: music.id, start: 0, duration: 60 })
+      doc.project.tracks[1].clips.push(c)
+      await h.pump.pump(1)
+      doc.project.tracks[1].clips = doc.project.tracks[1].clips.filter((x) => x.id !== c.id)
+      await h.pump.pump(1)
+    }
+    expect(core['pool'].ids().length).toBe(1)
+    expect(core['clipGains'].size).toBe(1)
+    core.dispose()
+  })
+
+  it('rewires the audio chain to the relinked element', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+
+    const before = core['pool'].peek(doc.project.tracks[0].clips[0].id)
+    expect(masterGainOf(h.lastAudioContext()).inputs.length).toBe(1)
+
+    // Relink: the asset's url changes; the pool rebuilds the element on the
+    // next tick, and the audio chain must follow it.
+    asset.url = 'blob:two'
+    await h.pump.pump(1)
+
+    const after = core['pool'].peek(doc.project.tracks[0].clips[0].id)
+    expect(after).not.toBe(before) // the pool rebuilt the element
+    const master = masterGainOf(h.lastAudioContext())
+    expect(master.inputs.length).toBe(1) // ONE chain (old torn down, new built)
+    // And that chain consumes the NEW element: walk the chain back from
+    // masterGain through the gain node to the element source node.
+    const feeder = master.inputs[0] as unknown as {
+      inputs: { mediaElement?: HTMLMediaElement }[]
+    }
+    expect(feeder.inputs.some((n) => n.mediaElement === after)).toBe(true)
+    core.dispose()
+  })
+
+  it('does not rebuild the chain when the element is unchanged (sig only compares when needed)', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(2) // two ticks with the same element
+
+    // No duplicate chains accumulated from identical ticks.
+    expect(masterGainOf(h.lastAudioContext()).inputs.length).toBe(1)
+    core.dispose()
   })
 })

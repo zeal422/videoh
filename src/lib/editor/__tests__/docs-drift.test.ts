@@ -21,6 +21,9 @@ import { basename, join, resolve } from 'node:path'
  *   total alone would hide a row that drifted, and a row that loses its cells
  *   (two rows collapsed onto one line) drops both files from the table while
  *   still summing to the same total.
+ * - Any line in those docs that mentions the battery and names a step count
+ *   must name the real `step` count in e2e/battery.sh. That count has drifted
+ *   twice (28 claimed for a 29-step run, 42 for 44) and no other lock sees it.
  */
 
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
@@ -198,6 +201,29 @@ function checkTestingTableRows(files: string[]): string[] {
   return problems
 }
 
+/**
+ * Battery step-count claims: a doc line that mentions the battery and names a
+ * step count must name the real one. Lines are matched individually so an
+ * unrelated "N steps" (e.g. an undo-depth line) cannot false-positive the lock.
+ */
+function checkBatterySteps(): string | null {
+  const script = readFileSync(join(ROOT, 'e2e', 'battery.sh'), 'utf8')
+  const real = (script.match(/^step /gm) ?? []).length
+  if (real === 0) return 'e2e/battery.sh registers no steps'
+  for (const doc of DOCS) {
+    const lines = readFileSync(join(ROOT, doc), 'utf8').split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      if (!/battery/i.test(lines[i])) continue
+      for (const m of lines[i].matchAll(/(\d+)[- ]steps?\b/g)) {
+        if (Number(m[1]) !== real) {
+          return `${doc}:${i + 1}: "${m[0]}" != ${real} steps in e2e/battery.sh`
+        }
+      }
+    }
+  }
+  return null
+}
+
 describe('docs test-count claims match the real suite', () => {
   const files = realTestFiles()
   const total = files.reduce((sum, f) => sum + countCases(f), 0)
@@ -222,5 +248,9 @@ describe('docs test-count claims match the real suite', () => {
 
   it('every per-file row in the testing.md inventory matches its suite', () => {
     expect(checkTestingTableRows(files)).toEqual([])
+  })
+
+  it('every battery step-count claim matches e2e/battery.sh', () => {
+    expect(checkBatterySteps()).toBeNull()
   })
 })

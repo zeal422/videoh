@@ -22,6 +22,27 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.6.1',
+    date: '2026-10-01',
+    highlights: [
+      'Trims on reversed and time-remapped clips keep the exact frames through head, tail, split and rate stretch',
+      'Playback cleans up after deletes and relinks: no clip keeps playing in the background and no audio chain goes stale',
+      'Export is honest: it refuses offline media, releases the encoder on cancel, and matches the preview for EQ and eased volume',
+      'Speed and time remapping controls report the rate the engine applies, and the keyframe dots nudge with arrow keys',
+    ],
+  },
+  {
+    version: '0.6.0',
+    date: '2026-09-29',
+    highlights: [
+      'Keyframe easing: easeIn, easeOut and easeInOut on any keyframe, picked in the Effect Controls graph',
+      'Speed curves: keyframe the time scale inside a clip for true time remapping (audio under a ramp is dropped)',
+      'Temperature and tint sliders grade the preview and the export through one shared color matrix',
+      'Scopes in the monitor: a luma histogram and an RGB balance meter, collapsible and off by default',
+      'A Reduce noise switch cleans broadband hiss in the preview and the export',
+    ],
+  },
+  {
     version: '0.5.6',
     date: '2026-09-28',
     highlights: [

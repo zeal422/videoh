@@ -1,8 +1,30 @@
-import { EQ_DB_MAX, EQ_DB_MIN, KEYFRAME_PROPERTY_BOUNDS, SPEED_MAX, SPEED_MIN } from './constants'
-import { clampPropertyValue, isAnimatableProperty, sanitizeKeyframes } from './keyframes'
+import {
+  EQ_DB_MAX,
+  EQ_DB_MIN,
+  FPS_MAX,
+  FPS_MIN,
+  KEYFRAME_PROPERTY_BOUNDS,
+  PROJECT_MAX_H,
+  PROJECT_MAX_W,
+  PROJECT_MIN_H,
+  PROJECT_MIN_W,
+  SPEED_MAX,
+  SPEED_MIN,
+  TEMPERATURE_MAX,
+  TEMPERATURE_MIN,
+  TINT_MAX,
+  TINT_MIN,
+} from './constants'
+import {
+  clampPropertyValue,
+  isAnimatableProperty,
+  isKeyframeInterpolation,
+  sanitizeKeyframes,
+} from './keyframes'
 import { applyMarkerPatch, isMarkerColor } from './markers'
 import { clamp } from './time'
 import type {
+  AnimStaticProperty,
   Clip,
   Doc,
   Keyframe,
@@ -120,9 +142,13 @@ export function deserializeDoc(data: unknown): {
   const project: Project = {
     id: typeof projectRaw.id === 'string' ? projectRaw.id : 'proj_loaded',
     name: typeof projectRaw.name === 'string' ? projectRaw.name : 'Imported Project',
-    width: numOr(projectRaw.width, 1920),
-    height: numOr(projectRaw.height, 1080),
-    fps: numOr(projectRaw.fps, 30),
+    // The same clamps `setProjectSettings` applies: a hand-edited file cannot
+    // install a value the UI would reject. Without them a hostile fps makes
+    // the export frame count Infinity (the render loop never terminates) and a
+    // hostile width lands on canvas.width unchecked.
+    width: clamp(Math.round(numOr(projectRaw.width, 1920)), PROJECT_MIN_W, PROJECT_MAX_W),
+    height: clamp(Math.round(numOr(projectRaw.height, 1080)), PROJECT_MIN_H, PROJECT_MAX_H),
+    fps: clamp(Math.round(numOr(projectRaw.fps, 30)), FPS_MIN, FPS_MAX),
     ...(projectMarkers ? { markers: projectMarkers } : {}),
     tracks: (projectRaw.tracks as Record<string, unknown>[]).map((t) => ({
       id: typeof t.id === 'string' ? t.id : `track_${Math.random().toString(36).slice(2)}`,
@@ -200,6 +226,15 @@ function hydrateClip(raw: Record<string, unknown>): Clip {
     if (eq.low !== 0 || eq.mid !== 0 || eq.high !== 0) clip.eq = eq
   }
   if (raw.compressor === true) clip.compressor = true
+  if (raw.denoise === true) clip.denoise = true
+  if (typeof raw.temperature === 'number' && Number.isFinite(raw.temperature)) {
+    const temperature = clamp(raw.temperature, TEMPERATURE_MIN, TEMPERATURE_MAX)
+    if (temperature !== 0) clip.temperature = temperature
+  }
+  if (typeof raw.tint === 'number' && Number.isFinite(raw.tint)) {
+    const tint = clamp(raw.tint, TINT_MIN, TINT_MAX)
+    if (tint !== 0) clip.tint = tint
+  }
   if (raw.animStatics && typeof raw.animStatics === 'object') {
     const statics: NonNullable<Clip['animStatics']> = {}
     for (const [property, value] of Object.entries(raw.animStatics as Record<string, unknown>)) {
@@ -218,10 +253,24 @@ function hydrateClip(raw: Record<string, unknown>): Clip {
         property,
         value.map((k) => {
           const raw = (k ?? {}) as Record<string, unknown>
-          return {
+          const keyframe: Keyframe = {
             time: numOr(raw.time, Number.NaN),
             value: numOr(raw.value, Number.NaN),
-          } as Keyframe
+          }
+          // Eased segments survive a save/load round-trip; an unknown name from
+          // a future build falls back to linear in sanitizeKeyframes.
+          if (isKeyframeInterpolation(raw.interpolation)) keyframe.interpolation = raw.interpolation
+          // Subdivided easing data (an exact bezier quad) rides along; a
+          // malformed one is dropped here and sanitizeKeyframes re-derives
+          // the shape from the name.
+          if (
+            Array.isArray(raw.easeOut) &&
+            raw.easeOut.length === 4 &&
+            raw.easeOut.every((n) => typeof n === 'number' && Number.isFinite(n))
+          ) {
+            keyframe.easeOut = raw.easeOut as [number, number, number, number]
+          }
+          return keyframe
         }),
       )
       if (kfs.length > 0) map[property] = kfs
@@ -280,9 +329,12 @@ function hydrateMarkers(raw: unknown): Marker[] | undefined {
   return markers
 }
 
-/** Animatable properties that keep a static field (opacity/volume have their own). */
-function isAnimStaticProperty(p: string): p is Exclude<KeyframeProperty, 'opacity' | 'volume'> {
-  return isAnimatableProperty(p) && p !== 'opacity' && p !== 'volume'
+/**
+ * Animatable properties that keep a static field (opacity/volume have their
+ * own fields, timeScale reads the clip's speed).
+ */
+function isAnimStaticProperty(p: string): p is AnimStaticProperty {
+  return isAnimatableProperty(p) && p !== 'opacity' && p !== 'volume' && p !== 'timeScale'
 }
 
 function hydrateStyle(raw: Record<string, unknown> | undefined): Clip['style'] {

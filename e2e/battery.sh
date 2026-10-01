@@ -36,6 +36,14 @@
 #   the whole app from the a11y snapshot. Both fresh-start steps dismiss it like
 #   a user would (Escape) before asserting, and two steps lock the greeting
 #   itself (Help > What's new opens; a recorded version stays silent on reload).
+# - the reversed-trim frame proof (f05_reverse_frame) rides on f02_trim's exact
+#   result (the first video part at 0.00..1.50): it reverses that clip, parks on
+#   the timeline frame at 0.60s, samples the composited canvas, drags the trim
+#   end handle LEFT by a fixed 40px (= 0.5s at the battery's zoom) and re-parks
+#   on the same timeline time. Keeping a local frame must keep the source frame
+#   it showed, so the two samples must be equal. PARK FIRST, then park again
+#   after each mutation: the preview is a parked-seek stepper, so only a fresh
+#   seek re-composites the frame.
 # - the real-file steps feed bytes the app does not own: a generated PNG goes
 #   through `agent-browser upload` into the media bin's hidden import input
 #   (probe, dedup, thumbnail path), and the save/open roundtrip captures the
@@ -46,8 +54,23 @@
 # - the clipboard/link steps run after f05 and respect link-group semantics:
 #   duplicate and paste move exactly the clicked clip's link group, read LIVE
 #   from the selection ring, and Shift+Delete ripples the pasted copy away.
+# - the color-grade proof spans two existing steps (0.6.0). f06 parks on a
+#   deterministic frame (18 frames = 0.6s), samples the monitor's red/blue
+#   balance, drives the Temperature slider to +100 and samples again; the
+#   ratio must rise, which is the only browser proof that the shared SVG
+#   feColorMatrix reaches the canvas. f07 then renders the SAME sequence
+#   twice, at +100 and at -100 (End and Home on the same slider), samples the
+#   red channel of the decoded MP4 at one doc time in both, and requires the
+#   warm export to carry at least 1.25x the red of the cool one. A ratio
+#   (not a level) is what makes that valid: the two exports differ ONLY in the
+#   grade, and an ungraded export would score 1.0.
 
-set -u
+# `pipefail` (with the `set -u` below): every assertion is a `snap | grep`
+# pipeline, and a failed, timed-out or empty snapshot must abort the step rather
+# than read as "feature absent". `snap()` and `evaln()` keep agent-browser's
+# exit status, so the pipeline reports it instead of the grep's. Still no
+# `set -e`: a failing grep is an expected, handled outcome in most steps.
+set -uo pipefail
 BASE_URL="${BASE_URL:-http://localhost:3000}"
 SESSION="${SESSION:-battery}"
 OUT="${OUT:-results.txt}"
@@ -59,6 +82,10 @@ OUT="${OUT:-results.txt}"
 # VARIABLE, never a glob: a glob could delete a PARALLEL battery run's capture
 # (the runner documents A/B runs against two trees).
 PROJECT_CAPTURE=''
+# The pasted copy's label time, recorded by f02_copy_paste and consumed by
+# f08_ripple_delete: it depends on the clip layout the earlier steps leave, so
+# it is read back live instead of hardcoded.
+PASTED_START=''
 trap '[ -n "$PROJECT_CAPTURE" ] && rm -f "$PROJECT_CAPTURE"' INT TERM EXIT
 
 ab() { agent-browser --session "$SESSION" "$@"; }
@@ -67,7 +94,20 @@ refs() { snap | grep -E "$1" | grep -oE 'ref=e[0-9]+' | cut -d= -f2; }
 spinrefs() { snap | grep -- '- spinbutton' | grep -oE 'ref=e[0-9]+' | cut -d= -f2; }
 firstref() { refs "$1" | head -1; }
 evaln() { ab eval "$1" 2>/dev/null | tr -d '"'; }
-clipcount() { ab get count '[aria-label^="Clip "]' 2>/dev/null; }
+# Timeline clips only. Counting by aria-label (the old form, `[aria-label^="Clip "]`)
+# also counted the Inspector's own slider labels (`Clip opacity percent`, `Clip
+# gain percent`, `Clip pan`, `Clip speed`, and the grade rows' `Clip temperature`
+# / `Clip tint` before 0.6.0 renamed them to their visible labels), so every
+# exact-count assertion silently depended on WHICH clip was selected. The two
+# grade sliders broke f02_duplicate, which reads its baseline before switching
+# the selection. The badges nested in a clip, the context menu and the
+# clip-marker tabs are not clips either.
+clipcount() {
+  evaln '[...document.querySelectorAll("[data-testid^=clip-]")].filter((e) => {
+    const id = e.dataset.testid || "";
+    return id !== "clip-context-menu" && id !== "clip-marker" && !id.endsWith("badge");
+  }).length' 2>/dev/null
+}
 sleeps() { sleep "${1:-0.4}"; }
 step() {
   local name="$1"; shift
@@ -452,7 +492,57 @@ f01b_import_real_file() {
   }
   sleep 2.5
   rm -f "$png"
-  [ "$(ab get count '[aria-label="Add to timeline"]')" = "4" ]
+  [ "$(ab get count '[aria-label="Add to timeline"]')" = "4" ] || return 1
+  # Remove the throwaway again: only the bundled samples can re-hydrate after a
+  # project roundtrip, so this asset would come back OFFLINE, and one offline
+  # asset in the bin disables the export dialog's Start button
+  # (hasOfflineMedia). That is what blocked f07's post-roundtrip export: the
+  # dialog never left its setup phase. Left in the bin it would also quick-add a
+  # stray clip below (the next step clicks every row), stretching the sequence.
+  local item
+  item=$(evaln '(() => {
+    const el = [...document.querySelectorAll("[data-testid^=media-item-]")]
+      .find((e) => e.textContent.includes("battery-pixel-"));
+    return el ? el.getAttribute("data-testid") : "none";
+  })()')
+  [ "$item" != "none" ] || { echo "f01b: the imported pixel is not in the bin" >&2; return 1; }
+  ab click "[data-testid=$item] button[aria-label=\"Remove from bin\"]" >/dev/null 2>&1
+  sleeps 0.5
+  [ "$(ab get count '[aria-label="Add to timeline"]')" = "3" ]
+}
+
+# The red/blue balance of a canvas, as the ratio sum(red)/sum(blue). A ratio
+# (not a sum) is what makes the preview monitor and the exported frame
+# comparable: resolution, letterboxing and alpha fades scale both channels
+# together, while the temperature grade moves red against blue. "" on failure.
+canvas_ratio() { # canvas_ratio <css selector for the canvas>
+  local rb
+  rb=$(evaln "(() => {
+    const c = document.querySelector('$1');
+    if (!c || !c.width || !c.height) return '0 0';
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let r = 0, b = 0;
+    for (let i = 0; i < d.length; i += 40) { r += d[i]; b += d[i + 2]; }
+    return r + ' ' + b;
+  })()")
+  awk -v v="${rb:-0 0}" 'BEGIN {
+    split(v, a, " ");
+    if (a[1] <= 0 || a[2] <= 0) { print ""; exit }
+    printf "%.6f", a[1] / a[2]
+  }'
+}
+
+# Brightness of one frame: a stride sum over the composited canvas. Equality
+# (not a ratio) between two parked seeks of the SAME timeline time is what the
+# reversed-trim step asserts, so the raw sum is the value it stores.
+frame_sum() { # frame_sum <css selector for the canvas>
+  evaln "(() => {
+    const c = document.querySelector('$1');
+    if (!c || !c.width || !c.height) return '0';
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let s = 0; for (let i = 0; i < d.length; i += 40) s += d[i] + d[i+1] + d[i+2];
+    return s;
+  })()"
 }
 
 # ————— F6 playback + compositing —————
@@ -472,7 +562,33 @@ f06_canvas() {
     let s = 0; for (let i = 0; i < d.length; i += 40) s += d[i] + d[i+1] + d[i+2];
     return s;
   })()')
-  [ "${s:-0}" -gt 0 ] 2>/dev/null
+  [ "${s:-0}" -gt 0 ] 2>/dev/null || return 1
+
+  # Color grade reaches the monitor (0.6.0).
+  # Park on a deterministic frame: 18 frame-steps = 0.60s at 30 fps, a doc time
+  # where the video clip is live. f07_export decodes the same time out of the
+  # produced MP4, so both samples cover the same content.
+  ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
+  local i
+  for i in $(seq 1 18); do ab press ArrowRight >/dev/null 2>&1; done
+  sleeps 0.6
+  local neutral graded
+  neutral=$(canvas_ratio "[data-testid=preview-canvas]")
+  [ -n "$neutral" ] || { echo "f06: could not sample the monitor" >&2; return 1; }
+
+  click_clip 'sample-video' || { echo "f06: video clip missing for the grade sample" >&2; return 1; }
+  local n; n=$(evaln 'document.querySelectorAll("#grade-temperature [role=slider]").length')
+  [ "$n" = "1" ] || { echo "f06: temperature slider missing (thumbs=$n)" >&2; return 1; }
+  # Focus the thumb, then press End: the slider commits on the keydown, exactly
+  # like the Inspector gain slider elsewhere in this battery.
+  ab eval 'document.querySelector("#grade-temperature [role=slider]").focus()' >/dev/null
+  ab press End >/dev/null 2>&1 && sleeps 0.6
+  graded=$(canvas_ratio "[data-testid=preview-canvas]")
+  [ -n "$graded" ] || { echo "f06: could not resample the monitor" >&2; return 1; }
+  awk -v n="$neutral" -v g="$graded" 'BEGIN { exit !(g > n * 1.2) }' || {
+    echo "f06: +100 temperature did not warm the monitor (neutral=$neutral graded=$graded)" >&2
+    return 1
+  }
 }
 
 # ————— F2 split + F8 undo/redo —————
@@ -543,15 +659,196 @@ f05_mute() {
     return 1
   }
   sleeps 0.4
-  snap | grep -q '"Mute clip" \[checked=true'
+  snap | grep -q '"Mute clip" \[checked=true' || return 1
+
+  # Noise reduction toggle (0.6.0): the switch lives in the Effect Controls
+  # tab's AudioShaping section (the Clip tab only has gain/mute), so switch tabs
+  # first. Off for an untouched clip, and the checked state flips when clicked
+  # (and flips back, so the export later in the battery runs with denoise OFF).
+  # `ab find role tab` resolves the tab but its click does not flip the state
+  # (verified in a live session); the eval-click on the testid works.
+  ab eval 'document.querySelector("[data-testid=inspector-tab-effects]").click()' >/dev/null 2>&1
+  sleeps 0.4
+  insp '[role=switch][aria-label="Reduce noise"]'
+  snap | grep -q '"Reduce noise" \[checked=false' || {
+    echo "f05: Reduce noise switch missing or not unchecked initially" >&2
+    return 1
+  }
+  ab find role switch click --name 'Reduce noise' >/dev/null 2>&1 && sleeps 0.4
+  snap | grep -q '"Reduce noise" \[checked=true' || {
+    echo "f05: Reduce noise did not switch on" >&2
+    return 1
+  }
+  ab find role switch click --name 'Reduce noise' >/dev/null 2>&1 && sleeps 0.4
+  snap | grep -q '"Reduce noise" \[checked=false' || {
+    echo "f05: Reduce noise did not switch back off" >&2
+    return 1
+  }
 }
 f05_gain() {
-  # Radix renders aria-label on the slider root, not the thumb — the a11y
-  # snapshot shows it unnamed, so target it via CSS instead of by role+name.
+  # f05_mute switched the Inspector to its Effect Controls tab to reach the
+  # denoise switch, and the tab is component state: it persists across steps and
+  # selections. Without switching back, the FIRST role=slider in the Inspector
+  # is the Effect Controls Volume row, so the Clip-tab Gain slider this step is
+  # named for was never exercised (the assertion still passed, since Volume also
+  # tops out at 200%). f07_export switches back for the same reason.
+  ab eval 'document.querySelector("[data-testid=inspector-tab-clip]").click()' >/dev/null 2>&1
+  sleeps 0.4
   insp '[role=slider]'
-  ab find first 'aside[aria-label=Inspector] [role=slider]' click >/dev/null 2>&1 || return 1
+  # Target by role+name. Radix reads a thumb's accessible name from the THUMB's
+  # own props, and shadcn's Slider spread the caller's `aria-label` onto the
+  # root, where it named nothing: the snapshot showed the slider unnamed, so this
+  # used to walk in by CSS. The shared slider now forwards the label to the
+  # thumb, which makes this step the regression proof for the naming fix.
+  ab find role slider click --name 'Clip gain percent' >/dev/null 2>&1 || return 1
   ab press End >/dev/null 2>&1 && sleeps 0.4
   [ "$(evaln 'document.querySelector("aside[aria-label=Inspector]").innerText.includes("200%")')" = "true" ]
+}
+
+# ————— F5 reverse + time remapping (the picture-only rows) —————
+# The reversed branch had NO battery coverage: the mirrored row axis (value,
+# dots, and the keyframe the easing picker and the diamond target) plus the
+# reverse switch were pinned by jsdom tests only. This walks the real UI: both
+# picture-only rows are offered on a video clip, Reverse lights the timeline
+# badge, a seeded curve turns the static Speed slider off, and the diamond
+# clears the curve again. A one-keyframe curve cannot tell the mirrored axis
+# from the plain one (the axis is its own inverse), so the numeric
+# discrimination stays in the render tests; what this proves is the whole path
+# in a real browser. The clip is left exactly as it was found.
+f05_reverse() {
+  click_clip 'sample-video' || { echo "f05_reverse: video clip not found" >&2; return 1; }
+  ab eval 'document.querySelector("[data-testid=inspector-tab-effects]").click()' >/dev/null 2>&1
+  sleeps 0.4
+  insp '[data-testid=prop-timeScale]'
+  [ "$(evaln 'document.querySelectorAll("[data-testid=prop-timeScale]").length')" = "1" ] || {
+    echo "f05_reverse: the time-remap row is missing on a video clip" >&2
+    return 1
+  }
+  insp '[role=switch][aria-label="Reverse clip"]'
+  ab find role switch click --name 'Reverse clip' >/dev/null 2>&1 || {
+    echo "f05_reverse: the reverse switch is missing on a video clip" >&2
+    return 1
+  }
+  sleeps 0.5
+  [ "$(evaln 'document.querySelectorAll("[data-testid=clip-reverse-badge]").length')" = "1" ] || {
+    echo "f05_reverse: the reverse badge did not appear for the reversed clip" >&2
+    return 1
+  }
+
+  # Seeding the curve (the diamond) must draw the graph and take the rate away
+  # from the static speed slider, which is the cue that the ramp is live.
+  ab eval 'document.querySelector("[data-testid=kf-toggle-timeScale]").click()' >/dev/null 2>&1
+  sleeps 0.4
+  [ "$(evaln 'document.querySelectorAll("[data-testid=kf-graph-timeScale]").length')" = "1" ] || {
+    echo "f05_reverse: seeding the time-remap curve drew no graph" >&2
+    return 1
+  }
+  [ "$(evaln 'document.querySelector("[data-testid=speed-section] [role=slider]").hasAttribute("data-disabled")')" = "true" ] || {
+    echo "f05_reverse: the static speed slider stayed live under a curve" >&2
+    return 1
+  }
+
+  # Clearing it again exercises the removal path on a reversed clip, then the
+  # clip goes back to the state the later steps expect.
+  ab eval 'document.querySelector("[data-testid=kf-toggle-timeScale]").click()' >/dev/null 2>&1
+  sleeps 0.4
+  [ "$(evaln 'document.querySelectorAll("[data-testid=kf-graph-timeScale]").length')" = "0" ] || {
+    echo "f05_reverse: the diamond did not clear the curve" >&2
+    return 1
+  }
+  ab find role switch click --name 'Reverse clip' >/dev/null 2>&1
+  sleeps 0.5
+  [ "$(evaln 'document.querySelectorAll("[data-testid=clip-reverse-badge]").length')" = "0" ]
+}
+
+# ————— F5 reversed-clip trim, proved in pixels —————
+# The reversed-edge trim contract (the tail's low anchor keeps every retained
+# local frame on the source frame it showed) is unit-locked in commands.test.ts,
+# clip-gesture.test.ts and the pointer-drag render tests; this is the browser
+# proof that the contract survives to the composited picture. Rides on
+# f02_trim's exact result: the first video part sits at 0.00..1.50. Park at
+# 0.60s, sample the monitor, drag the tail LEFT a fixed 40px (0.5s at the
+# battery's zoom: two zoom-outs halve 80 px/s to 20), re-park on the same
+# timeline time and sample again. Keeping a local frame must keep the frame:
+# the parked local 0.6 read source 1.5 - 0.6 = 0.9 before and reads
+# inPoint 0.5 + (1.0 - 0.6) = 0.9 after (a reversed tail shows the LOW source
+# end), while the pre-fix pinning read 0.4, a different frame.
+f05_reverse_frame() {
+  local part; part=$(firstref 'button "Clip sample-video.mp4 from 0.00 to 1.50 seconds"')
+  [ -n "$part" ] || { echo "f05_reverse_frame: the 1.50s video part is missing" >&2; return 1; }
+  ab scrollintoview "@$part" >/dev/null 2>&1 && sleeps 0.2
+  ab click "@$part" >/dev/null 2>&1 && sleeps 0.4
+  [ "$(ring_count)" -ge 1 ] || { echo "f05_reverse_frame: the video part did not select" >&2; return 1; }
+
+  # Reverse it. The switch lives in the Effect Controls tab (next to Speed and
+  # Time remapping), which is component state left by an earlier step, so click
+  # the tab explicitly to make sure it is mounted.
+  ab eval 'document.querySelector("[data-testid=inspector-tab-effects]").click()' >/dev/null 2>&1
+  sleeps 0.4
+  insp '[role=switch][aria-label="Reverse clip"]'
+  ab find role switch click --name 'Reverse clip' >/dev/null 2>&1 || {
+    echo "f05_reverse_frame: the reverse switch is missing" >&2
+    return 1
+  }
+  sleeps 0.5
+  [ "$(evaln 'document.querySelectorAll("[data-testid=clip-reverse-badge]").length')" = "1" ] || {
+    echo "f05_reverse_frame: the reverse badge did not appear" >&2
+    return 1
+  }
+
+  # Park on the timeline frame at 0.60s and sample the monitor.
+  local before
+  ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1 && sleeps 0.4
+  local i
+  for i in $(seq 1 18); do ab press ArrowRight >/dev/null 2>&1; done # 18 frames = 0.60s
+  sleeps 0.6
+  before=$(frame_sum "[data-testid=preview-canvas]")
+  [ "${before:-0}" -gt 0 ] 2>/dev/null || {
+    echo "f05_reverse_frame: could not sample the monitor (before)" >&2
+    return 1
+  }
+
+  # Drag the tail LEFT by exactly 40px: duration 1.50 -> 1.00s, inPoint 0 -> 0.5.
+  # The handle is an 8px-wide edge strip, invisible until hover, so it is found
+  # by geometry and dragged by raw coordinates (the f10 marker-drag pattern).
+  local handle xy x y
+  handle=$(evaln '(() => {
+    const c = [...document.querySelectorAll("[aria-label=\"Trim clip end\"]")]
+      .find((h) => h.closest("[data-testid^=clip-]")?.getAttribute("aria-label")?.includes("0.00 to 1.50"));
+    if (!c) return "none";
+    const r = c.getBoundingClientRect();
+    return [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)].join(",");
+  })()')
+  [ "$handle" != "none" ] || { echo "f05_reverse_frame: the trim-end handle is missing" >&2; return 1; }
+  IFS=',' read -r x y <<<"$handle"
+  ab mouse move "$x" "$y" >/dev/null 2>&1
+  ab mouse down >/dev/null 2>&1
+  ab mouse move "$((x - 20))" "$y" >/dev/null 2>&1
+  ab mouse move "$((x - 40))" "$y" >/dev/null 2>&1
+  sleeps 0.2
+  ab mouse up >/dev/null 2>&1
+  sleeps 0.6
+  snap | grep -Eq 'Clip sample-video.mp4 from 0.00 to 1.00 seconds' || {
+    echo "f05_reverse_frame: the tail drag did not cut 1.50 to 1.00" >&2
+    return 1
+  }
+
+  # Re-park on the SAME timeline time (0.60s is inside the kept span) and sample
+  # again: keeping a local frame must keep the source frame it showed.
+  ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1 && sleeps 0.4
+  for i in $(seq 1 18); do ab press ArrowRight >/dev/null 2>&1; done # 18 frames = 0.60s
+  sleeps 0.6
+  local after
+  after=$(frame_sum "[data-testid=preview-canvas]")
+  [ "${after:-0}" -gt 0 ] 2>/dev/null || {
+    echo "f05_reverse_frame: could not resample the monitor (after)" >&2
+    return 1
+  }
+  [ "$before" = "$after" ] || {
+    echo "f05_reverse_frame: the kept frame moved under the trim (before=$before after=$after)" >&2
+    return 1
+  }
+  true
 }
 
 # ————— F2/F8 clipboard, duplicate, ripple —————
@@ -561,9 +858,6 @@ f05_gain() {
 # expected delta is therefore read LIVE from the selection ring at action
 # time. No hardcoded +1/+2 that depends on which clip earlier steps left
 # behind. ring_count is also the click-actually-selected guard.
-clip_named_count() { # clip_named_count <name-regex> — snapshot buttons matching one clip name
-  snap | grep -cE "button \"Clip $1"
-}
 ring_count() {
   evaln '[...document.querySelectorAll("[data-testid^=clip-]:not([data-testid$=badge])")].filter((c) => c.className.includes("ring-rose-400")).length'
 }
@@ -603,7 +897,7 @@ f02_copy_paste() {
   # Paste at the sequence END (End key first): the audio sample is 8s long, so
   # a paste at the earlier playhead would OVERLAP the original on the same
   # lane and a later coordinate click could hit either clip. At the end the
-  # copy starts at a distinctive label time (22.00) and overlaps nothing.
+  # copy starts at a label time no other clip shares, and overlaps nothing.
   local before after n
   before=$(clipcount)
   select_named 'sample-audio' || { echo "f02: audio clip did not select for copy" >&2; return 1; }
@@ -616,16 +910,28 @@ f02_copy_paste() {
     echo "f02: paste moved $((after - before)) clips, copied group held $n" >&2
     return 1
   }
+  # The copy starts at the sequence END, so its label time is the maximum clip
+  # start on the timeline. Read it back live: the layout the earlier steps
+  # leave is not fixed (a hardcoded 22.00 broke the ripple step once).
+  PASTED_START=$(evaln '(() => {
+    const starts = [...document.querySelectorAll("[data-testid^=clip-]")]
+      .map((e) => / from ([0-9.]+) to ([0-9.]+) seconds/.exec(e.getAttribute("aria-label") || ""))
+      .filter(Boolean)
+      .map((m) => Number(m[1]));
+    return starts.length ? Math.max(...starts).toFixed(2) : "none";
+  })()')
+  [ "$PASTED_START" != "none" ] || { echo "f02: could not read the pasted copy back" >&2; return 1; }
 }
 f08_ripple_delete() {
-  # The pasted copy starts at the sequence end (22.00s, set by copy_paste),
-  # so target it by that distinctive label. The honest assertions: the pasted
-  # clip is GONE and the clip count dropped (the exact gap math on
-  # overlapping neighbors is locked in commands.test.ts).
+  # The pasted copy starts at the sequence end; f02_copy_paste recorded that
+  # label time in PASTED_START, so target the copy there. The honest
+  # assertions: the pasted clip is GONE and the clip count dropped (the exact
+  # gap math on overlapping neighbors is locked in commands.test.ts).
   local before target
+  [ -n "$PASTED_START" ] || { echo "f08: f02_copy_paste never recorded the pasted copy" >&2; return 1; }
   before=$(clipcount)
-  target=$(firstref 'button "Clip sample-audio.mp3 from 22.00')
-  [ -n "$target" ] || { echo "f08: the pasted 22.00s copy is missing" >&2; return 1; }
+  target=$(firstref "button \"Clip sample-audio.mp3 from $PASTED_START")
+  [ -n "$target" ] || { echo "f08: the pasted ${PASTED_START}s copy is missing" >&2; return 1; }
   ab scrollintoview "@$target" >/dev/null 2>&1 && sleeps 0.2
   ab click "@$target" >/dev/null 2>&1; sleeps 0.5
   [ "$(ring_count)" -ge 1 ] || { echo "f08: the pasted copy did not select" >&2; return 1; }
@@ -634,8 +940,8 @@ f08_ripple_delete() {
     echo "f08: Shift+Delete removed nothing" >&2
     return 1
   }
-  snap | grep -q 'Clip sample-audio.mp3 from 22.00' && {
-    echo "f08: the pasted 22.00s copy survived Shift+Delete" >&2
+  snap | grep -q "Clip sample-audio.mp3 from $PASTED_START" && {
+    echo "f08: the pasted ${PASTED_START}s copy survived Shift+Delete" >&2
     return 1
   }
   true
@@ -772,11 +1078,103 @@ f07_open_project() {
 f07_export() {
   ab find role button click --name 'Export' >/dev/null && sleep 0.8
   ab find role button click --name 'Start export' >/dev/null && sleep 1
-  ab wait --text 'Export complete' --timeout 60000
+  # The completion toast lives ~1s (radix auto-dismiss); `ab wait --text` polls
+  # too slowly and raced it (three consecutive hangs here), so poll fast and
+  # also accept the result view itself, which persists in the done phase.
+  export_done() {
+    for _ in $(seq 1 120); do
+      [ "$(evaln 'document.body.innerText.includes("Export complete") || !!document.querySelector("[data-testid=export-result-video]")')" = "true" ] && return 0
+      sleep 1
+    done
+    echo "f07: no export-complete signal within 120s" >&2
+    return 1
+  }
+  export_done || return 1
+
+  # The EXPORTED pixels are graded (0.6.0).
+  # The export plans its own filter chain, so f06's preview proof does not cover
+  # it and the decoded frame is the only real oracle. The reopened project kept
+  # the +100 grade (it round-tripped through the .veproj.json), so this first
+  # render is the warm one. A second render at -100 is the cool one: the two
+  # exports differ ONLY in the grade, so any red-channel gap between them can
+  # only come from the temperature matrix reaching the export.
+  local warm cool
+  warm=$(export_red_sum)
+  [ -n "$warm" ] && [ "$warm" -gt 0 ] 2>/dev/null || {
+    echo "f07: could not sample the exported +100 frame" >&2
+    return 1
+  }
+  ab find role button click --name 'Close' >/dev/null 2>&1 && sleeps 0.5
+
+  # The reopened project has no selection, and the Inspector may still be on its
+  # Effect Controls tab from the audio steps: select the video clip and open the
+  # Clip tab so the grade controls exist again.
+  select_named 'sample-video' || { echo "f07: video clip did not select" >&2; return 1; }
+  ab eval 'document.querySelector("[data-testid=inspector-tab-clip]").click()' >/dev/null 2>&1
+  sleeps 0.4
+
+  # Home = the slider minimum = -100 (the cool end). Same commit-on-keydown path
+  # f06 used with End.
+  [ "$(evaln 'document.querySelectorAll("#grade-temperature [role=slider]").length')" = "1" ] || {
+    echo "f07: temperature slider missing for the cool render" >&2
+    return 1
+  }
+  ab eval 'document.querySelector("#grade-temperature [role=slider]").focus()' >/dev/null
+  ab press Home >/dev/null 2>&1 && sleeps 0.6
+
+  ab find role button click --name 'Export' >/dev/null && sleep 0.8
+  ab find role button click --name 'Start export' >/dev/null && sleep 1
+  export_done || return 1
+  cool=$(export_red_sum)
+  [ -n "$cool" ] && [ "$cool" -gt 0 ] 2>/dev/null || {
+    echo "f07: could not sample the exported -100 frame" >&2
+    return 1
+  }
+  # At +100 the matrix scales red 1.25x, at -100 it scales red 0.75x, so the
+  # warm/cool red ratio is 1.667 for untouched pixels and can only fall to 1.333
+  # (when the warm pixels clip at 255). Anything at or below 1.25 means the
+  # exported pixels are not carrying the grade at all.
+  awk -v w="$warm" -v c="$cool" 'BEGIN { exit !(w / c > 1.25) }' || {
+    echo "f07: the exported frame is not graded (red +100=$warm vs -100=$cool)" >&2
+    return 1
+  }
+
+  # Leave no clip selected: the settings step below reads the FIRST spinbutton in
+  # the a11y snapshot, which must stay the project width and not a clip's Timing
+  # field.
+  ab press Control+Shift+a >/dev/null 2>&1 && sleeps 0.4
 }
 f07_close_dialog() {
   ab find role button click --name 'Close' >/dev/null && sleep 0.5
   ! snap | grep -q 'Export video'
+}
+
+# The red sum of the export dialog's decoded output at 0.60s (the doc time f06
+# sampled). Seek failures are harmless: both exports are read the same way, so
+# the differential stays valid even if the element never seeks. "" on failure.
+export_red_sum() {
+  ab eval '(() => {
+    const v = document.querySelector("[data-testid=export-result-video]");
+    if (v) { v.pause(); v.currentTime = 0.6; }
+  })()' >/dev/null 2>&1
+  sleeps 1.5
+  local r
+  r=$(evaln '(() => {
+    const v = document.querySelector("[data-testid=export-result-video]");
+    if (!v || !v.videoWidth) return "0";
+    const c = document.createElement("canvas");
+    c.width = v.videoWidth; c.height = v.videoHeight;
+    const ctx = c.getContext("2d");
+    ctx.drawImage(v, 0, 0);
+    const d = ctx.getImageData(0, 0, c.width, c.height).data;
+    let r = 0;
+    for (let i = 0; i < d.length; i += 40) r += d[i];
+    return String(r);
+  })()')
+  case "${r:-}" in
+    '' | *[!0-9]*) echo "" ;;
+    *) echo "$r" ;;
+  esac
 }
 
 # ————— settings —————
@@ -787,6 +1185,215 @@ settings_width() {
   ab scrollintoview "@$r" >/dev/null 2>&1 && sleeps 0.2
   ab fill "@$r" '960' >/dev/null && ab press Enter >/dev/null && sleep 0.8
   [ "$(evaln 'document.querySelector("[data-testid=preview-canvas]").width')" = "960" ]
+}
+
+# F2 rate stretch on a relinked-shorter asset (runs late: it saves and reopens the project)
+# `relinkMedia` swaps an offline asset's file (and its duration) and leaves every
+# clip window untouched, so a clip can end up consuming more source than the new
+# asset holds. Alt-drag used to hold the source span fixed, so `trimClip`'s
+# window guard rejected every pointer position: one toast and a dead edge. The
+# decision now clamps the span to the asset's readable tail, which makes the pair
+# satisfiable and the drag recover the clip. This step proves that in the real
+# UI: generate a 2s WAV, import and clip it, save, New Project, reopen (the
+# non-bundled file comes back offline), relink it to a 1s WAV, then Alt-drag the
+# tail. The speed badge must show the CLAMPED 1s span's rate; holding the old 2s
+# span would read twice as fast and is what a failed clamp looks like.
+#
+# No ffmpeg here, so the WAVs are generated: an 8 kHz 8-bit mono PCM WAV of
+# silence is a 44-byte header plus one zero byte per sample.
+le32() { # le32 <n>: the four little-endian bytes of n as printf escape text
+  printf '\\x%02x\\x%02x\\x%02x\\x%02x' "$(($1 & 255))" "$((($1 >> 8) & 255))" "$((($1 >> 16) & 255))" "$((($1 >> 24) & 255))"
+}
+make_wav() { # make_wav <path> <whole seconds>
+  local path="$1" secs="$2"
+  local samples=$((8000 * secs))
+  {
+    printf 'RIFF'; printf "$(le32 $((samples + 36)))"
+    printf 'WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00'
+    printf "$(le32 8000)"; printf "$(le32 8000)"
+    printf '\x01\x00\x08\x00data'
+    printf "$(le32 "$samples")"
+    head -c "$samples" /dev/zero
+  } >"$path"
+}
+
+f02_ratestretch_relinked() {
+  local long="${TMPDIR:-/tmp}/battery-long-$$.wav"
+  local short="${TMPDIR:-/tmp}/battery-short-$$.wav"
+  local proj; proj=$(mktemp /tmp/battery-relink.XXXXXX.veproj.json)
+  clean_relink() { rm -f "$long" "$short" "$proj"; }
+  make_wav "$long" 2
+  make_wav "$short" 1
+
+  # Import the 2s file through the media bin's real multi-file input, then
+  # quick-add it: the clip window is the full 2s of source.
+  ab upload 'aside[aria-label="Media bin"] input[type=file][multiple]' "$long" >/dev/null 2>&1 || {
+    echo "f02_ratestretch_relinked: the 2s WAV upload failed" >&2
+    clean_relink
+    return 1
+  }
+  sleeps 2.5
+  local item
+  item=$(evaln '(() => {
+    const el = [...document.querySelectorAll("[data-testid^=media-item-]")]
+      .find((e) => e.textContent.includes("battery-long-"));
+    return el ? el.getAttribute("data-testid") : "none";
+  })()')
+  [ "$item" != "none" ] || {
+    echo "f02_ratestretch_relinked: the 2s WAV did not appear in the bin" >&2
+    clean_relink
+    return 1
+  }
+  ab click "[data-testid=$item] button[aria-label=\"Add to timeline\"]" >/dev/null 2>&1
+  sleeps 0.8
+  [ "$(clipcount)" -ge 1 ] || {
+    echo "f02_ratestretch_relinked: quick-add produced no clip" >&2
+    clean_relink
+    return 1
+  }
+
+  # Save the project, then reopen it: the WAV's blob URL cannot persist, so the
+  # open path marks it offline (the bundled samples relink themselves by name),
+  # and the clip keeps the 2s window that now over-consumes a 1s asset.
+  ab download 'button[aria-label="Save project (Ctrl+S)"]' "$proj" >/dev/null 2>&1 || {
+    echo "f02_ratestretch_relinked: project save download failed" >&2
+    clean_relink
+    return 1
+  }
+  [ -s "$proj" ] || {
+    echo "f02_ratestretch_relinked: the saved project is empty" >&2
+    clean_relink
+    return 1
+  }
+  ab find role menuitem click --name 'File' >/dev/null 2>&1 && sleeps 0.4
+  ab find role menuitem click --name 'New Project' >/dev/null 2>&1 && sleeps 0.8
+  ab wait --text 'New project created' --timeout 5000 >/dev/null 2>&1 || {
+    echo "f02_ratestretch_relinked: New Project did not confirm" >&2
+    clean_relink
+    return 1
+  }
+  ab upload 'header input[type=file][accept=".json,application/json"]' "$proj" >/dev/null 2>&1 || {
+    echo "f02_ratestretch_relinked: project upload failed" >&2
+    clean_relink
+    return 1
+  }
+  sleeps 2.5
+
+  # The reopened asset must be offline with a relink button, and the clip must
+  # still hold its 2s window (the relink leaves clips untouched).
+  item=$(evaln '(() => {
+    const el = [...document.querySelectorAll("[data-testid^=media-item-]")]
+      .find((e) => e.textContent.includes("battery-long-"));
+    return el && el.querySelector("button[aria-label=\"Relink media file\"]")
+      ? el.getAttribute("data-testid")
+      : "none";
+  })()')
+  [ "$item" != "none" ] || {
+    echo "f02_ratestretch_relinked: the reopened WAV is not offline with a relink button" >&2
+    clean_relink
+    return 1
+  }
+  local d0
+  d0=$(evaln '(() => {
+    const c = document.querySelector("[data-testid^=clip-][aria-label^=\"Clip battery-long-\"]");
+    const m = /from ([\d.]+) to ([\d.]+) seconds/.exec(c ? c.getAttribute("aria-label") : "");
+    return m ? (Number(m[2]) - Number(m[1])).toFixed(2) : "none";
+  })()')
+  [ "$d0" = "2.00" ] || {
+    echo "f02_ratestretch_relinked: the reopened clip window is not 2.00s ($d0)" >&2
+    clean_relink
+    return 1
+  }
+
+  # Relink to the 1s file and prove the asset shrank.
+  ab upload "[data-testid=$item] input[type=file]" "$short" >/dev/null 2>&1 || {
+    echo "f02_ratestretch_relinked: the 1s WAV relink upload failed" >&2
+    clean_relink
+    return 1
+  }
+  sleeps 1.5
+  local shown
+  shown=$(evaln '(() => {
+    const el = [...document.querySelectorAll("[data-testid^=media-item-]")]
+      .find((e) => e.textContent.includes("battery-long-"));
+    return el ? el.textContent.replace(/\s+/g, " ") : "none";
+  })()')
+  case "$shown" in
+    *1.0s*) ;;
+    *)
+      echo "f02_ratestretch_relinked: the asset duration did not become 1.0s ($shown)" >&2
+      clean_relink
+      return 1
+      ;;
+  esac
+
+  # Alt-drag the tail right by half a second, the px measured from the clip's
+  # own width so any zoom works. agent-browser cannot hold Alt across its
+  # separate keydown and mouse commands (each invocation owns a fresh input
+  # state, verified), so the pointerdown is dispatched with altKey set and the
+  # moves and up go to the gesture's own window listeners. The real path is
+  # still exercised: beginGesture records the Alt, moveTo re-times, trimClip
+  # validates, and commitTransient lands one history entry.
+  local dragged
+  dragged=$(evaln '(() => {
+    const clip = document.querySelector("[data-testid^=clip-][aria-label^=\"Clip battery-long-\"]");
+    const h = [...document.querySelectorAll("[aria-label=\"Trim clip end\"]")]
+      .find((e) => e.closest("[data-testid^=clip-]")?.getAttribute("aria-label")?.includes("battery-long-"));
+    if (!clip || !h) return "none";
+    const m = /from ([\d.]+) to ([\d.]+) seconds/.exec(clip.getAttribute("aria-label"));
+    const scale = clip.getBoundingClientRect().width / (Number(m[2]) - Number(m[1]));
+    const dx = Math.round(scale * 0.5);
+    const r = h.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    const ev = (type, cx, cy, buttons) => new PointerEvent(type, {
+      pointerId: 7, pointerType: "mouse", isPrimary: true, bubbles: true,
+      cancelable: true, composed: true, button: 0, buttons,
+      altKey: true, clientX: cx, clientY: cy,
+    });
+    h.dispatchEvent(ev("pointerdown", x, y, 1));
+    window.dispatchEvent(ev("pointermove", x + dx / 2, y, 1));
+    window.dispatchEvent(ev("pointermove", x + dx, y, 1));
+    window.dispatchEvent(ev("pointerup", x + dx, y, 0));
+    return "ok";
+  })()')
+  [ "$dragged" = "ok" ] || {
+    echo "f02_ratestretch_relinked: could not dispatch the Alt-drag ($dragged)" >&2
+    clean_relink
+    return 1
+  }
+  sleeps 0.5
+
+  # The drag must have re-timed the clip, and with the CLAMPED span: the badge
+  # rate is 1/duration, not the 2x that holding the old 2s span would read.
+  local d1 badge
+  d1=$(evaln '(() => {
+    const c = document.querySelector("[data-testid^=clip-][aria-label^=\"Clip battery-long-\"]");
+    const m = /from ([\d.]+) to ([\d.]+) seconds/.exec(c ? c.getAttribute("aria-label") : "");
+    return m ? (Number(m[2]) - Number(m[1])).toFixed(2) : "none";
+  })()')
+  badge=$(evaln '(() => {
+    const c = document.querySelector("[data-testid^=clip-][aria-label^=\"Clip battery-long-\"]");
+    const b = c ? c.querySelector("[data-testid=clip-speed-badge]") : null;
+    return b ? b.textContent.replace("×", "") : "none";
+  })()')
+  if [ "$d1" = "none" ] || [ "$badge" = "none" ]; then
+    echo "f02_ratestretch_relinked: no re-timed clip with a speed badge (duration=$d1 badge=$badge)" >&2
+    clean_relink
+    return 1
+  fi
+  awk -v was="$d0" -v now="$d1" -v badge="$badge" 'BEGIN {
+    clamped = 1 / now;
+    held = 2 / now;
+    ok = now > was + 0.05 && badge > clamped - 0.011 && badge < clamped + 0.011 && (badge < held - 0.05 || badge > held + 0.05);
+    exit !ok;
+  }' || {
+    echo "f02_ratestretch_relinked: the drag did not recover the clip (duration=$d1 badge=$badge; the clamped 1s span needs speed 1/$d1)" >&2
+    clean_relink
+    return 1
+  }
+  clean_relink
+  true
 }
 
 console_clean() {
@@ -809,7 +1416,7 @@ step "f11 whats-new: a recorded version stays silent on reload" f11_whatsnew_onc
 step "f10 markers: sequence add/nav/drag/delete"    f10_markers_sequence
 step "f10 markers: clip marker + dialog edit"       f10_markers_clip
 step "f06 play: transport runs, time advances"     f06_play
-step "f06 sync: preview canvas renders frames"     f06_canvas
+step "f06 sync: preview canvas renders + temperature grades it" f06_canvas
 step "f02 split: select + 2.0s + Ctrl+K splits clip" f02_split
 step "f08 undo: Ctrl+Z removes the split"          f08_undo
 step "f08 redo: Ctrl+Shift+Z re-applies it"        f08_redo
@@ -820,8 +1427,10 @@ step "f02 link: Ctrl+L drops the A/V bond, Ctrl+Z restores it" f02_link_unlink
 step "f03 crossfade: enable on first clip"         f03_crossfade
 step "f04 text: T adds a text clip"                f04_text_add
 step "f04 text: content edited via Inspector"      f04_text_edit
-step "f05 audio: mute switch works"                f05_mute
+step "f05 audio: mute + reduce-noise switches work" f05_mute
 step "f05 audio: gain slider reaches 200%"         f05_gain
+step "f05 reverse: picture-only rows + the mirrored curve" f05_reverse
+step "f05 reverse: trim keeps the parked frame in pixels" f05_reverse_frame
 step "f08 ripple: Shift+Delete removes the pasted copy" f08_ripple_delete
 step "menus: all 9 application menus open"         menus_open
 step "menus: View > Snapping toggles off"          menu_snapping
@@ -833,9 +1442,10 @@ step "f08 save: capture the .veproj.json download"  f08_capture_project
 step "f08 save: project download toast"            f08_save
 step "f07 roundtrip: New Project + reopen the saved file" f07_open_project
 step "f07 export prep: normalize aux clips"        f07_prep
-step "f07 export: renders to completion"           f07_export
+step "f07 export: renders graded pixels to completion" f07_export
 step "f07 export: dialog closes cleanly"           f07_close_dialog
 step "settings: width change resizes canvas"       settings_width
+step "f02 rate stretch: relinked-shorter asset recovers" f02_ratestretch_relinked
 step "console: zero page errors across battery"    console_clean
 
 passed=$(grep -c '^PASS' "$OUT"); failed=$(grep -c '^FAIL' "$OUT")

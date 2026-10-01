@@ -11,14 +11,17 @@ import {
   Unlink,
   ClipboardPaste,
 } from 'lucide-react'
+import { applyCommands } from '@/lib/editor/commands'
 import { MIN_CLIP_DURATION } from '@/lib/editor/constants'
 import { findMedia } from '@/lib/editor/factories'
+import { hasTimeScaleCurve } from '@/lib/editor/keyframes'
 import { computeSnapPoints } from '@/lib/editor/snap'
 import {
   decideMove,
   decideRateStretch,
   decideTrimEnd,
   decideTrimStart,
+  trimRooms,
 } from '@/lib/editor/clip-gesture'
 import { autoScrollStep } from '@/lib/editor/timeline-scroll'
 import {
@@ -133,6 +136,15 @@ export function ClipView({
      *  (and the same track-index offset when the dragged clip changes lane). */
     partners: { id: string; trackIndex: number; kind: string; origStart: number }[]
     moved: boolean
+    /** A rejected rate stretch already toasted once this drag: later moves stay
+     *  silent, or a held drag over an unreachable span spams a toast per frame. */
+    stretchToastShown: boolean
+    /** The `!fits` corner's validation verdict for this drag ('pending' until
+     *  the first corner frame validates the pair). The clamped span is constant
+     *  for the whole drag, so the verdict cannot change mid-gesture: 'ok' lets
+     *  later moves dispatch without re-paying the whole-document clone, and
+     *  'rejected' applies nothing for the rest of the drag. */
+    stretchVerdict: 'pending' | 'ok' | 'rejected'
     /** Store gesture token captured at pointerdown; a mismatch means the slot
      *  was ended underneath us (foreign commit) and frames must stop. */
     token: number
@@ -267,6 +279,8 @@ export function ClipView({
       lastY: e.clientY,
       partners,
       moved: false,
+      stretchToastShown: false,
+      stretchVerdict: 'pending',
       token: useEditorStore.getState().beginTransient(e.pointerId),
       pointerId: e.pointerId,
       onMove,
@@ -427,9 +441,12 @@ export function ClipView({
     }
 
     if (g.mode === 'trim-start' || g.mode === 'trim-end') {
-      if (g.rateStretch && isMedia) {
+      if (g.rateStretch && isMedia && !hasTimeScaleCurve(clip)) {
         // Alt-drag rate stretch: source span fixed, speed re-derives. Dispatched
         // as speed-then-trim so the trim validates against the NEW speed.
+        // A clip with a `timeScale` ramp is skipped: the curve, not the static
+        // rate, sets its speed, so there is no rate to stretch. The drag falls
+        // through to the plain trim below, which still works.
         const s = decideRateStretch({
           mode: g.mode,
           origStart: g.orig.start,
@@ -439,29 +456,77 @@ export function ClipView({
           clientX,
           startX: g.startX,
           scale,
+          // A relink can leave the clip over-consuming this asset; the decision
+          // clamps the span to what still fits so the pair stays applicable.
+          assetDuration: asset?.duration ?? 0,
         })
         onSnapGuide(null)
-        try {
-          store.applyTransient({ type: 'setClipSpeed', clipId: clip.id, speed: s.speed })
-          store.applyTransient({
-            type: 'trimClip',
-            clipId: clip.id,
-            start: s.start,
-            inPoint: s.inPoint,
-            duration: s.duration,
-          })
-        } catch {
-          // transient clamp violation, ignore
+        const speedCommand = { type: 'setClipSpeed', clipId: clip.id, speed: s.speed } as const
+        const trimCommand = {
+          type: 'trimClip',
+          clipId: clip.id,
+          start: s.start,
+          inPoint: s.inPoint,
+          duration: s.duration,
+          // The decision already holds the SOURCE SPAN fixed and re-derives the
+          // speed, so no source anchor moves: the command must not apply an
+          // edge's anchor rule (a reversed clip's tail would shift the window).
+          edge: 'span',
+        } as const
+        if (!s.fits) {
+          // Even the minimum window overruns the asset (almost no readable
+          // source remains): validate the pair to surface the command layer's
+          // own message. `fits` is the decision's guarantee that the trim will
+          // accept the window, so only this corner pays the validation clone;
+          // `applyTransient` still swallows command errors (slider previews
+          // rely on it), which is why a rejection is validated up front. The
+          // corner's outcome cannot change mid-drag (the clamped span is
+          // pointer-independent), so the clone is paid once and the verdict
+          // rules the rest of the gesture.
+          if (g.stretchVerdict === 'pending') {
+            try {
+              applyCommands(useEditorStore.getState().doc, [speedCommand, trimCommand])
+              g.stretchVerdict = 'ok'
+            } catch (error) {
+              g.stretchVerdict = 'rejected'
+              // A rate stretch the command layer rejects must not die
+              // silently: say why ONCE, the way a refused drop does.
+              if (!g.stretchToastShown) {
+                g.stretchToastShown = true
+                toast({
+                  title: 'Cannot rate-stretch that far',
+                  description: error instanceof Error ? error.message : String(error),
+                  variant: 'destructive',
+                })
+              }
+            }
+          }
+          if (g.stretchVerdict === 'rejected') return
+          // Verdict 'ok': the pair is legal for every later frame too, so it
+          // dispatches below without a second validation clone.
         }
+        store.applyTransient(speedCommand)
+        store.applyTransient(trimCommand)
         return
       }
     }
 
     if (g.mode === 'trim-start') {
-      // Pure decision in clip-gesture.ts; this is the dispatch.
+      // Pure decision in clip-gesture.ts; this is the dispatch. The rooms are
+      // mirrored for a reversed clip, whose head shows the span's HIGH source end
+      // (see trimRooms).
+      const rooms = trimRooms({
+        bounded: isMedia,
+        reverse: !!clip.reverse,
+        inPoint: clip.inPoint,
+        duration: clip.duration,
+        speed: clip.speed ?? 1,
+        assetDuration: asset?.duration ?? 0,
+      })
       const d = decideTrimStart({
         orig: g.orig,
         isUnbounded: !asset || asset.kind === 'image',
+        headRoom: rooms.head,
         clientX,
         startX: g.startX,
         scale,
@@ -476,6 +541,7 @@ export function ClipView({
           start: d.start,
           inPoint: d.inPoint,
           duration: d.duration,
+          edge: 'head',
         })
       } catch {
         // transient clamp violation — ignore
@@ -483,10 +549,15 @@ export function ClipView({
       return
     }
 
-    // trim-end
-    const maxDur = isMedia
-      ? Math.max(MIN_CLIP_DURATION, (asset?.duration ?? 0) - clip.inPoint)
-      : Infinity
+    // trim-end: the same rooms, read from the other side for a reversed clip.
+    const maxDur = trimRooms({
+      bounded: isMedia,
+      reverse: !!clip.reverse,
+      inPoint: clip.inPoint,
+      duration: clip.duration,
+      speed: clip.speed ?? 1,
+      assetDuration: asset?.duration ?? 0,
+    }).maxDuration
     const d = decideTrimEnd({
       origStart: clip.start,
       origDuration: g.orig.duration,
@@ -505,6 +576,7 @@ export function ClipView({
         start: clip.start,
         inPoint: clip.inPoint,
         duration: d.duration,
+        edge: 'tail',
       })
     } catch {
       // ignore
@@ -748,7 +820,7 @@ export function ClipView({
             {clip.muted && (
               <span className="shrink-0 rounded bg-black/40 px-1 text-[9px]">MUTED</span>
             )}
-            {(clip.speed ?? 1) !== 1 && (
+            {(clip.speed ?? 1) !== 1 && !hasTimeScaleCurve(clip) && (
               <span
                 data-testid="clip-speed-badge"
                 title="Playback speed"

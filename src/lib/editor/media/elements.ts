@@ -59,6 +59,16 @@ export class ClipMediaPool {
     return node
   }
 
+  /** Every pooled clip id (the playback engine reconciles against the doc). */
+  ids(): string[] {
+    return [...this.els.keys()]
+  }
+
+  /** The pooled element for a clip id, undefined when none is pooled. */
+  peek(clipId: string): HTMLVideoElement | HTMLAudioElement | undefined {
+    return this.els.get(clipId)
+  }
+
   pauseAll(): void {
     for (const el of this.els.values()) {
       if (!el.paused) el.pause()

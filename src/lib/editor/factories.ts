@@ -1,3 +1,5 @@
+import { constantTimeScaleRate, integrateKeyframes } from './keyframes'
+import { clamp } from './time'
 import type {
   Clip,
   Doc,
@@ -114,11 +116,36 @@ export function docDuration(doc: Doc): number {
  * the clip's start), honoring speed and reverse. A reversed clip reads its
  * source span mirrored, so local 0 maps to the span's last frame. This is the
  * single mapping the preview, the frame plan and the exporter all share.
+ *
+ * With a `timeScale` ramp the consumed source time is the curve's INTEGRAL
+ * over the elapsed span instead of `local * speed`: the clip's timeline length
+ * is unchanged, only how fast it consumes source changes (Premiere's time
+ * remapping). The static speed stays the constant-rate fallback.
  */
 export function sourceTimeAt(clip: Clip, local: number): number {
-  const speed = clip.speed ?? 1
   const offset = clip.reverse ? Math.max(0, clip.duration - local) : local
-  return clip.inPoint + offset * speed
+  // A curve (of any shape) overrides the static rate; a flat curve's rate IS
+  // its constant value, so this reads the same rate the speed slider shows.
+  const ramp = clip.keyframes?.timeScale
+  const elapsed =
+    ramp && ramp.length > 0
+      ? integrateKeyframes(ramp, offset, constantTimeScaleRate(clip) ?? clip.speed ?? 1)
+      : offset * (clip.speed ?? 1)
+  return clip.inPoint + elapsed
+}
+
+/** How close to an asset's end the last readable source instant sits (seconds). */
+export const SOURCE_END_MARGIN = 0.01
+
+/**
+ * A source timestamp clamped into what the asset can actually deliver. A
+ * time-scale ramp can consume more source than the clip has (the command layer
+ * accepts such a curve on purpose), so both render paths ask for the last
+ * readable frame instead of a frame past the end: the excess freezes.
+ */
+export function clampSourceTime(sourceTime: number, asset: MediaAsset | undefined): number {
+  if (!asset) return Math.max(0, sourceTime)
+  return clamp(sourceTime, 0, Math.max(0, asset.duration - SOURCE_END_MARGIN))
 }
 
 export function findClip(doc: Doc, clipId: string): { clip: Clip; track: Track } | undefined {

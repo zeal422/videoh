@@ -7,6 +7,7 @@ import type { ImperativePanelHandle } from 'react-resizable-panels'
 import { Button } from '@/components/ui/button'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { PanelShell } from './PanelShell'
+import { ColorFilterDefs } from './ColorFilterDefs'
 import { MenuBar } from './MenuBar'
 import { Toolbar } from './Toolbar'
 import { MediaBin } from './MediaBin'
@@ -238,6 +239,9 @@ export function EditorShell() {
     /* Theme lives on <html> (layout.tsx) so Radix portals — menubar dropdowns,
        dialogs, selects, toasts — inherit the dark tokens too, not just this div. */
     <div className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
+      {/* Temperature/tint grades live in one hidden svg: both render paths
+          reference these filter ids as url(#...) inside ctx.filter. */}
+      <ColorFilterDefs />
       <MenuBar
         onOpenExport={() => setExportOpen(true)}
         onResetLayout={handleResetLayout}

@@ -23,6 +23,7 @@ import { Label } from '@/components/ui/label'
 import { toast } from '@/hooks/use-toast'
 
 import { docDuration } from '@/lib/editor/factories'
+import { hasOfflineMedia } from '@/lib/editor/offline'
 import { formatTime } from '@/lib/editor/time'
 import {
   downloadBlob,
@@ -52,6 +53,11 @@ export function ExportDialog({
   const resultBlobRef = useRef<Blob | null>(null)
 
   const duration = docDuration(doc)
+  // Restored-session assets have no object URL until relinked. Rendering with
+  // them produces a valid, entirely black, silent MP4 reported as a success:
+  // the preview warns about exactly this condition, so the export refuses it
+  // up front instead of producing the file.
+  const hasOfflineMedia = doc.media.some((m) => m.missing || !m.url)
 
   const start = async () => {
     // Pause the preview engine while the export engine owns the media elements.
@@ -147,10 +153,19 @@ export function ExportDialog({
                 or Safari 26+.
               </p>
             )}
+            {hasOfflineMedia && (
+              <p
+                className="text-xs font-medium text-destructive"
+                data-testid="export-offline-warning"
+              >
+                Some media is offline. Relink the missing files in the media bin first, or the
+                export will be black and silent where they appear.
+              </p>
+            )}
             <Button
               className="w-full"
               onClick={() => void start()}
-              disabled={duration <= 0 || !webCodecsSupported()}
+              disabled={duration <= 0 || !webCodecsSupported() || hasOfflineMedia}
             >
               Start export
             </Button>

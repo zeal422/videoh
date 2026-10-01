@@ -27,6 +27,30 @@ bun run build        # production build (standalone)
 Golden rule: after any change run `bun run check`. If any step is red you are
 not done. `build` uses `output: "standalone"` (see `next.config.ts`; don't break it).
 
+Running the suite (these are the steps agents get wrong):
+
+- `bun run check` takes minutes (the build dominates); read the tail of the
+  output, failures print there. Don't set tool timeouts under ~5 min.
+- Vitest flags (`--coverage`, `-t`, single files) must go through
+  `bun run vitest run ...` — bare `bun test` ignores `vitest.config.ts`, and so
+  do its coverage include-list and thresholds.
+- Coverage scope is the explicit include-list in `vitest.config.ts`. A new pure
+  module is unmeasured until you add it there, plus an inventory row in
+  `docs/testing.md`; the counts in README/testing/structure are drift-locked by
+  `docs-drift.test.ts` and all three move together.
+- `docs-drift.test.ts` failures after adding/removing tests or renaming battery
+  steps are the intended signal: update the docs, never the drift test.
+- After `bun run format`, re-run `bun run check`: Prettier can glue markdown
+  table rows together, which docs-drift then counts as broken cells.
+- Battery: `BASE_URL=http://localhost:3000 OUT=results.txt bash e2e/battery.sh`
+  (see [docs/testing.md](docs/testing.md)); export `GATE_PASSWORD` from
+  `.env.local` first or step 1 fails. It runs minutes (1080p export included),
+  needs `agent-browser` on PATH, and syntax-checks with `bash -n e2e/battery.sh`.
+  Afterwards close your agent-browser session (the owning tool's close command;
+  attribute leftovers by `ps -o pid,lstart`), and if you started the dev server,
+  stop it and verify the port is free (`curl -s --max-time 3
+http://localhost:3000` exits 7). If the user started it, leave it running.
+
 ## Map
 
 - `src/lib/editor/` — the state core. Types, constants, factories, commands, snap, transition, links,
@@ -41,7 +65,7 @@ not done. `build` uses `output: "standalone"` (see `next.config.ts`; don't break
 - `src/app/` — `layout.tsx` (dark `<html>`, fonts, Toaster), `page.tsx`, `globals.css` (tokens),
   `icon.svg`.
 - `src/lib/editor/__tests__/` — all tests (`*.test.ts`), plus the mocked browser harness in `mocks/`.
-- `e2e/battery.sh` — 42-step UI battery, first step is the gate login (needs the dev server +
+- `e2e/battery.sh` — 45-step UI battery, first step is the gate login (needs the dev server +
   `agent-browser`; set `GATE_PASSWORD` when the gate is active).
 - `public/samples/` — bundled demo media used by "Load sample media".
 

@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from '@/hooks/use-toast'
 
+import { NamedSlider } from '@/components/editor/NamedSlider'
 import { Button } from '@/components/ui/button'
-import { Slider } from '@/components/ui/slider'
 import {
   Dialog,
   DialogContent,
@@ -542,7 +542,7 @@ function AudioGainDialog({
           <div className="text-center text-sm font-medium tabular-nums">
             {Math.round(value * 100)}% <span className="text-muted-foreground">({dbLabel})</span>
           </div>
-          <Slider
+          <NamedSlider
             aria-label="Clip audio gain"
             min={GAIN_MIN}
             max={GAIN_MAX}

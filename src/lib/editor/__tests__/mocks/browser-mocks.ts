@@ -208,6 +208,14 @@ export function createFake2DContext() {
     fillRect: (...a: unknown[]) => calls.push({ op: 'fillRect', args: a }),
     clearRect: (...a: unknown[]) => calls.push({ op: 'clearRect', args: a }),
     drawImage: (...a: unknown[]) => calls.push({ op: 'drawImage', args: a }),
+    // Synthetic pixels: jsdom has no real rasterizer, but the scopes only need
+    // a buffer of the requested size (see ScopesPanel's bounded downsample).
+    getImageData: (x: unknown, y: unknown, w: unknown, h: unknown) => {
+      calls.push({ op: 'getImageData', args: [x, y, w, h] })
+      const width = Math.max(1, Number(w) || 1)
+      const height = Math.max(1, Number(h) || 1)
+      return { data: new Uint8ClampedArray(width * height * 4), width, height }
+    },
     fillText: (...a: unknown[]) => calls.push({ op: 'fillText', args: a }),
     strokeText: (...a: unknown[]) => calls.push({ op: 'strokeText', args: a }),
     beginPath: () => calls.push({ op: 'beginPath', args: [] }),

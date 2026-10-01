@@ -14,8 +14,13 @@ import {
   VideoSampleSink,
   VideoSampleSource,
 } from 'mediabunny'
-import { docDuration, findMedia } from '../factories'
+import { EQ_DB_MAX, EQ_DB_MIN } from '../constants'
+import { clampSourceTime, docDuration, findMedia } from '../factories'
+import { constantTimeScaleRate } from '../keyframes'
+import { linkGroupHasRamp } from '../links'
 import { drawTextClip } from '../playback/compositor'
+import { denoiseFilters } from '../playback/denoise'
+import { clamp } from '../time'
 import { clipCrossfadeSchedule, clipGainSchedule, planVideoFrame, type ClipDraw } from './offline'
 import type { Doc, MediaAsset } from '../types'
 
@@ -153,8 +158,9 @@ function drawPlannedClip(
 /**
  * Builds the OfflineAudioContext graph mirroring the preview mixer and renders
  * the full audio mix. Returns null when the timeline has no audible audio.
+ * @internal exported for tests
  */
-async function renderAudioMix(doc: Doc, duration: number): Promise<AudioBuffer | null> {
+export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioBuffer | null> {
   const audibleAssets = doc.media.filter((m) => m.kind === 'audio' || docHasAudioVideo(doc, m))
   if (audibleAssets.length === 0 || duration <= 0) return null
 
@@ -165,6 +171,11 @@ async function renderAudioMix(doc: Doc, duration: number): Promise<AudioBuffer |
   })
   const master = offline.createGain()
   master.connect(offline.destination)
+  // One decode per ASSET, shared by every clip that references it: a music bed
+  // placed 20 times would otherwise decode the identical file 20 times inside
+  // this render, multiplying both decode cost and peak memory by the placement
+  // count. Negative results are cached too, so a broken file fails once.
+  const audioBuffers = new Map<string, AudioBuffer | null>()
 
   for (const track of doc.project.tracks) {
     for (const clip of track.clips) {
@@ -172,10 +183,15 @@ async function renderAudioMix(doc: Doc, duration: number): Promise<AudioBuffer |
       if (!asset?.file) continue
       const isAudio = asset.kind === 'audio' || clip.audioOnly
       if (!isAudio) continue
-      if (clip.muted || track.muted || clip.reverse) continue
+      // Ramped clips drop their whole link group's audio, exactly like the
+      // preview mixer (see linkGroupHasRamp).
+      if (clip.muted || track.muted || clip.reverse || linkGroupHasRamp(doc, clip)) continue
 
-      // Decode the file through the offline context.
-      const buffer = await decodeAudio(asset.file, offline)
+      let buffer = audioBuffers.get(asset.id)
+      if (buffer === undefined) {
+        buffer = await decodeAudio(asset.file, offline)
+        audioBuffers.set(asset.id, buffer)
+      }
       if (!buffer) continue
 
       const source = offline.createBufferSource()
@@ -198,26 +214,34 @@ async function renderAudioMix(doc: Doc, duration: number): Promise<AudioBuffer |
         else xfade.gain.setValueAtTime(ev.value, ev.time)
       }
 
-      // EQ + compressor chain (same topology as the preview graph).
+      // EQ + compressor chain (same topology as the preview graph). The band
+      // gains are clamped to the shared limits exactly like the preview, so a
+      // malformed doc (a hand-edited file) cannot render two different mixes.
       let head: AudioNode = source
       if (clip.eq) {
         const low = offline.createBiquadFilter()
         low.type = 'lowshelf'
         low.frequency.value = 200
-        low.gain.value = clip.eq.low
+        low.gain.value = clamp(clip.eq.low, EQ_DB_MIN, EQ_DB_MAX)
         const mid = offline.createBiquadFilter()
         mid.type = 'peaking'
         mid.frequency.value = 1000
         mid.Q.value = 1
-        mid.gain.value = clip.eq.mid
+        mid.gain.value = clamp(clip.eq.mid, EQ_DB_MIN, EQ_DB_MAX)
         const high = offline.createBiquadFilter()
         high.type = 'highshelf'
         high.frequency.value = 4000
-        high.gain.value = clip.eq.high
+        high.gain.value = clamp(clip.eq.high, EQ_DB_MIN, EQ_DB_MAX)
         head.connect(low)
         low.connect(mid)
         mid.connect(high)
         head = high
+      }
+      if (clip.denoise) {
+        for (const filter of denoiseFilters(offline)) {
+          head.connect(filter)
+          head = filter
+        }
       }
       if (clip.compressor) {
         const comp = offline.createDynamicsCompressor()
@@ -236,7 +260,10 @@ async function renderAudioMix(doc: Doc, duration: number): Promise<AudioBuffer |
       panner.connect(master)
 
       source.start(clip.start, clip.inPoint, clip.duration * (clip.speed ?? 1))
-      if ((clip.speed ?? 1) !== 1) source.playbackRate.value = clip.speed ?? 1
+      // The curve (any shape) overrides the static rate; a flat curve's rate
+      // is a constant the buffer source resamples exactly like a speed.
+      const constantRate = constantTimeScaleRate(clip) ?? clip.speed ?? 1
+      if (constantRate !== 1) source.playbackRate.value = constantRate
     }
   }
 
@@ -328,6 +355,10 @@ export async function exportTimeline(
   }
   await Promise.all(pendingImages)
 
+  // Set once `finalize()` resolves: a finalized output must not be cancelled
+  // (cancel on it is a harmless no-op, but the flag keeps the intent exact).
+  let finalized = false
+
   try {
     for (let i = 0; i < totalFrames; i++) {
       if (handle.cancelled) throw new Error('Export cancelled')
@@ -353,8 +384,13 @@ export async function exportTimeline(
         // frame-accurate decode: the plan already mirrors the source position
         // (`sourceTimeAt`), and the query snaps to the frame boundary so each
         // rendered frame reads a distinct decoded sample.
+        // A time-remap ramp can consume more source than the asset holds. The
+        // excess freezes on the last frame (clamped here, exactly like the
+        // preview transport clamps before an element seek) instead of asking
+        // the decoder for a frame past the end.
+        const sourceTime = clampSourceTime(draw.sourceTime, asset)
         const sample = await sink.getSample(
-          draw.clip.reverse ? nextLowerFrame(draw.sourceTime, fps) : draw.sourceTime,
+          draw.clip.reverse ? nextLowerFrame(sourceTime, fps) : sourceTime,
         )
         if (sample) {
           const bitmap = await createImageBitmap(sample.toCanvasImageSource() as CanvasImageSource)
@@ -373,8 +409,21 @@ export async function exportTimeline(
     }
 
     await output.finalize()
+    finalized = true
   } finally {
     closeDecodedFrames(frames)
+    // A cancel, an encoder error, or any throw leaves the Output holding a
+    // live VideoEncoder; `Output.cancel()` is what force-closes the track
+    // sources and releases it (mediabunny reaches `_flushOrWaitForOngoingClose`
+    // only through cancel or finalize). Without this, one abandoned export
+    // per attempt pins a hardware encoder until the tab dies.
+    if (!finalized) {
+      try {
+        await output.cancel()
+      } catch {
+        // already cancelled or closed
+      }
+    }
   }
 
   if (handle.cancelled) throw new Error('Export cancelled')

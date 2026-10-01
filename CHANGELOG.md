@@ -5,6 +5,383 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-10-01
+
+### Fixed
+
+- **A clip deleted during playback kept playing audibly.** `syncMedia` only
+  iterates clips that exist, so nothing paused the deleted clip's element,
+  disconnected its nodes, or released it: it stayed audible for the rest of the
+  session and a 20x add/delete cycle grew the pool to 22 elements. The engine
+  now reconciles the live clip-id set every tick and releases anything absent.
+- **A relinked media element was never re-wired into the audio graph.** The
+  pool rebuilds the element on a url change, but the cached gain chain keyed on
+  clip id plus shaping signature kept feeding masterGain from the OLD element's
+  source node (the clip went silent; a denoise toggle then left two live
+  chains). Chain entries now record their element and rebuild on identity
+  change, which also stops leaking the old source node.
+- **One click on the Time-remapping diamond muted the clip and dropped it from
+  the export.** The seed curve is the identity, but the mute predicate keyed on
+  curve length, so `sourceTimeAt` was provably unchanged while both render
+  paths dropped the audio and the Speed slider locked. Ramp predicates are now
+  semantic (`hasTimeScaleRamp` = a curve no constant rate can follow; a flat
+  curve is resampled at its constant value), and consumption ownership stays on
+  curve existence (`hasTimeScaleCurve`) so command-layer duration math is
+  unchanged. A flat non-identity curve now drives the element and export buffer
+  rate like a constant speed.
+- **Export silently produced an all-black MP4 when assets were offline.** A
+  restored session's url-less assets skip both the audio mix and every draw,
+  then `finalize()` succeeds with a success toast. The export dialog now gates
+  its start button on the same condition the preview warns about
+  (`hasOfflineMedia`).
+- **Cancel and error paths leaked the WebCodecs VideoEncoder.** The `finally`
+  only closed decoded frames; mediabunny releases encoders solely through
+  `Output.cancel()`/`finalize()`, so each abandoned export pinned a hardware
+  encoder until the tab died. The `finally` now cancels any non-finalized
+  output.
+- **Eased volume exported flat when the shape rode under the linear name.**
+  The sampling gate read the keyframe's display name while the preview
+  evaluates the segment shape; a project file can carry a valid `easeOut` quad
+  under a normalized `linear` name, and the export then rendered a straight
+  ramp. The gate now follows the shape (`segmentControls`), the same source the
+  preview reads.
+- **Hostile project `fps`/`width`/`height` bypassed the command-layer clamps.**
+  `deserializeDoc` applied only a finite check, so a hand-edited file could
+  install `fps: 1e308` (export frame count `Infinity`, the render loop never
+  terminates) or a 100000-wide canvas the UI could never set. Hydration now
+  clamps with the same bounds `setProjectSettings` uses.
+- **`renderAudioMix` decoded the same media file once per clip.** A music bed
+  placed 20 times decoded the identical file 20 times inside one render, each
+  allocation alive through the whole mix. Buffers are now memoized per asset id
+  (failures included, so a broken file fails once).
+- **A multi-frame head trim of a ramped clip anchored off the gesture's
+  frozen origin.** `ClipView` derives every pointermove's `inPoint` from the
+  snapshot taken at pointerdown, so after the first frame the caller's value
+  already contains every prior delta; the rebase re-added them on top of an
+  anchor that had already advanced, and the kept span read the previous
+  frame's `(integral - spanDelta)` of source too early. The error scaled with
+  the pointermove count, so the same gesture differed between 30 and 120 Hz
+  (1.48 frames @30fps on a 1x..2x ramp, 4.4 on 1x..4x, and up to 19 on a
+  0.25x..2x ramp; a flat 1x curve was unaffected and the one-shot result was
+  already exact). The anchor now advances by the consumed integral from the
+  live `inPoint`, so the per-move increments compose back to the one-shot
+  result.
+- **A head trim of an over-consuming ramped clip composed the clamp and the
+  rebase into a broken window.** A relink can leave a clip reading past its
+  asset's end (a legal saved state the render freezes), and the rebase pins the
+  kept span's read end by continuity, so no head position could heal it: the
+  clamp's duration and the rebase's anchor produced a window that neither fit
+  nor stayed continuous (measured over-runs of 1.66s, 1.90s and 1.32s on the
+  repro cuts). The command now recovers after the rebase: hold the rebased
+  anchor and shrink the span to fit, or, when the cut fell inside the frozen
+  region, slide the window onto the asset's readable tail (the content shifts
+  by the over-run, the same cost the Alt-drag recovery accepts). A reversed
+  tail move's re-derived anchor recovers the same way, and a head drag keeps
+  its right edge anchored.
+- **Extending a forward ramped clip's head re-cut the picture.** The rebase
+  fired only on a shrink, so the caller's raw inPoint (timeline seconds, not
+  the source the reveal consumes) applied as given: on a 1x..4x ramp at inPoint
+  10, a 1s extension read [9, 23] where the kept span holds [10, 20]. The
+  rebase now covers the extension direction: the curve shifts right by the
+  revealed head (exact for any easing, a shift asks nothing of the shape), the
+  old head rate constant-extends across the reveal, and the anchor keeps the
+  old head's frame minus the reveal consumed at that rate. A REVERSED head extension
+  needed no fix (the low anchor is pinned and the mirrored read covers the
+  reveal by itself), which the old asymmetry proved.
+- **The `!fits` rate-stretch corner paid three whole-document clones per
+  pointermove.** The corner validates the pair up front to surface the
+  command's own message, but the clamped span cannot change mid-drag, so the
+  verdict is now reached once per gesture and reused: a validated pair
+  dispatches without a second clone, and a rejected one applies nothing for
+  the rest of the drag (previously the two `applyTransient` calls still ran on
+  every move after the validation, three clones per frame in the corner).
+- **Keyframe dots promised a keyboard path they did not have.** The dots are
+  focusable `role="slider"` elements, but the graph wrapper swallowed arrow
+  keys to protect the global shortcut, leaving a screen-reader user silence.
+  Each dot now nudges its own time by one frame on Left/Right (clamped to the
+  clip, mirrored for a reversed time-remapping row so Left moves the dot left
+  on screen, stepping while held like a native slider thumb). Fixing this also
+  fixed a real focus bug: the dots' React keys contained their time, so every
+  move remounted the dot and dropped focus mid-interaction.
+- **Splitting an eased keyframe curve re-timed the clip.** A preset easing is
+  a function of normalized progress and cannot be re-scaled onto a shortened
+  span, so the split halves drifted from the original curve (up to ~1s of
+  source). Easing is now DATA: a keyframe can carry the exact bezier control
+  quad of its outgoing segment (`easeOut`, hydrating from old files through
+  the preset name), and a cut SUBDIVIDES the crossing segment with de
+  Casteljau, stamping the exact sub-curves on both halves. Splits, forward and
+  reversed head trims and reversed tail trims are now exact for every easing;
+  the bezier x-solver was tightened to 1e-9 so the subdivision data survives
+  re-evaluation.
+- **The slider a11y fix lived in a generated shadcn file.**
+  `src/components/ui/` is meant to stay untouched, and the forwarding could not
+  ride a root prop (Radix names the `role="slider"` thumb from its own props),
+  so the label now travels through an editor-owned `NamedSlider` that composes
+  the same primitive; the generated Slider is back to stock and the thumb
+  naming is unchanged (tests and the battery still address sliders by role and
+  name).
+- **Three mirrored and corner trim-window bugs the linear tests could not
+  see.** A reversed head trim stamped the crossing segment's sub-curve on the
+  array END it appends to, where no segment starts, and re-applied the preset
+  name over the shortened span: an eased reversed head trim drifted 6.4e-3 s
+  of source where the split and forward paths are exact. The mirrored read
+  integrates the kept curve from the source-side origin, so the left
+  sub-curve now rides on the last surviving keyframe and the boundary reads
+  linear. The reversed-tail guard validated the caller's `inPoint` at the
+  requested duration, which is not the window the move produces (a reversed
+  tail pins the HIGH end): extending a clip whose high end sat exactly on the
+  asset's end was rejected although the reveal below the low anchor was
+  legal. And a forward head extension could persist a negative `inPoint` when
+  the old head rate exceeded the gesture's static-rate room (a 2x head
+  extended 1s from `inPoint` 1 landed at -1); the rebased anchor is now
+  validated for bounded material and the move rejected instead of writing an
+  unreadable window. Unbounded clips (an image, a text clip, a clip whose
+  asset is gone) have no source window: their `inPoint` stays pinned at 0 and
+  the rebase never touches it.
+- **Constant-rate trims ignored the clip's speed.** `inPoint` counts source
+  seconds, but the trim gesture handed over a timeline delta and the rooms
+  assumed a 1x span: at 2x, a 1s head trim moved the anchor by 1 source second
+  instead of 2 (re-cutting the kept span by the difference), the head room was
+  twice the timeline the source actually buys, and the tail room was twice
+  over. The command now derives a constant-rate head anchor from the timeline
+  move, and `trimRooms` converts the forward rooms through the rate exactly as
+  the reversed ones already did. Reversed and ramped paths are untouched.
+- **A forward ramped head extension grew its curve on every drag frame.** Each
+  `pointermove` dispatched its own `trimClip`, and the extension rebased the
+  curve on top of the previous frame's result while unshifting a redundant pin
+  keyframe: a 1s drag in 60 steps left 62 keyframes (one per frame, without
+  bound), and every later `sourceTimeAt` then scanned 60 extra segments in both
+  the preview and the export. The pin changed no rendered value (every reader
+  constant-extends the curve before its first keyframe), so it is gone and the
+  shifts compose: N steps now land on the exact one-shot curve, at the same
+  keyframe count and anchor.
+- **An over-consuming head trim that did not move the head re-anchored the
+  source below 0.** The over-consume clamp shortens a window that already read
+  past the asset, and `spanDelta` counted that clamp as a head shrink, so the
+  rebase fired for a head that never left its frame. On a curve slower than 1x
+  (`integral - span` negative) the anchor went negative (measured `inPoint`
+  -0.2667 for a 0.6x, 4s span at `inPoint` 0 on a 2s asset). The rebase is now
+  gated on the caller actually moving the head: a no-movement trim keeps its
+  anchor and the shortened span is what fits the asset.
+- **Re-picking the active easing un-subdivided a split or trimmed curve.** The
+  picker renders a segment's `interpolation` name as its pressed button, but a
+  bounded segment also carries the exact subdivided sub-curve in `easeOut`.
+  Clicking the already-pressed name rewrote that data with the full-span preset
+  (0.34s of source drift at the midpoint on a 1x..4x split eased ramp), so a
+  click on a control that looked inert changed the picture. Picking the name a
+  keyframe already shows is now a no-op while it carries exact data.
+- **`withSegmentControls(kf, undefined)` kept the old `easeOut`.** The doc
+  promised `undefined` meant linear, but the spread left any existing field in
+  place, so a caller asking for linear silently kept the previous shape. The
+  field is now deleted.
+- **The battery step-count drift lock, an Alt-drag recovery battery step, and
+  the docs battery counts** (45 steps) from the 0.6.0 verification round.
+
+## [0.6.0] - 2026-09-29
+
+### Added
+
+- **Keyframe easing.** Every keyframe carries an interpolation: linear
+  (unchanged default), easeIn, easeOut or easeInOut, solved by a hand-rolled
+  cubic-bezier evaluator (`bezier.ts`, the Premiere default control points) that
+  both render paths share. The easing picker in the Effect Controls graph
+  rewrites the active keyframe through the existing `setClipKeyframes` command;
+  saved files hydrate the field with unknown names falling back to linear.
+- **Speed curves (time remapping).** `timeScale` joins the animatable properties
+  (bounds reuse the clip speed limits 0.25..4), and `sourceTimeAt` integrates
+  the curve from the clip start, so a clip can ramp from 1x to 4x inside one
+  clip. Timeline duration and export frame count never change: what moves is
+  where each frame reads its source. The preview steps ramped clips per tick
+  (the same parked-seek path reverse uses, so the browser's variable-rate audio
+  is never asked to do something it cannot), audio is dropped for a ramp's whole
+  link group at all three gain/mix sites through one derived predicate, and
+  split redistributes the curve so both halves play the unsplit frames (exact
+  for every easing: an eased segment's bezier is subdivided at the cut with de
+  Casteljau and the halves carry the exact sub-curves); a trim re-validates the
+  kept span through the same integral, and a head trim rebases the curve so the
+  kept span keeps reading the frames it read before the cut (eased cuts
+  subdivide the same way).
+- **Temperature/tint grading.** A white-balance shift (-100..100 each) compiled
+  to one SVG `feColorMatrix` per graded clip, referenced by id from both render
+  paths' filter chains, so the preview and the export cannot disagree. The
+  Inspector's Clip tab gains the two sliders; the file format carries the two
+  fields (neutral collapses to absent).
+- **Scopes in the monitor.** A collapsible section inside the preview panel
+  (default off) draws a luma histogram and an RGB balance meter from a bounded
+  256x144 downsample read at ~10 Hz, never the full 4K frame per render.
+- **Noise reduction.** A "Reduce noise" switch on audio-bearing clips builds a
+  fixed broadband chain (rumble high-pass, hiss low-pass, a gentle peaking cut
+  in the hiss band) into BOTH the preview mixer and the offline export mix from
+  one shared builder, and joins the shaping signature so toggling it mid-playback
+  rebuilds the chain. A rendered-response test measures white-noise band energy
+  through the spec biquad formulas (rumble and top octave halved, the speech
+  band preserved, the hiss band measurably cut).
+
+### Fixed
+
+- **Preview and export color stacks were two copies of one string builder.**
+  They had drifted only in rounding, but that was enough to silently drop a
+  saturation of 1.00049 from the preview while the export kept it. Both paths
+  now consume one `buildColorFilter` (`color.ts`), locked by static wiring tests
+  plus a hardcoded expectation of the exported filter string, so a value can
+  never round away on one side again.
+- **The reversed-clip trim is proved in pixels.** The new battery step
+  `f05_reverse_frame` (the battery runs 45 steps) reverses the trimmed 1.50 s
+  video part, parks on the timeline frame at 0.60 s, samples the composited
+  monitor, drags the tail left a fixed 0.5 s and re-parks on the same time: the
+  kept frame must sample identical. That pins the tail's low anchor end to end
+  in the real compositor, which jsdom cannot see. Proven red first: the run on
+  the pre-fix pinning failed with a changed frame sample.
+- **The battery's clip counter counted the Inspector's sliders.**
+  `clipcount()` matched `[aria-label^="Clip "]`, which also matches the
+  Inspector's own slider labels, so exact-count assertions silently depended on
+  which clip was selected; the new grade sliders (two more such labels) surfaced
+  it as a duplicate step failing with "D moved -1 clips". Timeline clips are now
+  counted by their testids, the same identity the selection-ring helpers use.
+- **The export's EQ bands skipped the clamp the preview applies.** `mp4.ts`
+  assigned `clip.eq.{low,mid,high}` raw while the preview clamped them to
+  +/-24 dB, so a hand-edited project exported a different EQ than it previewed.
+  Both paths now read one named bound from `constants.ts`, locked by a static
+  test.
+- **The speed controls lied on a clip with a time remapping curve.** The curve,
+  not the static rate, decides how a ramped clip consumes source, so the Speed
+  slider changed a field the engines never read, the clip badge advertised a rate
+  that was not in effect, and Alt-drag rate stretch threw inside `trimClip` and
+  was swallowed, so a lengthening drag simply stopped responding. The slider is
+  disabled and the badge hidden while a curve exists (with a pointer to the Time
+  remapping row), and Alt-drag falls through to a plain trim.
+- **Adding a ramped clip applied the constant-rate length rule.** `addClip`'s
+  `clampClipToMedia` still divided the remaining source by the static speed, so a
+  ramped clip carrying a stale high speed was truncated even though its curve fit
+  the asset. The add path and `setClipSpeed` now share one ramp predicate, both
+  leaving the curve to decide how much source the span consumes.
+- **The export flattened every eased volume curve.** 0.6.0 taught the preview to
+  ease with the keyframe `interpolation` field, but `clipGainSchedule` still
+  emitted every keyframe as a plain ramp, so the Web Audio automation the
+  exporter schedules rendered straight lines where the monitor eased (up to 18
+  points of gain on a 4 s fade). An eased segment is now sampled into 16 short
+  linear ramps, keeping the two paths within half a percent of each other; a
+  linear curve still emits exactly the schedule it always did.
+- **A reversed clip's time-remapping row sat on the wrong axis.** `sourceTimeAt`
+  indexes a reversed clip's `timeScale` curve at `duration - local`, while the
+  Effect Controls row read the playhead, wrote the diamond's keyframe and
+  plotted its dots in plain clip-local time, so the whole curve appeared
+  mirrored: at local 0 the slider read 1.00 where the engine applied 2.00. That
+  row's axis is now flipped to match (self-inverse), for the value, the diamond,
+  the slider write and the graph's dots and drags. The two lookups that measure a
+  DISTANCE to the playhead (the keyframe the easing picker edits and the one the
+  diamond removes) now measure it on that same axis too, so they no longer target
+  the other end of the curve.
+- **Trimming the head of a reversed clip re-cut the footage.** A head move
+  advanced `inPoint` by the caller's timeline-local delta, but a reversed clip's
+  head edge shows the span's HIGH end, so the surviving window jumped a full
+  head-length up the source: a 4 s ramped clip trimmed to 3 s rendered source
+  6.25..1.00 instead of the 5.25..0.00 the retained locals showed. A reversed
+  head move now keeps the low anchor and lets the duration carry the change,
+  which repairs the long-standing constant-rate case too.
+- **A rejected Alt-drag rate stretch applied half of itself, silently.** The
+  gesture dispatched `setClipSpeed` then `trimClip` through `applyTransient`,
+  which swallows command errors on purpose (slider previews rely on it), so the
+  rejection never reached the gesture's `catch`: the speed change stayed applied
+  along with the duration it re-derived, and the "Cannot rate-stretch that far"
+  toast was unreachable code. The pair is validated against the live doc
+  whenever the decision cannot guarantee the trim fits, so a rejection changes
+  nothing and the toast fires.
+- **The Time remapping row was offered on audio clips.** A ramp drops its link
+  group's audio in both render paths, so on an audio-only clip the row could
+  never do anything audible: seeding a curve there silenced the pair while the
+  picture half (which reads its OWN curve) stayed untouched. The row is
+  picture-only now, like the reverse switch; the static Speed slider still
+  re-times the audio element. Both gates key off the clip's `audioOnly` flag, not
+  only the track kind, because `clipFitsTrack` lets an A/V pair's audio twin move
+  onto a video track, where the track kind alone still offered the picture-only
+  rows (a ramp seeded there muted the pair).
+- **The keyframe graph's dots had no key behaviour of their own.** They are
+  focusable `role="slider"` elements, so an arrow key pressed on a focused dot
+  drove the global shortcut (frame-step, jump-to-edit) while the dot did
+  nothing. The graph wrapper now carries the same arrow guard as the easing
+  picker directly above it.
+- **The documented temperature/tint gain range was wrong.** Temperature and tint
+  sum into the red and blue rows, so the legal square reaches 0.625..1.375 at
+  its corners, not the 0.75..1.25 the comment claimed and the axis-only test
+  implied. The comment states the real range and the test pins all four corners.
+- **The scopes stayed dead after the monitor was resized.** `unavailable` was
+  set by the read's `catch` and cleared only by a canvas identity change or a
+  close/reopen, while the sampling interval stopped for good; a resize resets a
+  canvas's origin-clean flag, so the canvas could be readable again with the
+  meters frozen. The interval now keeps running while the banner is up and
+  clears the latch as soon as a read succeeds.
+- **A reversed clip's tail edge slid the picture instead of trimming.** The
+  round-5 fix gave a reversed clip's HEAD the right anchor (its head shows the
+  span's high source end, so a head move keeps the low anchor and the duration
+  carries the change) but the tail kept the forward rule, which pins `inPoint`.
+  A reversed clip's tail is its LOW source end, so pinning `inPoint` moved the
+  other end instead: dragging the tail of a 4 s reversed clip to 3 s shifted
+  every kept frame one second up the source (a frame that read 3.5 read 2.5
+  afterwards) while the edge under the pointer never changed. The tail now holds
+  the HIGH end and re-derives the low anchor, mirroring the head rule: for a
+  ramped span that is the curve's integral over the timeline the tail gave up,
+  plus the curve shifted down onto the new origin with the rate at the cut pinned
+  as a keyframe at 0. `trimClip` also takes the moved edge explicitly
+  (`edge: 'head' | 'tail' | 'span'`) instead of inferring it from `inPoint`,
+  which a reversed tail move cannot be read from, and the trim rooms the gestures
+  clamp against are mirrored with it, so a reversed clip's head can extend into
+  the source above it (it was refused whenever `inPoint` was 0) and its tail into
+  the source below.
+- **Every slider in the app was unnamed to assistive tech.** The shared shadcn
+  `Slider` spread the caller's `aria-label` onto the Radix root, but the element
+  that carries `role="slider"` is the THUMB, and Radix reads a thumb's accessible
+  name from the thumb's own props (its built-in Minimum/Maximum labels only exist
+  for two or more thumbs). The label therefore named nothing, so the Control
+  panel's Temperature and Tint thumbs, whose `<label for>` cannot associate with a
+  span either, were announced as unnamed sliders. The shared slider now forwards
+  the label to the thumb (a single-value slider only, so a multi-thumb caller
+  keeps Radix's own labels), the grade rows use their visible labels, and f05_gain
+  reaches the gain slider by role and name instead of a CSS walk.
+- **The battery could not tell a failed snapshot from an absent feature.**
+  `snap()` discards agent-browser's stderr and every assertion pipes it into
+  grep, so a failed, timed-out or empty read looked exactly like a missing
+  control. `set -o pipefail` now carries the read's status through the pipeline.
+- **f05_gain exercised the wrong slider.** f05_mute switches the Inspector to
+  its Effect Controls tab to reach the denoise switch and nothing switched back,
+  so the "gain reaches 200%" step sampled the Effect Controls Volume row instead
+  of the Clip tab's Gain slider it is named for (the assertion passed because
+  both top out at 200%). The step switches back, like f07_export already did.
+- **A forward head trim could flatten the ramp it kept.** The rebase's boundary
+  test inspected the END of the kept curve, but the forward branch appends its
+  boundary keyframe at the START (local 0), so a survivor at exactly `2 * cut`
+  shifted onto `cut` and the guard read that as "boundary present": the pin was
+  skipped and the kept span played at the survivor's constant rate (flat 2x on
+  the repro, 0.5 s of wrong source on the linear 1x..2x fixture, and unbounded
+  in general: the error is the survivor's rate gap times the kept duration).
+  Each branch now tests
+  the end it appends to, and a regression test cuts the existing ramped fixture
+  exactly in half, the collision the old guard missed.
+- **Alt-drag rate stretch did nothing on a clip that over-consumed its asset.**
+  A relink to shorter media replaces the asset and leaves clip windows
+  untouched; the gesture held the source span fixed, so the trim's window guard
+  rejected every pointer position (one toast, a dead edge). The decision now
+  clamps the span to the asset's readable tail, which makes the dispatched pair
+  satisfiable again and lets the drag recover the clip, and it reports when even
+  the minimum span cannot fit. Only that corner still validates the pair against
+  the live doc, so the common path no longer throws away a whole-document clone
+  on every pointermove. The new battery step `f02_ratestretch_relinked` proves
+  the recovery end to end: it imports a generated 2 s WAV, clips it, saves and
+  reopens the project (leaving the file offline), relinks it to a 1 s WAV, and
+  alt-drags the tail; the badge must show the clamped 1 s span's rate, not the
+  doubled rate a held 2 s span would read.
+- **Auto-duck dipped the music under reversed dialogue that can never be
+  heard.** Both render paths drop a reversed clip's audio, but the ducking
+  guard only skipped ramped link groups, so a reversed dialogue clip still
+  drove the duck. It is skipped now.
+- **Battery step counts drifted again.** `AGENTS.md` and `docs/structure.md`
+  still said 42 steps for a run of 44 (45 with the new rate-stretch step); both
+  are corrected, and
+  `docs-drift.test.ts` now locks every battery step-count claim to the `step`
+  count in `e2e/battery.sh`, so the next drift fails the suite. The never-called
+  `clip_named_count` helper (a `grep -c` that exits 1 on a legitimate zero count
+  under `pipefail`) is deleted.
+
 ## [0.5.6] - 2026-09-28
 
 ### Fixed

@@ -1,4 +1,5 @@
 import { MIN_SPLIT_HEADROOM } from './constants'
+import { hasTimeScaleRamp } from './keyframes'
 import type { Clip, Doc, MediaAsset } from './types'
 
 /**
@@ -66,6 +67,20 @@ export function linkedAudioTwin(doc: Doc, clip: Clip): Clip | undefined {
 export function hasLinkedAudioTwin(doc: Doc, clip: Clip): boolean {
   if (!clip.linkId || clip.audioOnly) return false
   return !!linkedAudioTwin(doc, clip)
+}
+
+/**
+ * True when any member of `clip`'s link group carries a real `timeScale` ramp
+ * (`hasTimeScaleRamp`): a curve no constant playbackRate can follow. Ramped
+ * clips contribute no audio (preview and export alike), and the ramp is an
+ * A/V decision: re-timing only the video half while its twin kept playing at
+ * the old rate is exactly the twin-inconsistency this predicate prevents. A
+ * flat curve (identity seed or constant) is NOT a ramp: the element resamples
+ * it, so the group keeps its audio. Derived from the curve rather than
+ * stored, so it cannot go stale.
+ */
+export function linkGroupHasRamp(doc: Doc, clip: Clip): boolean {
+  return linkedClips(doc, clip.id).some((c) => hasTimeScaleRamp(c))
 }
 
 /**

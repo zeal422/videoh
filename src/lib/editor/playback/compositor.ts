@@ -1,3 +1,4 @@
+import { clipFilter } from '../color'
 import { getTransitionSpan, transitionAlphas } from '../transition'
 import { animatedValue } from '../keyframes'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
@@ -8,7 +9,8 @@ import type { Clip, Doc, MediaAsset, Track } from '../types'
  * Rendering rules:
  * - Tracks composite bottom→top (tracks[0] is the topmost layer).
  * - Video/image clips are drawn contain-fit (black bars preserved), with
- *   position/scale transform and the color filter stack applied per clip.
+ *   position/scale transform and the color filter stack applied per clip
+ *   (built by the shared `clipFilter` in color.ts).
  * - Text clips render their styled text (position/scale/opacity animated).
  * - Crossfades: when clip A (with transitionOut) overlaps clip B, both are
  *   drawn with complementary alpha across the transition span.
@@ -92,12 +94,8 @@ function drawClip(
   if (effective <= 0) return
 
   // Color stack: exposure/contrast/saturation/brightness/hue, animated or static.
-  const exposure = animatedValue(clip, 'exposure', local)
-  const contrast = animatedValue(clip, 'contrast', local)
-  const saturation = animatedValue(clip, 'saturation', local)
-  const brightness = animatedValue(clip, 'brightness', local)
-  const hue = animatedValue(clip, 'hue', local)
-  const filter = buildFilter(exposure, contrast, saturation, brightness, hue)
+  // One filter builder for both render paths (color.ts).
+  const filter = clipFilter(clip, local)
 
   const posX = animatedValue(clip, 'positionX', local)
   const posY = animatedValue(clip, 'positionY', local)
@@ -146,30 +144,6 @@ function drawClip(
       transformed ? { posX, posY, scale } : null,
     )
   }
-}
-
-/**
- * The ctx.filter string for the color stack. `none` when every parameter is
- * neutral so the browser skips the filter pass entirely.
- */
-export function buildFilter(
-  exposure: number,
-  contrast: number,
-  saturation: number,
-  brightness: number,
-  hue: number,
-): string {
-  const parts: string[] = []
-  if (brightness !== 1) parts.push(`brightness(${round3(brightness)})`)
-  if (contrast !== 1) parts.push(`contrast(${round3(contrast)})`)
-  if (saturation !== 1) parts.push(`saturate(${round3(saturation)})`)
-  if (hue !== 0) parts.push(`hue-rotate(${round3(hue)}deg)`)
-  if (exposure !== 1) parts.push(`brightness(${round3(Math.pow(exposure, 0.5))})`)
-  return parts.length === 0 ? 'none' : parts.join(' ')
-}
-
-function round3(n: number): number {
-  return Math.round(n * 1000) / 1000
 }
 
 function drawContain(
