@@ -16,7 +16,7 @@
  * span, but a bezier can be cut exactly at any parameter.
  */
 
-import { EASING_PRESETS, cubicBezier, cubicBezierArea } from './bezier'
+import { EASING_PRESETS, cubicBezier, cubicBezierArea, makeSolveT } from './bezier'
 import type { KeyframeInterpolation } from './types'
 
 /** Control quadruple of one side of a segment: cubic-bezier(x1, y1, x2, y2). */
@@ -98,35 +98,15 @@ export function subdivideControls(
 /**
  * The bezier PARAMETER at which the curve's x (time progress) reaches `p`.
  * A TIME cut at progress p subdivides at this parameter (de Casteljau is
- * parameter-space), solved with the same Newton+bisection scheme the
- * presets' solver uses, tightened because the subdivision data it produces
- * is what the halves re-time with.
+ * parameter-space), solved by the SAME solver the presets use (`makeSolveT`
+ * in bezier.ts), whose 1e-9 epsilon is what the subdivision data it produces
+ * needs: the halves re-time through it.
  */
 export function parameterAtX(controls: BezierQuad, p: number): number {
   if (p <= 0) return 0
   if (p >= 1) return 1
   const [x1, , x2] = controls
-  const coefA = 1 - 3 * x2 + 3 * x1
-  const coefB = 3 * x2 - 6 * x1
-  const coefC = 3 * x1
-  const xAt = (t: number) => ((coefA * t + coefB) * t + coefC) * t
-  const slopeAt = (t: number) => 3 * coefA * t * t + 2 * coefB * t + coefC
-  let t = p
-  for (let i = 0; i < 12; i++) {
-    const error = xAt(t) - p
-    if (Math.abs(error) < 1e-9) return t
-    const slope = slopeAt(t)
-    if (Math.abs(slope) < 1e-9) break
-    t -= error / slope
-  }
-  let low = 0
-  let high = 1
-  for (let i = 0; i < 32; i++) {
-    const mid = (low + high) / 2
-    if (xAt(mid) < p) low = mid
-    else high = mid
-  }
-  return (low + high) / 2
+  return makeSolveT(x1, x2)(p)
 }
 
 /** Evaluates a segment's shape at progress `u` (matches `easingFunction`). */

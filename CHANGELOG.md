@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.3] - 2026-10-04
+
+### Fixed
+
+- **A video clip with no linked audio twin now exports its embedded audio instead of going silent.** Both export paths picked audio with `asset.kind === 'audio' || clip.audioOnly`, so a video clip whose twin was deleted (or that was never linked) was skipped while the preview kept playing it. The plan and the mix now share one `clipRendersAudio` predicate in `links.ts` that mirrors the preview's shadow rule (`computeGain`), so preview and export cannot disagree again; the predicate requires a playable asset before every branch, so offline media (kind-audio, carrier or solo video) stays out of the plan. The mix's early-out and its scheduling loop now share one `scheduledAudioSource` gate (file, audibility, mute, reverse, rate), so a timeline whose only clips are skipped (muted, reversed or rate-dropped) returns no audio track at all instead of a silent one.
+- **A manually linked video part keeps its embedded audio in the export (a decided parity rule, not a side effect).** A manual link has no `audioOnly` carrier, so the preview never shadows its video part; the export used to drop that part and now matches the manual-link rule from 0.6.2. This is a deliberate, user-visible behavior change for manual links: after `Ctrl+L` the kept twin and the unmasked embedded audio both play, in preview and export alike, and the link-id model is unchanged.
+- **Auto-ducking resolves each dialogue clip's playability once, not once per sample.** The reversed, rate-changed and offline checks are per-clip facts; they now build the eligible source list before the sampling loop instead of re-running across all 97 samples per music clip.
+- **The eased-segment parameter solve shares the bezier solver.** `parameterAtX` had a hand-rolled Newton+bisection copy with a 32-deep fallback while `bezier.ts` used 40; `makeSolveT` is exported and both now solve with the same scheme and depth (the Newton phase is identical, the fallback tightens to about 9e-13), so subdivision data and evaluation cannot disagree about a cut.
+- **`setClipDenoise`'s comment now matches the handler**: an off clip stores `false` and the saved file carries `"denoise": false` (hydration reads only `true`, so absent and false load alike; no behavior change).
+- **Release notes key each highlight by position**, so two identical lines in one release cannot collide, and the keyframe-dot nudge reads `frameToTime` instead of inlining seconds-per-frame.
+- **A foreign easing quad under a linear keyframe name now renders and clears correctly.** Hydration keeps a valid `easeOut` while normalizing an unknown interpolation name to `linear` (every evaluator reads the quad first), but the Effect Controls dot and the easing picker read the name only: the segment rendered eased while the UI showed Linear, and clicking Linear did nothing. The dot's dashed state, the pressed easing button and the clear path now follow the segment's shape, so picking Linear normalizes the foreign data. The picker's no-op guard compares against the displayed interpolation too, so a foreign quad that matches a different preset no longer makes a click on the other name a silent no-op.
+- Cosmetic: the stale bisection-depth comment in `bezier.ts` and the em dashes added across docs, comments and `e2e/battery.sh` in the 0.5.6 to 0.6.2 range are gone.
+
+### Changed
+
+- Internal: the trim engine's pure math (the source-fitting bisection, both `timeScale` curve rebases and the source-consumption rule the split command shares) moved to `src/lib/editor/trim.ts`, with direct unit tests; `commands.ts` keeps the policy and dispatch. No behavior change.
+- The battery's export step now locks the exported MP4's stream layout: `export_track_kinds` downloads the result and reads its moov/trak/mdia/hdlr handler types, so the first render must carry an audio track while an audible clip exists (which also proves the parser reads non-empty kinds) and, after `mute_all_audio` mutes every audio-capable clip, the second render must carry none. That absent assertion is the browser-level lock on the silent-track regression above, red-first proven against the unfixed code. The Effect Controls same-name guard also gained its missing test: re-picking the displayed preset must keep the exact pre-click quad object, pinned by reference identity (deep data alone cannot tell the no-op from a deep-equal stamp).
+
 ## [0.6.2] - 2026-10-04
 
 ### Fixed

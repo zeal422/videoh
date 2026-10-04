@@ -255,7 +255,7 @@ describe('PlaybackCore (mocked browser)', () => {
 
   it('silences both halves of an A/V pair under a FLAT non-identity curve', async () => {
     // A flat constant curve is resamplable, so the video half's element can
-    // follow it — but its constant then retimes the picture against a twin
+    // follow it, but its constant then retimes the picture against a twin
     // playing at its own rate: the same desync a ramp causes, and only the
     // derived link-group predicate can catch it. Only the identity value
     // (flat at 1) keeps the pair audible.

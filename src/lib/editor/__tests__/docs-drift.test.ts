@@ -224,6 +224,29 @@ function checkBatterySteps(): string | null {
   return null
 }
 
+/**
+ * The coverage-scope sentence in testing.md must name every module in
+ * vitest.config.ts's coverage include list. Nothing else locks it: the text
+ * coverage table hides 100% files in agent environments (Vitest's skipFull
+ * default), and the per-file inventory covers test files, not source modules.
+ * The sentence had silently dropped `ease-segment` while the include list and
+ * the report both measured it.
+ */
+function checkCoverageScope(): string | null {
+  const cfg = readFileSync(join(ROOT, 'vitest.config.ts'), 'utf8')
+  const block = cfg.match(/coverage:\s*\{[\s\S]*?include:\s*\[([\s\S]*?)\]/)?.[1]
+  if (!block) return 'vitest.config.ts: no coverage include list'
+  const modules = [...block.matchAll(/'([^']+)'/g)].map((m) => basename(m[1], '.ts'))
+  const doc = readFileSync(join(ROOT, 'docs/testing.md'), 'utf8')
+  const start = doc.indexOf('state modules only:')
+  if (start < 0) return 'docs/testing.md: no coverage-scope sentence'
+  const end = doc.indexOf('\n\n', start)
+  const scope = doc.slice(start, end < 0 ? undefined : end)
+  const missing = modules.filter((m) => !scope.includes(`\`${m}\``))
+  if (missing.length > 0) return `docs/testing.md: coverage sentence omits ${missing.join(', ')}`
+  return null
+}
+
 describe('docs test-count claims match the real suite', () => {
   const files = realTestFiles()
   const total = files.reduce((sum, f) => sum + countCases(f), 0)
@@ -252,5 +275,9 @@ describe('docs test-count claims match the real suite', () => {
 
   it('every battery step-count claim matches e2e/battery.sh', () => {
     expect(checkBatterySteps()).toBeNull()
+  })
+
+  it('the testing.md coverage sentence names every included module', () => {
+    expect(checkCoverageScope()).toBeNull()
   })
 })

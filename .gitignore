@@ -39,7 +39,7 @@ node_modules
 next-env.d.ts
 
 # e2e / tooling artifacts
-results.txt
+results*.txt
 /e2e/results*.txt
 tool-results/
 

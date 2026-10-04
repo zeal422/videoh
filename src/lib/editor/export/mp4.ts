@@ -17,12 +17,12 @@ import {
 import { EQ_DB_MAX, EQ_DB_MIN } from '../constants'
 import { clampSourceTime, docDuration, findMedia } from '../factories'
 import { constantTimeScaleRate } from '../keyframes'
-import { linkGroupChangesRate } from '../links'
+import { clipRendersAudio, linkGroupChangesRate } from '../links'
 import { drawTextClip } from '../playback/compositor'
 import { denoiseFilters } from '../playback/denoise'
 import { clamp } from '../time'
 import { clipCrossfadeSchedule, clipGainSchedule, planVideoFrame, type ClipDraw } from './offline'
-import type { Doc, MediaAsset } from '../types'
+import type { Clip, Doc, Track } from '../types'
 
 /**
  * WebCodecs/MP4 export, offline (no realtime capture), frame-accurate.
@@ -161,8 +161,7 @@ function drawPlannedClip(
  * @internal exported for tests
  */
 export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioBuffer | null> {
-  const audibleAssets = doc.media.filter((m) => m.kind === 'audio' || docHasAudioVideo(doc, m))
-  if (audibleAssets.length === 0 || duration <= 0) return null
+  if (duration <= 0 || !docHasAudibleClips(doc)) return null
 
   const offline = new OfflineAudioContext({
     numberOfChannels: 2,
@@ -179,20 +178,13 @@ export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioB
 
   for (const track of doc.project.tracks) {
     for (const clip of track.clips) {
-      const asset = findMedia(doc, clip.mediaId)
-      if (!asset?.file) continue
-      const isAudio = asset.kind === 'audio' || clip.audioOnly
-      if (!isAudio) continue
-      // Rate-disagreeing A/V pairs (a ramp, a non-identity constant or a plain
-      // static speed difference) drop their pair's audio, and a clip with its
-      // own real ramp drops its own; exactly like the preview mixer (see
-      // linkGroupChangesRate).
-      if (clip.muted || track.muted || clip.reverse || linkGroupChangesRate(doc, clip)) continue
+      const scheduled = scheduledAudioSource(doc, track, clip)
+      if (!scheduled) continue
 
-      let buffer = audioBuffers.get(asset.id)
+      let buffer = audioBuffers.get(scheduled.assetId)
       if (buffer === undefined) {
-        buffer = await decodeAudio(asset.file, offline)
-        audioBuffers.set(asset.id, buffer)
+        buffer = await decodeAudio(scheduled.file, offline)
+        audioBuffers.set(scheduled.assetId, buffer)
       }
       if (!buffer) continue
 
@@ -276,9 +268,38 @@ export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioB
   return offline.startRendering()
 }
 
-function docHasAudioVideo(doc: Doc, m: MediaAsset): boolean {
-  return doc.project.tracks.some((t) =>
-    t.clips.some((c) => c.mediaId === m.id && (c.audioOnly || false)),
+/**
+ * The decodable source a clip contributes to the mix, or null when the loop
+ * would skip it: no file to decode, the shared audibility rule says silent, a
+ * mute on the clip or its track, a reversed clip, or the derived rate rule
+ * (a real ramp on the clip itself or a rate-disagreeing A/V pair; see
+ * linkGroupChangesRate). ONE gate for the scheduling loop and the early-out:
+ * when they disagree, a clip the early-out counts but the loop skips renders
+ * a silent audio track instead of no track at all.
+ */
+function scheduledAudioSource(
+  doc: Doc,
+  track: Track,
+  clip: Clip,
+): { assetId: string; file: File } | null {
+  const asset = findMedia(doc, clip.mediaId)
+  if (!asset?.file) return null
+  if (!clipRendersAudio(doc, clip)) return null
+  if (clip.muted || track.muted || clip.reverse || linkGroupChangesRate(doc, clip)) return null
+  return { assetId: asset.id, file: asset.file }
+}
+
+/**
+ * True when any clip will be scheduled into the mix. The same
+ * `scheduledAudioSource` gate the per-clip loop uses, so the early-out and
+ * the loop cannot disagree: a doc whose only clips are skipped (muted,
+ * reversed or rate-dropped) returns null and gets no audio track at all
+ * instead of a silent one. A solo video's embedded audio still makes the doc
+ * audible, unlike the old asset-kind scan.
+ */
+function docHasAudibleClips(doc: Doc): boolean {
+  return doc.project.tracks.some((track) =>
+    track.clips.some((clip) => scheduledAudioSource(doc, track, clip) !== null),
   )
 }
 

@@ -3,7 +3,7 @@ import { docDuration, findMedia, sourceTimeAt } from '../factories'
 import { getTransitionSpan, transitionAlphas } from '../transition'
 import { animatedValue } from '../keyframes'
 import { segmentControls } from '../ease-segment'
-import { hasLinkedAudioTwin, linkGroupChangesRate } from '../links'
+import { clipRendersAudio, linkGroupChangesRate } from '../links'
 import { clamp } from '../time'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
 
@@ -119,9 +119,7 @@ export function planAudioFrame(doc: Doc, t: number): AudioFramePlan {
       if (!isActive(clip, t)) continue
       const asset = findMedia(doc, clip.mediaId)
       if (!asset) continue
-      const audioBearing = asset.kind === 'audio' || clip.audioOnly
-      const videoSilent = asset.kind === 'video' && hasLinkedAudioTwin(doc, clip)
-      if (!audioBearing || videoSilent) continue
+      if (!clipRendersAudio(doc, clip)) continue
       // The skip is DERIVED from the rates (linkGroupChangesRate): both halves
       // of an A/V pair go silent together, while a manual link with no carrier
       // keeps its own audio; the reverse skip it mirrors is a plain stored flag.

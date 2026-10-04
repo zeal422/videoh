@@ -45,29 +45,36 @@ function peakAt(peaks: number[], sourceTime: number, sourceDuration: number): nu
 
 /** Samples the dialogue level over the music clip's overlap window, smoothed. */
 function dialogueCurve(doc: Doc, dialogueClips: Clip[], music: Clip): number[] {
+  // Resolve each clip ONCE: a clip the rate predicate silences (a
+  // rate-disagreeing A/V pair, or a clip with its own real ramp) is SILENT in
+  // both render paths, and so is a REVERSED clip (both paths drop its audio);
+  // none may drive the duck either, or the music would dip against source
+  // that is never heard. An unplayable asset is equally silent: restoring a
+  // session keeps the waveformPeaks while the file is offline (url cleared,
+  // missing set), so playability is required before sampling the peaks. Every
+  // check is per-clip (loop-invariant across the SAMPLES sample points), so
+  // the eligible sources are built once here instead of per sample.
+  const sources: { clip: Clip; peaks: number[]; duration: number }[] = []
+  for (const d of dialogueClips) {
+    if (d.reverse || linkGroupChangesRate(doc, d)) continue
+    const asset = findMedia(doc, d.mediaId)
+    if (!mediaPlayable(asset) || !asset.waveformPeaks) continue
+    sources.push({ clip: d, peaks: asset.waveformPeaks, duration: asset.duration })
+  }
   const samples: number[] = []
   const step = music.duration / SAMPLES
   for (let i = 0; i <= SAMPLES; i++) {
     const t = music.start + i * step // timeline time
     let level = 0
-    for (const d of dialogueClips) {
+    for (const source of sources) {
+      const d = source.clip
       if (t < d.start || t >= d.start + d.duration) continue
-      // A clip the rate predicate silences (a rate-disagreeing A/V pair, or a
-      // clip with its own real ramp) is SILENT in both render paths, and so is
-      // a REVERSED clip (both paths drop its audio); none may drive the duck
-      // either, or the music would dip against source that is never heard.
-      if (d.reverse || linkGroupChangesRate(doc, d)) continue
-      const asset = findMedia(doc, d.mediaId)
-      // An unplayable asset is equally silent: restoring a session keeps the
-      // waveformPeaks while the file is offline (url cleared, missing set), so
-      // playability is required before sampling the peaks.
-      if (!mediaPlayable(asset) || !asset.waveformPeaks) continue
       // The single source-time mapping (speed, reverse, ramp integral), the
       // same one the preview and the export read. The old inline
       // `inPoint + local * speed` ignored a ramp and sampled the wrong part
       // of the waveform.
       const sourceTime = sourceTimeAt(d, t - d.start)
-      level = Math.max(level, peakAt(asset.waveformPeaks, sourceTime, asset.duration))
+      level = Math.max(level, peakAt(source.peaks, sourceTime, source.duration))
     }
     samples.push(level)
   }

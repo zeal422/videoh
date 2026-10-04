@@ -108,6 +108,16 @@ describe('eased interpolation', () => {
       { time: 0, value: 1, interpolation: 'wobble' as KeyframeInterpolation },
     ])
     expect(unknown[0].interpolation).toBe('linear')
+
+    // A valid quad survives the name normalization: the evaluators read the
+    // SHAPE, so hydration must keep the data even when the name is unknown.
+    // The Effect Controls UI must not claim such a segment is linear.
+    const quad = [0.2, 0.3, 0.7, 0.8] as const
+    const unknownQuad = sanitizeKeyframes('opacity', [
+      { time: 0, value: 1, interpolation: 'wobble' as KeyframeInterpolation, easeOut: quad },
+    ])
+    expect(unknownQuad[0].interpolation).toBe('linear')
+    expect(unknownQuad[0].easeOut).toEqual(quad)
   })
 
   it('predicates interpolation names', () => {

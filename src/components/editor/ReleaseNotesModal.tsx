@@ -77,8 +77,8 @@ export function ReleaseNotesModal({
                 ) : null}
               </div>
               <ul className="flex flex-col gap-1.5">
-                {release.highlights.map((h) => (
-                  <li key={h} className="text-foreground/90 flex gap-2 text-xs leading-relaxed">
+                {release.highlights.map((h, j) => (
+                  <li key={j} className="text-foreground/90 flex gap-2 text-xs leading-relaxed">
                     <span aria-hidden="true" className="text-emerald-400/70">
                       •
                     </span>

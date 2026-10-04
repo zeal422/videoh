@@ -103,8 +103,11 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
   so there is **no double audio**.
 - The pair's rate is a shared contract: change either half's speed and the engine drops the pair's
   audio (preview and export alike) until both halves run at the same effective rate.
-- A twin whose media is gone still counts as the pair's sound carrier, so the pair stays silent until
-  the asset returns.
+- A twin whose media is gone still counts as the pair's sound carrier, so the pair stays silent until the
+  asset returns.
+- Deleting the twin while the video part remains hands the sound to the video part: its embedded
+  audio plays in both preview and export. `Ctrl+L` unlinks rather than deletes; the kept twin stays
+  audible, and both unlinked halves then play their own sources.
 - Linking clips for convenience makes no sound contract: a manual link without a twin keeps every
   member's own audio and rates, and a kind-audio clip merged into a pair's group keeps its own sound
   even when the pair's halves disagree on rate.

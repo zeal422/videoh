@@ -32,7 +32,7 @@ Running the suite (these are the steps agents get wrong):
 - `bun run check` takes minutes (the build dominates); read the tail of the
   output, failures print there. Don't set tool timeouts under ~5 min.
 - Vitest flags (`--coverage`, `-t`, single files) must go through
-  `bun run vitest run ...` — bare `bun test` ignores `vitest.config.ts`, and so
+  `bun run vitest run ...`. Bare `bun test` ignores `vitest.config.ts`, and so
   do its coverage include-list and thresholds.
 - Coverage scope is the explicit include-list in `vitest.config.ts`. A new pure
   module is unmeasured until you add it there, plus an inventory row in
@@ -65,7 +65,7 @@ http://localhost:3000` exits 7). If the user started it, leave it running.
 - `src/app/` — `layout.tsx` (dark `<html>`, fonts, Toaster), `page.tsx`, `globals.css` (tokens),
   `icon.svg`.
 - `src/lib/editor/__tests__/` — all tests (`*.test.ts`), plus the mocked browser harness in `mocks/`.
-- `e2e/battery.sh` — 45-step UI battery, first step is the gate login (needs the dev server +
+- `e2e/battery.sh`: 45-step UI battery, first step is the gate login (needs the dev server +
   `agent-browser`; set `GATE_PASSWORD` when the gate is active).
 - `public/samples/` — bundled demo media used by "Load sample media".
 

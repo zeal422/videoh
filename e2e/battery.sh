@@ -63,7 +63,14 @@
 #   red channel of the decoded MP4 at one doc time in both, and requires the
 #   warm export to carry at least 1.25x the red of the cool one. A ratio
 #   (not a level) is what makes that valid: the two exports differ ONLY in the
-#   grade, and an ungraded export would score 1.0.
+#   grade, and an ungraded export would score 1.0. The SAME two renders carry
+#   the export stream-layout proof (0.6.3): the warm export must include an
+#   audio track (one sample-audio copy is still audible), then every
+#   audio-capable clip is muted and the cool export must carry NO audio track.
+#   A silent AAC track where "no track" belongs is invisible to pixels and to
+#   the a11y snapshot, so export_track_kinds reads the result file's
+#   moov/trak/mdia/hdlr boxes directly, and it runs BEFORE the mute so the
+#   present-track assertion also proves the parser reads non-empty kinds.
 
 # `pipefail` (with the `set -u` below): every assertion is a `snap | grep`
 # pipeline, and a failed, timed-out or empty snapshot must abort the step rather
@@ -78,7 +85,7 @@ OUT="${OUT:-results.txt}"
 
 # The project-file capture (f08_capture_project) lives at a unique mktemp path
 # and is normally consumed by f07_open_project. Any step's early return between
-# the two must not leak the file, so an EXIT/INT/TERM trap removes it — by the
+# the two must not leak the file, so an EXIT/INT/TERM trap removes it, by the
 # VARIABLE, never a glob: a glob could delete a PARALLEL battery run's capture
 # (the runner documents A/B runs against two trees).
 PROJECT_CAPTURE=''
@@ -184,7 +191,7 @@ s02_fresh() {
   snap | grep -q 'Load sample media'
 }
 
-# ————— 0.5.6 welcome modal (Help > What's new) —————
+# ----- 0.5.6 welcome modal (Help > What's new) -----
 f11_whatsnew_opens() {
   local r; r=$(firstref 'menuitem "Help"')
   [ -n "$r" ] || return 1
@@ -477,7 +484,7 @@ f10_markers_clip() {
   }
 }
 
-# ————— F1b real file import (bytes the app does not bundle) —————
+# ----- F1b real file import (bytes the app does not bundle) -----
 # A tiny valid PNG (1x1, embedded as base64 and PIL-verified equivalent) goes
 # through the media bin's hidden multi-file input: the same importFile probe,
 # dedup and thumbnail path a user's file picker feeds. Success = a 4th
@@ -705,7 +712,7 @@ f05_gain() {
   [ "$(evaln 'document.querySelector("aside[aria-label=Inspector]").innerText.includes("200%")')" = "true" ]
 }
 
-# ————— F5 reverse + time remapping (the picture-only rows) —————
+# ----- F5 reverse + time remapping (the picture-only rows) -----
 # The reversed branch had NO battery coverage: the mirrored row axis (value,
 # dots, and the keyframe the easing picker and the diamond target) plus the
 # reverse switch were pinned by jsdom tests only. This walks the real UI: both
@@ -761,7 +768,7 @@ f05_reverse() {
   [ "$(evaln 'document.querySelectorAll("[data-testid=clip-reverse-badge]").length')" = "0" ]
 }
 
-# ————— F5 reversed-clip trim, proved in pixels —————
+# ----- F5 reversed-clip trim, proved in pixels -----
 # The reversed-edge trim contract (the tail's low anchor keeps every retained
 # local frame on the source frame it showed) is unit-locked in commands.test.ts,
 # clip-gesture.test.ts and the pointer-drag render tests; this is the browser
@@ -851,7 +858,7 @@ f05_reverse_frame() {
   true
 }
 
-# ————— F2/F8 clipboard, duplicate, ripple —————
+# ----- F2/F8 clipboard, duplicate, ripple -----
 # Group semantics (actions.ts): duplicate/copy/ripple expand the selection to
 # its link groups, and a plain click selects ONE clip (the ring is group-aware
 # but resolveSelectionGroups of one unlinked member is that member). The
@@ -861,7 +868,7 @@ f05_reverse_frame() {
 ring_count() {
   evaln '[...document.querySelectorAll("[data-testid^=clip-]:not([data-testid$=badge])")].filter((c) => c.className.includes("ring-rose-400")).length'
 }
-select_named() { # select_named <name-regex> — click by name, retry once, report ring
+select_named() { # select_named <name-regex>: click by name, retry once, report ring
   click_clip "$1" || return 1
   [ "$(ring_count)" -ge 1 ] && return 0
   click_clip "$1" || return 1
@@ -1074,6 +1081,172 @@ f07_open_project() {
     return 1
   }
 }
+# The exported MP4's own track list, read from the file bytes: the result
+# view's Download button gives agent-browser the real blob, then a box walk
+# (moov -> trak -> mdia -> hdlr) collects the handler types. Prints them sorted,
+# e.g. "soun vide"; empty audio means the export muxed no audio track at all.
+export_track_kinds() {
+  local f dref k
+  dref=$(firstref 'button "Download"')
+  [ -n "$dref" ] || { echo "export_track_kinds: Download button missing from the result view" >&2; return 1; }
+  f=$(mktemp /tmp/battery-export.XXXXXX.mp4)
+  ab download "@$dref" "$f" >/dev/null 2>&1 || {
+    echo "export_track_kinds: downloading the export failed" >&2
+    rm -f "$f"
+    return 1
+  }
+  k=$(bun -e '
+const b = require("fs").readFileSync(process.argv[1]);
+const out = new Set();
+(function w(s, e) {
+  let p = s;
+  while (p + 8 <= e) {
+    let z = b.readUInt32BE(p); const t = b.toString("latin1", p + 4, p + 8); let h = 8;
+    if (z === 1) { z = Number(b.readBigUInt64BE(p + 8)); h = 16; } else if (z === 0) { z = e - p; }
+    if (z < h || p + z > e) break;
+    if (t === "moov" || t === "trak" || t === "mdia") w(p + h, p + z);
+    else if (t === "hdlr" && p + 20 <= e) out.add(b.toString("latin1", p + 16, p + 20));
+    p += z;
+  }
+})(0, b.length);
+console.log([...out].sort().join(" "));
+' "$f" 2>/dev/null)
+  rm -f "$f"
+  [ -n "$k" ] || { echo "export_track_kinds: could not read the export's handler types" >&2; return 1; }
+  echo "$k"
+}
+
+# Mute every audio-capable clip in one pass so the next export's timeline has
+# no audible source at all (TO_FIX issue 2: the all-skipped shape has to be
+# constructed at export time; f05_mute muted exactly one copy and never reverts,
+# and the reopened project's state comes back through save/open). Selects each
+# clip by its unique label, reads the Clip tab's Mute switch the way f05_mute
+# does, and skips clips that offer no Mute control (image, text).
+mute_all_audio() {
+  local labels lab clicked sel attempt muted=0 mstate
+  # Labels are joined with "|", not "\n": evaln strips the quotes off
+  # agent-browser's JSON reply but leaves its \n escapes literal, so a newline
+  # join would arrive as one backslash-n-bearing line.
+  labels=$(evaln '[...document.querySelectorAll("[data-testid^=clip-]")].filter((e) => {
+    const id = e.dataset.testid || "";
+    return id !== "clip-context-menu" && id !== "clip-marker" && !id.endsWith("badge");
+  }).map((e) => e.getAttribute("aria-label")).join("|")')
+  [ -n "$labels" ] || { echo "mute_all_audio: clip list unreadable" >&2; return 1; }
+  # The Mute switch lives on the Clip tab; earlier steps left the Inspector on
+  # Effect Controls. ClipPanel remounts per selected clip with tab='clip', but
+  # assert it anyway for the no-selection-to-first-selection transition.
+  ab eval 'document.querySelector("[data-testid=inspector-tab-clip]")?.click()' >/dev/null 2>&1
+  sleeps 0.4
+  while IFS= read -r lab; do
+    [ -n "$lab" ] || continue
+    # Select by dispatching the clip's own Enter key from the DOM. Coordinate
+    # clicks cannot work here: the timeline stacks the image clip at the exact
+    # rect of the 0-1s video clip (both @421/442/80/55 in the probe below), so
+    # a real click at the video's centre selects the image every time, and
+    # snapshot refs race the selection re-render and resolve to neighbours.
+    # Enter on the clip div selects it (ClipView onKeyDown; no global Enter
+    # handler exists), needs no viewport hit-test, and the ring is read back
+    # after every attempt so a wrong selection can never pass.
+    clicked=''
+    sel=''
+    for attempt in 1 2 3; do
+      clicked=$(evaln "[...document.querySelectorAll(\"[data-testid^=clip-]\")].filter((e) => {
+        const id = e.dataset.testid || \"\";
+        return id !== \"clip-context-menu\" && id !== \"clip-marker\" && !id.endsWith(\"badge\");
+      }).find((e) => e.getAttribute(\"aria-label\") === \"$lab\")?.dataset.testid ?? \"missing\"")
+      if [ -z "$clicked" ] || [ "$clicked" = "missing" ]; then
+        echo "mute_all_audio: clip not in DOM: $lab" >&2
+        break
+      fi
+      evaln "(() => {
+        const el = [...document.querySelectorAll('[data-testid^=clip-]')].filter((e) => {
+          const id = e.dataset.testid || '';
+          return id !== 'clip-context-menu' && id !== 'clip-marker' && !id.endsWith('badge');
+        }).find((e) => e.getAttribute('aria-label') === \"$lab\");
+        if (!el) return 'gone';
+        el.focus();
+        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        return 'ok';
+      })()" >/dev/null
+      sleeps 0.5
+      # Verify on the WANTED clip's own ring, not "the first ringed element":
+      # linked clips render the ring on every group member, so a group whose
+      # earlier-in-DOM member is not the wanted clip used to read as a miss.
+      sel=$(evaln "(() => {
+        const el = [...document.querySelectorAll('[data-testid^=clip-]')].filter((e) => {
+          const id = e.dataset.testid || '';
+          return id !== 'clip-context-menu' && id !== 'clip-marker' && !id.endsWith('badge');
+        }).find((e) => e.getAttribute('aria-label') === \"$lab\");
+        if (!el) return 'gone';
+        return el.className.includes('ring-rose-400') ? 'selected' : 'not-selected';
+      })()")
+      [ "$sel" = "selected" ] && break
+      if [ -n "${BATTERY_DEBUG:-}" ]; then echo "mute_all_audio: attempt $attempt for $lab got ${sel:-none}"; fi
+    done
+    if [ -z "$clicked" ] || [ "$clicked" = "missing" ]; then return 1; fi
+    if [ "$sel" != "selected" ]; then
+      echo "mute_all_audio: could not select $lab (wanted $clicked, state ${sel:-none})" >&2
+      if [ -n "${BATTERY_DEBUG:-}" ]; then
+        echo "mute_all_audio: probe => $(evaln "(() => {
+          const clips = [...document.querySelectorAll('[data-testid^=clip-]')].filter((e) => {
+            const id = e.dataset.testid || '';
+            return id !== 'clip-context-menu' && id !== 'clip-marker' && !id.endsWith('badge');
+          });
+          const rect = (e) => { const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join('/'); };
+          const byLabel = clips.find((e) => e.getAttribute('aria-label') === \"$lab\" );
+          const ringed = document.querySelector('[data-testid^=clip-].ring-rose-400');
+          let hitInfo = 'none';
+          if (byLabel) {
+            const r = byLabel.getBoundingClientRect();
+            const hit = document.elementFromPoint(Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2));
+            const c = hit && hit.closest('[data-testid^=clip-]');
+            hitInfo = (hit ? hit.tagName + '|' + (hit.getAttribute('data-testid') || '-') : 'null') + ' => ' + (c ? c.getAttribute('aria-label') : 'no-clip');
+          }
+          return JSON.stringify({
+            wanted: byLabel ? byLabel.dataset.testid + '@' + rect(byLabel) : 'gone',
+            ringed: ringed ? ringed.dataset.testid + '@' + ringed.getAttribute('aria-label') + '@' + rect(ringed) : 'none',
+            atCenter: hitInfo,
+            clips: clips.map((e) => (e.dataset.testid || '').slice(5, 13) + ':' + e.getAttribute('aria-label') + '@' + rect(e)),
+          });
+        })()")"
+      fi
+      return 1
+    fi
+    # Read the switch through the DOM, not the a11y snapshot: the snapshot
+    # only carries visible content, and a tall panel (Video + grade + timing
+    # sections) puts the Audio section below the fold, which reads as "no audio
+    # rows" and silently leaves that clip audible.
+    mstate=$(evaln 'document.querySelector("aside[aria-label=Inspector] [role=switch][aria-label=\"Mute clip\"]")?.getAttribute("aria-checked") ?? "none"')
+    [ -n "$mstate" ] || { echo "mute_all_audio: switch state unreadable for $lab" >&2; return 1; }
+    if [ -n "${BATTERY_DEBUG:-}" ]; then
+      echo "mute_all_audio: $lab -> $mstate | tabs=$(evaln 'document.querySelectorAll("[data-testid^=inspector-tab-]").length') | aside=$(evaln 'document.querySelector("aside[aria-label=Inspector]") ? "yes" : "NO"') | head=$(evaln 'document.querySelector("aside[aria-label=Inspector]")?.innerText.split("\n").slice(0,6).join(" / ")')"
+    fi
+    case "$mstate" in
+      none) continue ;; # no Audio section (image, text)
+      true) continue ;; # already muted
+      false)
+        # The click needs screen coordinates, so bring the row into view first.
+        insp '[role=switch][aria-label="Mute clip"]'
+        ab find role switch click --name 'Mute clip' >/dev/null 2>&1 || {
+          echo "mute_all_audio: mute click failed on $lab" >&2
+          return 1
+        }
+        sleeps 0.4
+        mstate=$(evaln 'document.querySelector("aside[aria-label=Inspector] [role=switch][aria-label=\"Mute clip\"]")?.getAttribute("aria-checked") ?? "none"')
+        [ "$mstate" = "true" ] || {
+          echo "mute_all_audio: $lab did not mute (state: $mstate)" >&2
+          return 1
+        }
+        muted=$((muted + 1))
+        ;;
+      *) echo "mute_all_audio: unexpected switch state '$mstate' for $lab" >&2; return 1 ;;
+    esac
+  done <<< "${labels//|/$'\n'}"
+  echo "mute_all_audio: muted $muted clip(s)"
+  # f07 needs the all-muted shape actually constructed: fail on zero mutes so
+  # the step reports the mute setup, not a bogus export regression.
+  [ "$muted" -ge 1 ]
+}
 
 f07_export() {
   ab find role button click --name 'Export' >/dev/null && sleep 0.8
@@ -1098,13 +1271,28 @@ f07_export() {
   # render is the warm one. A second render at -100 is the cool one: the two
   # exports differ ONLY in the grade, so any red-channel gap between them can
   # only come from the temperature matrix reaching the export.
-  local warm cool
+  local warm cool warm_kinds cool_kinds
   warm=$(export_red_sum)
   [ -n "$warm" ] && [ "$warm" -gt 0 ] 2>/dev/null || {
     echo "f07: could not sample the exported +100 frame" >&2
     return 1
   }
+  # Stream-layout lock (0.6.3): one sample-audio copy is still audible here, so
+  # the exported MP4 MUST carry an audio track. Running it before the mute also
+  # proves export_track_kinds returns non-empty kinds, so the absent assertion
+  # below cannot pass vacuously on a broken parser.
+  warm_kinds=$(export_track_kinds) || { echo "f07: warm export track kinds unreadable" >&2; return 1; }
+  case " $warm_kinds " in
+    *" soun "*) ;;
+    *) echo "f07: warm export carries no audio track (kinds: $warm_kinds)" >&2; return 1 ;;
+  esac
   ab find role button click --name 'Close' >/dev/null 2>&1 && sleeps 0.5
+
+  # Construct the all-skipped audio shape for the cool render: mute EVERY
+  # audio-capable clip, so renderAudioMix must return null and the MP4 must
+  # contain video only. Muting does not touch pixels, so the warm/cool red
+  # ratio below still compares two renders that differ only in the grade.
+  mute_all_audio || { echo "f07: could not mute every audio clip" >&2; return 1; }
 
   # The reopened project has no selection, and the Inspector may still be on its
   # Effect Controls tab from the audio steps: select the video clip and open the
@@ -1130,6 +1318,13 @@ f07_export() {
     echo "f07: could not sample the exported -100 frame" >&2
     return 1
   }
+  # The regression lock: with every audio clip muted the early-out must skip
+  # the mix entirely. The unfixed code built the context anyway and muxed a
+  # SILENT AAC track, which is what this rejects.
+  cool_kinds=$(export_track_kinds) || { echo "f07: cool export track kinds unreadable" >&2; return 1; }
+  case " $cool_kinds " in
+    *" soun "*) echo "f07: muted timeline still exported an audio track (kinds: $cool_kinds)" >&2; return 1 ;;
+  esac
   # At +100 the matrix scales red 1.25x, at -100 it scales red 0.75x, so the
   # warm/cool red ratio is 1.667 for untouched pixels and can only fall to 1.333
   # (when the warm pixels clip at 255). Anything at or below 1.25 means the

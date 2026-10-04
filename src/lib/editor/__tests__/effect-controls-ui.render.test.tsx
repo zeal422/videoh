@@ -11,6 +11,7 @@ import { playbackRef, type PlaybackController } from '../playback/engine-ref'
 import { isTransientActive, useEditorStore } from '../store'
 import { clipFitsTrack, createClip, createMediaAsset, createTrack } from '../factories'
 import { linkGroupChangesRate } from '../links'
+import { EASING_PRESETS } from '../bezier'
 import type { Clip, Doc } from '../types'
 
 /**
@@ -288,6 +289,114 @@ describe('InspectorPanel tabs', () => {
     kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
     expect(kfs?.[0].interpolation).toBe('linear')
     expect(kfs?.[0].easeOut).toBeUndefined()
+  })
+
+  it('re-picking the displayed preset keeps the exact quad object', async () => {
+    // The stored name AND quad both match the displayed preset (V2_C). Deep
+    // data cannot tell the guard's no-op from a stamp that rewrites the same
+    // preset values, but reference identity can: the guard returns the store's
+    // own keyframe, and sanitizeKeyframes rides its easeOut array into the
+    // cloned doc, while a stamp would swap in a fresh copy. This is the only
+    // observable that pins the same-name protection for a full-preset quad.
+    const { doc } = docWithSelectedVideoClip()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.keyframes = {
+      opacity: [
+        { time: 1, value: 1, interpolation: 'easeIn', easeOut: EASING_PRESETS.easeIn },
+        { time: 5, value: 0.2 },
+      ],
+    }
+    useEditorStore.setState({ doc: structuredClone(doc), playhead: 1.1 })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    const pressed = screen.getByTestId('kf-ease-opacity-easeIn')
+    expect(pressed).toHaveAttribute('aria-pressed', 'true')
+    const before =
+      useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity?.[0]?.easeOut
+    expect(before).toBeDefined()
+
+    await userEvent.click(pressed)
+
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(kfs?.[0].interpolation).toBe('easeIn')
+    expect(kfs?.[0].easeOut).toEqual(EASING_PRESETS.easeIn)
+    expect(kfs?.[0].easeOut).toBe(before)
+  })
+
+  it('shows a foreign eased quad under a linear name as eased and unnamed', async () => {
+    // Hydration normalizes an unknown interpolation name to 'linear' while
+    // KEEPING a valid `easeOut` (keyframes.test.ts), and every evaluator reads
+    // the shape (`easeOut ?? preset`). A hand-edited file can therefore carry
+    // a segment that renders eased under a linear name: the dot must read the
+    // SHAPE, and no button may claim the segment is linear.
+    const { doc } = docWithSelectedVideoClip()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.keyframes = {
+      opacity: [
+        { time: 1, value: 1, interpolation: 'linear', easeOut: [0.2, 0.3, 0.7, 0.8] },
+        { time: 5, value: 0.2 },
+      ],
+    }
+    useEditorStore.setState({ doc: structuredClone(doc), playhead: 1.1 })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    expect(screen.getByTestId('kf-dot-opacity-0').className).toContain('border-dashed')
+    expect(screen.getByTestId('kf-ease-opacity-linear')).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByTestId('kf-ease-opacity-easeIn')).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('picking Linear clears a foreign eased quad under a linear name', async () => {
+    // The same-name guard exists to protect a subdivided sub-curve, but a
+    // linear name describes no quad: a click on Linear must normalize the
+    // foreign data instead of leaving the segment eased forever.
+    const { doc } = docWithSelectedVideoClip()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.keyframes = {
+      opacity: [
+        { time: 1, value: 1, interpolation: 'linear', easeOut: [0.2, 0.3, 0.7, 0.8] },
+        { time: 5, value: 0.2 },
+      ],
+    }
+    useEditorStore.setState({ doc: structuredClone(doc), playhead: 1.1 })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    await userEvent.click(screen.getByTestId('kf-ease-opacity-linear'))
+
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(kfs?.[0].interpolation).toBe('linear')
+    expect(kfs?.[0].easeOut).toBeUndefined()
+    expect(screen.getByTestId('kf-dot-opacity-0').className).not.toContain('border-dashed')
+  })
+
+  it('picking an unpressed name replaces a foreign quad that shows another preset', async () => {
+    // A foreign keyframe can carry a non-linear name whose quad matches a
+    // DIFFERENT preset (hydration keeps both). The picker shows that quad's
+    // preset pressed; the no-op guard must compare against the displayed
+    // value, or clicking the unpressed name silently changes nothing.
+    const { doc } = docWithSelectedVideoClip()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.keyframes = {
+      opacity: [
+        { time: 1, value: 1, interpolation: 'easeIn', easeOut: EASING_PRESETS.easeOut },
+        { time: 5, value: 0.2 },
+      ],
+    }
+    useEditorStore.setState({ doc: structuredClone(doc), playhead: 1.1 })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    expect(screen.getByTestId('kf-ease-opacity-easeOut')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('kf-ease-opacity-easeIn')).toHaveAttribute('aria-pressed', 'false')
+
+    await userEvent.click(screen.getByTestId('kf-ease-opacity-easeIn'))
+
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(kfs?.[0].interpolation).toBe('easeIn')
+    expect(kfs?.[0].easeOut).toEqual(EASING_PRESETS.easeIn)
+    expect(screen.getByTestId('kf-ease-opacity-easeIn')).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('an arrow key on the easing picker does not drive the global shortcut', async () => {

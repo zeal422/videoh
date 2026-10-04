@@ -19,7 +19,7 @@ import {
 
 import { EditorCommandError } from '@/lib/editor/commands'
 import { KEYFRAME_PROPERTY_BOUNDS, SPEED_MAX, SPEED_MIN } from '@/lib/editor/constants'
-import { presetControls } from '@/lib/editor/ease-segment'
+import { presetControls, segmentControls } from '@/lib/editor/ease-segment'
 import {
   KEYFRAME_INTERPOLATIONS,
   animatedValue,
@@ -37,6 +37,7 @@ import {
 import { findMedia } from '@/lib/editor/factories'
 import { linkedAudioTwin } from '@/lib/editor/links'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
+import { frameToTime } from '@/lib/editor/time'
 import type { Clip, Keyframe, KeyframeInterpolation } from '@/lib/editor/types'
 
 /**
@@ -96,6 +97,27 @@ const INTERPOLATION_LABELS: Record<KeyframeInterpolation, string> = {
   easeIn: 'Ease in',
   easeOut: 'Ease out',
   easeInOut: 'Ease in/out',
+}
+
+/**
+ * The easing name a keyframe's segment should DISPLAY as: the preset its stored
+ * `easeOut` quad exactly matches when it has one, else its stored display name
+ * (a subdivided sub-curve keeps its source preset's name), and null when a
+ * quad under a linear name matches no preset. The segment's SHAPE is the truth
+ * (every evaluator reads `easeOut ?? preset(name)`), so the dashed dot, the
+ * pressed button and the clear path all follow this, and foreign data under a
+ * linear name cannot masquerade as a linear segment.
+ */
+function displayedInterpolation(k: Keyframe | undefined): KeyframeInterpolation | null {
+  if (!k) return 'linear'
+  const name = k.interpolation ?? 'linear'
+  const quad = k.easeOut
+  if (!quad) return name
+  const preset = KEYFRAME_INTERPOLATIONS.find((n) => {
+    const controls = presetControls(n)
+    return controls !== undefined && controls.every((v, i) => v === quad[i])
+  })
+  return preset ?? (name === 'linear' ? null : name)
 }
 
 export function EffectControlsPanel({ clip, trackKind }: { clip: Clip; trackKind: string }) {
@@ -381,7 +403,7 @@ function KeyframeGraph({
   // step, and steps while the key is held the way a native slider thumb
   // does. Without this the wrapper's guard swallowed the keys and the
   // contract promised a keyboard path the dots did not have.
-  const frame = 1 / fps
+  const frame = frameToTime(1, fps)
   const nudgeDot = (index: number, key: string) => {
     const delta = (key === 'ArrowRight' ? 1 : -1) * frame
     const next = keyframes.map((k, i) => {
@@ -471,7 +493,7 @@ function KeyframeGraph({
     (best, k, i) => (Math.abs(k.time - at) < Math.abs(keyframes[best].time - at) ? i : best),
     0,
   )
-  const activeInterpolation = keyframes[activeIndex]?.interpolation ?? 'linear'
+  const activeInterpolation = displayedInterpolation(keyframes[activeIndex])
   const setInterpolation = (interpolation: KeyframeInterpolation) => {
     apply({
       type: 'setClipKeyframes',
@@ -480,11 +502,24 @@ function KeyframeGraph({
       keyframes: keyframes.map((k, i) => {
         if (i !== activeIndex) return k
         // A BOUNDED segment carries its exact sub-curve in `easeOut`, and the
-        // picker renders its `interpolation` NAME as the pressed button. Picking
-        // that same name must be a no-op: the name is a display shorthand, so
-        // overwriting the data with the full-span preset would silently
-        // un-subdivide a split/trimmed curve on a click that looks inert.
-        if (interpolation === k.interpolation && k.easeOut) return k
+        // picker presses the button that `displayedInterpolation` reports.
+        // Picking that same NON-LINEAR value must be a no-op: the name is a
+        // display shorthand, so overwriting the data with the full-span preset
+        // would silently un-subdivide a split/trimmed curve on a click that
+        // looks inert. The comparison is against the DISPLAYED value, not the
+        // stored name: a foreign quad that matches a DIFFERENT preset is what
+        // the picker shows pressed, and clicking the other name must stamp its
+        // preset instead of no-opping on the stored name. Linear carries no
+        // quad by definition, so picking it always normalizes: a foreign
+        // `easeOut` under a linear name must be clearable, not protected by
+        // the same-name rule.
+        if (
+          interpolation !== 'linear' &&
+          interpolation === displayedInterpolation(k) &&
+          k.easeOut
+        ) {
+          return k
+        }
         // Stamp the preset's exact bezier data: a later split/trim that
         // subdivides this segment then starts from the real shape, and the
         // name stays the UI's display shorthand.
@@ -531,7 +566,7 @@ function KeyframeGraph({
             (Math.max(0, Math.min(clip.duration, axis(k.time))) / Math.max(1e-6, clip.duration)) *
             100
           const bottom = ((k.value - bounds.min) / span) * 100
-          const eased = (k.interpolation ?? 'linear') !== 'linear'
+          const eased = segmentControls(k) !== undefined
           return (
             <div
               // Index key, not `time`: a time-bearing key remounts the dot on

@@ -18,6 +18,7 @@ import {
   canLinkClips,
   canSplitGroupAt,
   clipIsSelected,
+  clipRendersAudio,
   distinctLinkGroupCount,
   groupSelected,
   hasLinkedAudioTwin,
@@ -66,6 +67,111 @@ describe('assetHasAudio', () => {
   it('falls back to the waveform-peaks heuristic for legacy saves', () => {
     expect(assetHasAudio(avAsset({ hasAudio: undefined, waveformPeaks: [0.5] }))).toBe(true)
     expect(assetHasAudio(avAsset({ hasAudio: undefined }))).toBe(false)
+  })
+})
+
+describe('clipRendersAudio', () => {
+  const movieAsset = () =>
+    createMediaAsset({
+      kind: 'video',
+      name: 'movie.mp4',
+      duration: 10,
+      hasAudio: true,
+      url: 'blob:movie',
+    })
+
+  it('renders kind-audio clips, audioOnly carriers and solo video parts', () => {
+    const doc = createDoc() // [V1, A1]
+    const movie = movieAsset()
+    const song = createMediaAsset({ kind: 'audio', name: 's.mp3', duration: 10, url: 'blob:s' })
+    const legacy = createMediaAsset({
+      kind: 'video',
+      name: 'old.mp4',
+      duration: 10,
+      waveformPeaks: [0.5],
+      url: 'blob:old',
+    })
+    doc.media = [movie, song, legacy]
+    const solo = createClip({ id: 'solo', mediaId: movie.id, duration: 4 })
+    const carrier = createClip({ id: 'carrier', mediaId: movie.id, duration: 4, audioOnly: true })
+    const music = createClip({ id: 'music', mediaId: song.id, duration: 4 })
+    const legacyClip = createClip({ id: 'legacy', mediaId: legacy.id, duration: 4 })
+    doc.project.tracks[0].clips.push(solo, carrier, legacyClip)
+    doc.project.tracks[1].clips.push(music)
+    expect(clipRendersAudio(doc, solo)).toBe(true)
+    expect(clipRendersAudio(doc, carrier)).toBe(true)
+    expect(clipRendersAudio(doc, music)).toBe(true)
+    // Legacy saves without `hasAudio` read audibility from the peaks.
+    expect(clipRendersAudio(doc, legacyClip)).toBe(true)
+  })
+
+  it('shadows the video part while its twin exists and skips videos without audio', () => {
+    const doc = createDoc()
+    const movie = movieAsset()
+    doc.media = [movie]
+    const video = createClip({ id: 'v', mediaId: movie.id, duration: 4, linkId: 'L' })
+    const twin = createClip({
+      id: 't',
+      mediaId: movie.id,
+      duration: 4,
+      linkId: 'L',
+      audioOnly: true,
+    })
+    doc.project.tracks[0].clips.push(video)
+    doc.project.tracks[1].clips.push(twin)
+    expect(clipRendersAudio(doc, video)).toBe(false)
+    expect(clipRendersAudio(doc, twin)).toBe(true)
+
+    // A video with no decodable audio never enters the mix.
+    const mute = createMediaAsset({
+      kind: 'video',
+      name: 'mute.mp4',
+      duration: 10,
+      hasAudio: false,
+      url: 'blob:m',
+    })
+    doc.media.push(mute)
+    const quiet = createClip({ id: 'quiet', mediaId: mute.id, duration: 4 })
+    doc.project.tracks[0].clips.push(quiet)
+    expect(clipRendersAudio(doc, quiet)).toBe(false)
+  })
+
+  it('keeps images and offline or dangling media out of the audio render', () => {
+    const doc = createDoc()
+    const image = createMediaAsset({ kind: 'image', name: 'p.png', duration: 0, url: 'blob:i' })
+    const offline = movieAsset()
+    offline.missing = true
+    const urlLess = movieAsset()
+    urlLess.url = ''
+    const offlineSong = createMediaAsset({
+      kind: 'audio',
+      name: 'gone.mp3',
+      duration: 8,
+      missing: true,
+      url: '',
+    })
+    doc.media = [image, offline, urlLess, offlineSong]
+    const pic = createClip({ id: 'pic', mediaId: image.id, duration: 4 })
+    // `audioOnly` on a picture-less asset is unreachable through placement,
+    // but a hand-edited file can carry it; playability decides first.
+    const picOnly = createClip({ id: 'picOnly', mediaId: image.id, duration: 4, audioOnly: true })
+    const gone = createClip({ id: 'gone', mediaId: offline.id, duration: 4 })
+    // A dead carrier is offline media too: it stays out of the mix until the
+    // asset returns (the video part stays shadowed meanwhile).
+    const deadCarrier = createClip({
+      id: 'deadCarrier',
+      mediaId: offline.id,
+      duration: 4,
+      audioOnly: true,
+    })
+    const blank = createClip({ id: 'blank', mediaId: urlLess.id, duration: 4 })
+    const music = createClip({ id: 'music', mediaId: offlineSong.id, duration: 4 })
+    const dangling = createClip({ id: 'dangling', mediaId: 'ghost', duration: 4 })
+    doc.project.tracks[0].clips.push(pic, picOnly, gone, deadCarrier, blank, dangling)
+    doc.project.tracks[1].clips.push(music)
+    for (const clip of [...doc.project.tracks[0].clips, ...doc.project.tracks[1].clips]) {
+      expect(clipRendersAudio(doc, clip)).toBe(false)
+    }
   })
 })
 

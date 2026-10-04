@@ -87,7 +87,7 @@ describe('subdivideControls', () => {
   it('the halves reassemble the original curve exactly (reparameterized)', () => {
     for (const u of [0.2, 0.5, 0.75]) {
       const { left, right } = subdivideControls(c, u)
-      // The cut at PARAMETER u lands at curve point (x(u), y(u)) — parameter
+      // The cut at PARAMETER u lands at curve point (x(u), y(u)): parameter
       // space, no x-solve: de Casteljau splits the polygon at its parameter.
       const qx = xPoly(u)
       const qy = yPoly(u)
@@ -126,6 +126,17 @@ describe('parameterAtX', () => {
     }
     expect(parameterAtX(c, 0)).toBe(0)
     expect(parameterAtX(c, 1)).toBe(1)
+  })
+
+  it('falls back to the shared 40-deep bisection when Newton stalls', () => {
+    // The degenerate x(t) = t^3 cubic ([0, 0, 0, 1] control points) sends
+    // Newton off course, so this solve always reaches the bisection fallback.
+    // 40 halvings pin the x-solve to ~9e-13 (the old hand-rolled 32-deep copy
+    // landed at ~9e-12 here, which the bound below catches).
+    const c = [0, 0, 0, 1] as const
+    const t = parameterAtX(c, 0.05)
+    const xAt = (t: number) => t * t * t
+    expect(Math.abs(xAt(t) - 0.05)).toBeLessThan(5e-13)
   })
 })
 

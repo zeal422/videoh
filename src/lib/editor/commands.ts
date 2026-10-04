@@ -23,7 +23,6 @@ import {
   TRANSITION_MAX,
   TRANSITION_MIN,
 } from './constants'
-import { withSegmentControls } from './ease-segment'
 import {
   clipFitsTrack,
   docDuration,
@@ -35,17 +34,20 @@ import {
 } from './factories'
 import { clamp } from './time'
 import {
-  cutInterpolation,
-  evaluateKeyframes,
   hasTimeScaleCurve,
   integrateKeyframes,
   isAnimatableProperty,
   sanitizeKeyframes,
   splitKeyframeMap,
-  subdivideSegmentAt,
 } from './keyframes'
 import { applyMarkerPatch, reIdMarkers } from './markers'
 import { maxTransitionDuration } from './transition'
+import {
+  largestFittingDuration,
+  rebaseCurveFromCut,
+  sourceConsumption,
+  truncateCurveAtCut,
+} from './trim'
 import type {
   AnimStaticProperty,
   Clip,
@@ -345,9 +347,9 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
         if (ramp && ramp.length > 0) {
           // An over-consuming ramp (accepted on add, frozen on the last readable
           // frame at render) is a legal saved state, and clamping it here instead
-          // of throwing is what keeps such a clip trimmable: `below` converges to
-          // the largest length whose integral still fits the asset.
-          const consumed = (d: number) => integrateKeyframes(ramp, d, clip.speed ?? 1)
+          // of throwing is what keeps such a clip trimmable: the bisection
+          // converges to the largest length whose integral still fits the asset.
+          const consumed = (d: number) => sourceConsumption(ramp, d, clip.speed ?? 1)
           if (boundAnchor + consumed(clip.duration) > asset.duration + 1e-6) {
             // Even the minimum length cannot fit: no trim can make this state
             // valid, so reject instead of clamping to a clip that still
@@ -355,14 +357,10 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
             if (boundAnchor + consumed(MIN_CLIP_DURATION) > asset.duration + 1e-6) {
               throw new EditorCommandError('Trim exceeds the end of the source')
             }
-            let below = MIN_CLIP_DURATION
-            let above = clip.duration
-            for (let i = 0; i < 32; i++) {
-              const mid = (below + above) / 2
-              if (boundAnchor + consumed(mid) <= asset.duration) below = mid
-              else above = mid
-            }
-            duration = Math.min(duration, below)
+            duration = Math.min(
+              duration,
+              largestFittingDuration(boundAnchor, consumed, asset.duration, clip.duration),
+            )
             // A head trim whose duration was clamped keeps its right edge:
             // start slides so start + duration lands where the drag anchored
             // it (command.start + command.duration).
@@ -372,7 +370,10 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
           } else if (!tailMirror && boundAnchor + consumed(duration) > asset.duration + 1e-6) {
             throw new EditorCommandError('Trim exceeds the end of the source')
           }
-        } else if (boundAnchor + boundDuration * (clip.speed ?? 1) > asset.duration + 1e-6) {
+        } else if (
+          boundAnchor + sourceConsumption(ramp, boundDuration, clip.speed ?? 1) >
+          asset.duration + 1e-6
+        ) {
           throw new EditorCommandError('Trim exceeds the end of the source')
         }
       } else {
@@ -453,48 +454,9 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
         const kfs = rampBefore
         if (clip.reverse) {
           if (spanDelta > 1e-9) {
-            const cut = durationBefore - spanDelta
-            const kept = kfs.filter((k) => k.time <= cut).map((k) => ({ ...k }))
-            // The boundary lands at local `cut`, so the reversed branch tests
-            // the array END it appends to. Testing the wrong end skipped the
-            // pin whenever a surviving keyframe's shifted time equaled `cut`,
-            // i.e. whenever the curve's last keyframe sat at exactly 2 * cut,
-            // flattening the kept span to that keyframe's rate.
-            if (kept.length === 0 || kept[kept.length - 1].time < cut - 1e-9) {
-              // The reversed mirrored read integrates the kept curve from the
-              // source-side origin, so the crossing segment ENDS at the
-              // boundary: its left de Casteljau piece rides on the last
-              // surviving keyframe and the append itself reads linear (no
-              // segment starts at the last keyframe).
-              const pieces = subdivideSegmentAt(kfs, cut)
-              if (pieces && kept.length > 0) {
-                kept[kept.length - 1] = withSegmentControls(kept[kept.length - 1], pieces.left)
-              }
-              kept.push({
-                time: cut,
-                value: evaluateKeyframes(kfs, cut, kfs[0].value),
-                interpolation: 'linear',
-              })
-            }
-            if (clip.keyframes) clip.keyframes.timeScale = kept
-            else clip.keyframes = { timeScale: kept }
+            assignTimeScale(clip, truncateCurveAtCut(kfs, durationBefore - spanDelta))
           }
         } else if (spanDelta > 1e-9) {
-          const cut = spanDelta
-          const kept = kfs.filter((k) => k.time >= cut).map((k) => ({ ...k, time: k.time - cut }))
-          // The boundary lands at local 0, so the forward branch tests the
-          // array START it prepends to (see the reversed note above).
-          if (kept.length === 0 || kept[0].time > 1e-9) {
-            // An eased segment crossing the cut SUBDIVIDES: the boundary's
-            // outgoing segment is the exact right sub-curve (de Casteljau).
-            const pieces = subdivideSegmentAt(kfs, cut)
-            kept.unshift({
-              time: 0,
-              value: evaluateKeyframes(kfs, cut, kfs[0].value),
-              interpolation: cutInterpolation(kfs, cut),
-              ...(pieces ? { easeOut: pieces.right } : {}),
-            })
-          }
           // The anchor advances by the source THIS frame's cut consumed:
           // inPointBefore + integral(ramp, spanDelta). The caller's inPoint
           // cannot be the base: ClipView derives it from the gesture's frozen
@@ -503,13 +465,12 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
           // span by the previous frame's (integral - spanDelta), i.e. by how
           // many moves the drag happened to produce. The live anchor plus
           // each move's consumed span composes back to the one-shot result.
-          const consumed = integrateKeyframes(kfs, spanDelta, clip.speed ?? 1)
+          const consumed = sourceConsumption(kfs, spanDelta, clip.speed ?? 1)
           // Unbounded material (an image, a text clip, or a clip whose asset
           // is gone) has no source window: the guard above pins its inPoint at
           // 0 and the rebased anchor must not touch it.
           if (bounded) clip.inPoint = inPointBefore + consumed
-          if (clip.keyframes) clip.keyframes.timeScale = kept
-          else clip.keyframes = { timeScale: kept }
+          assignTimeScale(clip, rebaseCurveFromCut(kfs, spanDelta))
         } else {
           // Extension: the head revealed `h` timeline seconds of source that
           // plays at the curve's OLD head rate. Shifting every keyframe right
@@ -542,8 +503,7 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
           // changed no rendered value but added a keyframe per pointermove, so
           // one drag grew the curve without bound and every `sourceTimeAt`
           // call scanned more segments.
-          if (clip.keyframes) clip.keyframes.timeScale = kept
-          else clip.keyframes = { timeScale: kept }
+          assignTimeScale(clip, kept)
         }
       }
       // A REVERSED TAIL move is the mirror of that. Its curve origin is the LOW
@@ -553,25 +513,12 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       // the cut as a keyframe at 0 (with the crossing segment's subdivided
       // shape) is the same boundary pattern, mirrored, exact for eased too.
       if (tailMirror && rampBefore && rampBefore.length > 0 && Math.abs(spanDelta) > 1e-9) {
-        const kept = rampBefore
-          .filter((k) => k.time >= spanDelta)
-          .map((k) => ({ ...k, time: k.time - spanDelta }))
-        if (kept.length === 0 || kept[0].time > 1e-9) {
-          const pieces = subdivideSegmentAt(rampBefore, spanDelta)
-          kept.unshift({
-            time: 0,
-            value: evaluateKeyframes(rampBefore, spanDelta, rampBefore[0].value),
-            interpolation: cutInterpolation(rampBefore, spanDelta),
-            ...(pieces ? { easeOut: pieces.right } : {}),
-          })
-        }
-        if (clip.keyframes) clip.keyframes.timeScale = kept
-        else clip.keyframes = { timeScale: kept }
+        assignTimeScale(clip, rebaseCurveFromCut(rampBefore, spanDelta))
       }
       // The rebase rules above can RAISE the anchor (a head cut lands on a
       // faster part of the curve than local 0 read), so a window the guard
       // validated against the PRE-TRIM state can still over-consume once the
-      // rebase is done — and a head move cannot heal a window that already
+      // rebase is done, and a head move cannot heal a window that already
       // over-consumed (a relink leaves windows untouched): the rebase pins
       // local 0 by continuity, so no head position fixes the read end.
       // Recovery, in priority order: hold the rebased anchor (the dragged
@@ -583,20 +530,18 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       // rebase, on the old anchor and the old curve.
       if (bounded && rampBefore && rampBefore.length > 0 && clip.keyframes?.timeScale) {
         const curve = clip.keyframes.timeScale
-        const consumed = (d: number) => integrateKeyframes(curve, d, clip.speed ?? 1)
+        const consumed = (d: number) => sourceConsumption(curve, d, clip.speed ?? 1)
         if (clip.inPoint + consumed(clip.duration) > asset.duration + 1e-6) {
           const anchorHostsMinSpan =
             clip.inPoint <= asset.duration + 1e-6 &&
             clip.inPoint + consumed(MIN_CLIP_DURATION) <= asset.duration + 1e-6
           if (anchorHostsMinSpan) {
-            let below = MIN_CLIP_DURATION
-            let above = clip.duration
-            for (let i = 0; i < 32; i++) {
-              const mid = (below + above) / 2
-              if (clip.inPoint + consumed(mid) <= asset.duration) below = mid
-              else above = mid
-            }
-            clip.duration = below
+            clip.duration = largestFittingDuration(
+              clip.inPoint,
+              consumed,
+              asset.duration,
+              clip.duration,
+            )
           } else {
             // The anchor is unreadable (or cannot host the minimum span):
             // end the window at the asset's last readable instant.
@@ -604,14 +549,7 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
               if (consumed(MIN_CLIP_DURATION) > asset.duration + 1e-6) {
                 throw new EditorCommandError('Trim exceeds the end of the source')
               }
-              let below = MIN_CLIP_DURATION
-              let above = clip.duration
-              for (let i = 0; i < 32; i++) {
-                const mid = (below + above) / 2
-                if (consumed(mid) <= asset.duration) below = mid
-                else above = mid
-              }
-              clip.duration = below
+              clip.duration = largestFittingDuration(0, consumed, asset.duration, clip.duration)
             }
             clip.inPoint = asset.duration - consumed(clip.duration)
           }
@@ -655,8 +593,7 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       // For the reversed case the left half owns the span's tail, so it moves
       // up by the RIGHT half's source consumption (exact at the cut for any
       // curve, and the same value the constant-rate rule produces).
-      const consumed = (offset: number) =>
-        ramp && ramp.length > 0 ? integrateKeyframes(ramp, offset, speed) : offset * speed
+      const consumed = (offset: number) => sourceConsumption(ramp, offset, speed)
       const splitInPoint = (offset: number) => clip.inPoint + consumed(offset)
       const leftInPoint = isMedia && clip.reverse ? splitInPoint(rightDuration) : clip.inPoint
       const [leftKeyframes, rightKeyframes] = splitKeyframeMap(clip.keyframes, leftDuration, {
@@ -831,7 +768,8 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
     case 'setClipDenoise': {
       const { clip } = requireClip(doc, command.clipId)
       // Same shape as the compressor: a switch that stores its own flag, so an
-      // off clip (and the file it saves) carries no denoise field at all.
+      // off clip stores `false` and the saved file carries `"denoise": false`
+      // (hydration reads only `true`, so absent and false load alike).
       clip.denoise = command.enabled
       return
     }
@@ -1044,6 +982,15 @@ function describeClip(doc: Doc, clip: Clip): string {
   if (clip.text !== undefined) return 'Text'
   const asset = findMedia(doc, clip.mediaId)
   return asset ? `“${asset.name}” (${asset.kind})` : 'Clip'
+}
+
+/**
+ * Writes a rebased `timeScale` curve onto the clip, seeding the keyframe map
+ * when the clip has none.
+ */
+function assignTimeScale(clip: Clip, keyframes: Keyframe[]): void {
+  if (clip.keyframes) clip.keyframes.timeScale = keyframes
+  else clip.keyframes = { timeScale: keyframes }
 }
 
 /**

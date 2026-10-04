@@ -82,7 +82,7 @@ src/hooks/
 └── use-toast.ts                  # toast store (shadcn)
 ```
 
-## `src/lib/` — outside the editor core
+## `src/lib/`: outside the editor core
 
 ```text
 src/lib/
@@ -111,6 +111,7 @@ src/lib/editor/
 ├── factories.ts          # uid + create* constructors, finders, compatibility checks, sourceTimeAt
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
 ├── commands.ts           # the 39 EditorCommand variants + applyCommand(s), direction-aware split spans
+├── trim.ts               # pure trim/split math: source-fitting bisection, timeScale curve rebases
 ├── snap.ts               # snap-point computation and application
 ├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
 ├── marquee.ts            # marquee (box) selection: lane-space rect math + group resolution (pure)
@@ -149,7 +150,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 52 test files (840 tests) + src/lib/gate.test.ts: see testing.md
+└── __tests__/            # 53 test files (870 tests) + src/lib/gate.test.ts: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / ResizeObserver
 ```

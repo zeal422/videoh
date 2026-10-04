@@ -184,20 +184,20 @@ The entire edit is one serializable document (`Doc = { project, media }`). All t
 Time model conventions:
 
 - **Timeline position** is `clip.start + clip.duration` (absolute seconds from the timeline origin).
-- **Source position** is `clip.inPoint` — where playback starts inside the source media. A trimmed clip keeps `duration` on the timeline but moves `inPoint`; `inPoint + duration` never exceeds the source length for video/audio (images and text are unbounded). A reversed clip reads the same window backwards, so its head shows `inPoint + duration × speed` and its tail `inPoint`, and a trim moves the anchor on the side the edge gave material back to.
+- **Source position** is `clip.inPoint`: where playback starts inside the source media. A trimmed clip keeps `duration` on the timeline but moves `inPoint`; `inPoint + duration` never exceeds the source length for video/audio (images and text are unbounded). A reversed clip reads the same window backwards, so its head shows `inPoint + duration × speed` and its tail `inPoint`, and a trim moves the anchor on the side the edge gave material back to.
 - **Track order is compositing z-order**: `tracks[0]` is the _topmost_ layer. The default project is `V1` (video) over `A1` (audio) at **1920×1080 (Full HD) @ 30fps**; new tracks are conventionally ordered text, then video, then audio. Dropping media between tracks (`addTrack` with `atIndex`) places the layer at the exact z-position the user pointed at — explicit placement skips the convention sort, and any order is legal (e.g. an audio layer between two video layers) because the array order is what renders.
 - Compatibility rules: video/image material goes on `video` tracks, audio on `audio` tracks, text clips on `text` tracks.
 
 ## Command pattern
 
-All mutations flow through 39 named commands in `src/lib/editor/commands.ts`, applied with `applyCommand(doc, command)` / `applyCommands(doc, commands[])`. Each command validates its input (throwing `EditorCommandError` on unknown ids, out-of-bounds trims, and so on) and returns a **new** doc — the input is never mutated.
+All mutations flow through 39 named commands in `src/lib/editor/commands.ts`, applied with `applyCommand(doc, command)` / `applyCommands(doc, commands[])`. Each command validates its input (throwing `EditorCommandError` on unknown ids, out-of-bounds trims, and so on) and returns a **new** doc. The input is never mutated.
 
 | Command                | Description                                                                                                                                                   |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `addMediaAsset`        | Register an imported media asset in the bin.                                                                                                                  |
 | `removeMediaAsset`     | Remove an asset; clips keep a dangling `mediaId`.                                                                                                             |
 | `relinkMedia`          | Patch an asset (usually a fresh `url`) and clear `missing`.                                                                                                   |
-| `addTrack`             | Append a track and re-sort to the text/video/audio order — or, with `atIndex`, insert at that exact z-position without re-sorting (drop-between-tracks).      |
+| `addTrack`             | Append a track and re-sort to the text/video/audio order, or, with `atIndex`, insert at that exact z-position without re-sorting (drop-between-tracks).       |
 | `removeTrack`          | Remove a track (the last remaining track is protected).                                                                                                       |
 | `renameTrack`          | Rename a track (empty names are ignored).                                                                                                                     |
 | `toggleTrackMute`      | Flip a track's `muted` flag.                                                                                                                                  |
@@ -291,7 +291,7 @@ bun run format:check   # prettier check
 
 The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **864 tests across 53 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **894 tests across 54 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -365,7 +365,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 53 test files (864 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
+│   └── __tests__/               # 54 test files (894 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs

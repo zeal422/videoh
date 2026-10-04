@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.6.3',
+    date: '2026-10-04',
+    highlights: [
+      'A video clip with no audio twin now exports its own sound instead of going silent, exactly like the preview',
+      "Manually linked clips keep every member's audio in the export, matching the preview",
+      'One shared audibility rule feeds the preview, the export plan and the export mix, so they cannot drift apart',
+      'Small fixes: auto-ducking skips silent dialogue faster and keyframe dots nudge on the shared frame grid',
+    ],
+  },
+  {
     version: '0.6.2',
     date: '2026-10-04',
     highlights: [

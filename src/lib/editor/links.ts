@@ -84,6 +84,22 @@ export function hasLinkedAudioTwin(doc: Doc, clip: Clip): boolean {
 }
 
 /**
+ * True when `clip` contributes its own audio to the mix: a playable
+ * kind-audio clip, a playable `audioOnly` carrier, or a playable video part
+ * with no linked carrier whose asset carries audio. Mirrors
+ * PlaybackCore.computeGain (the video part is shadowed only while a linked
+ * twin exists), so preview and export cannot disagree; requiring playability
+ * FIRST keeps every offline branch (audio, carrier or solo video) out of the
+ * plan, which the mix skips at its `asset.file` gate.
+ */
+export function clipRendersAudio(doc: Doc, clip: Clip): boolean {
+  const asset = findMedia(doc, clip.mediaId)
+  if (!asset || !mediaPlayable(asset)) return false
+  if (asset.kind === 'audio' || clip.audioOnly) return true
+  return asset.kind === 'video' && assetHasAudio(asset) && !hasLinkedAudioTwin(doc, clip)
+}
+
+/**
  * True when `clip`'s audio cannot follow its group's timing. Two reasons: a
  * real `timeScale` ramp ON `clip` itself (no constant rate can follow it, so
  * its own audio cannot render), and an A/V pair whose members' effective

@@ -223,6 +223,51 @@ describe('planAudioFrame', () => {
     const plan = planAudioFrame(d, 1)
     expect(plan.audible.map((x) => x.clip.id)).toEqual(['t'])
   })
+
+  it('includes the embedded audio of a solo video clip with no twin', () => {
+    // Finding 1: computeGain only shadows a video part WHILE a linked twin
+    // exists, so with the twin gone the preview plays the embedded audio; the
+    // plan must report the same source or the export goes silent.
+    const a = asset({ hasAudio: true })
+    const d = doc([{ kind: 'video', clips: [videoClip({ id: 'v' })] }], [a])
+    expect(planAudioFrame(d, 1).audible.map((x) => x.clip.id)).toEqual(['v'])
+  })
+
+  it('keeps a manual link video part audible beside its kind-audio partner', () => {
+    // A manual link has no audioOnly carrier, so no shadow applies and every
+    // member keeps its own sound (the preview's rule; the export used to drop
+    // the video part).
+    const movie = asset({ id: 'mv', hasAudio: true })
+    const song = asset({ id: 'ma', kind: 'audio', name: 's.mp3' })
+    const video = videoClip({ id: 'vm', mediaId: 'mv', linkId: 'L' })
+    const music = createClip({ id: 'am', mediaId: 'ma', duration: 4, linkId: 'L' })
+    const d = doc(
+      [
+        { kind: 'video', clips: [video] },
+        { kind: 'audio', clips: [music] },
+      ],
+      [movie, song],
+    )
+    expect(planAudioFrame(d, 1).audible.map((x) => x.clip.id)).toEqual(['vm', 'am'])
+  })
+
+  it('keeps offline media out of the audio plan', () => {
+    // The mix skips a file-less asset at its `asset.file` gate, so the plan
+    // requires playability in every branch (solo video, kind-audio, carrier);
+    // otherwise the plan would promise an audible clip the mix can never render.
+    const missing = asset({ hasAudio: true, missing: true })
+    const gone = doc([{ kind: 'video', clips: [videoClip({ id: 'v' })] }], [missing])
+    expect(planAudioFrame(gone, 1).audible).toHaveLength(0)
+
+    const urlLess = asset({ hasAudio: true, url: '' })
+    const blank = doc([{ kind: 'video', clips: [videoClip({ id: 'v' })] }], [urlLess])
+    expect(planAudioFrame(blank, 1).audible).toHaveLength(0)
+
+    const offlineSong = asset({ id: 'ma', kind: 'audio', name: 'gone.mp3', missing: true, url: '' })
+    const song = createClip({ id: 'ca', mediaId: 'ma', duration: 4 })
+    const music = doc([{ kind: 'audio', clips: [song] }], [offlineSong])
+    expect(planAudioFrame(music, 1).audible).toHaveLength(0)
+  })
 })
 
 describe('time-remap ramps', () => {
@@ -605,6 +650,121 @@ describe('clipGainSchedule', () => {
       expect(events[i].time).toBeGreaterThanOrEqual(events[i - 1].time)
     }
     expect(events.map((e) => e.time)).toEqual([1.999, 2, 3, 6])
+  })
+})
+
+describe('renderAudioMix (solo video embedded audio)', () => {
+  it('mixes the embedded audio of a solo video clip with no twin', async () => {
+    // Finding 1: the mix's audibility rule skipped a video part with no twin,
+    // so deleting the twin clip exported a silent file while the preview kept
+    // playing. The shared predicate must let the file decode like the twin's.
+    const file = new File([new Uint8Array([1, 2, 3])], 'm.mp4', { type: 'video/mp4' })
+    const movie = { ...asset({ hasAudio: true, url: 'blob:v' }), file }
+    // A skipped sibling (muted here) must not stop the audible clip: the
+    // early-out asks whether ANY clip schedules, not whether all do.
+    const muted = videoClip({ id: 'cm', start: 4, duration: 2, muted: true })
+    const d = doc([{ kind: 'video', clips: [videoClip({ id: 'cv' }), muted] }], [movie])
+
+    let decodes = 0
+    let sources = 0
+    class FakeParam {
+      value = 1
+      setValueAtTime = () => undefined
+      linearRampToValueAtTime = () => undefined
+    }
+    class FakeOfflineContext {
+      destination = {}
+      sampleRate = 48000
+      currentTime = 0
+      createGain() {
+        return { gain: new FakeParam(), connect: () => undefined }
+      }
+      createStereoPanner() {
+        return { pan: new FakeParam(), connect: () => undefined }
+      }
+      createBufferSource() {
+        sources++
+        return {
+          buffer: null,
+          playbackRate: new FakeParam(),
+          connect: () => undefined,
+          start: () => undefined,
+        }
+      }
+      decodeAudioData(): Promise<AudioBuffer> {
+        decodes++
+        return Promise.resolve(fakeBuffer())
+      }
+      startRendering(): Promise<AudioBuffer> {
+        return Promise.resolve(fakeBuffer())
+      }
+    }
+    vi.stubGlobal('OfflineAudioContext', FakeOfflineContext)
+    try {
+      const buffer = await renderAudioMix(d, 20)
+      expect(buffer).not.toBeNull()
+      expect(decodes).toBe(1)
+      expect(sources).toBe(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('returns no audio track when every clip is skipped by the loop gates', async () => {
+    // Regression: the early-out used to run only `clipRendersAudio`, so a
+    // muted, reversed or rate-dropped clip passed the gate, the loop scheduled
+    // nothing, and the MP4 got a silent AAC track instead of no track at all.
+    // The gate now shares the loop's predicate; assert through renderAudioMix.
+    const file = new File([new Uint8Array([1, 2, 3])], 'm.mp4', { type: 'video/mp4' })
+    const movie = { ...asset({ hasAudio: true, url: 'blob:v' }), file }
+    const shaped = (setup: (c: Clip) => void): Doc => {
+      const clip = videoClip({ id: 'cv' })
+      setup(clip)
+      return doc([{ kind: 'video', clips: [clip] }], [movie])
+    }
+    const mutedTrack = shaped(() => undefined)
+    mutedTrack.project.tracks[0].muted = true
+    const cases: [string, Doc][] = [
+      [
+        'muted clip',
+        shaped((c) => {
+          c.muted = true
+        }),
+      ],
+      [
+        'reversed clip',
+        shaped((c) => {
+          c.reverse = true
+        }),
+      ],
+      [
+        'rate-changing curve',
+        shaped((c) => {
+          c.keyframes = {
+            timeScale: [
+              { time: 0, value: 1 },
+              { time: 2, value: 2 },
+            ],
+          }
+        }),
+      ],
+      ['muted track', mutedTrack],
+    ]
+
+    let contexts = 0
+    class FakeOfflineContext {
+      constructor() {
+        contexts++
+      }
+    }
+    vi.stubGlobal('OfflineAudioContext', FakeOfflineContext)
+    try {
+      for (const [name, d] of cases) expect(await renderAudioMix(d, 20), name).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    // Every shape short-circuited before a mix context was built.
+    expect(contexts).toBe(0)
   })
 })
 

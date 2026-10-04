@@ -62,8 +62,12 @@ function slopeAt(t: number, a1: number, a2: number): number {
   return 3 * coefA(a1, a2) * t * t + 2 * coefB(a1, a2) * t + coefC(a1)
 }
 
-/** Solves x(t) = x for the curve's x control points. */
-function makeSolveT(x1: number, x2: number): (x: number) => number {
+/**
+ * Solves x(t) = x for the curve's x control points. Exported so
+ * `ease-segment.ts` solves a cut's parameter with the exact same scheme and
+ * depth instead of a second hand-rolled copy.
+ */
+export function makeSolveT(x1: number, x2: number): (x: number) => number {
   return (x) => {
     let t = x
     for (let i = 0; i < NEWTON_ITERATIONS; i++) {
@@ -75,7 +79,7 @@ function makeSolveT(x1: number, x2: number): (x: number) => number {
       t -= error / slope
     }
     // Bisection fallback at a fixed depth, so the result does not depend on
-    // how quickly the interval happens to shrink: 24 halvings pin t to ~6e-8.
+    // how quickly the interval happens to shrink: 40 halvings pin t to ~9e-13.
     let low = 0
     let high = 1
     for (let i = 0; i < BISECTION_ITERATIONS; i++) {
