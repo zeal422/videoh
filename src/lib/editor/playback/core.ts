@@ -1,9 +1,9 @@
-import { clampSourceTime, docDuration, findMedia, sourceTimeAt } from '../factories'
+import { clampSourceTime, docDuration, findMedia, mediaPlayable, sourceTimeAt } from '../factories'
 import { denoiseFilters } from './denoise'
 import { EQ_DB_MAX, EQ_DB_MIN, SPEED_MAX, SPEED_MIN } from '../constants'
 import { getTransitionSpan } from '../transition'
-import { hasLinkedAudioTwin, linkGroupHasRamp } from '../links'
-import { animatedValue, constantTimeScaleRate, hasTimeScaleCurve } from '../keyframes'
+import { hasLinkedAudioTwin, linkGroupChangesRate } from '../links'
+import { animatedValue, constantTimeScaleRate, hasTimeScaleRamp } from '../keyframes'
 import { ClipMediaPool } from '../media/elements'
 import { clamp } from '../time'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
@@ -51,16 +51,6 @@ const DRIFT_THRESHOLD = 0.4
  * position the element has not reached yet.
  */
 const SEEK_QUIET_MS = 350
-
-/**
- * True when the clip carries a REAL time-remap curve (no constant rate can
- * follow it): the stepped-preview and audio-drop case. A flat curve (the
- * identity diamond seed, or a constant) is resampled at its constant rate
- * instead, exactly like a plain speed.
- */
-function hasRamp(clip: Clip): boolean {
-  return hasTimeScaleCurve(clip) && constantTimeScaleRate(clip) === undefined
-}
 
 /**
  * The clip's effective CONSTANT rate, for elements that can follow one: the
@@ -303,7 +293,16 @@ export class PlaybackCore {
     const doc = this.opts.getDoc()
     const live = new Set<string>()
     for (const track of doc.project.tracks) {
-      for (const clip of track.clips) live.add(clip.id)
+      for (const clip of track.clips) {
+        // A clip whose media no longer resolves (its asset was removed from
+        // the bin while the clip survives for undo/relink) is NOT live: the
+        // doc keeps the clip, but keeping its element would let it play on
+        // against a source nothing can resolve (the ghost-playback hole).
+        // The SAME predicate gates syncMedia below (mediaPlayable), so the
+        // two can never disagree.
+        if (!mediaPlayable(findMedia(doc, clip.mediaId))) continue
+        live.add(clip.id)
+      }
     }
     for (const id of this.pool.ids()) {
       if (live.has(id)) continue
@@ -348,8 +347,10 @@ export class PlaybackCore {
         // Restored sessions keep assets without a URL ("missing" until
         // relinked). Elements for them are pure noise: error events, autoplay
         // attempts on an empty source, "playing" elements that can never show
-        // or sound anything. Skip them entirely.
-        if (!asset || asset.missing || !asset.url || asset.kind === 'image') continue
+        // or sound anything. Skip them entirely, via the same test
+        // releaseMissingClips uses above, so a clip this loop refuses to
+        // touch has always just had its element released.
+        if (!mediaPlayable(asset)) continue
         const active = t >= clip.start && t < clip.start + clip.duration
         const el = this.pool.get(clip, asset)
         // Clamped into the asset: a ramp may over-consume its source, and the
@@ -365,7 +366,7 @@ export class PlaybackCore {
           // still fall through to the pause below.
           if (this.trackingSeek(el)) continue
 
-          if (clip.reverse || hasRamp(clip)) {
+          if (clip.reverse || hasTimeScaleRamp(clip)) {
             // Two cases park the element and seek to the exact source position
             // every tick (stepped preview): a reversed clip cannot play
             // backwards in realtime, and a ramped clip's source position is a
@@ -463,16 +464,19 @@ export class PlaybackCore {
     // A/V pairs: the audio twin is the group's sole sound carrier. The video
     // part keeps PLAYING (its element feeds the compositor frames) but its
     // embedded audio must be shadowed or the pair would double-play.
-    // Reversed clips drop their audio (Premiere drops it too), and so does a
-    // clip whose link group carries a timeScale ramp: variable-rate audio needs
-    // varispeed or a resampler, neither of which exists here. The ramp check is
-    // DERIVED from the curve (linkGroupHasRamp), so it can never go stale the
-    // way a stored flag could; it covers both members of an A/V pair.
+    // Reversed clips drop their audio (Premiere drops it too), and so does an
+    // A/V pair whose rates disagree: a real ramp needs varispeed or a
+    // resampler (neither exists here), and an effective rate (a curve's
+    // constant or the plain static speed) that leaves the halves disagreeing
+    // retimes the picture against the twin. A manual link without a carrier is
+    // not an A/V pair and keeps its own audio. The check is DERIVED from the
+    // rates (linkGroupChangesRate), so it can never go stale the way a stored
+    // flag could; it covers both pair members.
     if (
       clip.muted ||
       track.muted ||
       clip.reverse ||
-      linkGroupHasRamp(doc, clip) ||
+      linkGroupChangesRate(doc, clip) ||
       hasLinkedAudioTwin(doc, clip)
     ) {
       return 0

@@ -478,6 +478,72 @@ describe('clipGainSchedule', () => {
     }
   })
 
+  it('spans flat-curve export audio at the curve rate, not the static speed', async () => {
+    // The duration handed to AudioBufferSourceNode.start is in SOURCE seconds
+    // and is consumed at playbackRate: covering a 4s clip at the 0.5x flat
+    // curve rate takes 4 * 0.5 = 2 source seconds, not the static 4. Reading
+    // the static speed plays 4 source seconds at half rate = 8 timeline
+    // seconds of audio, bleeding over the next clip (the mirror case ends
+    // early in silence).
+    const file = new File([new Uint8Array([1, 2, 3])], 'm.mp3', { type: 'audio/mpeg' })
+    const music = { ...asset({ id: 'ma', kind: 'audio', duration: 60, url: 'blob:m' }), file }
+    const clip = audioClip({
+      id: 'cflat',
+      start: 0,
+      duration: 4,
+      keyframes: { timeScale: [{ time: 0, value: 0.5, interpolation: 'linear' }] },
+    })
+    const d = doc([{ kind: 'audio', clips: [clip] }], [music])
+
+    const sources: { playbackRate: { value: number } }[] = []
+    let started: { offset: number; duration: number } | undefined
+    class FakeParam {
+      value = 1
+      setValueAtTime = () => undefined
+      linearRampToValueAtTime = () => undefined
+    }
+    class FakeOfflineContext {
+      destination = {}
+      sampleRate = 48000
+      currentTime = 0
+      createGain() {
+        return { gain: new FakeParam(), connect: () => undefined }
+      }
+      createStereoPanner() {
+        return { pan: new FakeParam(), connect: () => undefined }
+      }
+      createBufferSource() {
+        const src = {
+          buffer: null,
+          playbackRate: new FakeParam(),
+          connect: () => undefined,
+          start: (_when: number, offset: number, duration: number) => {
+            started = { offset, duration }
+          },
+        }
+        sources.push(src)
+        return src
+      }
+      decodeAudioData(): Promise<AudioBuffer> {
+        return Promise.resolve(fakeBuffer())
+      }
+      startRendering(): Promise<AudioBuffer> {
+        return Promise.resolve(fakeBuffer())
+      }
+    }
+    vi.stubGlobal('OfflineAudioContext', FakeOfflineContext)
+    try {
+      const buffer = await renderAudioMix(d, 20)
+      expect(buffer).not.toBeNull()
+      // duration = 4s clip * 0.5x curve rate = 2 source seconds.
+      expect(started).toEqual({ offset: 0, duration: 2 })
+      // The same constant drives the resampling rate.
+      expect(sources[0]?.playbackRate.value).toBe(0.5)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('follows an eased segment instead of flattening it', () => {
     // Web Audio has no easing primitive, so mp4.ts schedules one `linearRamp`
     // per event. An eased segment must therefore be SAMPLED, or the export

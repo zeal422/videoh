@@ -17,7 +17,7 @@ import {
 import { EQ_DB_MAX, EQ_DB_MIN } from '../constants'
 import { clampSourceTime, docDuration, findMedia } from '../factories'
 import { constantTimeScaleRate } from '../keyframes'
-import { linkGroupHasRamp } from '../links'
+import { linkGroupChangesRate } from '../links'
 import { drawTextClip } from '../playback/compositor'
 import { denoiseFilters } from '../playback/denoise'
 import { clamp } from '../time'
@@ -183,9 +183,11 @@ export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioB
       if (!asset?.file) continue
       const isAudio = asset.kind === 'audio' || clip.audioOnly
       if (!isAudio) continue
-      // Ramped clips drop their whole link group's audio, exactly like the
-      // preview mixer (see linkGroupHasRamp).
-      if (clip.muted || track.muted || clip.reverse || linkGroupHasRamp(doc, clip)) continue
+      // Rate-disagreeing A/V pairs (a ramp, a non-identity constant or a plain
+      // static speed difference) drop their pair's audio, and a clip with its
+      // own real ramp drops its own; exactly like the preview mixer (see
+      // linkGroupChangesRate).
+      if (clip.muted || track.muted || clip.reverse || linkGroupChangesRate(doc, clip)) continue
 
       let buffer = audioBuffers.get(asset.id)
       if (buffer === undefined) {
@@ -259,10 +261,14 @@ export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioB
       xfade.connect(panner)
       panner.connect(master)
 
-      source.start(clip.start, clip.inPoint, clip.duration * (clip.speed ?? 1))
       // The curve (any shape) overrides the static rate; a flat curve's rate
       // is a constant the buffer source resamples exactly like a speed.
       const constantRate = constantTimeScaleRate(clip) ?? clip.speed ?? 1
+      // The start duration is in SOURCE seconds and is consumed at the rate
+      // below, so both must read the SAME constant: a static-speed duration
+      // makes a flat curve's audio span duration * static / curve timeline
+      // seconds and bleed over the next clip (the mirror case ends early).
+      source.start(clip.start, clip.inPoint, clip.duration * constantRate)
       if (constantRate !== 1) source.playbackRate.value = constantRate
     }
   }

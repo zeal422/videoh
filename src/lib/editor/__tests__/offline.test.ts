@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { createClip, createDoc, createMediaAsset, createTextClip, createTrack } from '../factories'
-import { offlineMediaAt } from '../offline'
+import { hasOfflineMedia, offlineMediaAt } from '../offline'
 import type { Clip, Doc, MediaAsset, TrackKind } from '../types'
 
 /**
@@ -90,5 +90,32 @@ describe('preview offline overlay wiring', () => {
     expect(panel).toMatch(/data-testid="media-offline-overlay"/)
     expect(panel).toMatch(/Media offline/)
     expect(panel).toMatch(/Relink in the Media bin/)
+  })
+})
+
+describe('hasOfflineMedia (the export gate predicate)', () => {
+  it('blocks when a used clip no longer resolves', () => {
+    // A dangling mediaId is not an asset at all: the old media-bin predicate
+    // passed it through and the export rendered that clip black and silent.
+    const online = video('online.mp4', { url: 'blob:x' })
+    const doc = buildDoc([online], [createClip({ mediaId: 'media_gone', start: 0, duration: 4 })])
+    expect(hasOfflineMedia(doc)).toBe(true)
+  })
+
+  it('does not block on an offline asset nothing uses', () => {
+    // The mirror over-block: an offline asset sitting in the bin must not
+    // refuse an export whose every used clip is online.
+    const used = video('used.mp4', { url: 'blob:x' })
+    const doc = buildDoc(
+      [used, video('unused.mp4', { url: '', missing: true })],
+      [createClip({ mediaId: used.id, start: 0, duration: 4 })],
+    )
+    expect(hasOfflineMedia(doc)).toBe(false)
+  })
+
+  it('passes a fully online doc', () => {
+    const asset = video('online.mp4', { url: 'blob:x' })
+    const doc = buildDoc([asset], [createClip({ mediaId: asset.id, start: 0, duration: 4 })])
+    expect(hasOfflineMedia(doc)).toBe(false)
   })
 })

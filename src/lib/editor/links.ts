@@ -1,5 +1,6 @@
 import { MIN_SPLIT_HEADROOM } from './constants'
-import { hasTimeScaleRamp } from './keyframes'
+import { constantTimeScaleRate, hasTimeScaleRamp } from './keyframes'
+import { findMedia, mediaPlayable } from './factories'
 import type { Clip, Doc, MediaAsset } from './types'
 
 /**
@@ -61,26 +62,77 @@ export function linkedAudioTwin(doc: Doc, clip: Clip): Clip | undefined {
 /**
  * True when `clip` (a video-bearing occurrence) must stay SILENT because its
  * linked audio twin carries the group's sound. Never true for the audio
- * carrier itself — shadowing it would mute the whole pair. This is the
- * anti-double-audio rule applied by the playback engine and the exporter.
+ * carrier itself (shadowing it would mute the whole pair), and never true for
+ * a kind-audio clip: only a VIDEO part has embedded audio to hide, so an
+ * audio clip merged into the group by a manual link keeps its own sound (the
+ * export mix renders it that way). This is the anti-double-audio rule applied
+ * by the playback engine and the exporter.
+ *
+ * The twin's own playability is deliberately NOT checked: a twin whose media
+ * is gone still counts as the carrier, so the pair stays silent until the
+ * asset returns. Unmasking the video half instead would play its embedded
+ * audio, a different source whenever the group spans two assets, which the
+ * export mixer never renders, and preview and export would stop agreeing.
  */
 export function hasLinkedAudioTwin(doc: Doc, clip: Clip): boolean {
   if (!clip.linkId || clip.audioOnly) return false
+  // Only a video-bearing part has embedded audio to shadow. A kind-audio clip
+  // in the group has its own track and keeps its own sound (manual links are
+  // never muted), so the preview must not silence it.
+  if (findMedia(doc, clip.mediaId)?.kind !== 'video') return false
   return !!linkedAudioTwin(doc, clip)
 }
 
 /**
- * True when any member of `clip`'s link group carries a real `timeScale` ramp
- * (`hasTimeScaleRamp`): a curve no constant playbackRate can follow. Ramped
- * clips contribute no audio (preview and export alike), and the ramp is an
- * A/V decision: re-timing only the video half while its twin kept playing at
- * the old rate is exactly the twin-inconsistency this predicate prevents. A
- * flat curve (identity seed or constant) is NOT a ramp: the element resamples
- * it, so the group keeps its audio. Derived from the curve rather than
- * stored, so it cannot go stale.
+ * True when `clip`'s audio cannot follow its group's timing. Two reasons: a
+ * real `timeScale` ramp ON `clip` itself (no constant rate can follow it, so
+ * its own audio cannot render), and an A/V pair whose members' effective
+ * rates DISAGREE (a ramp anywhere, or a curve constant or plain static speed
+ * that leaves one half off the others'). Only a group with an `audioOnly`
+ * carrier is an A/V pair: the carrier is the group's designated sound and
+ * must follow the picture's rate. The rate rule binds only the group's A/V
+ * members (the carriers and the video-bearing parts): a kind-audio clip
+ * merged into the group has its own timeline and its own sound, so its
+ * static rate is renderable by resampling and neither silences the pair nor
+ * gets silenced with it (its own real ramp is the only thing that drops its
+ * audio). Clips linked for editing convenience keep their own rates and
+ * their own audio, like linked clips in Premiere, Resolve and Final Cut.
+ * Members whose media does not resolve are ignored by
+ * the rate comparisons (TO_FIX item 11): media that cannot play cannot
+ * desync anything. Carrier-ness itself is structural, tested on the whole
+ * group, so a carrier whose media is gone still makes the group an A/V pair
+ * (a dead twin stays the carrier, the same rule `hasLinkedAudioTwin`
+ * follows). The identity seed (flat at 1) and a pair whose halves agree on
+ * one rate change nothing, so both keep their audio, and a SOLO clip always
+ * keeps its resampled audio (its element follows its own constant). Derived
+ * rather than stored, so it cannot go stale.
  */
-export function linkGroupHasRamp(doc: Doc, clip: Clip): boolean {
-  return linkedClips(doc, clip.id).some((c) => hasTimeScaleRamp(c))
+export function linkGroupChangesRate(doc: Doc, clip: Clip): boolean {
+  const group = linkedClips(doc, clip.id)
+  const members = group.filter((c) => mediaPlayable(findMedia(doc, c.mediaId)))
+  if (members.length === 0) return false
+  // A real ramp on THIS clip makes its own audio unrenderable, carrier or not.
+  // (Playability matters here too: a dead clip has no audio to drop, item 11.)
+  if (mediaPlayable(findMedia(doc, clip.mediaId)) && hasTimeScaleRamp(clip)) return true
+  // The rest is A/V pair semantics: only a group with an `audioOnly` carrier
+  // has a designated sound that must follow the picture's rate. Carrier-ness
+  // is STRUCTURAL, tested on the whole group: a carrier whose media is gone
+  // still holds the pair together (the same decision hasLinkedAudioTwin
+  // makes), while the playability filter above only narrows the rate
+  // comparisons below (a member that cannot play cannot desync anything).
+  if (!group.some((c) => c.audioOnly)) return false
+  // Pair semantics bind only the A/V members (the carriers and the
+  // video-bearing parts). A kind-audio clip has no picture to follow, so its
+  // own static rate is renderable by resampling and must not fold into (or
+  // be silenced by) the pair's comparison; its own ramp is handled above.
+  const isAvMember = !!clip.audioOnly || findMedia(doc, clip.mediaId)?.kind === 'video'
+  if (!isAvMember) return false
+  const avMembers = members.filter(
+    (c) => c.audioOnly || findMedia(doc, c.mediaId)?.kind === 'video',
+  )
+  if (avMembers.some((c) => hasTimeScaleRamp(c))) return true
+  const rates = new Set(avMembers.map((c) => constantTimeScaleRate(c) ?? c.speed ?? 1))
+  return rates.size > 1
 }
 
 /**

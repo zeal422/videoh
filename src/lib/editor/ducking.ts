@@ -1,5 +1,5 @@
-import { findMedia, sourceTimeAt } from './factories'
-import { linkGroupHasRamp } from './links'
+import { findMedia, mediaPlayable, sourceTimeAt } from './factories'
+import { linkGroupChangesRate } from './links'
 import { clampPropertyValue } from './keyframes'
 import type { Clip, Doc, Keyframe } from './types'
 
@@ -52,13 +52,16 @@ function dialogueCurve(doc: Doc, dialogueClips: Clip[], music: Clip): number[] {
     let level = 0
     for (const d of dialogueClips) {
       if (t < d.start || t >= d.start + d.duration) continue
-      // A clip whose link group carries a `timeScale` ramp is SILENT in both
-      // render paths (variable-rate audio has no resampler), and so is a
-      // REVERSED clip (both paths drop its audio); neither may drive the duck
+      // A clip the rate predicate silences (a rate-disagreeing A/V pair, or a
+      // clip with its own real ramp) is SILENT in both render paths, and so is
+      // a REVERSED clip (both paths drop its audio); none may drive the duck
       // either, or the music would dip against source that is never heard.
-      if (d.reverse || linkGroupHasRamp(doc, d)) continue
+      if (d.reverse || linkGroupChangesRate(doc, d)) continue
       const asset = findMedia(doc, d.mediaId)
-      if (!asset?.waveformPeaks) continue
+      // An unplayable asset is equally silent: restoring a session keeps the
+      // waveformPeaks while the file is offline (url cleared, missing set), so
+      // playability is required before sampling the peaks.
+      if (!mediaPlayable(asset) || !asset.waveformPeaks) continue
       // The single source-time mapping (speed, reverse, ramp integral), the
       // same one the preview and the export read. The old inline
       // `inPoint + local * speed` ignored a ramp and sampled the wrong part

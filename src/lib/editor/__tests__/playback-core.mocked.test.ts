@@ -253,6 +253,244 @@ describe('PlaybackCore (mocked browser)', () => {
     expect(gains()).toEqual([0, 0])
   })
 
+  it('silences both halves of an A/V pair under a FLAT non-identity curve', async () => {
+    // A flat constant curve is resamplable, so the video half's element can
+    // follow it — but its constant then retimes the picture against a twin
+    // playing at its own rate: the same desync a ramp causes, and only the
+    // derived link-group predicate can catch it. Only the identity value
+    // (flat at 1) keeps the pair audible.
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0, linkId: 'L1' })
+    doc.project.tracks[1].clips.push(
+      createClip({
+        id: 'twin',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        linkId: 'L1',
+        audioOnly: true,
+        gain: 0.8,
+      }),
+    )
+    doc.project.tracks[0].clips[0].keyframes = { timeScale: [{ time: 0, value: 0.5 }] }
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const gains = () =>
+      masterGainOf(h.lastAudioContext()).inputs.map(
+        (n) => (n as FakeGainNode).gain.last?.value ?? 1,
+      )
+    expect(gains()).toEqual([0, 0])
+  })
+
+  it('silences both halves of a statically mismatched A/V pair in the preview mixer', async () => {
+    // A plain speed difference set by the Speed slider, no curve anywhere: the
+    // picture retimes against a twin playing at its own rate. The derived
+    // predicate must drop both halves exactly like a curve disagreement.
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0, linkId: 'L1' })
+    doc.project.tracks[1].clips.push(
+      createClip({
+        id: 'twin',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        linkId: 'L1',
+        audioOnly: true,
+        gain: 0.8,
+      }),
+    )
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const gains = () =>
+      masterGainOf(h.lastAudioContext()).inputs.map(
+        (n) => (n as FakeGainNode).gain.last?.value ?? 1,
+      )
+    expect(gains().some((g) => Math.abs(g - 0.8) < 1e-5)).toBe(true)
+
+    doc.project.tracks[0].clips[0].speed = 2
+    await h.pump.pump(1)
+    expect(gains()).toEqual([0, 0])
+    void core
+  })
+
+  it('keeps both clips audible when a manual link disagrees on speed', async () => {
+    // No `audioOnly` carrier means no A/V pair: the shared sound contract does
+    // not exist, so a plain speed difference must not mute either member.
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, {
+      mediaId: asset.id,
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+      linkId: 'L1',
+      speed: 2,
+    })
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0, linkId: 'L1' })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const gains = () =>
+      masterGainOf(h.lastAudioContext()).inputs.map(
+        (n) => (n as FakeGainNode).gain.last?.value ?? 1,
+      )
+    expect(gains()).toEqual([1, 1])
+    void core
+  })
+
+  it('keeps a pair silent when the carrier media is gone: the video half never takes over', async () => {
+    // Decision: a dead twin still shadows the video half, so the pair stays
+    // silent until the asset returns instead of unmasking embedded audio that
+    // the export mixer never renders. Locked here against future
+    // media-playability changes.
+    const { doc, asset } = makeDoc()
+    const twinAsset = createMediaAsset({
+      kind: 'audio',
+      name: 'twin.mp3',
+      duration: 4,
+      url: 'blob:twin',
+    })
+    doc.media.push(twinAsset)
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0, linkId: 'L1' })
+    doc.project.tracks[1].clips.push(
+      createClip({
+        id: 'twin',
+        mediaId: twinAsset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        linkId: 'L1',
+        audioOnly: true,
+        gain: 0.8,
+      }),
+    )
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const master = masterGainOf(h.lastAudioContext())
+    const gains = () => master.inputs.map((n) => (n as FakeGainNode).gain.last?.value ?? 1)
+    expect(gains()).toHaveLength(2)
+    expect(gains().some((g) => Math.abs(g - 0.8) < 1e-5)).toBe(true)
+
+    doc.media = doc.media.filter((m) => m.id !== twinAsset.id)
+    await h.pump.pump(1)
+    // The video half stays muted (the twin is still the carrier) and the
+    // released twin cannot play: the pair is silent.
+    expect(gains()).toEqual([0])
+    void core
+  })
+
+  it('keeps a manually merged audio clip audible in the preview mixer (not shadowed)', async () => {
+    // The shadow hides the video part's EMBEDDED audio. A separate audio clip
+    // linked into the pair's group has its own track and keeps its own sound,
+    // exactly as the export mix renders it; shadowing it here alone made the
+    // two paths disagree.
+    const { doc, asset } = makeDoc()
+    const song = createMediaAsset({
+      kind: 'audio',
+      name: 'song.mp3',
+      duration: 4,
+      url: 'blob:song',
+    })
+    doc.media.push(song)
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0, linkId: 'L1' })
+    doc.project.tracks[1].clips.push(
+      createClip({
+        id: 'twin',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        linkId: 'L1',
+        audioOnly: true,
+        gain: 0.8,
+      }),
+      createClip({
+        id: 'song',
+        mediaId: song.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        linkId: 'L1',
+        gain: 0.5,
+      }),
+    )
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const master = masterGainOf(h.lastAudioContext())
+    const gains = master.inputs.map((n) => (n as FakeGainNode).gain.last?.value ?? 1)
+    expect(gains).toHaveLength(3)
+    // The video half is shadowed; the twin and the merged song both sound.
+    expect([...gains].sort()).toEqual([0, 0.5, 0.8])
+    void core
+  })
+
+  it('keeps a merged kind-audio clip audible: the rate rule binds only A/V members', async () => {
+    // Merged group: video + its audio twin + a separately linked song. The
+    // twin and the video half agree on 1x, so the shadow silences only the
+    // video part. The song is KIND AUDIO: it has no picture to follow, so its
+    // own static 2x is renderable by resampling and must not fold into the
+    // pair's rate comparison (that fold used to silence the song and the pair
+    // alike).
+    const { doc, asset } = makeDoc()
+    const twinAsset = createMediaAsset({
+      kind: 'audio',
+      name: 'twin.mp3',
+      duration: 4,
+      url: 'blob:twin',
+    })
+    const song = createMediaAsset({
+      kind: 'audio',
+      name: 'song.mp3',
+      duration: 4,
+      url: 'blob:song',
+    })
+    doc.media.push(twinAsset, song)
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0, linkId: 'L1' })
+    doc.project.tracks[1].clips.push(
+      createClip({
+        id: 'twin',
+        mediaId: twinAsset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        linkId: 'L1',
+        audioOnly: true,
+        gain: 0.8,
+      }),
+      createClip({
+        id: 'song',
+        mediaId: song.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        linkId: 'L1',
+        gain: 0.5,
+        speed: 2,
+      }),
+    )
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const master = masterGainOf(h.lastAudioContext())
+    const gains = () => master.inputs.map((n) => (n as FakeGainNode).gain.last?.value ?? 1)
+    // Control: the video half is shadowed, the twin and the song sound.
+    expect([...gains()].sort()).toEqual([0, 0.5, 0.8])
+
+    // The carrier's asset goes missing: its node is released, the video half
+    // stays shadowed (a dead twin still holds the pair together), and the
+    // song keeps its own sound.
+    doc.media = doc.media.filter((m) => m.id !== twinAsset.id)
+    await h.pump.pump(1)
+    expect(gains()).toHaveLength(2)
+    expect([...gains()].sort()).toEqual([0, 0.5])
+    void core
+  })
+
   it('plays an identity-seeded curve and resamples a flat 2x (not ramps)', async () => {
     // The diamond's first click seeds [{time, value: 1}]: a flat curve a
     // constant playbackRate follows exactly. It must neither park the element
@@ -647,6 +885,62 @@ describe('PlaybackCore (mocked browser)', () => {
     expect(el.src).toContain('blob:relinked')
     expect(el.paused).toBe(false)
     void core
+  })
+
+  it('stops a pooled element whose clip loses its media (dangling mediaId)', async () => {
+    // removeMediaAsset leaves the clip in the doc on purpose (undo/relink
+    // recover it), so the live-set keeps the element alive: it kept PLAYING
+    // against a source that no longer resolves. The element must go the
+    // moment the clip stops resolving, and come back if the media returns.
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    expect(document.querySelectorAll('video')).toHaveLength(1)
+
+    doc.media.length = 0
+    await h.pump.pump(2)
+    expect(document.querySelectorAll('video, audio')).toHaveLength(0)
+    expect(core.isPlaying).toBe(true) // playback continues, silently clean
+
+    // Undo (or a relink) restores the asset: the very next frame re-acquires
+    // an element and plays it, like the missing-asset relink path.
+    doc.media.push(asset)
+    await h.pump.pump(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    expect(el).toBeTruthy()
+    expect(el.paused).toBe(false)
+  })
+
+  it('releases the element when the asset kind flips to image mid-play', async () => {
+    // TO_FIX item 12: the live set checked absent/missing only, while
+    // syncMedia also skips url-less and image assets. No UI path flips a kind,
+    // but the next person who adds one inherits a silent audio leak; the two
+    // predicates must not be able to drift.
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    expect(document.querySelectorAll('video')).toHaveLength(1)
+
+    asset.kind = 'image'
+    await h.pump.pump(2)
+    expect(document.querySelectorAll('video, audio')).toHaveLength(0)
+  })
+
+  it('releases the element when the url empties while missing stays false', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    expect(document.querySelectorAll('video')).toHaveLength(1)
+
+    asset.url = ''
+    await h.pump.pump(2)
+    expect(document.querySelectorAll('video, audio')).toHaveLength(0)
   })
 
   it('still pauses a clip whose pending seek is in flight once it goes inactive', async () => {

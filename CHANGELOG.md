@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.2] - 2026-10-04
+
+### Fixed
+
+- **A rate-changing time-remap curve no longer desyncs a linked A/V pair.** A real ramp, or curves that leave the pair's effective rates disagreeing (a flat non-identity constant on one half), now silences both halves (preview, export and ducking alike) instead of playing the twin at its own rate; the identity seed and a solo clip's own constant keep their audio. The predicate `linkGroupHasRamp` became `linkGroupChangesRate`.
+- **A clip whose media stops resolving no longer plays on as a ghost.** Removing an asset from the bin while its clips stay on the timeline (recoverable via undo) now stops and releases their pooled elements; the elements return the moment the media resolves again.
+- **A rate-changing curve on a clip whose media is gone no longer mutes the half that still plays.** The link predicate ignores members whose media cannot resolve: media that cannot play cannot desync anything.
+- **A carrier whose media is gone still holds the pair together.** The rate predicate tested carrier-ness on its playability-filtered member list, so deleting a twin's asset turned the A/V pair into a lookalike manual link and stopped the pair's rate rule from applying; carrier-ness is now tested on the whole group, while the rate comparisons keep ignoring unplayable members. In a merged group this also brings the export plan in line with the preview, which already silences the shadowed member.
+- **A manually merged audio clip is no longer muted in the preview.** The twin shadow exists to hide the video part's EMBEDDED audio; a separate audio clip linked into an A/V pair's group has its own track and keeps its own sound, so the preview now matches the export mix, which already played it.
+- **A kind-audio clip merged into an A/V pair no longer rate-locks the pair.** The rate predicate folded every playable group member into the comparison, so retiming a music clip linked into a carrier group (even while the pair itself ran at one rate) silenced the pair and the clip alike; the comparison now binds only the group's A/V members (the carriers and the video-bearing parts). The kind-audio clip keeps its own resampled rate and sound and drops its own audio only when it carries a real ramp itself.
+- **`releaseMissingClips` and `syncMedia` share one asset test.** A clip whose asset is url-less without being flagged missing, or flipped to an image, has its element released instead of ghosting through a gap between the two predicates.
+- **A flat time-remap curve exported audio of the wrong length.** The export buffer duration now reads the curve's constant rate, the same value its playback rate uses, so a 4s clip with a 0.5x flat curve renders 4s of audio instead of 8, and the mirror case no longer ends early in silence.
+- **The Effect Controls speed readout now shows the rate the curve applies.** A flat curve's constant is what playback and export use, so the label and the disabled slider report it instead of the stale static speed, falling back to the static value for a real ramp.
+- **A loaded project can no longer carry a timeScale curve on a picture-less clip.** Hydration drops the curve when the clip carries `audioOnly` or its media resolves to an audio asset: the curve could only ever silence the link group, and the rows that could clear it are hidden.
+- **The export gate now checks the clips the export uses, not the media bin.** A clip whose mediaId no longer resolves blocks the export before it renders black and silent, and an offline asset nothing uses no longer refuses a clean export.
+- **Auto-duck no longer dips for dialogue that cannot play.** Restoring a session rebuilds media with a cleared url and `missing` set while the waveform peaks come back from the saved project, so the duck curve dipped the music against source that is never heard; the dialogue curve now requires the asset to be playable before sampling its peaks.
+- **A plain static speed difference between an A/V pair's halves now silences the pair.** The rate predicate compared rates only when a `timeScale` curve existed, so dragging the Speed slider (or the Alt-drag rate stretch) on one half played the picture against the twin at its own rate; it now compares every member's effective rate, curve or static, so a disagreement drops the pair's audio exactly like a curve disagreement, and auto-duck no longer dips the music against that silent pair, while equal speeds (including a shared non-identity value) keep it.
+- **Manual links are no longer rate-locked.** The rate predicate silenced every member of any link group whose speeds disagreed, so merely linking two clips that already ran at different speeds muted both; the disagreement rule now applies only to A/V pairs (groups with an `audioOnly` carrier), while a clip with its own real ramp still drops only its own audio.
+
+### Changed
+
+- Internal cleanup: `playback/core.ts` uses the shared `hasTimeScaleRamp` predicate, the reversed-`timeScale` axis rule lives in one `rowAxis` helper in Effect Controls, and the dead `COLOR_NEUTRAL` re-export is gone.
+
 ## [0.6.1] - 2026-10-01
 
 ### Fixed

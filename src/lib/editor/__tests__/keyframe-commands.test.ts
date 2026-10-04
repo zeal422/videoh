@@ -476,6 +476,19 @@ describe('computeDuckingKeyframes', () => {
     expect(computeDuckingKeyframes(reversed, music, [reversedClip])).toEqual([])
   })
 
+  it('skips a dialogue clip whose asset is missing but still carries peaks', () => {
+    // Restoring a session rebuilds media entries with url: '' and missing:
+    // true until relink, while waveformPeaks come back from the saved project.
+    // The peaks alone must not drive the duck: the music would dip against
+    // dialogue that cannot play.
+    const { doc, music, dialogue } = duckSetup(0.8)
+    const offline = {
+      ...doc,
+      media: doc.media.map((m) => (m.id === 'media_d' ? { ...m, url: '', missing: true } : m)),
+    }
+    expect(computeDuckingKeyframes(offline, music, [dialogue])).toEqual([])
+  })
+
   it('samples a ramped dialogue clip through the curve integral, not local * speed', () => {
     // The MUTE test above locks the ramp skip. This one locks the sampling
     // formula with NON-uniform peaks, so the two mappings produce DIFFERENT

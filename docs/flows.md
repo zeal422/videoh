@@ -37,7 +37,9 @@ Stable hooks used across flows and tests:
   the new one.
 - Import probes duration/size, generates a JPEG thumbnail (≤160 px), decodes audio for waveform peaks
   (`WAVEFORM_BUCKETS = 1000`) and records `hasAudio`.
-- Removing an asset leaves clips with a dangling `mediaId`; they render as offline and can be relinked.
+- Removing an asset leaves clips with a dangling `mediaId`: the span renders black (the offline
+  overlay names only assets the bin still has), the export refuses until it resolves, and undo is
+  the recovery.
 
 ## Place media on the timeline
 
@@ -99,6 +101,13 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
 - A video with audio lands as a linked pair: video part on a video track, `audioOnly` twin on an audio
   track (waveform included). The engine shadows the video part's embedded audio while the twin exists,
   so there is **no double audio**.
+- The pair's rate is a shared contract: change either half's speed and the engine drops the pair's
+  audio (preview and export alike) until both halves run at the same effective rate.
+- A twin whose media is gone still counts as the pair's sound carrier, so the pair stays silent until
+  the asset returns.
+- Linking clips for convenience makes no sound contract: a manual link without a twin keeps every
+  member's own audio and rates, and a kind-audio clip merged into a pair's group keeps its own sound
+  even when the pair's halves disagree on rate.
 - The pair selects, moves, splits, duplicates, deletes, cuts/copies/pastes as one unit. `Ctrl+L` or the
   context menu unlinks, after which each half is independent.
 - The inspector shows a "Linked with the audio clip…" hint and routes gain/mute to the twin.

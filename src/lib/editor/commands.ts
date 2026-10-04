@@ -203,7 +203,8 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       const index = doc.media.findIndex((m) => m.id === command.mediaId)
       if (index === -1) throw new EditorCommandError('Unknown media asset')
       doc.media.splice(index, 1)
-      // Clips keep their dangling mediaId and render as "missing" — recoverable via relink.
+      // Clips keep their dangling mediaId and render blank; undo restores the asset (relink
+      // needs an asset to exist), and the export gate refuses while it is gone.
       return
     }
 

@@ -16,12 +16,21 @@ import type { Doc } from './types'
  * - Names are deduplicated, so an A/V pair of the same file reports once.
  */
 /**
- * True when any asset is offline (a restored session's url-less entry): the
- * condition `offlineMediaAt` reports for the preview, shared with the export
- * gate so both paths warn on exactly the same state.
+ * True when any USED clip's media cannot render: its asset is offline (a
+ * restored session's url-less entry), or its `mediaId` no longer resolves at
+ * all. Per-clip on purpose: an offline asset nothing uses must not block an
+ * export, and a dangling mediaId is not an asset the bin could relink. The
+ * export dialog shares this predicate, so the gate and the preview's
+ * `offlineMediaAt` describe the same condition.
  */
 export function hasOfflineMedia(doc: Doc): boolean {
-  return doc.media.some((m) => m.missing || !m.url)
+  return doc.project.tracks.some((t) =>
+    t.clips.some((c) => {
+      if (!c.mediaId) return false
+      const asset = findMedia(doc, c.mediaId)
+      return !asset || asset.missing || !asset.url
+    }),
+  )
 }
 
 export function offlineMediaAt(doc: Doc, time: number): string[] {

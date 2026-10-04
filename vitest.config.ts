@@ -35,6 +35,7 @@ export default defineConfig({
         'src/lib/editor/timeline-scroll.ts',
         'src/lib/editor/marquee.ts',
         'src/lib/editor/markers.ts',
+        'src/lib/editor/offline.ts',
         'src/lib/editor/serialization.ts',
         'src/lib/editor/store.ts',
         'src/lib/editor/persistence.ts',

@@ -143,6 +143,59 @@ describe('deserializeDoc', () => {
     expect(doc.project.tracks[1].clips).toEqual([])
   })
 
+  it('drops a foreign timeScale curve on picture-less clips, keeps the picture half', () => {
+    // A hand-edited or imported file can put a timeScale curve on a clip that
+    // carries no picture (the A/V twin or a clip of an audio asset). The
+    // engines then drop the whole link group's audio while the UI hides every
+    // row that could clear the curve, so hydration must not admit it. The
+    // picture half of a pair keeps its curve: remapping is picture-only, so a
+    // fix that dropped EVERY clip's curve would fail the first assertion.
+    const curve = [{ time: 1, value: 2, interpolation: 'linear' }]
+    const data = {
+      version: 1,
+      project: {
+        fps: 30,
+        tracks: [
+          {
+            kind: 'video',
+            clips: [
+              { id: 'cv', mediaId: 'mv', start: 0, duration: 4, keyframes: { timeScale: curve } },
+            ],
+          },
+          {
+            kind: 'audio',
+            clips: [
+              {
+                id: 'ct',
+                mediaId: 'mv',
+                audioOnly: true,
+                start: 0,
+                duration: 4,
+                keyframes: { timeScale: curve },
+              },
+              { id: 'ca', mediaId: 'ma', start: 0, duration: 4, keyframes: { timeScale: curve } },
+            ],
+          },
+        ],
+      },
+      media: [
+        { id: 'mv', name: 'v.mp4', kind: 'video', duration: 10 },
+        { id: 'ma', name: 'a.mp3', kind: 'audio', duration: 10 },
+      ],
+    }
+    const { doc } = deserializeDoc(JSON.parse(JSON.stringify(data)))
+    const video = doc.project.tracks[0].clips[0]
+    const twin = doc.project.tracks[1].clips[0]
+    const audio = doc.project.tracks[1].clips[1]
+    // The picture half keeps its curve (and a clean round-trip stays exact).
+    expect(video.keyframes?.timeScale).toEqual(curve)
+    // The twin: audioOnly === true, dropped.
+    expect(twin.keyframes).toBeUndefined()
+    // The audio-asset clip carries no audioOnly flag but resolves to audio:
+    // also picture-less, also dropped.
+    expect(audio.keyframes).toBeUndefined()
+  })
+
   it('hydrates text clip styles', () => {
     const doc = createDoc()
     doc.project.tracks[0].kind = 'text'

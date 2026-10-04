@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.6.2',
+    date: '2026-10-04',
+    highlights: [
+      "Changing one half of a linked A/V pair's speed drops the pair's audio instead of playing out of step",
+      'Clips whose media stops resolving stop playing instead of ghosting on, and return when the asset comes back',
+      'Linking clips for convenience no longer mutes them at different speeds, and a music clip merged into a pair keeps its own sound',
+      'Export refuses offline or dangling media based on the clips it will render, not the whole bin',
+      'Auto-ducking no longer dips the music for dialogue that cannot play',
+    ],
+  },
+  {
     version: '0.6.1',
     date: '2026-10-01',
     highlights: [

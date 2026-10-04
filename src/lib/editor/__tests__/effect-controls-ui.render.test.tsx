@@ -10,6 +10,7 @@ import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { playbackRef, type PlaybackController } from '../playback/engine-ref'
 import { isTransientActive, useEditorStore } from '../store'
 import { clipFitsTrack, createClip, createMediaAsset, createTrack } from '../factories'
+import { linkGroupChangesRate } from '../links'
 import type { Clip, Doc } from '../types'
 
 /**
@@ -123,6 +124,83 @@ describe('InspectorPanel tabs', () => {
     // is disabled and points at where the rate actually comes from.
     expect(slider()).toHaveAttribute('data-disabled')
     expect(screen.getByTestId('speed-section')).toHaveTextContent('time remapping curve')
+  })
+
+  it('the speed readout follows a flat timeScale curve', async () => {
+    // A flat curve OWNS the clip's rate (constantTimeScaleRate): the label and
+    // the disabled thumb must show the curve's value, not the stale static
+    // field. The fix falls back to clip.speed for a REAL ramp, where
+    // constantTimeScaleRate is undefined (there the readout must stay finite).
+    const { doc } = docWithSelectedVideoClip()
+    doc.project.tracks[0].clips[0].keyframes = {
+      timeScale: [{ time: 0, value: 2, interpolation: 'linear' }],
+    }
+    useEditorStore.setState({ doc })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+    const section = screen.getByTestId('speed-section')
+    // '2.00×' alone proves nothing (the time remap row shows the curve value
+    // either way): the stale STATIC label must be gone too.
+    expect(section).toHaveTextContent('2.00×')
+    expect(section).not.toHaveTextContent('1.00×')
+    expect(screen.getByRole('slider', { name: 'Clip speed' })).toHaveAttribute('aria-valuenow', '2')
+  })
+
+  it('the Speed slider on one half of a linked pair edits that half and silences the group', async () => {
+    // The runtime binding the static locks cannot prove: the control edits the
+    // SELECTED half (speed does not route through `audibleClipId` the way
+    // gain/mute do), and the resulting static disagreement drops the pair's
+    // audio in preview and export alike (`linkGroupChangesRate`).
+    const asset = createMediaAsset({
+      kind: 'video',
+      duration: 30,
+      name: 'demo.mp4',
+      url: 'blob:demo',
+      hasAudio: true,
+    })
+    const video = createClip({
+      id: 'clip_v',
+      mediaId: asset.id,
+      start: 0,
+      duration: 6,
+      linkId: 'L1',
+    })
+    const twin = createClip({
+      id: 'clip_a',
+      mediaId: asset.id,
+      start: 0,
+      duration: 6,
+      linkId: 'L1',
+      audioOnly: true,
+    })
+    const doc: Doc = {
+      project: {
+        tracks: [
+          createTrack('video', 1, { clips: [video] }),
+          createTrack('audio', 1, { clips: [twin] }),
+        ],
+        id: 'p_test',
+        name: 'test',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      },
+      media: [asset],
+    }
+    useEditorStore.setState({ doc, selection: video.id, selections: [video.id], playhead: 2 })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    fireEvent.keyDown(screen.getByRole('slider', { name: 'Clip speed' }), { key: 'ArrowRight' })
+
+    const next = useEditorStore.getState().doc
+    const nextVideo = next.project.tracks[0].clips[0]
+    const nextTwin = next.project.tracks[1].clips[0]
+    expect(nextVideo.speed).toBeCloseTo(1.05, 5)
+    expect(nextTwin.speed).toBeUndefined() // the twin was never touched
+    // The halves now disagree about rate, so the group contributes no audio.
+    expect(linkGroupChangesRate(next, nextVideo)).toBe(true)
+    expect(linkGroupChangesRate(next, nextTwin)).toBe(true)
   })
 
   it('the keyframe diamond writes a first keyframe at clip-local playhead time', async () => {

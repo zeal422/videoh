@@ -3,7 +3,7 @@ import { docDuration, findMedia, sourceTimeAt } from '../factories'
 import { getTransitionSpan, transitionAlphas } from '../transition'
 import { animatedValue } from '../keyframes'
 import { segmentControls } from '../ease-segment'
-import { hasLinkedAudioTwin, linkGroupHasRamp } from '../links'
+import { hasLinkedAudioTwin, linkGroupChangesRate } from '../links'
 import { clamp } from '../time'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
 
@@ -49,7 +49,6 @@ export interface AudioFramePlan {
 // The filter string comes from the ONE shared builder in color.ts, so the plan
 // and the preview compositor cannot drift apart (see the static lock and the
 // cross-path agreement test in color.test.ts).
-export { COLOR_NEUTRAL } from '../color'
 
 function clipTransform(
   clip: Clip,
@@ -123,10 +122,10 @@ export function planAudioFrame(doc: Doc, t: number): AudioFramePlan {
       const audioBearing = asset.kind === 'audio' || clip.audioOnly
       const videoSilent = asset.kind === 'video' && hasLinkedAudioTwin(doc, clip)
       if (!audioBearing || videoSilent) continue
-      // The ramp skip is DERIVED from the link group's curve (linkGroupHasRamp),
-      // so both halves of an A/V pair go silent together; the reverse skip it
-      // mirrors is a plain stored flag.
-      if (clip.muted || track.muted || clip.reverse || linkGroupHasRamp(doc, clip)) continue
+      // The skip is DERIVED from the rates (linkGroupChangesRate): both halves
+      // of an A/V pair go silent together, while a manual link with no carrier
+      // keeps its own audio; the reverse skip it mirrors is a plain stored flag.
+      if (clip.muted || track.muted || clip.reverse || linkGroupChangesRate(doc, clip)) continue
 
       const local = t - clip.start
       let gain = animatedValue(clip, 'volume', local)

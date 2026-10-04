@@ -21,7 +21,7 @@ import {
   distinctLinkGroupCount,
   groupSelected,
   hasLinkedAudioTwin,
-  linkGroupHasRamp,
+  linkGroupChangesRate,
   linkedAudioTwin,
   linkedClips,
 } from '../links'
@@ -40,6 +40,7 @@ function avAsset(partial: Partial<MediaAsset> = {}): MediaAsset {
     name: 'movie.mp4',
     duration: 10,
     hasAudio: true,
+    url: 'blob:movie',
     ...partial,
   })
 }
@@ -198,15 +199,24 @@ describe('link-group operations', () => {
     expect(hasLinkedAudioTwin(doc, audio)).toBe(false)
   })
 
-  it('linkGroupHasRamp sees a REAL ramp on either member, and only timeScale', () => {
+  it('linkGroupChangesRate sees a real ramp or a non-identity constant, and only timeScale', () => {
     const { doc, video, audio } = docWithPair()
-    expect(linkGroupHasRamp(doc, video)).toBe(false)
+    expect(linkGroupChangesRate(doc, video)).toBe(false)
 
-    // An IDENTITY seed is not a ramp: the flat curve is resamplable at a
-    // constant rate, so the group keeps its audio (the diamond's first click
-    // used to mute the pair for nothing).
+    // An IDENTITY seed is not a rate change: the flat curve at 1 retimes
+    // nothing, so the group keeps its audio (the diamond's first click used
+    // to mute the pair for nothing).
     video.keyframes = { timeScale: [{ time: 0, value: 1 }] }
-    expect(linkGroupHasRamp(doc, video)).toBe(false)
+    expect(linkGroupChangesRate(doc, video)).toBe(false)
+
+    // A FLAT constant other than 1 also retimes the picture (the curve's
+    // constant drives the element rate and the export buffer), so it desyncs
+    // the twin exactly like a ramp does. Only the identity value keeps the
+    // pair audible.
+    video.keyframes = { timeScale: [{ time: 0, value: 0.5 }] }
+    expect(linkGroupChangesRate(doc, video)).toBe(true)
+    video.keyframes = { timeScale: [{ time: 0, value: 2 }] }
+    expect(linkGroupChangesRate(doc, video)).toBe(true)
 
     // A real ramp on the VIDEO half makes the whole group ramped, so the
     // twin's audio goes silent with it (the derived predicate is the reason).
@@ -216,24 +226,270 @@ describe('link-group operations', () => {
         { time: 4, value: 2 },
       ],
     }
-    expect(linkGroupHasRamp(doc, video)).toBe(true)
-    expect(linkGroupHasRamp(doc, audio)).toBe(true)
+    expect(linkGroupChangesRate(doc, video)).toBe(true)
+    expect(linkGroupChangesRate(doc, audio)).toBe(true)
 
-    // Other curves are not ramps.
+    // Other curves are not rate changes.
     video.keyframes = { opacity: [{ time: 0, value: 1 }] }
-    expect(linkGroupHasRamp(doc, video)).toBe(false)
+    expect(linkGroupChangesRate(doc, video)).toBe(false)
 
-    // An unlinked clip is its own group.
-    const solo = createClip({ id: 'solo', duration: 4 })
+    // An unlinked clip is its own group. Its media must resolve for its
+    // curve to count: media that cannot play cannot mute anything (item 11).
+    const soloAsset = createMediaAsset({
+      kind: 'video',
+      name: 'solo.mp4',
+      duration: 10,
+      url: 'blob:solo',
+    })
+    doc.media.push(soloAsset)
+    const solo = createClip({ id: 'solo', mediaId: soloAsset.id, duration: 4 })
     doc.project.tracks[0].clips.push(solo)
-    expect(linkGroupHasRamp(doc, solo)).toBe(false)
+    expect(linkGroupChangesRate(doc, solo)).toBe(false)
     solo.keyframes = {
       timeScale: [
         { time: 0, value: 1 },
         { time: 4, value: 2 },
       ],
     }
-    expect(linkGroupHasRamp(doc, solo)).toBe(true)
+    expect(linkGroupChangesRate(doc, solo)).toBe(true)
+  })
+
+  it('linkGroupChangesRate ignores members whose media does not resolve', () => {
+    // TO_FIX item 11: the predicate's ramp arm never asked whether a member's
+    // media resolves, so a DANGLING member's curve muted the playable half of
+    // the pair (media it cannot follow a rate of cannot desync anything).
+    const { doc, video, audio } = docWithPair()
+    // Give the twin its own audio asset, then remove it: the twin's mediaId
+    // dangles while the video half stays fully resolvable.
+    const twinAsset = createMediaAsset({
+      kind: 'audio',
+      name: 'a.mp3',
+      duration: 10,
+      url: 'blob:audio',
+    })
+    doc.media.push(twinAsset)
+    audio.mediaId = twinAsset.id
+
+    // Control: both halves resolvable, a real ramp on the twin mutes the group.
+    audio.keyframes = {
+      timeScale: [
+        { time: 0, value: 1 },
+        { time: 4, value: 2 },
+      ],
+    }
+    expect(linkGroupChangesRate(doc, video)).toBe(true)
+
+    // The dangling twin's ramp must NOT mute the playable half.
+    doc.media.splice(doc.media.indexOf(twinAsset), 1)
+    expect(linkGroupChangesRate(doc, video)).toBe(false)
+
+    // Same for a dangling member's non-identity constant.
+    audio.keyframes = { timeScale: [{ time: 0, value: 0.5 }] }
+    expect(linkGroupChangesRate(doc, video)).toBe(false)
+
+    // The resolvable half's own curve still counts.
+    audio.keyframes = undefined
+    video.keyframes = {
+      timeScale: [
+        { time: 0, value: 1 },
+        { time: 4, value: 2 },
+      ],
+    }
+    expect(linkGroupChangesRate(doc, video)).toBe(true)
+  })
+
+  it('a dead carrier still holds the group together: carrier-ness is structural', () => {
+    // The carrier test runs on the WHOLE group, not on the playable members:
+    // an asset that disappears must not flip the group's classification (the
+    // same decision `hasLinkedAudioTwin` makes for shadowing). Playability
+    // still filters the rate comparisons only: a member that cannot play
+    // cannot desync anything (item 11).
+    const { doc, video, audio } = docWithPair()
+    const twinAsset = createMediaAsset({
+      kind: 'audio',
+      name: 'a.mp3',
+      duration: 10,
+      url: 'blob:audio',
+    })
+    doc.media.push(twinAsset)
+    audio.mediaId = twinAsset.id
+    video.keyframes = {
+      timeScale: [
+        { time: 0, value: 1 },
+        { time: 4, value: 2 },
+      ],
+    }
+
+    // Both halves resolvable: the video half's ramp counts from either side.
+    expect(linkGroupChangesRate(doc, video)).toBe(true)
+    expect(linkGroupChangesRate(doc, audio)).toBe(true)
+
+    // Carrier's media gone: still a pair, so the same ramp still counts from
+    // the carrier side too (only the rate comparisons ignore dead members).
+    doc.media.splice(doc.media.indexOf(twinAsset), 1)
+    expect(linkGroupChangesRate(doc, video)).toBe(true)
+    expect(linkGroupChangesRate(doc, audio)).toBe(true)
+  })
+
+  it('a kind-audio member of a carrier group is not shadowed (only video parts are)', () => {
+    // The shadow hides EMBEDDED audio: only a video-bearing part has any. A
+    // separate audio clip merged into the group by a manual link keeps its
+    // own sound (manual links are never muted), and the export mix already
+    // renders it that way, so shadowing it in the preview alone would make
+    // the two paths disagree.
+    const { doc, video, audio } = docWithPair()
+    const song = createMediaAsset({ kind: 'audio', name: 's.mp3', duration: 10, url: 'blob:s' })
+    doc.media.push(song)
+    doc.project.tracks[1].clips.push(
+      createClip({ id: 'song', mediaId: song.id, start: 0, duration: 4 }),
+    )
+    const linked = applyCommands(doc, commandsToLinkClips(doc, [audio.id, 'song'])!)
+    const songClip = clipById(linked, 'song')!.clip
+
+    // The song IS in the carrier's group...
+    expect(
+      linkedClips(linked, video.id)
+        .map((c) => c.id)
+        .sort(),
+    ).toEqual([video.id, audio.id, 'song'].sort())
+    // ...the video part is still shadowed, but the song keeps its own sound.
+    expect(hasLinkedAudioTwin(linked, video)).toBe(true)
+    expect(hasLinkedAudioTwin(linked, songClip)).toBe(false)
+  })
+
+  it('the rate rule binds only A/V members: a merged kind-audio clip keeps its own sound', () => {
+    // The pair's rate lock exists to keep the carrier with its picture. A kind
+    // audio clip merged into the group has no picture to follow, so its static
+    // rate is renderable by resampling (like a solo clip's) and must neither
+    // be silenced by the pair's disagreement nor silence the pair. Only its
+    // own real ramp drops its own audio.
+    const { doc, video, audio } = docWithPair()
+    const song = createMediaAsset({ kind: 'audio', name: 's.mp3', duration: 10, url: 'blob:s' })
+    doc.media.push(song)
+    doc.project.tracks[1].clips.push(
+      createClip({ id: 'song', mediaId: song.id, start: 20, duration: 4 }),
+    )
+    const linked = applyCommands(doc, commandsToLinkClips(doc, [audio.id, 'song'])!)
+    const videoClip = clipById(linked, video.id)!.clip
+    const twinClip = clipById(linked, audio.id)!.clip
+    const songClip = clipById(linked, 'song')!.clip
+
+    // The extra clip at 3x neither mutes itself nor the pair.
+    songClip.speed = 3
+    expect(linkGroupChangesRate(linked, videoClip)).toBe(false)
+    expect(linkGroupChangesRate(linked, twinClip)).toBe(false)
+    expect(linkGroupChangesRate(linked, songClip)).toBe(false)
+
+    // The pair's own disagreement still silences the pair; the song keeps its
+    // own resampled sound.
+    videoClip.speed = 2
+    expect(linkGroupChangesRate(linked, videoClip)).toBe(true)
+    expect(linkGroupChangesRate(linked, twinClip)).toBe(true)
+    expect(linkGroupChangesRate(linked, songClip)).toBe(false)
+
+    // A real ramp on the song drops only the song.
+    videoClip.speed = 1
+    songClip.speed = 1
+    songClip.keyframes = {
+      timeScale: [
+        { time: 0, value: 1 },
+        { time: 4, value: 2 },
+      ],
+    }
+    expect(linkGroupChangesRate(linked, videoClip)).toBe(false)
+    expect(linkGroupChangesRate(linked, twinClip)).toBe(false)
+    expect(linkGroupChangesRate(linked, songClip)).toBe(true)
+  })
+
+  it('linkGroupChangesRate sees a plain static speed difference between the halves', () => {
+    // The Speed slider writes one static rate and no curve. The halves
+    // disagreeing about rate is the same desync a curve disagreement causes,
+    // so the pair must drop its audio the same way (and regain it at any
+    // shared rate).
+    const { doc, video, audio } = docWithPair()
+    expect(linkGroupChangesRate(doc, video)).toBe(false)
+
+    video.speed = 2
+    expect(linkGroupChangesRate(doc, video)).toBe(true)
+    expect(linkGroupChangesRate(doc, audio)).toBe(true)
+
+    audio.speed = 2
+    expect(linkGroupChangesRate(doc, video)).toBe(false)
+
+    // A SOLO clip is one rate: its own constant keeps its resampled audio.
+    audio.linkId = undefined
+    expect(linkGroupChangesRate(doc, video)).toBe(false)
+  })
+
+  it('linking two clips at different speeds keeps both audible (no carrier, no rate lock)', () => {
+    // Only a group with an `audioOnly` carrier is an A/V pair whose sound must
+    // follow the picture. A manual link is move/edit grouping (Premiere,
+    // Resolve and Final Cut do not rate-lock linked clips), so a static speed
+    // difference must not mute the members.
+    const doc = createDoc()
+    const asset = createMediaAsset({ kind: 'video', name: 'clip.mp4', duration: 10, url: 'blob:v' })
+    const song = createMediaAsset({ kind: 'audio', name: 'song.mp3', duration: 10, url: 'blob:a' })
+    doc.media = [asset, song]
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'v1', mediaId: asset.id, duration: 4, speed: 2 }),
+    )
+    doc.project.tracks[1].clips.push(createClip({ id: 's1', mediaId: song.id, duration: 4 }))
+
+    const linked = applyCommand(doc, { type: 'linkClips', clipIds: ['v1', 's1'] })
+    const v = clipById(linked, 'v1')!.clip
+    const s = clipById(linked, 's1')!.clip
+    expect(v.linkId).toBe(s.linkId)
+    expect(linkGroupChangesRate(linked, v)).toBe(false)
+    expect(linkGroupChangesRate(linked, s)).toBe(false)
+  })
+
+  it('a manual link with a ramp silences only the ramped clip, not its partners', () => {
+    // A real ramp makes the ramped clip's OWN audio unrenderable (no constant
+    // rate can follow it), but a partner outside an A/V pair has its own sound
+    // and keeps playing.
+    const doc = createDoc()
+    const asset = createMediaAsset({ kind: 'video', name: 'clip.mp4', duration: 10, url: 'blob:v' })
+    const song = createMediaAsset({ kind: 'audio', name: 'song.mp3', duration: 10, url: 'blob:a' })
+    doc.media = [asset, song]
+    doc.project.tracks[0].clips.push(createClip({ id: 'v1', mediaId: asset.id, duration: 4 }))
+    doc.project.tracks[1].clips.push(createClip({ id: 's1', mediaId: song.id, duration: 4 }))
+
+    const linked = applyCommand(doc, { type: 'linkClips', clipIds: ['v1', 's1'] })
+    const v = clipById(linked, 'v1')!.clip
+    const s = clipById(linked, 's1')!.clip
+    v.keyframes = {
+      timeScale: [
+        { time: 0, value: 1 },
+        { time: 4, value: 2 },
+      ],
+    }
+    expect(linkGroupChangesRate(linked, v)).toBe(true)
+    expect(linkGroupChangesRate(linked, s)).toBe(false)
+  })
+
+  it('keeps the video half silent while its twin media is gone (the carrier stays the carrier)', () => {
+    // Decision: a twin whose media cannot play still counts as the group's
+    // carrier, so the pair is silent until the asset returns. Unmasking the
+    // video half instead would play its embedded audio, a DIFFERENT source
+    // whenever the pair spans two assets, which the export mixer never
+    // renders; preview and export would stop agreeing. Locked here so no
+    // future media-playability change flips it by accident.
+    const { doc, video, audio } = docWithPair()
+    const twinAsset = createMediaAsset({
+      kind: 'audio',
+      name: 'gone.mp3',
+      duration: 10,
+      url: 'blob:gone',
+    })
+    doc.media.push(twinAsset)
+    audio.mediaId = twinAsset.id
+    doc.media.splice(doc.media.indexOf(twinAsset), 1)
+
+    // The video half's own asset still resolves...
+    expect(doc.media.some((m) => m.id === video.mediaId)).toBe(true)
+    // ...but the dead twin is still the group's carrier, so the pair stays silent.
+    expect(linkedAudioTwin(doc, video)?.id).toBe(audio.id)
+    expect(hasLinkedAudioTwin(doc, video)).toBe(true)
   })
 
   it('audibleClipId routes audio edits to the twin from either side', () => {

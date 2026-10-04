@@ -24,6 +24,7 @@ import {
   KEYFRAME_INTERPOLATIONS,
   animatedValue,
   clampPropertyValue,
+  constantTimeScaleRate,
   hasTimeScaleCurve,
   staticPropertyValue,
   type KeyframeProperty,
@@ -236,12 +237,11 @@ function PropertyRow({
   const animated = keyframes.length > 0
   // A reversed clip reads its `timeScale` curve in MIRRORED source-side local
   // time (`sourceTimeAt` integrates at duration - local), so that row's whole
-  // axis is flipped to match: a dot at the playhead then means the rate the
-  // engine actually applies there. `axis` is its own inverse. Every other
-  // property is evaluated at the plain clip-local time, so this is timeScale
-  // only.
+  // axis is flipped to match (see rowAxis): a dot at the playhead then means
+  // the rate the engine actually applies there. The flag rides to
+  // KeyframeGraph as a prop; the axis itself comes from the shared helper.
   const mirrored = property === 'timeScale' && !!clip.reverse
-  const axis = (t: number) => (mirrored ? clip.duration - t : t)
+  const axis = rowAxis(clip, property)
   const current = animatedValue(clip, property, axis(playheadLocal))
   const cfg = sliderConfig(property)
 
@@ -362,7 +362,6 @@ function KeyframeGraph({
   clip,
   property,
   playheadLocal,
-  mirrored,
 }: {
   clip: Clip
   property: KeyframeProperty
@@ -374,8 +373,7 @@ function KeyframeGraph({
   // One frame in the project's frame grid: the keyboard nudge's unit.
   const fps = useEditorStore((s) => s.doc.project.fps)
   const keyframes = clip.keyframes?.[property] ?? []
-  // Curve time -> on-screen axis time (its own inverse); see PropertyRow.
-  const axis = (t: number) => (mirrored ? clip.duration - t : t)
+  const axis = rowAxis(clip, property)
   // Arrow nudging of the FOCUSED dot (the dots are the thumbs of the row's
   // `role="slider"` contract): one frame in the project's own frame grid, in
   // AXIS space so a reversed row's Left moves the dot left on screen. Each
@@ -752,6 +750,18 @@ function AutoDuck({
   )
 }
 
+/**
+ * Curve time to on-screen axis time for one property row (its own inverse):
+ * a reversed clip reads its `timeScale` curve in MIRRORED source-side local
+ * time (`sourceTimeAt` integrates at duration - local), so that row's whole
+ * axis is flipped to match. Every other property plots plain clip-local time.
+ * Shared by PropertyRow and KeyframeGraph so the rule lives in one place.
+ */
+function rowAxis(clip: Clip, property: KeyframeProperty): (t: number) => number {
+  const mirrored = property === 'timeScale' && !!clip.reverse
+  return (t: number) => (mirrored ? clip.duration - t : t)
+}
+
 function SpeedSection({ clip }: { clip: Clip }) {
   const apply = useEditorStore((s) => s.apply)
   const playhead = useEditorStore((s) => s.playhead)
@@ -763,6 +773,11 @@ function SpeedSection({ clip }: { clip: Clip }) {
   // The curve, not the static rate, sets a ramped clip's speed, so the static
   // control is disabled rather than pretending to change something.
   const ramped = hasTimeScaleCurve(clip)
+  // The rate playback and export apply: a flat curve's constant, or the
+  // static speed when there is no curve or the curve is a real ramp (no
+  // single value; the remap row owns it). The fallback also keeps the
+  // readout finite on a ramped clip, where the constant is undefined.
+  const effectiveSpeed = constantTimeScaleRate(clip) ?? clip.speed ?? 1
   // Time remapping and reverse are picture-only. A ramp drops its link group's
   // audio in both render paths, so on an audio-only clip the row could only ever
   // silence the pair (the curve's twin reads its OWN keyframes, so nothing else
@@ -783,12 +798,12 @@ function SpeedSection({ clip }: { clip: Clip }) {
           <div className="mb-1.5 flex items-center justify-between">
             <Label className="text-xs">Speed</Label>
             <span className="text-xs tabular-nums text-muted-foreground">
-              {(clip.speed ?? 1).toFixed(2)}×
+              {effectiveSpeed.toFixed(2)}×
             </span>
           </div>
           <NamedSlider
             aria-label="Clip speed"
-            value={[clip.speed ?? 1]}
+            value={[effectiveSpeed]}
             min={SPEED_MIN}
             max={SPEED_MAX}
             step={0.05}
@@ -841,7 +856,9 @@ function SpeedSection({ clip }: { clip: Clip }) {
               no curve exists, the slider sets the clip's static speed instead, which may shorten
               the clip so it never needs source past the asset's end (it never grows). Ramped clips
               play stepped in the preview, render frame-accurate in the export, and drop their audio
-              (both halves of a linked pair), like reversed clips.
+              (both halves of a linked pair), like reversed clips. A flat curve that pushes one
+              half's rate off the other's retimes the picture against it, so it silences the pair
+              too; the identity seed (1x) and a solo clip's own constant keep the audio.
             </p>
           </>
         )}

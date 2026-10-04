@@ -160,6 +160,17 @@ export function findTrack(doc: Doc, trackId: string): Track | undefined {
   return doc.project.tracks.find((t) => t.id === trackId)
 }
 
+/**
+ * Whether an asset can back a media element at all: present, not flagged
+ * missing, carrying a URL, and not a still image (images are drawn directly,
+ * they never enter the element pool). The ONE asset-playability test shared
+ * by the playback engine's element bookkeeping and the link predicate's
+ * member filter, so the two cannot drift apart.
+ */
+export function mediaPlayable(asset: MediaAsset | undefined): asset is MediaAsset {
+  return !!asset && !asset.missing && !!asset.url && asset.kind !== 'image'
+}
+
 export function findMedia(doc: Doc, mediaId: string | undefined): MediaAsset | undefined {
   if (!mediaId) return undefined
   return doc.media.find((m) => m.id === mediaId)

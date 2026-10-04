@@ -158,7 +158,7 @@ export function deserializeDoc(data: unknown): {
       name: typeof t.name === 'string' ? t.name : 'Track',
       muted: !!t.muted,
       clips: (Array.isArray(t.clips) ? (t.clips as Record<string, unknown>[]) : []).map((c) =>
-        hydrateClip(c),
+        hydrateClip(c, media),
       ),
     })),
   }
@@ -193,7 +193,7 @@ function hydrateMedia(raw: Record<string, unknown>): MediaAsset {
   }
 }
 
-function hydrateClip(raw: Record<string, unknown>): Clip {
+function hydrateClip(raw: Record<string, unknown>, media: MediaAsset[]): Clip {
   const clip: Clip = {
     id: typeof raw.id === 'string' ? raw.id : `clip_${Math.random().toString(36).slice(2)}`,
     start: Math.max(0, numOr(raw.start, 0)),
@@ -276,6 +276,22 @@ function hydrateClip(raw: Record<string, unknown>): Clip {
       if (kfs.length > 0) map[property] = kfs
     }
     if (Object.keys(map).length > 0) clip.keyframes = map
+  }
+  // A timeScale curve is picture-only: the Effect Controls rows that could
+  // edit it hide on a clip without picture, while both render paths drop a
+  // link group's audio when its rate changes (a ramp, or rates the halves
+  // cannot agree on), and a solo clip's curve would retime its sound with no
+  // row to edit or clear it. A hand-edited or foreign file could install such
+  // a curve, so hydration drops it. Both signals count: the A/V
+  // twin carries `audioOnly`, an audio-asset clip carries no flag but
+  // resolves to an audio kind. A dangling mediaId keeps the curve: without
+  // the asset kind there is nothing to say the clip is picture-less.
+  if (clip.keyframes?.timeScale) {
+    const asset = media.find((m) => m.id === clip.mediaId)
+    if (clip.audioOnly === true || asset?.kind === 'audio') {
+      delete clip.keyframes.timeScale
+      if (Object.keys(clip.keyframes).length === 0) clip.keyframes = undefined
+    }
   }
   if (typeof raw.text === 'string') {
     clip.text = raw.text
