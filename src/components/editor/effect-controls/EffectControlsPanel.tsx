@@ -1,6 +1,12 @@
 'use client'
 
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import { ChevronDown, ChevronUp, Diamond, Plus } from 'lucide-react'
 
 import { NamedSlider } from '@/components/editor/NamedSlider'
@@ -18,14 +24,28 @@ import {
 } from '@/components/ui/select'
 
 import { EditorCommandError } from '@/lib/editor/commands'
-import { KEYFRAME_PROPERTY_BOUNDS, SPEED_MAX, SPEED_MIN } from '@/lib/editor/constants'
-import { presetControls, segmentControls } from '@/lib/editor/ease-segment'
+import {
+  EASE_HANDLE_KEYBOARD_STEP,
+  KEYFRAME_PROPERTY_BOUNDS,
+  SPEED_MAX,
+  SPEED_MIN,
+} from '@/lib/editor/constants'
+import {
+  LINEAR_QUAD,
+  mirrorQuad,
+  presetControls,
+  segmentControls,
+  withEasing,
+  withQuadHandle,
+  withSegmentControls,
+} from '@/lib/editor/ease-segment'
 import {
   KEYFRAME_INTERPOLATIONS,
   animatedValue,
   clampPropertyValue,
   constantTimeScaleRate,
   hasTimeScaleCurve,
+  keyframeDefaultEasing,
   staticPropertyValue,
   type KeyframeProperty,
 } from '@/lib/editor/keyframes'
@@ -243,6 +263,121 @@ function sliderConfig(property: KeyframeProperty): { min: number; max: number; s
   }
 }
 
+/**
+ * The active segment's start index for one row and playhead: the LAST stored
+ * pair whose start sits at or before `at` (in row-axis time). A playhead
+ * before the first keyframe takes the first pair (that region is
+ * constant-extended), and a property with fewer than two keyframes has no
+ * segment at all. The picker, the handles and `data-active-quad` all read
+ * this one rule.
+ */
+function activeSegmentStart(keyframes: Keyframe[], at: number): number | null {
+  if (keyframes.length < 2) return null
+  let start = 0
+  for (let i = 0; i < keyframes.length - 1; i++) {
+    if (keyframes[i].time > at) break
+    start = i
+  }
+  return start
+}
+
+/**
+ * The per-property easing picker. With a curve it edits the active segment's
+ * START keyframe (the same target the handles edit); without one it edits the
+ * property's default easing for NEW keyframes, labelled so the two modes
+ * cannot be confused.
+ */
+function EasingPicker({
+  clip,
+  property,
+  playheadLocal,
+  animated,
+}: {
+  clip: Clip
+  property: KeyframeProperty
+  playheadLocal: number
+  animated: boolean
+}) {
+  const apply = useEditorStore((s) => s.apply)
+  const defaults = useEditorStore((s) => s.doc.project.keyframeDefaults)
+  const keyframes = clip.keyframes?.[property] ?? []
+  const axis = rowAxis(clip, property)
+  const targetIndex = activeSegmentStart(keyframes, axis(playheadLocal)) ?? 0
+  const displayed = animated
+    ? displayedInterpolation(keyframes[targetIndex])
+    : keyframeDefaultEasing(defaults, property)
+
+  const setInterpolation = (interpolation: KeyframeInterpolation) => {
+    if (!animated) {
+      // Default mode: a press on the already-pressed name is a no-op (no
+      // history entry), and `linear` deletes the entry (absent reads linear).
+      if (interpolation === keyframeDefaultEasing(defaults, property)) return
+      apply({ type: 'setKeyframeDefault', property, interpolation })
+      return
+    }
+    apply({
+      type: 'setClipKeyframes',
+      clipId: clip.id,
+      property,
+      keyframes: keyframes.map((k, i) => {
+        if (i !== targetIndex) return k
+        // A BOUNDED segment carries its exact sub-curve in `easeOut`, and the
+        // picker presses the button that `displayedInterpolation` reports.
+        // Picking that same NON-LINEAR value must be a no-op: the name is a
+        // display shorthand, so overwriting the data with the full-span preset
+        // would silently un-subdivide a split/trimmed curve on a click that
+        // looks inert. The comparison is against the DISPLAYED value, not the
+        // stored name: a foreign quad that matches a DIFFERENT preset is what
+        // the picker shows pressed, and clicking the other name must stamp its
+        // preset instead of no-opping on the stored name. Linear carries no
+        // quad by definition, so picking it always normalizes: a foreign
+        // `easeOut` under a linear name must be clearable, not protected by
+        // the same-name rule.
+        if (
+          interpolation !== 'linear' &&
+          interpolation === displayedInterpolation(k) &&
+          k.easeOut
+        ) {
+          return k
+        }
+        // Stamp the preset's exact bezier data through the shared helper: a
+        // later split/trim that subdivides this segment then starts from the
+        // real shape, and the name stays the UI's display shorthand.
+        return withEasing(k, interpolation)
+      }),
+    })
+  }
+
+  return (
+    <div className="space-y-1">
+      {!animated && (
+        <span className="text-[10px] leading-none text-muted-foreground">Default easing</span>
+      )}
+      <div
+        className="flex items-center gap-1"
+        role="group"
+        aria-label={animated ? `${property} easing` : `${property} default easing`}
+        data-testid={`kf-ease-${property}`}
+        onKeyDown={swallowArrows}
+      >
+        {KEYFRAME_INTERPOLATIONS.map((value) => (
+          <Button
+            key={value}
+            size="sm"
+            variant={value === displayed ? 'secondary' : 'ghost'}
+            className="h-5 px-1.5 text-[10px]"
+            aria-pressed={value === displayed}
+            data-testid={`kf-ease-${property}-${value}`}
+            onClick={() => setInterpolation(value)}
+          >
+            {INTERPOLATION_LABELS[value]}
+          </Button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function PropertyRow({
   clip,
   property,
@@ -255,6 +390,7 @@ function PropertyRow({
   playheadLocal: number
 }) {
   const apply = useEditorStore((s) => s.apply)
+  const defaults = useEditorStore((s) => s.doc.project.keyframeDefaults)
   const keyframes = clip.keyframes?.[property] ?? []
   const animated = keyframes.length > 0
   // A reversed clip reads its `timeScale` curve in MIRRORED source-side local
@@ -284,8 +420,14 @@ function PropertyRow({
       const next = keyframes.filter((k) => k !== nearest)
       setCurve(next)
     } else {
-      // First keyframe: pin the current static value at the playhead.
-      setCurve([{ time: axis(playheadLocal), value: staticPropertyValue(clip, property) }])
+      // First keyframe: pin the current static value at the playhead, carrying
+      // the property's default easing when one is set.
+      setCurve([
+        withEasing(
+          { time: axis(playheadLocal), value: staticPropertyValue(clip, property) },
+          keyframeDefaultEasing(defaults, property),
+        ),
+      ])
     }
   }
 
@@ -294,7 +436,12 @@ function PropertyRow({
       // Editing an animated property writes/updates a keyframe at the playhead.
       const at = axis(playheadLocal)
       const next = keyframes.filter((k) => Math.abs(k.time - at) > 1e-6)
-      next.push({ time: at, value: clampPropertyValue(property, v) })
+      next.push(
+        withEasing(
+          { time: at, value: clampPropertyValue(property, v) },
+          keyframeDefaultEasing(defaults, property),
+        ),
+      )
       const store = useEditorStore.getState()
       if (commit) setCurve(next)
       else {
@@ -367,6 +514,12 @@ function PropertyRow({
         onValueChange={([v]) => onSlider(v, false)}
         onValueCommit={([v]) => onSlider(v, true)}
       />
+      <EasingPicker
+        clip={clip}
+        property={property}
+        playheadLocal={playheadLocal}
+        animated={animated}
+      />
       {animated && (
         <KeyframeGraph
           clip={clip}
@@ -384,6 +537,7 @@ function KeyframeGraph({
   clip,
   property,
   playheadLocal,
+  mirrored,
 }: {
   clip: Clip
   property: KeyframeProperty
@@ -423,6 +577,10 @@ function KeyframeGraph({
   // Gesture token from beginTransient: a foreign commit bumps it and the drag
   // then refuses further frames (they would carry no undo entry).
   const tokenRef = useRef(-1)
+  // The grabbed keyframe's current time. The store re-sorts the array the
+  // moment a crossing frame lands, so the index captured below stops naming
+  // the grabbed keyframe: the drag looks it up by the time it last wrote.
+  const dragTimeRef = useRef(0)
 
   useEffect(() => {
     if (dragIndex === null) return
@@ -437,10 +595,20 @@ function KeyframeGraph({
       const live = useEditorStore.getState().doc
       const clipNow = live.project.tracks.flatMap((tr) => tr.clips).find((c) => c.id === clip.id)
       const kfs = clipNow?.keyframes?.[property]
-      if (!kfs || !kfs[dragIndex]) return
-      const next = kfs.map((k, i) =>
-        i === dragIndex ? { ...k, time: Math.max(0, Math.min(clip.duration, axis(t))) } : k,
-      )
+      if (!kfs || kfs.length === 0) return
+      // Find the grabbed keyframe again: after it passes a neighbour the stored
+      // array is sorted, so `dragIndex` names the keyframe it crossed and every
+      // later frame would drive that one to the pointer while the grabbed dot
+      // freezes. The captured index wins while it still matches (two keyframes
+      // may legally share a time, e.g. both clamped to a clip end).
+      const target =
+        kfs[dragIndex]?.time === dragTimeRef.current
+          ? dragIndex
+          : kfs.findIndex((k) => k.time === dragTimeRef.current)
+      if (target < 0) return
+      const time = Math.max(0, Math.min(clip.duration, axis(t)))
+      const next = kfs.map((k, i) => (i === target ? { ...k, time } : k))
+      dragTimeRef.current = time
       store.applyTransient({ type: 'setClipKeyframes', clipId: clip.id, property, keyframes: next })
     }
     const onUp = (e: PointerEvent) => {
@@ -477,134 +645,317 @@ function KeyframeGraph({
     }
     // `pointerId` is a dependency because the handlers read it: a re-grab of the
     // same dot by a second pointer must hand ownership over instead of leaving
-    // the listeners filtering for the first one.
+    // the listeners filtering for the first one. `dragTimeRef` is read live and
+    // mutates per frame, so it stays out of the dependency list on purpose.
   }, [dragIndex, clip.id, clip.duration, property, pointerId])
 
   const bounds = KEYFRAME_PROPERTY_BOUNDS[property]
   const span = Math.max(1e-6, bounds.max - bounds.min)
 
-  // The easing picker targets the keyframe nearest the playhead, the same one
-  // the diamond toggle removes: both measure on the row's own axis, mirrored for
-  // a reversed clip's timeScale. The interpolation belongs to the segment that
-  // STARTS at a keyframe, so editing the last keyframe changes nothing visible
-  // until another keyframe follows it.
   const at = axis(playheadLocal)
-  const activeIndex = keyframes.reduce(
-    (best, k, i) => (Math.abs(k.time - at) < Math.abs(keyframes[best].time - at) ? i : best),
-    0,
-  )
-  const activeInterpolation = displayedInterpolation(keyframes[activeIndex])
-  const setInterpolation = (interpolation: KeyframeInterpolation) => {
+  // The active segment; the picker, the handles and `data-active-quad` share
+  // this one rule. A mirrored row compares in STORED time, because `at` is
+  // already the axis reading of the playhead.
+  const activeStart = activeSegmentStart(keyframes, at)
+
+  // Screen mapping, the same one the dots use (percent of the strip, y from
+  // the bottom). A mirrored row flips time only (`rowAxis`), so values plot
+  // directly and the mirror lives in the segment's own box.
+  const dotPoint = (k: Keyframe) => ({
+    x: (Math.max(0, Math.min(clip.duration, axis(k.time))) / Math.max(1e-6, clip.duration)) * 100,
+    y: Math.max(0, Math.min(100, ((k.value - bounds.min) / span) * 100)),
+  })
+  const fmt = (n: number) => n.toFixed(3)
+
+  // One path per stored pair: linear draws a line, an eased pair draws its
+  // exact box cubic. A mirrored row draws the stored pair's endpoints at their
+  // screen positions with the control points of mirrorQuad(stored), so the
+  // draw and the drag go through the one conversion the helper names.
+  const segments = keyframes.slice(0, -1).map((a, i) => {
+    const b = keyframes[i + 1]
+    const left = mirrored ? dotPoint(b) : dotPoint(a)
+    const right = mirrored ? dotPoint(a) : dotPoint(b)
+    const raw = segmentControls(a)
+    const quad = raw ? (mirrored ? mirrorQuad(raw) : raw) : undefined
+    const box = (u: number, v: number) => ({
+      x: left.x + u * (right.x - left.x),
+      y: left.y + v * (right.y - left.y),
+    })
+    const svg = (p: { x: number; y: number }) => `${fmt(p.x)},${fmt(100 - p.y)}`
+    const d = quad
+      ? `M ${svg(left)} C ${svg(box(quad[0], quad[1]))} ${svg(box(quad[2], quad[3]))} ${svg(right)}`
+      : `M ${svg(left)} L ${svg(right)}`
+    return { i, d }
+  })
+
+  // The active segment's DRAWN quad (mirrored first for a reversed row) and
+  // its two handle positions. mirrorQuad swaps the ends, so on a mirrored row
+  // the stored `out` pair is drawn at point 1; the testid always names the
+  // STORED pair the drag writes.
+  const active =
+    activeStart === null
+      ? null
+      : (() => {
+          const a = keyframes[activeStart]
+          const b = keyframes[activeStart + 1]
+          const raw = segmentControls(a) ?? LINEAR_QUAD
+          const quad = mirrored ? mirrorQuad(raw) : raw
+          const left = mirrored ? dotPoint(b) : dotPoint(a)
+          const right = mirrored ? dotPoint(a) : dotPoint(b)
+          const point = (p: number) => ({
+            x: left.x + quad[p * 2] * (right.x - left.x),
+            y: left.y + quad[p * 2 + 1] * (right.y - left.y),
+          })
+          return {
+            startIndex: activeStart,
+            quadAttr: quad.map((n) => fmt(n)).join(','),
+            out: point(mirrored ? 1 : 0),
+            in: point(mirrored ? 0 : 1),
+            storedOut: { x: raw[0], y: raw[1] },
+            storedIn: { x: raw[2], y: raw[3] },
+          }
+        })()
+
+  // Handle drag: the same window-listener protocol as the dot drag (token
+  // check, `applyTransient` per move, commit on release, cancel on
+  // pointercancel), so a handle drag is one undo step and cannot strand a
+  // transient. The pointer is read in the drawn box with NO pre-flip; a
+  // mirrored row applies the same single `mirrorQuad` conversion on the way to
+  // storage, never a second one.
+  const [handleDrag, setHandleDrag] = useState<{
+    which: 'out' | 'in'
+    startIndex: number
+    pointerId: number
+  } | null>(null)
+  useEffect(() => {
+    if (!handleDrag) return
+    const store = useEditorStore.getState()
+    const onMove = (e: PointerEvent) => {
+      if (e.pointerId !== handleDrag.pointerId) return
+      if (currentTransientToken() !== tokenRef.current) return
+      const rect = wrapRef.current?.getBoundingClientRect()
+      if (!rect || rect.width <= 0 || rect.height <= 0) return
+      const live = useEditorStore.getState().doc
+      const clipNow = live.project.tracks.flatMap((tr) => tr.clips).find((c) => c.id === clip.id)
+      const kfs = clipNow?.keyframes?.[property]
+      const start = kfs?.[handleDrag.startIndex]
+      const end = kfs?.[handleDrag.startIndex + 1]
+      if (!start || !end) return
+      // The drawn box: u across the span left to right, v from the drawn left
+      // endpoint's value to the drawn right endpoint's.
+      const bounds = KEYFRAME_PROPERTY_BOUNDS[property]
+      const span = Math.max(1e-6, bounds.max - bounds.min)
+      const axis = rowAxis(clip, property)
+      const point = (k: Keyframe) => ({
+        x:
+          (Math.max(0, Math.min(clip.duration, axis(k.time))) / Math.max(1e-6, clip.duration)) *
+          100,
+        y: Math.max(0, Math.min(100, ((k.value - bounds.min) / span) * 100)),
+      })
+      const left = point(mirrored ? end : start)
+      const right = point(mirrored ? start : end)
+      const uRow = (e.clientX - rect.left) / rect.width
+      const vRow = 1 - (e.clientY - rect.top) / rect.height
+      const raw = segmentControls(start) ?? LINEAR_QUAD
+      const current =
+        handleDrag.which === 'out' ? { x: raw[0], y: raw[1] } : { x: raw[2], y: raw[3] }
+      const spanX = right.x - left.x
+      const spanY = right.y - left.y
+      // BOTH axes read the drawn box: u across the segment's time span, v from
+      // the drawn left endpoint's value to the right one's, the exact mapping
+      // the path draws through. Reading u off the whole strip would agree only
+      // on a full-width segment and would jump the handle on every partial one.
+      const u = Math.abs(spanX) < 1e-9 ? current.x : (uRow * 100 - left.x) / spanX
+      // A flat segment has no vertical box to read: keep the stored y.
+      const v = Math.abs(spanY) < 1e-9 ? current.y : (vRow * 100 - left.y) / spanY
+      const nextQuad = withQuadHandle(raw, handleDrag.which, {
+        x: mirrored ? 1 - u : u,
+        y: mirrored ? 1 - v : v,
+      })
+      const next = kfs.map((k, i) =>
+        i === handleDrag.startIndex
+          ? withSegmentControls<Keyframe>({ ...k, interpolation: 'linear' }, nextQuad)
+          : k,
+      )
+      store.applyTransient({ type: 'setClipKeyframes', clipId: clip.id, property, keyframes: next })
+    }
+    const onUp = (e: PointerEvent) => {
+      if (e.pointerId !== handleDrag.pointerId) return
+      // Commit on release, so the whole drag is one undo step (the same
+      // capture-phase ordering and dangling-commit net as the dot drag).
+      try {
+        useEditorStore.getState().commitTransient()
+      } catch {
+        useEditorStore.getState().cancelTransient()
+      }
+      setHandleDrag(null)
+    }
+    const onCancel = (e: PointerEvent) => {
+      if (e.pointerId !== handleDrag.pointerId) return
+      useEditorStore.getState().cancelTransient()
+      setHandleDrag(null)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, true)
+    window.addEventListener('pointercancel', onCancel, true)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp, true)
+      window.removeEventListener('pointercancel', onCancel, true)
+    }
+    // `handleDrag` carries the pointer id: a re-grab re-runs the effect with
+    // the new owner, the same handover the dot drag gets from its state.
+  }, [handleDrag, clip.id, clip.duration, property, mirrored])
+
+  const onHandlePointerDown = (which: 'out' | 'in', e: ReactPointerEvent) => {
+    e.stopPropagation()
+    if (activeStart === null) return
+    tokenRef.current = useEditorStore.getState().beginTransient(e.pointerId)
+    setHandleDrag({ which, startIndex: activeStart, pointerId: e.pointerId })
+  }
+
+  const onHandleKeyDown = (which: 'out' | 'in', e: ReactKeyboardEvent) => {
+    if (activeStart === null) return
+    if (
+      e.key !== 'ArrowLeft' &&
+      e.key !== 'ArrowRight' &&
+      e.key !== 'ArrowUp' &&
+      e.key !== 'ArrowDown'
+    ) {
+      return
+    }
+    e.preventDefault()
+    e.stopPropagation()
+    const start = keyframes[activeStart]
+    const raw = segmentControls(start) ?? LINEAR_QUAD
+    const current = which === 'out' ? { x: raw[0], y: raw[1] } : { x: raw[2], y: raw[3] }
+    const dx =
+      e.key === 'ArrowLeft'
+        ? -EASE_HANDLE_KEYBOARD_STEP
+        : e.key === 'ArrowRight'
+          ? EASE_HANDLE_KEYBOARD_STEP
+          : 0
+    const dy =
+      e.key === 'ArrowUp'
+        ? EASE_HANDLE_KEYBOARD_STEP
+        : e.key === 'ArrowDown'
+          ? -EASE_HANDLE_KEYBOARD_STEP
+          : 0
+    const nextQuad = withQuadHandle(raw, which, { x: current.x + dx, y: current.y + dy })
+    // The same write rule as a drag: the name normalizes to linear, so a
+    // hand-made shape shows no pressed preset.
     apply({
       type: 'setClipKeyframes',
       clipId: clip.id,
       property,
-      keyframes: keyframes.map((k, i) => {
-        if (i !== activeIndex) return k
-        // A BOUNDED segment carries its exact sub-curve in `easeOut`, and the
-        // picker presses the button that `displayedInterpolation` reports.
-        // Picking that same NON-LINEAR value must be a no-op: the name is a
-        // display shorthand, so overwriting the data with the full-span preset
-        // would silently un-subdivide a split/trimmed curve on a click that
-        // looks inert. The comparison is against the DISPLAYED value, not the
-        // stored name: a foreign quad that matches a DIFFERENT preset is what
-        // the picker shows pressed, and clicking the other name must stamp its
-        // preset instead of no-opping on the stored name. Linear carries no
-        // quad by definition, so picking it always normalizes: a foreign
-        // `easeOut` under a linear name must be clearable, not protected by
-        // the same-name rule.
-        if (
-          interpolation !== 'linear' &&
-          interpolation === displayedInterpolation(k) &&
-          k.easeOut
-        ) {
-          return k
-        }
-        // Stamp the preset's exact bezier data: a later split/trim that
-        // subdivides this segment then starts from the real shape, and the
-        // name stays the UI's display shorthand.
-        const controls = presetControls(interpolation)
-        const next: Keyframe = { ...k, interpolation }
-        if (controls) next.easeOut = [...controls]
-        else delete next.easeOut
-        return next
-      }),
+      keyframes: keyframes.map((k, i) =>
+        i === activeStart
+          ? withSegmentControls<Keyframe>({ ...k, interpolation: 'linear' }, nextQuad)
+          : k,
+      ),
     })
   }
 
   return (
-    <div className="space-y-1">
-      <div
-        className="flex items-center gap-1"
-        role="group"
-        aria-label={`${property} easing`}
-        data-testid={`kf-ease-${property}`}
-        onKeyDown={swallowArrows}
+    <div
+      ref={wrapRef}
+      data-testid={`kf-graph-${property}`}
+      data-active-quad={active?.quadAttr}
+      className="relative h-10 w-full rounded border border-border bg-muted/30"
+      onKeyDown={swallowArrows}
+    >
+      <svg
+        // `size-full` is required, not decorative: an absolutely positioned
+        // REPLACED element with a square viewBox sizes itself from the 1:1
+        // intrinsic ratio whenever a side is left to `auto`, so `inset-0` alone
+        // makes the box as tall as the row is WIDE and `h-full` alone makes it
+        // as narrow as the row is tall. Either way the viewBox stretches with
+        // the box and the drawn curve stops meeting the percent-placed dots.
+        className="pointer-events-none absolute inset-0 size-full"
+        aria-hidden="true"
+        data-testid={`kf-curve-${property}`}
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
       >
-        {KEYFRAME_INTERPOLATIONS.map((value) => (
-          <Button
-            key={value}
-            size="sm"
-            variant={value === activeInterpolation ? 'secondary' : 'ghost'}
-            className="h-5 px-1.5 text-[10px]"
-            aria-pressed={value === activeInterpolation}
-            data-testid={`kf-ease-${property}-${value}`}
-            onClick={() => setInterpolation(value)}
-          >
-            {INTERPOLATION_LABELS[value]}
-          </Button>
+        {segments.map((seg) => (
+          <path
+            key={seg.i}
+            data-testid={`kf-seg-${property}-${seg.i}`}
+            d={seg.d}
+            fill="none"
+            strokeWidth={1.5}
+            vectorEffect="non-scaling-stroke"
+            className="stroke-amber-400"
+          />
         ))}
-      </div>
-      <div
-        ref={wrapRef}
-        data-testid={`kf-graph-${property}`}
-        className="relative h-10 w-full rounded border border-border bg-muted/30"
-        onKeyDown={swallowArrows}
-      >
-        {keyframes.map((k, i) => {
-          const left =
-            (Math.max(0, Math.min(clip.duration, axis(k.time))) / Math.max(1e-6, clip.duration)) *
-            100
-          const bottom = ((k.value - bounds.min) / span) * 100
-          const eased = segmentControls(k) !== undefined
+      </svg>
+      {active &&
+        (['out', 'in'] as const).map((which) => {
+          const pos = which === 'out' ? active.out : active.in
+          const stored = which === 'out' ? active.storedOut : active.storedIn
           return (
             <div
-              // Index key, not `time`: a time-bearing key remounts the dot on
-              // every nudge/drag frame, which drops keyboard focus mid-use
-              // (the next press would fall through to the global shortcut).
-              key={i}
-              data-testid={`kf-dot-${property}-${i}`}
-              data-interpolation={k.interpolation ?? 'linear'}
+              key={which}
+              data-testid={`kf-handle-${property}-${which}`}
               role="slider"
               tabIndex={0}
-              aria-label={`${property} keyframe ${i + 1}`}
-              aria-valuenow={Number(k.time.toFixed(2))}
+              aria-label={`${property} ease handle ${
+                which === 'out' ? 'outgoing' : 'incoming'
+              } ${active.startIndex + 1}`}
+              aria-valuenow={Number(stored.x.toFixed(2))}
               aria-valuemin={0}
-              aria-valuemax={clip.duration}
-              className={`absolute size-2.5 -translate-x-1/2 translate-y-1/2 cursor-ew-resize rounded-full border bg-amber-400 ${
-                eased ? 'border-dashed border-amber-700' : 'border-amber-600'
-              }`}
-              style={{ left: `${left}%`, bottom: `${Math.max(0, Math.min(100, bottom))}%` }}
-              onPointerDown={(e) => {
-                e.stopPropagation()
-                tokenRef.current = useEditorStore.getState().beginTransient(e.pointerId)
-                setPointerId(e.pointerId)
-                setDragIndex(i)
-              }}
-              onKeyDown={(e) => {
-                if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
-                // One frame per keydown, OS repeat included: the same
-                // step-on-hold behavior a native slider thumb has. The graph
-                // wrapper's guard stops anything from reaching the global
-                // shortcut either way (the wrapper runs first by bubbling).
-                e.preventDefault()
-                e.stopPropagation()
-                nudgeDot(i, e.key)
-              }}
+              aria-valuemax={1}
+              aria-valuetext={`x ${stored.x.toFixed(2)}, y ${stored.y.toFixed(2)}`}
+              className="absolute size-2.5 -translate-x-1/2 translate-y-1/2 cursor-grab rounded-full border border-amber-600 bg-amber-400"
+              style={{ left: `${pos.x}%`, bottom: `${pos.y}%` }}
+              onPointerDown={(e) => onHandlePointerDown(which, e)}
+              onKeyDown={(e) => onHandleKeyDown(which, e)}
             />
           )
         })}
-      </div>
+      {keyframes.map((k, i) => {
+        const left =
+          (Math.max(0, Math.min(clip.duration, axis(k.time))) / Math.max(1e-6, clip.duration)) * 100
+        const bottom = ((k.value - bounds.min) / span) * 100
+        const eased = segmentControls(k) !== undefined
+        return (
+          <div
+            // Index key, not `time`: a time-bearing key remounts the dot on
+            // every nudge/drag frame, which drops keyboard focus mid-use
+            // (the next press would fall through to the global shortcut).
+            key={i}
+            data-testid={`kf-dot-${property}-${i}`}
+            data-interpolation={k.interpolation ?? 'linear'}
+            role="slider"
+            tabIndex={0}
+            aria-label={`${property} keyframe ${i + 1}`}
+            aria-valuenow={Number(k.time.toFixed(2))}
+            aria-valuemin={0}
+            aria-valuemax={clip.duration}
+            className={`absolute size-2.5 -translate-x-1/2 translate-y-1/2 cursor-ew-resize rounded-full border bg-amber-400 ${
+              eased ? 'border-dashed border-amber-700' : 'border-amber-600'
+            }`}
+            style={{ left: `${left}%`, bottom: `${Math.max(0, Math.min(100, bottom))}%` }}
+            onPointerDown={(e) => {
+              e.stopPropagation()
+              tokenRef.current = useEditorStore.getState().beginTransient(e.pointerId)
+              dragTimeRef.current = k.time
+              setPointerId(e.pointerId)
+              setDragIndex(i)
+            }}
+            onKeyDown={(e) => {
+              if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+              // One frame per keydown, OS repeat included: the same
+              // step-on-hold behavior a native slider thumb has. The graph
+              // wrapper's guard stops anything from reaching the global
+              // shortcut either way (the wrapper runs first by bubbling).
+              e.preventDefault()
+              e.stopPropagation()
+              nudgeDot(i, e.key)
+            }}
+          />
+        )
+      })}
     </div>
   )
 }

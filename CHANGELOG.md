@@ -5,6 +5,70 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.4] - 2026-10-06
+
+### Added
+
+- **The Effect Controls graph now draws each segment's real bezier curve, and the active segment's two
+  handles shape it.** The graph used to draw dots only, and a segment's easing could only
+  be picked from the presets. Every stored pair now renders as its exact cubic: a linear pair as a line,
+  an eased pair from its quad, and a subdivided split/trim segment from its own sub-curve data rather
+  than re-deriving it from the preset name (an eased segment survives a cut with both halves on the
+  original curve). The active segment puts two amber handles on the drawn curve: a drag (one undo step
+  through the same transient protocol as the dots) or the arrow keys (0.02 per press, clamped) writes
+  that segment's free quad and normalizes the name to `linear`, because a hand-made shape matches no
+  preset. A mirrored time-remap row draws `mirrorQuad(stored)` and the pointer maps back through the
+  same single conversion, so the drawn curve, the handles and the data cannot disagree.
+- **Per-property default easing for newly authored keyframes.** Each property row can store a default
+  (linear, easeIn, easeOut or easeInOut). The diamond's first keyframe and a slider-created keyframe
+  stamp it as the name AND the preset's exact quad, so a later split or trim subdivides the real shape.
+  Derived keyframes (split boundaries, trim rebases, ducking output, paste) keep the shape of the
+  segment they came from and never take the default. Defaults are stored on the project, save with it
+  and load back; an unknown property or name from a hand-edited file is dropped without throwing.
+- The battery gains a 46th step, `f05b curve: handle drag reshapes an eased segment`: it seeds a
+  keyframe, writes a second one with the opacity slider, presses `Ease in/out`, arrow-nudges the
+  outgoing handle, drags the incoming one with a real pointer event, then undoes every commit and
+  asserts the curve is gone, all `data-active-quad` assertions against exact numbers.
+
+### Fixed
+
+- **The curve SVG is now exactly the graph row's box.** An absolutely positioned replaced element
+  with a square viewBox takes its size from the 1:1 intrinsic ratio whenever a side is left to
+  `auto`, so the overlay came out as tall as the row is WIDE (229px inside a 40px row) and `h-full`
+  alone traded that for a box as narrow as the row is tall: either way the viewBox stretched with the
+  box and the drawn curve stopped meeting the percent-placed dots (19px off on a 10% value span).
+  The overlay pins both dimensions now, the static lock names the classes, and the battery asserts
+  the two boxes agree, which is layout no jsdom test can see.
+- **Dragging a keyframe dot past its neighbour no longer strands the segment's easing.** A segment's
+  shape lives on the keyframe that STARTS it, so a plain time sort moved the pair apart: the new
+  start carried no quad (the segment drew linear) while the old start kept a quad for a segment that
+  no longer began there. `rehomeSegmentShapes` re-homes each preserved pair's curve onto its new
+  start, mirrored when the pair now runs the other way and named for the mirrored preset (`easeOut`
+  reads as `easeIn`); a pair that was not adjacent before stays linear and drops the stale quad. Only
+  a write that moves ONE keyframe's time counts as a reorder, so the slider re-inserting a keyframe at
+  the playhead (which shifts the tail by one index, and on a plateau looks index-aligned) passes
+  through untouched instead of dropping a shape.
+- **A keyframe dot dragged past another keeps following the pointer.** The drag targeted the keyframe
+  by its array INDEX, but the store keeps the array sorted by time, so the moment the dot crossed a
+  neighbour the index named the keyframe it had just passed: the grabbed dot froze and the other one
+  ran to the pointer on every later frame (and, with the re-homing above, the segment's curve flipped
+  back and forth with it). The gesture remembers the time it last wrote and looks its keyframe up by
+  it, which is the same rule the dot's own time is written with.
+
+### Changed
+
+- **The easing picker now edits the active segment's start keyframe, not the keyframe nearest the
+  playhead.** With the playhead in a segment's second half, or on or past the last keyframe, a press
+  used to edit a keyframe whose interpolation changes nothing visible; it now edits the segment the
+  user sees, exactly what the handles edit.
+- **The easing control is now visible on every animatable property row, including unanimated ones.**
+  It used to be absent entirely until a property had a curve; with no keyframes it runs in "Default
+  easing" mode (its own caption and aria-label), sets the per-property default above, and a press on
+  the already-pressed name is a no-op with no history entry.
+- Internal: `ease-segment.ts` gained `mirrorQuad`, `withQuadHandle` and `withEasing`, `keyframes.ts`
+  gained `keyframeDefaultEasing`, the command layer gained `setKeyframeDefault`, and hydration keeps
+  only known properties and interpolation names in `Project.keyframeDefaults`.
+
 ## [0.6.3] - 2026-10-04
 
 ### Fixed

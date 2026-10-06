@@ -9,14 +9,13 @@ import {
 } from '../constants'
 import { denoiseFilters } from '../playback/denoise'
 /**
- * The MEASURABLE half of the denoise feature (plan Phase 4.2): white noise in,
- * per-band energy out. There is no real OfflineAudioContext in Node, so this
- * renders the chain through a faithful IIR stand-in: the same biquad
- * coefficient formulas the Web Audio spec defines for highpass/lowpass/
- * peaking, applied sample by sample. That proves the SEQUENCE of bands the
- * builder produces attenuates what it should and preserves what it should,
- * which is the numeric criterion the plan asks for; final audibility stays a
- * manual check, exactly as the plan scopes it.
+ * The MEASURABLE half of the denoise feature: white noise in, per-band energy
+ * out. There is no real OfflineAudioContext in Node, so this renders the chain
+ * through a faithful IIR stand-in: the same biquad coefficient formulas the Web
+ * Audio spec defines for highpass/lowpass/peaking, applied sample by sample.
+ * That proves the SEQUENCE of bands the builder produces attenuates what it
+ * should and preserves what it should, which is the numeric criterion this
+ * feature is judged on; final audibility stays a manual check.
  *
  * Q CONVENTION: the spec reads `Q` as DECIBELS for lowpass/highpass and as a
  * linear quality factor for peaking, so `makeChain` converts the two corner

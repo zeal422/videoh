@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.6.4',
+    date: '2026-10-06',
+    highlights: [
+      "The Effect Controls graph draws each keyframe segment's real bezier curve",
+      'Shape any segment by dragging its two handles, or nudge them with the arrow keys',
+      'Per-property default easing: set it on a row and every new keyframe of that property starts with it',
+      'The easing picker edits the segment you see, and it is available on every property row',
+    ],
+  },
+  {
     version: '0.6.3',
     date: '2026-10-04',
     highlights: [

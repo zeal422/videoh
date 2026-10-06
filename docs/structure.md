@@ -13,7 +13,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── robots.txt           # crawler policy
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
-│   └── battery.sh           # scripted UI battery (45 steps) driven by agent-browser
+│   └── battery.sh           # scripted UI battery (46 steps) driven by agent-browser
 ├── docs/                    # this documentation set
 ├── next.config.ts           # output: "standalone"
 ├── vitest.config.ts         # node env, @ alias, coverage include + thresholds
@@ -150,7 +150,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 53 test files (870 tests) + src/lib/gate.test.ts: see testing.md
+└── __tests__/            # 53 test files (913 tests) + src/lib/gate.test.ts: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / ResizeObserver
 ```

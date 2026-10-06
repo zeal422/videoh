@@ -127,3 +127,6 @@ export const KEYFRAME_PROPERTY_BOUNDS: Record<
   // A time-remap ramp: the curve is in speed multipliers (1 = normal).
   timeScale: { min: SPEED_MIN, max: SPEED_MAX, default: 1 },
 }
+
+/** Keyboard nudge for one easing handle, in normalized curve coordinates. */
+export const EASE_HANDLE_KEYBOARD_STEP = 0.02

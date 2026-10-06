@@ -68,13 +68,17 @@ describe('effect controls surface', () => {
     expect(ec).toMatch(/commitTransient\(\)/)
   })
 
-  it('the graph offers a per-keyframe easing picker and marks eased dots', () => {
+  it('offers the easing picker in both modes and marks eased dots', () => {
     expect(ec).toMatch(/KEYFRAME_INTERPOLATIONS\.map/)
     expect(ec).toMatch(/data-testid=\{`kf-ease-\$\{property\}-\$\{value\}`\}/)
-    // The picker stamps the preset's exact bezier data alongside the name, so
-    // a later split/trim subdivision starts from the real shape.
-    expect(ec).toMatch(/presetControls\(interpolation\)/)
-    expect(ec).toMatch(/next\.easeOut = \[\.\.\.controls\]/)
+    // The picker's stamp rule (name plus the preset's exact quad, name only
+    // for linear) lives in the shared `withEasing` helper now: the panel only
+    // calls it, so a picker press and a handle-drag write hold one rule.
+    expect(ec).toMatch(/withEasing\(k, interpolation\)/)
+    // The unanimated mode reads and writes the property default instead, and
+    // it names itself as the default so the two modes cannot be confused.
+    expect(ec).toMatch(/keyframeDefaultEasing\(defaults, property\)/)
+    expect(ec).toMatch(/type: 'setKeyframeDefault'/)
     expect(ec).toMatch(/data-interpolation=\{k\.interpolation \?\? 'linear'\}/)
     // Eased segments get a distinct dot state (dashed border).
     expect(ec).toMatch(/eased \? 'border-dashed border-amber-700' : 'border-amber-600'/)
@@ -84,6 +88,37 @@ describe('effect controls surface', () => {
       /<KeyframeGraph\s+clip=\{clip\}\s+property=\{property\}\s+playheadLocal=\{playheadLocal\}/,
     )
     expect(ec).toMatch(/mirrored=\{mirrored\}/)
+  })
+
+  it('draws the curve SVG before the dots so an exact overlap still drags the dot', () => {
+    // One `toMatch` pins BOTH the overlay's shape and its DOM order: the curve
+    // testid must appear before the dot testid in the emitted source, and the
+    // pattern is absent before this change, so the lock is red-first. An order
+    // check that vacuously passes while the curve is missing (an indexOf
+    // comparison) would not be.
+    expect(ec).toMatch(
+      /data-testid=\{`kf-curve-\$\{property\}`\}[\s\S]*data-testid=\{`kf-dot-\$\{property\}-\$\{i\}`\}/,
+    )
+    expect(ec).toMatch(/pointer-events-none absolute inset-0 size-full/)
+    // The box size is the half of this lock jsdom cannot see. `inset-0` alone
+    // cannot size the SVG: an absolutely positioned replaced element with a
+    // square viewBox sizes itself from the 1:1 intrinsic ratio whenever a side
+    // is left to `auto`, so the box becomes as tall as the row is WIDE (or, with
+    // only a height, as narrow as the row is tall) and the viewBox stretches
+    // with it. The curve then stops matching the dots, which are placed in
+    // percent of the row. Only a real browser can observe that, so the battery
+    // pins the two boxes as well.
+  })
+
+  it('lays the two easing handles on the active segment and drags them through the helpers', () => {
+    expect(ec).toMatch(/data-testid=\{`kf-handle-\$\{property\}-\$\{which\}`\}/)
+    expect(ec).toMatch(/withQuadHandle\(raw, handleDrag\.which, \{/)
+    expect(ec).toMatch(/EASE_HANDLE_KEYBOARD_STEP/)
+    // The handle drag keeps the transient protocol (token, applyTransient per
+    // frame, commit on release, cancel on pointercancel) the dot lock above
+    // pins, and exposes the active quad to the battery and render tests.
+    expect(ec).toMatch(/setHandleDrag\(/)
+    expect(ec).toMatch(/data-active-quad=\{active\?\.quadAttr\}/)
   })
 
   it('audio shaping: pan, EQ bands, compressor, noise reduction, auto-duck', () => {

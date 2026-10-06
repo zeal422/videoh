@@ -64,6 +64,50 @@ describe('serializeDoc', () => {
   })
 })
 
+describe('keyframeDefaults', () => {
+  it('round-trips the defaults map', () => {
+    const doc = makeDoc()
+    doc.project.keyframeDefaults = { opacity: 'easeIn', volume: 'easeInOut' }
+    const { doc: loaded } = deserializeDoc(JSON.parse(JSON.stringify(serializeDoc(doc))))
+    expect(loaded.project.keyframeDefaults).toEqual({ opacity: 'easeIn', volume: 'easeInOut' })
+  })
+
+  it('an absent field hydrates to nothing, and a v1 doc without it still loads', () => {
+    const doc = makeDoc()
+    const { doc: loaded } = deserializeDoc(JSON.parse(JSON.stringify(serializeDoc(doc))))
+    expect(loaded.project.keyframeDefaults).toBeUndefined()
+    expect('keyframeDefaults' in loaded.project).toBe(false)
+
+    const v1 = JSON.parse(JSON.stringify(serializeDoc(doc))) as { version: number }
+    v1.version = 1
+    expect(deserializeDoc(v1).doc.project.keyframeDefaults).toBeUndefined()
+  })
+
+  it('drops unknown property keys and unknown names from a hand-edited file', () => {
+    const json = JSON.parse(JSON.stringify(serializeDoc(makeDoc()))) as {
+      project: Record<string, unknown>
+    }
+    json.project.keyframeDefaults = {
+      opacity: 'easeIn',
+      bogus: 'easeIn',
+      volume: 'nope',
+      hue: 7,
+    }
+    const { doc } = deserializeDoc(json)
+    expect(doc.project.keyframeDefaults).toEqual({ opacity: 'easeIn' })
+  })
+
+  it('an all-invalid map hydrates to nothing at all (no empty object)', () => {
+    const json = JSON.parse(JSON.stringify(serializeDoc(makeDoc()))) as {
+      project: Record<string, unknown>
+    }
+    json.project.keyframeDefaults = { bogus: 'nope' }
+    const { doc } = deserializeDoc(json)
+    expect(doc.project.keyframeDefaults).toBeUndefined()
+    expect('keyframeDefaults' in doc.project).toBe(false)
+  })
+})
+
 describe('deserializeDoc', () => {
   it('round-trips a serialized doc and flags all media as missing', () => {
     const { doc, missingMediaIds } = deserializeDoc(

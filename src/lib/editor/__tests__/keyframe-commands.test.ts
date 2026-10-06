@@ -4,7 +4,7 @@ import { computeDuckingKeyframes, overlappingAudioClips, sanitizeDuckingOptions 
 import { animatedValue } from '../keyframes'
 import { createClip, createTrack } from '../factories'
 import { WAVEFORM_BUCKETS } from '../constants'
-import type { Clip, Doc, MediaAsset } from '../types'
+import type { Clip, Doc, KeyframeInterpolation, KeyframeProperty, MediaAsset } from '../types'
 
 function baseDoc(): { doc: Doc; clipId: string; trackId: string } {
   const clip = createClip({ id: 'clip_1', start: 0, duration: 4 })
@@ -31,6 +31,69 @@ function makeAsset(overrides: Partial<MediaAsset> = {}): MediaAsset {
     ...overrides,
   }
 }
+
+describe('setKeyframeDefault', () => {
+  it('sets the property default, linear clears it, and the empty map collapses', () => {
+    const { doc } = baseDoc()
+    const next = applyCommand(doc, {
+      type: 'setKeyframeDefault',
+      property: 'opacity',
+      interpolation: 'easeIn',
+    })
+    expect(next.project.keyframeDefaults).toEqual({ opacity: 'easeIn' })
+    // The input doc is never mutated (commands clone).
+    expect(doc.project.keyframeDefaults).toBeUndefined()
+
+    const both = applyCommand(next, {
+      type: 'setKeyframeDefault',
+      property: 'volume',
+      interpolation: 'easeInOut',
+    })
+    expect(both.project.keyframeDefaults).toEqual({ opacity: 'easeIn', volume: 'easeInOut' })
+
+    // linear DELETES the entry: absent reads as linear, no stored no-op.
+    const clearedOne = applyCommand(both, {
+      type: 'setKeyframeDefault',
+      property: 'opacity',
+      interpolation: 'linear',
+    })
+    expect(clearedOne.project.keyframeDefaults).toEqual({ volume: 'easeInOut' })
+
+    const clearedAll = applyCommand(clearedOne, {
+      type: 'setKeyframeDefault',
+      property: 'volume',
+      interpolation: 'linear',
+    })
+    // The emptied map is absent (the same `= undefined` convention
+    // `setClipKeyframes` uses when the last curve is cleared).
+    expect(clearedAll.project.keyframeDefaults).toBeUndefined()
+  })
+
+  it('rejects an unknown property like every other keyframe command', () => {
+    const { doc } = baseDoc()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setKeyframeDefault',
+        property: 'bogus' as KeyframeProperty,
+        interpolation: 'easeIn',
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('rejects an unknown interpolation name before it can reach the stored defaults', () => {
+    const { doc } = baseDoc()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setKeyframeDefault',
+        property: 'opacity',
+        interpolation: 'bogus' as KeyframeInterpolation,
+      }),
+    ).toThrow(EditorCommandError)
+    // `applyCommand` clones only when it does not throw, so a rejected command
+    // leaves the input doc untouched (the same guarantee the property guard has).
+    expect(doc.project.keyframeDefaults).toBeUndefined()
+  })
+})
 
 describe('setClipKeyframes', () => {
   it('stores a sanitized, sorted curve and evaluation follows it', () => {

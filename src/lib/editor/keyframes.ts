@@ -9,7 +9,14 @@ import {
   withSegmentControls,
   type BezierQuad,
 } from './ease-segment'
-import type { Clip, Keyframe, KeyframeInterpolation, KeyframeMap, KeyframeProperty } from './types'
+import type {
+  Clip,
+  Keyframe,
+  KeyframeDefaults,
+  KeyframeInterpolation,
+  KeyframeMap,
+  KeyframeProperty,
+} from './types'
 
 /**
  * Keyframe engine, per-property animation for clips.
@@ -54,6 +61,18 @@ export const ANIMATABLE_PROPERTIES: readonly KeyframeProperty[] = [
 
 export function isAnimatableProperty(p: string): p is KeyframeProperty {
   return (ANIMATABLE_PROPERTIES as readonly string[]).includes(p)
+}
+
+/**
+ * The property's default easing for NEW keyframes; absent reads as linear.
+ * Both authoring sites (the diamond seed and a slider write on an animated
+ * property) stamp this, so a project can carry its own curve style.
+ */
+export function keyframeDefaultEasing(
+  defaults: KeyframeDefaults | undefined,
+  property: KeyframeProperty,
+): KeyframeInterpolation {
+  return defaults?.[property] ?? 'linear'
 }
 
 /** The property's static (non-animated) value on a clip, or the default. */

@@ -28,6 +28,7 @@ import type {
   Clip,
   Doc,
   Keyframe,
+  KeyframeDefaults,
   KeyframeMap,
   KeyframeProperty,
   Marker,
@@ -139,6 +140,7 @@ export function deserializeDoc(data: unknown): {
   )
 
   const projectMarkers = hydrateMarkers(projectRaw.markers)
+  const projectDefaults = hydrateKeyframeDefaults(projectRaw.keyframeDefaults)
   const project: Project = {
     id: typeof projectRaw.id === 'string' ? projectRaw.id : 'proj_loaded',
     name: typeof projectRaw.name === 'string' ? projectRaw.name : 'Imported Project',
@@ -150,6 +152,7 @@ export function deserializeDoc(data: unknown): {
     height: clamp(Math.round(numOr(projectRaw.height, 1080)), PROJECT_MIN_H, PROJECT_MAX_H),
     fps: clamp(Math.round(numOr(projectRaw.fps, 30)), FPS_MIN, FPS_MAX),
     ...(projectMarkers ? { markers: projectMarkers } : {}),
+    ...(projectDefaults ? { keyframeDefaults: projectDefaults } : {}),
     tracks: (projectRaw.tracks as Record<string, unknown>[]).map((t) => ({
       id: typeof t.id === 'string' ? t.id : `track_${Math.random().toString(36).slice(2)}`,
       kind: (t.kind === 'audio' || t.kind === 'text'
@@ -343,6 +346,22 @@ function hydrateMarkers(raw: unknown): Marker[] | undefined {
   if (markers.length === 0) return undefined
   markers.sort((a, b) => a.time - b.time)
   return markers
+}
+
+/**
+ * Per-property easing defaults from a file: unknown property keys and unknown
+ * names are dropped (the same trust boundary every hydrated field uses), and a
+ * map with nothing left is absent rather than empty.
+ */
+function hydrateKeyframeDefaults(raw: unknown): KeyframeDefaults | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const defaults: KeyframeDefaults = {}
+  for (const [property, name] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isAnimatableProperty(property)) continue
+    if (!isKeyframeInterpolation(name)) continue
+    defaults[property] = name
+  }
+  return Object.keys(defaults).length === 0 ? undefined : defaults
 }
 
 /**

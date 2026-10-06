@@ -65,7 +65,7 @@ http://localhost:3000` exits 7). If the user started it, leave it running.
 - `src/app/` — `layout.tsx` (dark `<html>`, fonts, Toaster), `page.tsx`, `globals.css` (tokens),
   `icon.svg`.
 - `src/lib/editor/__tests__/` — all tests (`*.test.ts`), plus the mocked browser harness in `mocks/`.
-- `e2e/battery.sh`: 45-step UI battery, first step is the gate login (needs the dev server +
+- `e2e/battery.sh`: 46-step UI battery, first step is the gate login (needs the dev server +
   `agent-browser`; set `GATE_PASSWORD` when the gate is active).
 - `public/samples/` — bundled demo media used by "Load sample media".
 

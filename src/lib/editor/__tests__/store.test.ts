@@ -62,6 +62,27 @@ describe('history', () => {
     expect(useEditorStore.getState().doc).toEqual(withClip)
   })
 
+  it('setKeyframeDefault is one history entry and undo restores the previous default', () => {
+    // The defaults map lives inside the Doc, so this is the generic history
+    // path; the test pins that the command really goes through it (one entry
+    // per press, no stray mutation of the snapshot).
+    const store = useEditorStore.getState()
+    store.apply({ type: 'setKeyframeDefault', property: 'opacity', interpolation: 'easeIn' })
+    expect(useEditorStore.getState().doc.project.keyframeDefaults).toEqual({ opacity: 'easeIn' })
+    expect(useEditorStore.getState().past).toHaveLength(1)
+
+    useEditorStore
+      .getState()
+      .apply({ type: 'setKeyframeDefault', property: 'opacity', interpolation: 'easeOut' })
+    expect(useEditorStore.getState().doc.project.keyframeDefaults).toEqual({ opacity: 'easeOut' })
+    expect(useEditorStore.getState().past).toHaveLength(2)
+
+    useEditorStore.getState().undo()
+    expect(useEditorStore.getState().doc.project.keyframeDefaults).toEqual({ opacity: 'easeIn' })
+    useEditorStore.getState().redo()
+    expect(useEditorStore.getState().doc.project.keyframeDefaults).toEqual({ opacity: 'easeOut' })
+  })
+
   it('multiple applies build a stack; undo unwinds in order', () => {
     addTestClip()
     useEditorStore.getState().apply({ type: 'setProjectSettings', patch: { name: 'A' } })

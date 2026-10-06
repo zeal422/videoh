@@ -6,6 +6,7 @@ import {
   clampPropertyValue,
   evaluateKeyframes,
   isKeyframeInterpolation,
+  keyframeDefaultEasing,
   sanitizeKeyframes,
   splitKeyframeMap,
   staticPropertyValue,
@@ -21,6 +22,16 @@ function clip(overrides: Partial<Clip> = {}): Clip {
 }
 
 const kf = (time: number, value: number): Keyframe => ({ time, value })
+
+describe('keyframeDefaultEasing', () => {
+  it('reads the property default and falls back to linear', () => {
+    expect(keyframeDefaultEasing(undefined, 'opacity')).toBe('linear')
+    expect(keyframeDefaultEasing({}, 'opacity')).toBe('linear')
+    expect(keyframeDefaultEasing({ opacity: 'easeIn' }, 'opacity')).toBe('easeIn')
+    // Per property: another property with no entry still reads linear.
+    expect(keyframeDefaultEasing({ opacity: 'easeIn' }, 'volume')).toBe('linear')
+  })
+})
 
 describe('evaluateKeyframes', () => {
   const curve: Keyframe[] = [kf(0, 0), kf(2, 10)]

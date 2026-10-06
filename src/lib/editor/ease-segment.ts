@@ -17,7 +17,7 @@
  */
 
 import { EASING_PRESETS, cubicBezier, cubicBezierArea, makeSolveT } from './bezier'
-import type { KeyframeInterpolation } from './types'
+import type { Keyframe, KeyframeInterpolation } from './types'
 
 /** Control quadruple of one side of a segment: cubic-bezier(x1, y1, x2, y2). */
 export type BezierQuad = readonly [number, number, number, number]
@@ -52,6 +52,163 @@ export function withSegmentControls<K>(kf: K, controls: BezierQuad | undefined):
   if (controls) next.easeOut = controls
   else delete next.easeOut
   return next
+}
+
+/**
+ * The straight line's canonical controls: a cubic with all four control
+ * points on y = x, so `cubicBezier` returns the identity function. The base
+ * for a segment that has no stored quad yet (the handles start here) and the
+ * fallback the graph reports when nothing is stored.
+ */
+export const LINEAR_QUAD: BezierQuad = [1 / 3, 1 / 3, 2 / 3, 2 / 3]
+
+/**
+ * The same segment read right-to-left: [(1-x2), (1-y2), (1-x1), (1-y1)].
+ * An involution: the same call mirrors a stored quad for a reversed row's
+ * drawing and un-mirrors an edited quad on the way back to storage, which is
+ * what keeps the mirrored row's draw and drag one rule instead of two.
+ */
+export function mirrorQuad(controls: BezierQuad): BezierQuad {
+  const [x1, y1, x2, y2] = controls
+  return [1 - x2, 1 - y2, 1 - x1, 1 - y1]
+}
+
+/**
+ * `controls` with one handle moved to `at`, both clamped to [0, 1].
+ * `out` = (x1, y1), `in` = (x2, y2).
+ */
+export function withQuadHandle(
+  controls: BezierQuad,
+  which: 'out' | 'in',
+  at: { x: number; y: number },
+): BezierQuad {
+  const x = Math.max(0, Math.min(1, at.x))
+  const y = Math.max(0, Math.min(1, at.y))
+  return which === 'out' ? [x, y, controls[2], controls[3]] : [controls[0], controls[1], x, y]
+}
+
+/**
+ * The picker's stamp rule, extracted from the panel: name plus the preset's
+ * exact quad, or name only for linear. The name stays the display shorthand;
+ * the quad is what a later split or trim subdivides, so both must be written
+ * together.
+ */
+export function withEasing(kf: Keyframe, interpolation: KeyframeInterpolation): Keyframe {
+  const controls = presetControls(interpolation)
+  if (!controls) return withSegmentControls({ ...kf, interpolation }, undefined)
+  // A fresh array, not the shared preset tuple: the result lands in the doc.
+  const copy: BezierQuad = [controls[0], controls[1], controls[2], controls[3]]
+  return withSegmentControls({ ...kf, interpolation }, copy)
+}
+
+/** True when two quads hold the same four numbers (absent matches absent). */
+function sameQuad(a: BezierQuad | undefined, b: BezierQuad | undefined): boolean {
+  if (!a || !b) return a === b
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3]
+}
+
+/**
+ * The preset a quad lands on, with its canonical controls. The comparison is
+ * tolerant on purpose: mirroring a preset's numbers arithmetically lands a
+ * floating-point step off (1 - 0.58 is not 0.42), and storing that step would
+ * stop `displayedInterpolation`'s exact match from naming the segment. A
+ * mirrored preset must therefore store the preset's own numbers again.
+ */
+function presetFor(
+  quad: BezierQuad,
+): { name: KeyframeInterpolation; controls: BezierQuad } | undefined {
+  const names = Object.keys(EASING_PRESETS) as (keyof typeof EASING_PRESETS)[]
+  const name = names.find((n) => EASING_PRESETS[n].every((v, i) => Math.abs(v - quad[i]) < 1e-9))
+  if (!name) return undefined
+  const controls = EASING_PRESETS[name]
+  return { name, controls: [controls[0], controls[1], controls[2], controls[3]] }
+}
+
+/**
+ * Keeps every authored segment shape on the keyframe that STARTS its segment
+ * after the caller REORDERS the same keyframes (a dot dragged or nudged past a
+ * neighbour). A plain time sort would silently move the curves: the new start
+ * of a pair carries no quad, so its segment draws linear, while the old start
+ * keeps a quad for a segment that no longer begins there.
+ *
+ * Only an index-aligned write that moves exactly ONE keyframe's time counts as
+ * a reorder, which is exactly the drag and nudge shape; structural writes (a
+ * split, a trim, a keyframe added or removed) pass through untouched, and so
+ * does a re-insert at the playhead, which shifts the tail by one index (on a
+ * plateau, where the values and the shaping all coincide, that shift looks
+ * aligned and would otherwise read as a reorder).
+ * A pair that stays adjacent keeps its shape, MIRRORED when the pair now runs
+ * the other way (reading a curve backwards is its mirror, so easeOut reads as
+ * easeIn and easeInOut as itself) and named for the mirrored preset, or left
+ * linear when no preset matches. A keyframe that starts no preserved pair
+ * starts linear again, name included, so a stale quad cannot resurface on the
+ * next keyframe added after it.
+ *
+ * Returns the keyframes in TIME ORDER: the sort is what the reorder detection
+ * needs, and the command sanitizes (and sorts) the result anyway.
+ */
+export function rehomeSegmentShapes(
+  before: readonly Keyframe[],
+  incoming: readonly Keyframe[],
+): Keyframe[] {
+  if (before.length !== incoming.length || before.length < 2) return [...incoming]
+  // A malformed write (a non-finite time from a foreign caller) must not read
+  // as a reorder: sanitize drops those entries after this runs, and sorting
+  // around NaN would shuffle the array underneath that filter.
+  if (!incoming.every((k) => Number.isFinite(k.time))) return [...incoming]
+  const indexAligned = incoming.every((k, i) => {
+    const b = before[i]
+    return (
+      k.value === b.value &&
+      (k.interpolation ?? 'linear') === (b.interpolation ?? 'linear') &&
+      sameQuad(k.easeOut, b.easeOut)
+    )
+  })
+  if (!indexAligned) return [...incoming]
+  // A reorder moves ONE keyframe in time: the dot drag writes that one time and
+  // leaves every other field of every keyframe byte-identical, and the keyboard
+  // nudge is the same write. Two or more moved times mean the array was
+  // rebuilt (see the doc above), not reordered.
+  let movedTimes = 0
+  for (let i = 0; i < incoming.length; i++) {
+    if (incoming[i].time !== before[i].time) movedTimes++
+  }
+  if (movedTimes !== 1) return [...incoming]
+  const order = incoming.map((_, i) => i).sort((a, b) => incoming[a].time - incoming[b].time)
+  // Stored arrays are always sorted: an already sorted write moved nothing.
+  if (order.every((index, position) => index === position)) return [...incoming]
+
+  const shape = new Map<number, { quad?: BezierQuad; interpolation: KeyframeInterpolation }>()
+  for (let p = 0; p + 1 < order.length; p++) {
+    const u = order[p]
+    const v = order[p + 1]
+    if (v === u + 1) {
+      // The same neighbours in the same direction: the quad already sits on u.
+      shape.set(u, {
+        quad: segmentControls(before[u]),
+        interpolation: before[u].interpolation ?? 'linear',
+      })
+    } else if (u === v + 1) {
+      // The pair runs the other way now, and the old start (v) authored it.
+      const authored = segmentControls(before[v])
+      const mirrored = authored && mirrorQuad(authored)
+      const preset = mirrored && presetFor(mirrored)
+      shape.set(u, {
+        quad: preset ? preset.controls : mirrored,
+        interpolation: preset ? preset.name : (before[v].interpolation ?? 'linear'),
+      })
+    }
+    // Any other pair was not adjacent before: it is a NEW segment, so it stays
+    // linear (no entry), and its old shape is dropped with it.
+  }
+  const last = order[order.length - 1]
+  return order.map((index) => {
+    const outgoing = index === last ? undefined : shape.get(index)
+    return withSegmentControls<Keyframe>(
+      { ...incoming[index], interpolation: outgoing?.interpolation ?? 'linear' },
+      outgoing?.quad,
+    )
+  })
 }
 
 /**

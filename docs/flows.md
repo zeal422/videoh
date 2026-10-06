@@ -173,15 +173,26 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
   through to the track below. When opacity (or any animatable property) has keyframes, the curve
   replaces the static value during preview and export alike.
 - **Keyframes and Effect Controls**: selecting a clip shows the Clip / Effect Controls tabs. Each
-  animatable property row has a keyframe diamond (add/remove at the playhead) and, once animated, a
-  light graph whose dots drag in time (one drag = one undo step). Keyframe times are clip-local, so
+  animatable property row has a keyframe diamond (add/remove at the playhead), an easing picker that
+  is always visible (on a property with no curve it stores that property's default easing for new
+  keyframes), and, once animated, a light graph whose dots drag in time (one drag = one undo step).
+  The graph draws every segment's real bezier shape, and the active segment carries two handles: a
+  drag or the arrow keys shapes that segment's quad beyond the presets, one undo step per drag. The
+  picker and the handles edit the active segment's start keyframe. Keyframe times are clip-local, so
   moves and duplicates carry their animation along and splitting redistributes the curves (exact
   for every easing: an eased segment carries the exact bezier data of its shape, and a cut
   subdivides that bezier with de Casteljau so both halves re-time the original). A head trim of a
   ramped clip rebases the curve the same way, so the kept span keeps reading the frames it read
-  before the cut. A reversed clip's time-remapping row mirrors its axis (the value, the dots, and
-  the keyframe the easing picker and the diamond target all measure on the mirrored time
-  `sourceTimeAt` reads), and the picture-only rows stay hidden for a clip that carries no picture.
+  before the cut. A reversed clip's time-remapping row mirrors its axis (the value, the dots and
+  the drawn curve all measure on the mirrored time `sourceTimeAt` reads, the handles and the picker
+  edit the segment's start keyframe on that axis, and the diamond still targets the keyframe the
+  mirrored playhead sits nearest), and the picture-only rows stay hidden for a clip that carries no
+  picture.
+- **Dragging a keyframe dot past its neighbour** keeps the segment's shape on its pair. A segment's
+  easing lives on the keyframe that STARTS it, so a crossing re-homes the curve onto the new start,
+  mirrored when the pair now runs the other way and named for the mirrored preset (`easeOut` reads as
+  `easeIn`), while a pair that was not adjacent before starts linear. The dot under the pointer keeps
+  following it across the swap, and the whole drag stays one undo step.
 - **Rate stretch (Alt-drag a clip edge)** keeps the source span fixed and re-derives the speed from
   the new duration (clamped 0.25x to 4x); a clip left over-consuming a shorter relinked asset has the
   span clamped to the readable tail so the drag still applies (when even the minimum span cannot fit,

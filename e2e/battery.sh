@@ -858,6 +858,264 @@ f05_reverse_frame() {
   true
 }
 
+# ----- F5 keyframe curve editing, proved in a real browser -----
+# The curve, the handles, the active-quad attribute and the easing defaults
+# are locked in jsdom (effect-controls-ui.render.test.tsx); this walks the
+# whole chain on real elements: seed a keyframe with the diamond, write a
+# SECOND one with the opacity slider (two keyframes are what make a segment,
+# and only a segment has handles), press a preset while the playhead sits on
+# the segment's start keyframe, arrow-nudge the outgoing handle, drag the
+# incoming one with a real pointer, then presses `Ease out` so the outgoing
+# handle sits EXACTLY on the first dot and drags THAT DOT with real mouse input
+# (the one hit-test the overlay could steal, and the only one jsdom cannot see),
+# and finally undoes every commit so the clip goes
+# back exactly as the later steps expect it. Rides on f05_reverse_frame's
+# exact result: the first video part sits at 0.00..1.00, so a keyframe at the
+# clip start plus one on the slider make a segment inside the clip.
+f05b_curve_handles() {
+  local part; part=$(firstref 'button "Clip sample-video.mp4 from 0.00 to 1.00 seconds"')
+  [ -n "$part" ] || { echo "f05b: the 1.00s video part is missing" >&2; return 1; }
+  ab scrollintoview "@$part" >/dev/null 2>&1 && sleeps 0.2
+  ab click "@$part" >/dev/null 2>&1 && sleeps 0.4
+  [ "$(ring_count)" -ge 1 ] || { echo "f05b: the video part did not select" >&2; return 1; }
+
+  # The tab is component state an earlier step may have left on the Clip tab,
+  # so click Effect Controls explicitly.
+  ab eval 'document.querySelector("[data-testid=inspector-tab-effects]").click()' >/dev/null 2>&1
+  sleeps 0.4
+  insp '[data-testid=prop-opacity]'
+  [ "$(evaln 'document.querySelectorAll("[data-testid=prop-opacity]").length')" = "1" ] || {
+    echo "f05b: the opacity row is missing on a video clip" >&2
+    return 1
+  }
+
+  # Seed the first keyframe at the clip start, then park the playhead later
+  # and step the opacity slider: an animated property writes a keyframe at
+  # the playhead, and a keyboard step on the slider commits immediately
+  # (Radix semantics), so the second keyframe is one undo entry like the seed.
+  ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1 && sleeps 0.4
+  ab eval 'document.querySelector("[data-testid=kf-toggle-opacity]").click()' >/dev/null 2>&1
+  sleeps 0.4
+  [ "$(evaln 'document.querySelector("[data-testid=kf-toggle-opacity]").getAttribute("data-active")')" = "true" ] || {
+    echo "f05b: the diamond did not seed an opacity keyframe" >&2
+    return 1
+  }
+  local i
+  for i in $(seq 1 15); do ab press ArrowRight >/dev/null 2>&1; done # 15 frames = 0.50s
+  sleeps 0.4
+  ab find role slider click --name 'Opacity value' >/dev/null 2>&1 || {
+    echo "f05b: the opacity slider is missing" >&2
+    return 1
+  }
+  ab press ArrowLeft >/dev/null 2>&1 && sleeps 0.4
+  [ "$(evaln 'document.querySelectorAll("[data-testid=kf-dot-opacity-1]").length')" = "1" ] || {
+    echo "f05b: the slider step did not write a second keyframe" >&2
+    return 1
+  }
+  # One keyframe has no segment, so no handles: this is the cue the pair landed.
+  [ "$(evaln 'document.querySelectorAll("[data-testid=kf-handle-opacity-out], [data-testid=kf-handle-opacity-in]").length')" = "2" ] || {
+    echo "f05b: a two-keyframe segment drew no handles" >&2
+    return 1
+  }
+
+  # The curve SVG must be exactly the row's box. It is a replaced element with a
+  # square viewBox, so it sizes itself from the 1:1 intrinsic ratio whenever a
+  # side is left to `auto`: `inset-0` alone makes the box as tall as the row is
+  # WIDE and a height alone makes it as narrow as the row is tall. Either way the
+  # viewBox stretches with the box and the drawn curve stops meeting the
+  # percent-placed dots. jsdom cannot see layout, so this is the only lock on the
+  # two boxes agreeing.
+  local geom svgW svgH rowW rowH
+  geom=$(evaln '(() => {
+    const s = document.querySelector("[data-testid=kf-curve-opacity]");
+    const g = document.querySelector("[data-testid=kf-graph-opacity]");
+    if (!s || !g) return "missing";
+    const r = s.getBoundingClientRect();
+    return `${r.width.toFixed(2)} ${r.height.toFixed(2)} ${g.clientWidth} ${g.clientHeight}`;
+  })()')
+  svgW=''; svgH=''; rowW=''; rowH=''
+  read -r svgW svgH rowW rowH <<<"$geom"
+  awk -v sw="$svgW" -v sh="$svgH" -v rw="$rowW" -v rh="$rowH" 'BEGIN {
+    exit !(rw > 10 && rh > 10 && sw > rw - 1 && sw < rw + 1 && sh > rh - 1 && sh < rh + 1)
+  }' || {
+    echo "f05b: the curve SVG is ${svgW}x${svgH} against a ${rowW}x${rowH} row (the curve is stretched)" >&2
+    return 1
+  }
+
+  # Park ON the seed keyframe before pressing a preset: the picker edits the
+  # active segment's start keyframe, exactly what the handles edit, so both
+  # targets agree deterministically here. The picker is always mounted, one per
+  # row, so click the row's own button by testid rather than a name several
+  # rows share.
+  ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1 && sleeps 0.4
+  ab eval 'document.querySelector("[data-testid=kf-ease-opacity-easeInOut]").click()' >/dev/null 2>&1
+  sleeps 0.4
+  local quad
+  quad=$(evaln 'document.querySelector("[data-testid=kf-graph-opacity]").getAttribute("data-active-quad")')
+  [ "$quad" = "0.420,0.000,0.580,1.000" ] || {
+    echo "f05b: the ease-in/out preset did not land on the segment (quad=$quad)" >&2
+    return 1
+  }
+
+  # Arrow-nudge the outgoing handle twice: y climbs 0.02 per press, and the
+  # write normalizes the name to linear (a hand-made shape matches no preset),
+  # so no button may read pressed afterwards.
+  ab eval 'document.querySelector("[data-testid=kf-handle-opacity-out]").focus()' >/dev/null 2>&1
+  ab press ArrowUp >/dev/null 2>&1 && sleeps 0.3
+  ab press ArrowUp >/dev/null 2>&1 && sleeps 0.4
+  quad=$(evaln 'document.querySelector("[data-testid=kf-graph-opacity]").getAttribute("data-active-quad")')
+  [ "$quad" = "0.420,0.040,0.580,1.000" ] || {
+    echo "f05b: the arrow nudge did not move the outgoing handle (quad=$quad)" >&2
+    return 1
+  }
+  [ "$(evaln '[...document.querySelectorAll("[data-testid^=kf-ease-opacity-]")].filter((b) => b.getAttribute("aria-pressed") === "true").length')" = "0" ] || {
+    echo "f05b: a preset still reads pressed after the keyboard edit" >&2
+    return 1
+  }
+
+  # A real pointer drag on the incoming handle. The pointerdown goes to the
+  # element (the React handler begins the transient); the moves and the up go
+  # to the gesture's own window listeners, which attach on the render that
+  # follows the press, so the press is its own eval and then we wait. Same
+  # protocol as the dot drag and the rate-stretch step.
+  local started
+  started=$(evaln '(() => {
+    const h = document.querySelector("[data-testid=kf-handle-opacity-in]");
+    if (!h) return "missing";
+    const r = h.getBoundingClientRect();
+    h.dispatchEvent(new PointerEvent("pointerdown", {
+      pointerId: 11, pointerType: "mouse", isPrimary: true, bubbles: true,
+      cancelable: true, composed: true, button: 0, buttons: 1,
+      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+    }));
+    return "ok";
+  })()')
+  [ "$started" = "ok" ] || { echo "f05b: could not start the handle drag ($started)" >&2; return 1; }
+  sleeps 0.4
+  # The drag writes the quad in the segment's own BOX, so the expected x
+  # delta is the strip move divided by the segment's share of the strip (a
+  # full-width segment would hide a strip-normalized read; this one spans
+  # half of it, so the two differ by 2x). The segment path's first and last
+  # x are its box ends in strip percent; both are read before the moves.
+  local dragged
+  dragged=$(evaln '(() => {
+    const h = document.querySelector("[data-testid=kf-handle-opacity-in]");
+    const w = document.querySelector("[data-testid=kf-graph-opacity]");
+    const seg = document.querySelector("[data-testid^=kf-seg-opacity-]");
+    if (!h || !w || !seg) return "missing";
+    const hr = h.getBoundingClientRect();
+    const wr = w.getBoundingClientRect();
+    const d = seg.getAttribute("d") || "";
+    const nums = d.match(/-?\d+(?:\.\d+)?/g) || [];
+    const spanPct = nums.length >= 4 ? Number(nums[nums.length - 2]) - Number(nums[0]) : 0;
+    if (!(spanPct > 0.01)) return "no-span";
+    const x = hr.left + hr.width / 2;
+    const y = hr.top + hr.height / 2;
+    const dx = Math.round(wr.width * 0.1);
+    const dy = Math.round(wr.height * 0.5);
+    const expected = (dx / wr.width) * 100 / spanPct;
+    const ev = (type, cx, cy, buttons) => new PointerEvent(type, {
+      pointerId: 11, pointerType: "mouse", isPrimary: true, bubbles: true,
+      cancelable: true, composed: true, button: 0, buttons,
+      clientX: cx, clientY: cy,
+    });
+    window.dispatchEvent(ev("pointermove", x + dx, y + dy, 1));
+    window.dispatchEvent(ev("pointermove", x + dx, y + dy, 1));
+    window.dispatchEvent(ev("pointerup", x + dx, y + dy, 0));
+    return "ok " + expected.toFixed(4);
+  })()')
+  local dragStatus dragExpected
+  read -r dragStatus dragExpected <<<"$dragged"
+  [ "$dragStatus" = "ok" ] || { echo "f05b: could not dispatch the handle drag ($dragged)" >&2; return 1; }
+  sleeps 0.5
+
+  # The drag must move the INCOMING pair only, by the BOX delta it should: a
+  # strip-normalized x read would move this one by half the expected amount
+  # and would still clear a mere "> 0.02" check.
+  local after
+  after=$(evaln 'document.querySelector("[data-testid=kf-graph-opacity]").getAttribute("data-active-quad")')
+  awk -v before="$quad" -v now="$after" -v want="$dragExpected" 'BEGIN {
+    split(before, b, ","); split(now, n, ",");
+    ok = (n[1] > b[1] - 0.011 && n[1] < b[1] + 0.011) &&
+         (n[2] > b[2] - 0.011 && n[2] < b[2] + 0.011) &&
+         (n[3] > b[3] + want - 0.05 && n[3] < b[3] + want + 0.05);
+    exit !ok;
+  }' || {
+    echo "f05b: the drag did not write the box delta (before=$quad after=$after want=$dragExpected)" >&2
+    return 1
+  }
+
+  # The corner lock: `Ease out`'s first control point IS the pair's start point,
+  # so the outgoing handle sits exactly on dot 0. A real pointer press there must
+  # reach the DOT (the overlay is pointer-events-none and the dot paints above
+  # the handle), and a drag must move the dot's TIME while the quad stays put.
+  # Only real input is hit-tested: `fireEvent` bypasses hit-testing and jsdom has
+  # no layout, which is why this lives here and not in a render test.
+  ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1 && sleeps 0.4
+  ab eval 'document.querySelector("[data-testid=kf-ease-opacity-easeOut]").click()' >/dev/null 2>&1
+  sleeps 0.4
+  quad=$(evaln 'document.querySelector("[data-testid=kf-graph-opacity]").getAttribute("data-active-quad")')
+  [ "$quad" = "0.000,0.000,0.580,1.000" ] || {
+    echo "f05b: the ease-out preset did not land on the segment (quad=$quad)" >&2
+    return 1
+  }
+  local corner
+  corner=$(evaln '(() => {
+    const dot = document.querySelector("[data-testid=kf-dot-opacity-0]");
+    const handle = document.querySelector("[data-testid=kf-handle-opacity-out]");
+    const graph = document.querySelector("[data-testid=kf-graph-opacity]");
+    if (!dot || !handle || !graph) return "missing";
+    const d = dot.getBoundingClientRect();
+    const h = handle.getBoundingClientRect();
+    const g = graph.getBoundingClientRect();
+    const cx = Math.round(d.left + d.width / 2);
+    const cy = Math.round(d.top + d.height / 2);
+    const hit = document.elementFromPoint(cx, cy);
+    const step = Math.round(g.width * 0.1);
+    const expected = ((cx + step - g.left) / g.width) * Number(dot.getAttribute("aria-valuemax"));
+    const overlap = Math.abs(d.left - h.left) < 0.5 && Math.abs(d.top - h.top) < 0.5;
+    return `${cx} ${cy} ${step} ${expected.toFixed(4)} ${hit?.getAttribute("data-testid")} ${overlap}`;
+  })()')
+  local cx cy step wantTime hitName overlap
+  cx=''; cy=''; step=''; wantTime=''; hitName=''; overlap=''
+  read -r cx cy step wantTime hitName overlap <<<"$corner"
+  [ "$hitName" = "kf-dot-opacity-0" ] || {
+    echo "f05b: the corner press would hit ${hitName:-nothing}, not the dot" >&2
+    return 1
+  }
+  [ "$overlap" = "true" ] || { echo "f05b: the ease-out handle is not on dot 0" >&2; return 1; }
+  ab mouse move "$cx" "$cy" >/dev/null 2>&1; sleeps 0.2
+  ab mouse down >/dev/null 2>&1; sleeps 0.3
+  ab mouse move "$((cx + 3))" "$cy" >/dev/null 2>&1; sleeps 0.2
+  ab mouse move "$((cx + step))" "$cy" >/dev/null 2>&1; sleeps 0.3
+  ab mouse up >/dev/null 2>&1; sleeps 0.5
+  local dotAfter quadAfter
+  dotAfter=$(evaln 'document.querySelector("[data-testid=kf-dot-opacity-0]").getAttribute("aria-valuenow")')
+  quadAfter=$(evaln 'document.querySelector("[data-testid=kf-graph-opacity]").getAttribute("data-active-quad")')
+  [ "$quadAfter" = "0.000,0.000,0.580,1.000" ] || {
+    echo "f05b: the corner drag moved the handle, not the dot (quad=$quadAfter)" >&2
+    return 1
+  }
+  awk -v got="$dotAfter" -v want="$wantTime" 'BEGIN { exit !(got > want - 0.02 && got < want + 0.02) }' || {
+    echo "f05b: the corner drag did not move the dot (time=$dotAfter want=$wantTime)" >&2
+    return 1
+  }
+
+  # Restore: undo until the curve is gone. The commit count is not pinned (a
+  # slider click can commit a second entry), so the loop watches for the
+  # keyframes to clear and then asserts the clip is unanimated again.
+  local guard
+  for guard in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    [ "$(evaln 'document.querySelectorAll("[data-testid=kf-graph-opacity]").length')" = "0" ] && break
+    ab press Control+z >/dev/null 2>&1 && sleeps 0.4
+  done
+  [ "$(evaln 'document.querySelectorAll("[data-testid=kf-graph-opacity]").length')" = "0" ] || {
+    echo "f05b: undo did not restore the clip (the curve is still on the row)" >&2
+    return 1
+  }
+  true
+}
+
 # ----- F2/F8 clipboard, duplicate, ripple -----
 # Group semantics (actions.ts): duplicate/copy/ripple expand the selection to
 # its link groups, and a plain click selects ONE clip (the ring is group-aware
@@ -1626,6 +1884,7 @@ step "f05 audio: mute + reduce-noise switches work" f05_mute
 step "f05 audio: gain slider reaches 200%"         f05_gain
 step "f05 reverse: picture-only rows + the mirrored curve" f05_reverse
 step "f05 reverse: trim keeps the parked frame in pixels" f05_reverse_frame
+step "f05b curve: handle drag reshapes an eased segment" f05b_curve_handles
 step "f08 ripple: Shift+Delete removes the pasted copy" f08_ripple_delete
 step "menus: all 9 application menus open"         menus_open
 step "menus: View > Snapping toggles off"          menu_snapping

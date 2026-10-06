@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { InspectorPanel } from '@/components/editor/InspectorPanel'
@@ -603,15 +603,18 @@ describe('InspectorPanel tabs', () => {
     expect(screen.getByTestId('kf-dot-timeScale-1')).toHaveStyle({ left: '0%' })
   })
 
-  it('targets the mirrored keyframe with the easing picker on a reversed clip', async () => {
-    // The picker edits the keyframe nearest the playhead, so it has to measure on
-    // the same mirrored axis as the value and the dots; measuring on the plain
-    // local time edits the other end of the curve.
+  it('measures the picker target on the mirrored axis (the segment start rule)', async () => {
+    // The picker edits the active segment's START keyframe on the row's own
+    // axis. The nearest-keyframe rule lands on the same keyframe here, so this
+    // case cannot tell the two targets apart; it DOES catch a read that forgot
+    // the mirror: a plain-local-time read would select the 0-3 segment and
+    // press its start (time 0) instead of time 3.
     const { doc } = docWithSelectedVideoClip()
     doc.project.tracks[0].clips[0].keyframes = {
       timeScale: [
         { time: 0, value: 1, interpolation: 'easeIn' },
-        { time: 6, value: 4, interpolation: 'easeOut' },
+        { time: 3, value: 2, interpolation: 'easeOut' },
+        { time: 6, value: 4, interpolation: 'linear' },
       ],
     }
     const reversed = structuredClone(doc)
@@ -620,7 +623,7 @@ describe('InspectorPanel tabs', () => {
     render(<InspectorPanel />)
     await userEvent.click(screen.getByTestId('inspector-tab-effects'))
 
-    // Mirrored playhead 6 - 2 = 4 is nearer curve time 6 than curve time 0.
+    // Mirrored playhead 6 - 2 = 4 starts (and is nearest) curve time 3.
     expect(screen.getByTestId('kf-ease-timeScale-easeOut')).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByTestId('kf-ease-timeScale-easeIn')).toHaveAttribute('aria-pressed', 'false')
   })
@@ -1055,5 +1058,559 @@ describe('InspectorPanel tabs', () => {
     render(<InspectorPanel />)
     await userEvent.click(screen.getByTestId('inspector-tab-effects'))
     expect(screen.getByTestId('prop-timeScale')).toBeInTheDocument()
+  })
+})
+
+describe('keyframe curve, handles and easing defaults', () => {
+  function seed(mutate: (clip: Clip) => void, playhead: number) {
+    const { doc } = docWithSelectedVideoClip()
+    mutate(doc.project.tracks[0].clips[0])
+    useEditorStore.setState({ doc: structuredClone(doc), playhead })
+  }
+
+  function sizeGraph(property = 'opacity') {
+    const graph = screen.getByTestId(`kf-graph-${property}`)
+    graph.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 200,
+        bottom: 40,
+        width: 200,
+        height: 40,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect
+  }
+
+  it('draws an eased segment as a cubic and reports the active quad', async () => {
+    // Clip duration 6: the dots sit at 16.667% / 0% and 83.333% / 20% (from
+    // the bottom); an easeInOut segment's controls are its box fractions of
+    // that span.
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 1, value: 1, interpolation: 'easeInOut' },
+          { time: 5, value: 0.2 },
+        ],
+      }
+    }, 1.1)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    expect(screen.getByTestId('kf-seg-opacity-0')).toHaveAttribute(
+      'd',
+      'M 16.667,0.000 C 44.667,0.000 55.333,80.000 83.333,80.000',
+    )
+    expect(screen.getByTestId('kf-graph-opacity')).toHaveAttribute(
+      'data-active-quad',
+      '0.420,0.000,0.580,1.000',
+    )
+  })
+
+  it('draws a linear segment as a line and reports the canonical linear quad', async () => {
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 1, value: 1 },
+          { time: 5, value: 0.2 },
+        ],
+      }
+    }, 1.1)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    expect(screen.getByTestId('kf-seg-opacity-0')).toHaveAttribute(
+      'd',
+      'M 16.667,0.000 L 83.333,80.000',
+    )
+    expect(screen.getByTestId('kf-graph-opacity')).toHaveAttribute(
+      'data-active-quad',
+      '0.333,0.333,0.667,0.667',
+    )
+  })
+
+  it('draws a subdivided segment from its exact sub-curve, not the preset name', async () => {
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 1, value: 1, interpolation: 'linear', easeOut: [0.29, 0.5, 0.58, 1] },
+          { time: 5, value: 0.2 },
+        ],
+      }
+    }, 1.1)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    expect(screen.getByTestId('kf-seg-opacity-0')).toHaveAttribute(
+      'd',
+      'M 16.667,0.000 C 36.000,40.000 55.333,80.000 83.333,80.000',
+    )
+    expect(screen.getByTestId('kf-graph-opacity')).toHaveAttribute(
+      'data-active-quad',
+      '0.290,0.500,0.580,1.000',
+    )
+  })
+
+  it('draws a reversed timeScale row as the mirrored shape, left to right', async () => {
+    // Reversed: kf0 (time 0) sits at the RIGHT end, kf1 at the left. The drawn
+    // quad is mirrorQuad(stored), one application, never a second flip.
+    seed((clip) => {
+      clip.reverse = true
+      clip.keyframes = {
+        timeScale: [
+          { time: 0, value: 1, interpolation: 'easeIn' },
+          { time: 6, value: 4 },
+        ],
+      }
+    }, 2)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    expect(screen.getByTestId('kf-seg-timeScale-0')).toHaveAttribute(
+      'd',
+      'M 0.000,0.000 C 0.000,0.000 58.000,80.000 100.000,80.000',
+    )
+    expect(screen.getByTestId('kf-graph-timeScale')).toHaveAttribute(
+      'data-active-quad',
+      '0.000,0.000,0.580,1.000',
+    )
+  })
+
+  it('takes the first pair when the playhead precedes the first keyframe', async () => {
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 3, value: 0.4, interpolation: 'easeIn' },
+          { time: 5, value: 0.6 },
+        ],
+      }
+    }, 0)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    expect(screen.getByTestId('kf-graph-opacity')).toHaveAttribute(
+      'data-active-quad',
+      '0.420,0.000,1.000,1.000',
+    )
+    // The picker and the handles agree on that first pair.
+    await userEvent.click(screen.getByTestId('kf-ease-opacity-easeInOut'))
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(kfs?.[0].interpolation).toBe('easeInOut')
+    expect(kfs?.[1].interpolation).toBe('linear')
+  })
+
+  it('omits data-active-quad and the handles when a property has one keyframe', async () => {
+    seed((clip) => {
+      clip.keyframes = { opacity: [{ time: 2, value: 1 }] }
+    }, 2)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    expect(screen.getByTestId('kf-graph-opacity')).not.toHaveAttribute('data-active-quad')
+    expect(screen.queryByTestId('kf-handle-opacity-out')).not.toBeInTheDocument()
+    // No segment exists, so the picker targets the only keyframe (today's rule).
+    expect(screen.getByTestId('kf-ease-opacity-linear')).toHaveAttribute('aria-pressed', 'true')
+    await userEvent.click(screen.getByTestId('kf-ease-opacity-easeIn'))
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(kfs?.[0].interpolation).toBe('easeIn')
+  })
+
+  it('retargets the picker to the active segment start, not the nearest keyframe', async () => {
+    // The playhead sits ON the last keyframe (5). The old nearest-keyframe rule
+    // would press the keyframe at 5; the aligned rule presses the segment's
+    // start (1), because no segment starts at the last keyframe and editing it
+    // changes nothing visible. This is the red-first case for the retarget.
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 1, value: 1, interpolation: 'easeIn' },
+          { time: 5, value: 0.2, interpolation: 'linear' },
+        ],
+      }
+    }, 5)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    await userEvent.click(screen.getByTestId('kf-ease-opacity-easeInOut'))
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(kfs?.[0].interpolation).toBe('easeInOut')
+    expect(kfs?.[1].interpolation).toBe('linear')
+    expect(screen.getByTestId('kf-ease-opacity-easeInOut')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('lays the handles on the active segment and drags the outgoing one in one undo step', async () => {
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 1, value: 1, interpolation: 'easeInOut' },
+          { time: 5, value: 0.2 },
+        ],
+      }
+    }, 1.1)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+    sizeGraph()
+
+    // The outgoing handle starts on the quad's point 0: (0.42, 0) of the box,
+    // so at 44.667% of the width, on the bottom edge.
+    const handle = screen.getByTestId('kf-handle-opacity-out')
+    expect(Number.parseFloat(handle.style.left)).toBeCloseTo(44.667, 3)
+    expect(Number.parseFloat(handle.style.bottom)).toBeCloseTo(100, 6)
+    const pastBefore = useEditorStore.getState().past.length
+    fireEvent.pointerDown(handle, { bubbles: true, pointerId: 5, clientX: 89, clientY: 0 })
+    // To (u, v) = (0.5, 0.625): the middle of the span, 62.5% from the first
+    // keyframe's value to the second's.
+    fireEvent.pointerMove(window, { pointerId: 5, clientX: 100, clientY: 20 })
+    fireEvent.pointerUp(window, { pointerId: 5 })
+
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    // Box fractions, so the x comes back as 0.4999999999999999 (the strip
+    // midpoint is 0.5 of this segment's box): compare with a tolerance.
+    expect(kfs?.[0].easeOut?.[0]).toBeCloseTo(0.5, 6)
+    expect(kfs?.[0].easeOut?.[1]).toBeCloseTo(0.625, 6)
+    expect(kfs?.[0].easeOut?.[2]).toBe(0.58)
+    expect(kfs?.[0].easeOut?.[3]).toBe(1)
+    // The write normalizes the name: a hand-made shape matches no preset, so
+    // the picker shows nothing pressed (the segment still renders eased).
+    expect(kfs?.[0].interpolation).toBe('linear')
+    expect(screen.getByTestId('kf-ease-opacity-easeInOut')).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByTestId('kf-ease-opacity-easeIn')).toHaveAttribute('aria-pressed', 'false')
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+
+    useEditorStore.getState().undo()
+    const undone = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(undone?.[0].interpolation).toBe('easeInOut')
+    expect(undone?.[0].easeOut).toBeUndefined()
+  })
+
+  it('nudges handles with the arrows in stored curve coordinates, clamped', async () => {
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 1, value: 1, interpolation: 'easeInOut' },
+          { time: 5, value: 0.2 },
+        ],
+      }
+    }, 1.1)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    const step = 0.02
+    fireEvent.keyDown(screen.getByTestId('kf-handle-opacity-out'), {
+      key: 'ArrowUp',
+      bubbles: true,
+    })
+    fireEvent.keyDown(screen.getByTestId('kf-handle-opacity-out'), {
+      key: 'ArrowUp',
+      bubbles: true,
+    })
+    fireEvent.keyDown(screen.getByTestId('kf-handle-opacity-out'), {
+      key: 'ArrowLeft',
+      bubbles: true,
+    })
+    // The incoming handle sits on y = 1 already: ArrowUp clamps there.
+    fireEvent.keyDown(screen.getByTestId('kf-handle-opacity-in'), { key: 'ArrowUp', bubbles: true })
+    fireEvent.keyDown(screen.getByTestId('kf-handle-opacity-in'), {
+      key: 'ArrowRight',
+      bubbles: true,
+    })
+
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(kfs?.[0].easeOut).toEqual([0.42 - step, 2 * step, 0.58 + step, 1])
+  })
+
+  it('writes the un-mirrored quad for a mirrored handle drag', async () => {
+    // On a reversed row the stored `out` pair is DRAWN at box point 1, and the
+    // pointer maps back through the same single mirrorQuad conversion: dragging
+    // to (u, v) stores (1-u, 1-v).
+    seed((clip) => {
+      clip.reverse = true
+      clip.keyframes = {
+        timeScale: [
+          { time: 0, value: 1, interpolation: 'easeIn' },
+          { time: 6, value: 4 },
+        ],
+      }
+    }, 2)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+    sizeGraph('timeScale')
+
+    const handle = screen.getByTestId('kf-handle-timeScale-out')
+    // The drawn quad is mirrorQuad(easeIn) = [0, 0, 0.58, 1]; the out handle
+    // sits at its point 1 = (0.58, 1) of the box.
+    expect(Number.parseFloat(handle.style.left)).toBeCloseTo(58, 6)
+    expect(Number.parseFloat(handle.style.bottom)).toBeCloseTo(20, 6)
+    fireEvent.pointerDown(handle, { bubbles: true, pointerId: 5, clientX: 58, clientY: 32 })
+    fireEvent.pointerMove(window, { pointerId: 5, clientX: 100, clientY: 20 })
+    fireEvent.pointerUp(window, { pointerId: 5 })
+
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.timeScale
+    expect(kfs?.[0].easeOut).toEqual([0.5, 0.375, 1, 1])
+    // The drawn quad follows the pointer: stored (0.5, 0.375) mirrors to the
+    // box point (0.5, 0.625) the pointer landed on.
+    expect(screen.getByTestId('kf-graph-timeScale')).toHaveAttribute(
+      'data-active-quad',
+      '0.000,0.000,0.500,0.625',
+    )
+  })
+
+  it('reads the handle x in the segment box, not as a fraction of the strip', async () => {
+    // The segment spans t=1..5 on a 6s clip: 16.667% to 83.333% of the strip.
+    // A pointer at 30% of the strip sits at (30 - 16.667) / 66.667 = 0.2 of
+    // the segment's own box, which is what the quad stores and what the draw
+    // maps through. Reading u off the strip (0.3) redraws the handle 6.667pp
+    // away from the pointer.
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 1, value: 1, interpolation: 'easeInOut' },
+          { time: 5, value: 0.2 },
+        ],
+      }
+    }, 1.1)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+    sizeGraph()
+
+    const handle = screen.getByTestId('kf-handle-opacity-out')
+    fireEvent.pointerDown(handle, { bubbles: true, pointerId: 5, clientX: 89, clientY: 0 })
+    // clientX 60 = 30% of the 200px strip; clientY 12 = 70% up the 40px row.
+    fireEvent.pointerMove(window, { pointerId: 5, clientX: 60, clientY: 12 })
+    fireEvent.pointerUp(window, { pointerId: 5 })
+
+    const quad =
+      useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity?.[0].easeOut
+    expect(quad?.[0]).toBeCloseTo(0.2, 6)
+    // clientY 12 -> vRow 0.7 -> v = (70 - 100) / -80 = 0.375 of the box.
+    expect(quad?.[1]).toBeCloseTo(0.375, 6)
+    expect(quad?.[2]).toBe(0.58)
+    expect(quad?.[3]).toBe(1)
+  })
+
+  it('keeps the quad intact when a handle is pressed and released with no movement', async () => {
+    // A stored hand-made quad: the out pair sits at box (0.2, 0.375), drawn at
+    // 30% of the strip (16.667 + 0.2 * 66.667) and 70% from the bottom.
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 1, value: 1, easeOut: [0.2, 0.375, 0.58, 1] },
+          { time: 5, value: 0.2 },
+        ],
+      }
+    }, 1.1)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+    sizeGraph()
+
+    const handle = screen.getByTestId('kf-handle-opacity-out')
+    expect(Number.parseFloat(handle.style.left)).toBeCloseTo(30, 3)
+    expect(Number.parseFloat(handle.style.bottom)).toBeCloseTo(70, 3)
+    // Press right on the handle and move by zero: nothing may change. A
+    // strip-normalized u would read 0.3 here and corrupt the stored 0.2.
+    fireEvent.pointerDown(handle, { bubbles: true, pointerId: 5, clientX: 60, clientY: 12 })
+    fireEvent.pointerMove(window, { pointerId: 5, clientX: 60, clientY: 12 })
+    fireEvent.pointerUp(window, { pointerId: 5 })
+
+    const quad =
+      useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity?.[0].easeOut
+    expect(quad?.[0]).toBeCloseTo(0.2, 6)
+    expect(quad?.[1]).toBeCloseTo(0.375, 6)
+    expect(quad?.[2]).toBe(0.58)
+    expect(quad?.[3]).toBe(1)
+  })
+
+  it('keeps the eased curve on the pair when a dot is dragged past its neighbour', async () => {
+    // A segment's shape lives on the keyframe that STARTS it, so a plain time
+    // sort would hand the segment to the other keyframe and draw it linear.
+    // Reading the pair's curve backwards is its mirror, so the curve must come
+    // back on the new start as the MIRRORED quad, named for the mirrored preset.
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 1, value: 0.2, interpolation: 'easeOut' },
+          { time: 5, value: 1 },
+        ],
+      }
+    }, 1.1)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+    sizeGraph()
+    const seeded = structuredClone(
+      useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity,
+    )
+
+    const dot = screen.getByTestId('kf-dot-opacity-1')
+    expect(Number.parseFloat(dot.style.left)).toBeCloseTo(83.333, 3)
+    // Drag the later dot (5s of 6s = 83.333%) left past the earlier one: 20 of
+    // the 200px strip is 0.6s, so the pair swaps.
+    fireEvent.pointerDown(dot, { bubbles: true, pointerId: 5, clientX: 166.667, clientY: 60 })
+    fireEvent.pointerMove(window, { pointerId: 5, clientX: 20, clientY: 60 })
+    fireEvent.pointerUp(window, { pointerId: 5 })
+
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    // easeOut [0, 0, 0.58, 1] read right-to-left mirrors to easeIn's preset,
+    // and the old start starts nothing now, so it keeps no shape (a stored quad
+    // under a preset NAME would otherwise resolve back through the name). The
+    // pointer-to-time conversion is floating point, so times compare loosely.
+    expect(kfs?.length).toBe(2)
+    expect(kfs?.[0].time).toBeCloseTo(0.6, 9)
+    expect(kfs?.[0]).toMatchObject({ value: 1, interpolation: 'easeIn', easeOut: [0.42, 0, 1, 1] })
+    expect(kfs?.[1].time).toBeCloseTo(1, 9)
+    expect(kfs?.[1]).toMatchObject({ value: 0.2, interpolation: 'linear' })
+    expect(kfs?.[1].easeOut).toBeUndefined()
+    // The DRAWN segment is still a cubic, not the line a naive sort leaves: the
+    // mirrored quad over the reversed pair (box y is drawn top-down).
+    expect(screen.getByTestId('kf-seg-opacity-0')).toHaveAttribute(
+      'd',
+      'M 10.000,0.000 C 12.800,0.000 16.667,80.000 16.667,80.000',
+    )
+    expect(screen.getByTestId('kf-graph-opacity')).toHaveAttribute(
+      'data-active-quad',
+      '0.420,0.000,1.000,1.000',
+    )
+    // The picker follows the mirrored name, and the drag stays one undo step
+    // that restores the original order, name and quad.
+    expect(screen.getByTestId('kf-ease-opacity-easeIn')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('kf-ease-opacity-easeOut')).toHaveAttribute('aria-pressed', 'false')
+
+    useEditorStore.getState().undo()
+    const undone = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(undone).toEqual(seeded)
+  })
+
+  it('follows the grabbed dot across a neighbour, not its array index', async () => {
+    // The store re-sorts the moment a crossing frame lands (and the reorder
+    // re-homes the pair's curve), so an index captured at pointerdown names
+    // another keyframe afterwards: the grabbed dot then freezes while its
+    // neighbour runs to the pointer, flipping the curve on every frame. The
+    // gesture must follow the keyframe it grabbed, so the dot it passes keeps
+    // its time, its value and its linear reading.
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 1, value: 0.2, interpolation: 'easeOut' },
+          { time: 5, value: 1 },
+        ],
+      }
+    }, 1.1)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+    sizeGraph()
+
+    // Grab the LATER (value 1) dot: 5s of 6s is 83.333% of the 200px strip.
+    const dot = screen.getByTestId('kf-dot-opacity-1')
+    fireEvent.pointerDown(dot, { bubbles: true, pointerId: 5, clientX: 166.667, clientY: 60 })
+    // Three moves, so the drag keeps going AFTER the pair swaps.
+    for (const x of [20, 10, 8]) {
+      fireEvent.pointerMove(window, { pointerId: 5, clientX: x, clientY: 60 })
+    }
+    fireEvent.pointerUp(window, { pointerId: 5 })
+
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    // 8px of 200px is 4% of 6s, so the grabbed dot lands at 0.24s; the dot it
+    // passed stays at 1s. easeOut [0, 0, 0.58, 1] read backwards is easeIn.
+    expect(kfs?.length).toBe(2)
+    expect(kfs?.[0].time).toBeCloseTo(0.24, 9)
+    expect(kfs?.[0]).toMatchObject({ value: 1, interpolation: 'easeIn', easeOut: [0.42, 0, 1, 1] })
+    expect(kfs?.[1].time).toBeCloseTo(1, 9)
+    expect(kfs?.[1]).toMatchObject({ value: 0.2, interpolation: 'linear' })
+    expect(kfs?.[1].easeOut).toBeUndefined()
+  })
+
+  it('shows the picker on an unanimated property and writes the property default', async () => {
+    docWithSelectedVideoClip()
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    // The control was absent entirely before this change (the whole graph hid
+    // behind `animated`), so presence, label and effect are all new.
+    const row = screen.getByTestId('prop-opacity')
+    expect(within(row).getByText('Default easing')).toBeInTheDocument()
+    expect(screen.getByTestId('kf-ease-opacity')).toHaveAttribute(
+      'aria-label',
+      'opacity default easing',
+    )
+    expect(screen.getByTestId('kf-ease-opacity-linear')).toHaveAttribute('aria-pressed', 'true')
+
+    const pastBefore = useEditorStore.getState().past.length
+    await userEvent.click(screen.getByTestId('kf-ease-opacity-easeIn'))
+    expect(useEditorStore.getState().doc.project.keyframeDefaults).toEqual({ opacity: 'easeIn' })
+    expect(screen.getByTestId('kf-ease-opacity-easeIn')).toHaveAttribute('aria-pressed', 'true')
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+
+    // Pressing the already-pressed name is a no-op (no history entry).
+    await userEvent.click(screen.getByTestId('kf-ease-opacity-easeIn'))
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+
+    // Linear clears the entry (absent reads as linear).
+    await userEvent.click(screen.getByTestId('kf-ease-opacity-linear'))
+    expect(useEditorStore.getState().doc.project.keyframeDefaults).toBeUndefined()
+  })
+
+  it('seeds a keyframe with the default name and its exact quad', async () => {
+    seed(() => {}, 2)
+    useEditorStore.setState((s) => ({
+      doc: { ...s.doc, project: { ...s.doc.project, keyframeDefaults: { opacity: 'easeIn' } } },
+    }))
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    await userEvent.click(screen.getByTestId('kf-toggle-opacity'))
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(kfs).toEqual([{ time: 2, value: 1, interpolation: 'easeIn', easeOut: [0.42, 0, 1, 1] }])
+  })
+
+  it('stamps the default on a slider-created keyframe of an animated property', async () => {
+    // Start below the property's max: a keyboard step at the bound is a no-op
+    // and would commit nothing (the keyframe write is what is under test).
+    seed((clip) => {
+      clip.keyframes = { opacity: [{ time: 1, value: 0.5 }] }
+    }, 2)
+    useEditorStore.setState((s) => ({
+      doc: { ...s.doc, project: { ...s.doc.project, keyframeDefaults: { opacity: 'easeOut' } } },
+    }))
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    // A keyboard step on the slider commits immediately (Radix semantics).
+    fireEvent.keyDown(screen.getByRole('slider', { name: 'Opacity value' }), {
+      key: 'ArrowRight',
+    })
+    const kfs = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    const created = kfs?.find((k) => Math.abs(k.time - 2) < 1e-6)
+    expect(created?.time).toBeCloseTo(2, 6)
+    expect(created).toMatchObject({ interpolation: 'easeOut', easeOut: [0, 0, 0.58, 1] })
+    // The pre-existing keyframe keeps its shape (sanitize normalizes the
+    // absent name to linear, it does not take the new default).
+    const untouched = kfs?.find((k) => Math.abs(k.time - 1) < 1e-6)
+    expect(untouched?.interpolation).toBe('linear')
+    expect(untouched?.easeOut).toBeUndefined()
+  })
+
+  it('keeps a split boundary on the crossing sub-curve, never the property default', async () => {
+    const { doc } = docWithSelectedVideoClip()
+    const clipId = doc.project.tracks[0].clips[0].id
+    const clip = doc.project.tracks[0].clips[0]
+    clip.keyframes = {
+      timeScale: [
+        { time: 0, value: 1, interpolation: 'easeInOut' },
+        { time: 6, value: 3 },
+      ],
+    }
+    doc.project.keyframeDefaults = { timeScale: 'easeIn' }
+    useEditorStore.setState({ doc: structuredClone(doc), playhead: 3 })
+
+    useEditorStore.getState().apply({ type: 'splitClip', clipId, atTime: 3 })
+    const left = useEditorStore.getState().doc.project.tracks[0].clips.find((c) => c.id === clipId)
+    const kfs = left?.keyframes?.timeScale ?? []
+    const boundary = kfs[kfs.length - 1]
+    expect(boundary?.time).toBeCloseTo(3, 6)
+    // The boundary keeps the subdivided shape of the crossing segment, not the
+    // stored default: defaults stamp NEW keyframes only.
+    expect(boundary?.easeOut).toBeDefined()
+    expect(boundary?.easeOut).not.toEqual(EASING_PRESETS.easeIn)
   })
 })

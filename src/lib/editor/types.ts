@@ -105,6 +105,13 @@ export type KeyframeProperty =
   | 'timeScale'
 
 /**
+ * Per-property default easing for newly authored keyframes (0.6.4). Absent
+ * entries read as linear, and a linear default is never STORED (the command
+ * deletes it), so an absent field and a linear default are the same thing.
+ */
+export type KeyframeDefaults = Partial<Record<KeyframeProperty, KeyframeInterpolation>>
+
+/**
  * Animatable properties that keep a static value in `clip.animStatics`.
  * opacity and volume have dedicated fields and timeScale's static source is
  * `clip.speed`, so none of the three belongs here.
@@ -219,6 +226,11 @@ export interface Project {
   fps: number
   /** Sequence markers, `time` in timeline seconds (see {@link Marker}). */
   markers?: Marker[]
+  /**
+   * Per-property default easing for newly authored keyframes; an absent entry
+   * reads as linear (see {@link KeyframeDefaults}).
+   */
+  keyframeDefaults?: KeyframeDefaults
   /** Index 0 = topmost layer. Conventional order: text tracks, video tracks, audio tracks. */
   tracks: Track[]
 }

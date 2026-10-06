@@ -32,11 +32,13 @@ import {
   nextClipOnTrack,
   uid,
 } from './factories'
+import { rehomeSegmentShapes } from './ease-segment'
 import { clamp } from './time'
 import {
   hasTimeScaleCurve,
   integrateKeyframes,
   isAnimatableProperty,
+  isKeyframeInterpolation,
   sanitizeKeyframes,
   splitKeyframeMap,
 } from './keyframes'
@@ -53,6 +55,7 @@ import type {
   Clip,
   Doc,
   Keyframe,
+  KeyframeInterpolation,
   KeyframeMap,
   KeyframeProperty,
   Marker,
@@ -133,6 +136,11 @@ export type EditorCommand =
       clipId: string
       property: KeyframeProperty
       keyframes: Keyframe[]
+    }
+  | {
+      type: 'setKeyframeDefault'
+      property: KeyframeProperty
+      interpolation: KeyframeInterpolation
     }
   | { type: 'setClipSpeed'; clipId: string; speed: number }
   | { type: 'setClipReverse'; clipId: string; reverse: boolean }
@@ -700,7 +708,13 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       if (!isAnimatableProperty(command.property)) {
         throw new EditorCommandError(`Unknown animatable property: ${command.property}`)
       }
-      const keyframes = sanitizeKeyframes(command.property, command.keyframes)
+      // A write that reorders the same keyframes (a dot dragged or nudged past
+      // a neighbour) must keep each authored curve on the pair it belongs to;
+      // a structural write passes through untouched (see the helper).
+      const keyframes = sanitizeKeyframes(
+        command.property,
+        rehomeSegmentShapes(clip.keyframes?.[command.property] ?? [], command.keyframes),
+      )
       if (!clip.keyframes) clip.keyframes = {}
       if (keyframes.length === 0) {
         // An empty curve clears the animation; the property falls back to its
@@ -709,6 +723,27 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
         if (Object.keys(clip.keyframes).length === 0) clip.keyframes = undefined
       } else {
         clip.keyframes[command.property] = keyframes
+      }
+      return
+    }
+
+    case 'setKeyframeDefault': {
+      if (!isAnimatableProperty(command.property)) {
+        throw new EditorCommandError(`Unknown animatable property: ${command.property}`)
+      }
+      if (!isKeyframeInterpolation(command.interpolation)) {
+        throw new EditorCommandError(`Unknown interpolation: ${String(command.interpolation)}`)
+      }
+      const p = doc.project
+      if (command.interpolation === 'linear') {
+        // Absent reads as linear, so a linear press DELETES the entry and an
+        // emptied map disappears entirely (the keyframes convention).
+        if (p.keyframeDefaults) {
+          delete p.keyframeDefaults[command.property]
+          if (Object.keys(p.keyframeDefaults).length === 0) p.keyframeDefaults = undefined
+        }
+      } else {
+        p.keyframeDefaults = { ...p.keyframeDefaults, [command.property]: command.interpolation }
       }
       return
     }
