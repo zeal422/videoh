@@ -130,7 +130,7 @@ export function useEditorKeyboard(onSave: () => void): void {
       }
       if (mod && key === 'v') {
         e.preventDefault()
-        const commands = commandsToPasteClips(doc, playhead)
+        const commands = commandsToPasteClips(doc, playhead, store.untargetedTracks)
         if (commands) store.apply(commands)
         return
       }
@@ -311,7 +311,7 @@ export function useEditorKeyboard(onSave: () => void): void {
         case 't':
         case 'T': {
           e.preventDefault()
-          store.apply(commandsToAddText(doc, playhead))
+          store.apply(commandsToAddText(doc, playhead, store.untargetedTracks))
           break
         }
         case 'ArrowLeft': {

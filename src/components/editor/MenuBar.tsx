@@ -291,7 +291,11 @@ export function MenuBar({
             break
           }
           case 'clip.paste': {
-            const pasteCommands = commandsToPasteClips(store.doc, store.playhead)
+            const pasteCommands = commandsToPasteClips(
+              store.doc,
+              store.playhead,
+              store.untargetedTracks,
+            )
             if (!pasteCommands) return
             store.apply(pasteCommands)
             break
@@ -375,7 +379,7 @@ export function MenuBar({
           }
 
           case 'graphics.newText':
-            store.apply(commandsToAddText(store.doc, store.playhead))
+            store.apply(commandsToAddText(store.doc, store.playhead, store.untargetedTracks))
             break
 
           case 'view.zoomIn':

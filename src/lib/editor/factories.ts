@@ -210,6 +210,20 @@ export function firstCompatibleTrack(doc: Doc, kind: MediaKind): Track | undefin
 }
 
 /**
+ * First track (topmost) that satisfies `fits` and is not in `untargetedTrackIds`.
+ * The one implementation of the targeting rule: paste entries, media
+ * placement, the A/V twin lane and text placement all resolve through it, each
+ * with its own `fits` predicate (kindFitsEntry, trackFitsAsset, kind checks).
+ */
+export function firstTargetedTrack(
+  doc: Doc,
+  untargetedTrackIds: readonly string[],
+  fits: (track: Track) => boolean,
+): Track | undefined {
+  return doc.project.tracks.find((t) => !untargetedTrackIds.includes(t.id) && fits(t))
+}
+
+/**
  * Next clip on the same track by start position (used for transitions).
  * Returns the clip whose start is the smallest among those strictly after `clip.start`.
  */

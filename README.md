@@ -9,6 +9,7 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/
 - **Media import** — video, audio, and image files via the media bin (multi-select) or drag-and-drop; automatic duration/size probing, JPEG thumbnails, normalized waveform peaks, and audio-track detection.
 - **Multi-track timeline** — move clips (including across compatible tracks, with the whole selection following), trim either edge, split at the playhead, duplicate, delete, and snapping to clip edges, the playhead, and timeline bounds. Add video/audio/text tracks from the `+` button in the timeline's corner cell (or the toolbar `+` and the menus) — new tracks stack per the convention text → video → audio, and `tracks[0]` renders on top.
 - **Manageable layers** — each track header has a context menu (or double-click the name) to **rename**, **mute** or **delete** the layer; delete is disabled for the last remaining lane. A layer the edit leaves **empty is removed with it**, in the same undo step, so a lane never lingers with nothing on it (a lane that was already empty is kept, which is what makes "add a layer, then fill it" work). Dragging a clip near the top or bottom edge of the tracks **scrolls the timeline** so it can reach a lane that is off-screen, and dropping it on a lane of the wrong kind marks that lane, and the drop is rolled back whole — the clip returns to where it started rather than keeping the part of the gesture that happened to be legal.
+- **Track targeting + select-by-lane**: every track is targeted by default; the header menu's **Target Track** toggles a lane (an untargeted lane dims its kind icon) and **Select Track Clips** selects the whole lane, expanding A/V link groups. Targeting steers lane-less placement (bin **quick-add**, **Add Text**) to the first targeted compatible lane, including a video's audio twin, and paste follows that same order once its original lane cannot be used, so a compatible original lane that is still targeted is kept; when no lane of that kind is targeted the old landing order still applies. A clip drag, a duplicate and a drop onto a compatible lane keep the lane the user pointed at, and targeting is session state, not saved in the project file.
 - **Multi-selection + manual A/V linking** — plain click selects a clip (its link group), **Shift+click adds** another clip's group, **Ctrl+click toggles** it, **Ctrl+A** selects everything; every group op (move, delete, cut/copy/paste, split, duplicate) acts on the whole selection. **Drag a box (marquee)** on empty timeline space to select every clip it covers (Shift adds the covered groups, Ctrl toggles them), with edge auto-scroll while dragging. Select a video clip and an audio clip with Shift+click, then **right-click → Link** (or `Ctrl+L`) to bond them Premiere-style; `Ctrl+L` on a linked selection unlinks it again. A **Razor tool** (`C`) cuts a clip exactly where you click; **Shift+Delete ripple-deletes** the selection and closes the gap.
 - **Markers** — press `M` to drop a marker at the playhead: on the primary selected clip when one is selected (source-anchored, so trims, speed changes and reversal keep it on the same media frame), otherwise on the sequence ruler. Markers take a name, one of eight colors and notes (double-click one or use Marker › Edit Selected Marker); `Shift+M` / `Ctrl+Shift+M` jump between markers, markers are snap targets for clip drags and trims, and `Delete` removes the selected one. Sequence markers live in `project.markers`, clip markers in `clip.markers` (source seconds); both persist in the project file.
 - **A/V linked clips** — dropping a video that HAS audio places it as a linked pair: the video part on the video track and an audio-only twin on the audio track (waveform included). The pair selects, moves, splits, duplicates and deletes together, and the audio twin is the sole sound carrier (no double audio). **Right-click any clip** for the Premiere-style menu — Cut, Copy, Paste at playhead, Split, Duplicate, **Link / Unlink Audio/Video**, Delete, **Ripple Delete** — and after unlinking, each half is fully independent.
@@ -315,7 +316,7 @@ bun run battery        # scripted UI battery (reuses a server already on :3000, 
 
 The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **1024 tests across 57 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **1048 tests across 57 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -391,7 +392,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 57 test files (1024 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
+│   └── __tests__/               # 57 test files (1048 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs
@@ -420,7 +421,7 @@ src/
 
 Limitations, all observable in the current code:
 
-- **Selection is id-based** — `store.selections` holds clip ids (primary first); group operations expand A/V link groups and the marquee box selects whole groups, but there is no track targeting or select-by-lane on the timeline.
+- **Selection is id-based**: `store.selections` holds clip ids (primary first); group operations expand A/V link groups, the marquee box selects whole groups, and `Select Track Clips` takes a whole lane plus its link twins. Track targeting is session state: it steers lane-less placements (paste, quick-add, add text) but is not saved into the project file.
 - **Export requires WebCodecs**: the MP4 pipeline replaced MediaRecorder/WebM, so very old browsers cannot export (playback still works). ProRes is out of scope because no shipping browser exposes a ProRes `VideoEncoder`; HEVC is left out on value grounds, not because a browser encoder is missing.
 - **Keyframe curves are eased, not overshooting**: the presets (linear, easeIn, easeOut, easeInOut) plus free handle editing on any segment, with the control points clamped inside the unit square. There is no Hold interpolation, no spatial interpolation for position paths, and adjacent segments do not share a smooth joint (each side carries its own handle pair).
 - **Reverse preview is stepped**, `<video>` cannot play backwards in realtime; the export is frame-accurate but playback shows a stepped approximation. Rate stretch on one half of a linked A/V pair does not re-time the twin (link groups still move/delete/split together).
@@ -443,9 +444,8 @@ Roadmap candidates, roughly in order of impact (the full gap analysis against Pr
 each release already closed, is in [`ROADMAP.md`](ROADMAP.md)):
 
 1. More transitions: dip-to-black fits the existing span/alpha model in `transition.ts`; wipes, slides and pushes additionally need a spatial parameter (a mask or a position offset).
-2. Track targeting and track-level operations (marquee and markers shipped).
-3. Track grouping and compound clips.
-4. A `StreamTarget` export path once files grow past the in-memory buffer.
+2. Track grouping and compound clips.
+3. A `StreamTarget` export path once files grow past the in-memory buffer.
 
 ---
 

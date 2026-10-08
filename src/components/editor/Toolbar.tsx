@@ -58,6 +58,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
   const snapEnabled = useEditorStore((s) => s.snapEnabled)
   const pxPerSec = useEditorStore((s) => s.pxPerSec)
   const activeTool = useEditorStore((s) => s.activeTool)
+  const untargetedTracks = useEditorStore((s) => s.untargetedTracks)
   const { apply, undo, redo, toggleSnap, setPxPerSec, setActiveTool } = useEditorStore.getState()
 
   const loadInputRef = useRef<HTMLInputElement>(null)
@@ -104,7 +105,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
 
   const addTextAtPlayhead = () => {
     try {
-      apply(commandsToAddText(doc, playhead))
+      apply(commandsToAddText(doc, playhead, untargetedTracks))
     } catch (error) {
       showError(error)
     }

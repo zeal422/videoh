@@ -9,7 +9,7 @@ import {
   isTransientActive,
   useEditorStore,
 } from '../store'
-import { createClip, createDoc, createMediaAsset } from '../factories'
+import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 import type { Doc } from '../types'
 
 function videoTrackId(doc: Doc): string {
@@ -41,6 +41,7 @@ beforeEach(() => {
     selections: [],
     selection: null,
     selectedMarker: null,
+    untargetedTracks: [],
     activeTool: 'select',
   })
 })
@@ -570,5 +571,79 @@ describe('marker selection (store-only, exclusive with clips)', () => {
     useEditorStore.getState().selectMarker({ scope: 'sequence', markerId })
     useEditorStore.getState().replaceDoc(createDoc())
     expect(useEditorStore.getState().selectedMarker).toBeNull()
+  })
+})
+
+describe('track targeting', () => {
+  it('defaults to every track targeted and leaves history alone', () => {
+    const trackId = videoTrackId(useEditorStore.getState().doc)
+    expect(useEditorStore.getState().untargetedTracks).toEqual([])
+    const past = useEditorStore.getState().past.length
+
+    useEditorStore.getState().setTrackTargeted(trackId, false)
+    expect(useEditorStore.getState().untargetedTracks).toEqual([trackId])
+    expect(useEditorStore.getState().past).toHaveLength(past)
+
+    useEditorStore.getState().setTrackTargeted(trackId, true)
+    expect(useEditorStore.getState().untargetedTracks).toEqual([])
+  })
+
+  it('replaceDoc clears the list', () => {
+    const trackId = videoTrackId(useEditorStore.getState().doc)
+    useEditorStore.getState().setTrackTargeted(trackId, false)
+    useEditorStore.getState().replaceDoc(createDoc())
+    expect(useEditorStore.getState().untargetedTracks).toEqual([])
+  })
+
+  it('a dangling id stays inert, and undo restores the untargeted posture', () => {
+    const trackId = videoTrackId(useEditorStore.getState().doc)
+    useEditorStore.getState().setTrackTargeted(trackId, false)
+
+    useEditorStore.getState().apply({ type: 'removeTrack', trackId })
+    expect(useEditorStore.getState().doc.project.tracks.some((t) => t.id === trackId)).toBe(false)
+    expect(useEditorStore.getState().untargetedTracks).toContain(trackId)
+
+    useEditorStore.getState().undo()
+    expect(useEditorStore.getState().doc.project.tracks.some((t) => t.id === trackId)).toBe(true)
+    expect(useEditorStore.getState().untargetedTracks).toContain(trackId)
+  })
+
+  it('selectTrackClips takes the lane in order and expands a cross-lane twin', () => {
+    const asset = createMediaAsset({ kind: 'video', duration: 4, name: 'pair.mp4' })
+    const videoTrack = createTrack('video', 1)
+    const audioTrack = createTrack('audio', 1)
+    const video = createClip({
+      id: 'sel_v',
+      linkId: 'link_sel',
+      mediaId: asset.id,
+      start: 0,
+      duration: 2,
+      inPoint: 0,
+    })
+    const twin = createClip({
+      id: 'sel_a',
+      linkId: 'link_sel',
+      mediaId: asset.id,
+      start: 0,
+      duration: 2,
+      inPoint: 0,
+      audioOnly: true,
+    })
+    videoTrack.clips = [video]
+    audioTrack.clips = [twin]
+    useEditorStore.setState({
+      doc: {
+        project: { ...useEditorStore.getState().doc.project, tracks: [videoTrack, audioTrack] },
+        media: [asset],
+      },
+    })
+    useEditorStore.getState().selectMarker({ scope: 'sequence', markerId: 'm_any' })
+
+    useEditorStore.getState().selectTrackClips(videoTrack.id)
+    expect(useEditorStore.getState().selections).toEqual([video.id, twin.id])
+    expect(useEditorStore.getState().selectedMarker).toBeNull()
+
+    useEditorStore.getState().selectTrackClips(audioTrack.id)
+    expect(useEditorStore.getState().selections).toEqual([twin.id, video.id])
   })
 })

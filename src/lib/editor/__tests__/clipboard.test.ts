@@ -9,9 +9,9 @@ import {
   copyClips,
   hasClipboardContent,
 } from '../clipboard'
-import { createClip, createDoc, createMediaAsset } from '../factories'
+import { createClip, createDoc, createMediaAsset, createTextClip, createTrack } from '../factories'
 import { linkedAudioTwin } from '../links'
-import type { MediaAsset } from '../types'
+import type { Doc, MediaAsset, Track } from '../types'
 
 /**
  * In-memory clip clipboard: copy snapshots the link group, cut = copy +
@@ -185,5 +185,92 @@ describe('clipboard copy/cut/paste', () => {
 
   it('paste returns null with an empty clipboard', () => {
     expect(commandsToPasteClips(createDoc(), 0)).toBeNull()
+  })
+})
+
+/**
+ * Targeting: paste lands on the first TARGETED lane that fits; the legacy
+ * order still applies when nothing of the entry's kind is targeted, and with
+ * every lane targeted the result is exactly the old behavior.
+ */
+describe('paste targeting', () => {
+  function docWithTracks(...tracks: Track[]): Doc {
+    const doc = createDoc()
+    doc.project.tracks = tracks
+    return doc
+  }
+
+  function scene() {
+    const asset = createMediaAsset({ kind: 'video', name: 't.mp4', duration: 10 })
+    const top = createTrack('video', 1)
+    const bottom = createTrack('video', 1)
+    bottom.clips = [createClip({ id: 'c_bottom', mediaId: asset.id, start: 0, duration: 4 })]
+    const doc = docWithTracks(top, bottom)
+    doc.media = [asset]
+    return { doc, top, bottom }
+  }
+
+  it('an untargeted original lane yields to the targeted lane above it', () => {
+    const { doc, top, bottom } = scene()
+    copyClips(doc, ['c_bottom'])
+    const next = applyCommands(doc, commandsToPasteClips(doc, 5, [bottom.id])!)
+    expect(next.project.tracks[0].id).toBe(top.id)
+    expect(next.project.tracks[0].clips.some((c) => c.start === 5)).toBe(true)
+    expect(next.project.tracks[1].clips.some((c) => c.start === 5)).toBe(false)
+  })
+
+  it('a targeted original lane wins over a targeted lane above it', () => {
+    const { doc, top, bottom } = scene()
+    copyClips(doc, ['c_bottom'])
+    const next = applyCommands(doc, commandsToPasteClips(doc, 5, [])!)
+    expect(next.project.tracks[1].clips.some((c) => c.start === 5)).toBe(true)
+    expect(next.project.tracks[0].clips.some((c) => c.start === 5)).toBe(false)
+    expect(top.clips).toHaveLength(0)
+  })
+
+  it('omitting the list behaves as all-targeted', () => {
+    const { doc } = scene()
+    copyClips(doc, ['c_bottom'])
+    const next = applyCommands(doc, commandsToPasteClips(doc, 5)!)
+    expect(next.project.tracks[1].clips.some((c) => c.start === 5)).toBe(true)
+  })
+
+  it('falls back to the legacy order when no lane of that kind is targeted', () => {
+    const { doc, top, bottom } = scene()
+    copyClips(doc, ['c_bottom'])
+    const next = applyCommands(doc, commandsToPasteClips(doc, 5, [top.id, bottom.id])!)
+    // The original lane still exists and fits, so the legacy order lands there.
+    expect(next.project.tracks).toHaveLength(2)
+    expect(next.project.tracks[1].clips.some((c) => c.start === 5)).toBe(true)
+  })
+
+  it('a text entry follows the targeted text lane', () => {
+    const first = createTrack('text', 1)
+    const second = createTrack('text', 1)
+    second.clips = [createTextClip({ id: 'c_text', start: 0, duration: 4 })]
+    const doc = docWithTracks(first, second)
+
+    copyClips(doc, ['c_text'])
+    const next = applyCommands(doc, commandsToPasteClips(doc, 5, [second.id])!)
+    expect(next.project.tracks[0].clips.some((c) => c.start === 5)).toBe(true)
+    expect(next.project.tracks[1].clips.some((c) => c.start === 5)).toBe(false)
+  })
+
+  it('media entries never land on a text lane', () => {
+    const asset = createMediaAsset({ kind: 'video', name: 't.mp4', duration: 10 })
+    const video = createTrack('video', 1)
+    video.clips = [createClip({ id: 'c_v', mediaId: asset.id, start: 0, duration: 4 })]
+    const withVideo = docWithTracks(video)
+    withVideo.media = [asset]
+    copyClips(withVideo, ['c_v'])
+
+    // The original lane is gone; only a text lane remains.
+    const textOnly = docWithTracks(createTrack('text', 1))
+    textOnly.media = [asset]
+    const commands = commandsToPasteClips(textOnly, 5)!
+    expect(commands[0]).toMatchObject({ type: 'addTrack', kind: 'video' })
+    const next = applyCommands(textOnly, commands)
+    expect(next.project.tracks.find((t) => t.kind === 'text')!.clips).toHaveLength(0)
+    expect(next.project.tracks.find((t) => t.kind === 'video')!.clips[0].start).toBe(5)
   })
 })

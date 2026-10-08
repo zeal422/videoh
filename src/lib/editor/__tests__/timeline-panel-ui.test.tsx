@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 
 import { TimelinePanel, TRACK_HEADER_WIDTH } from '@/components/editor/timeline/TimelinePanel'
 import { Ruler } from '@/components/editor/timeline/Ruler'
@@ -841,5 +841,111 @@ describe('timeline content width', () => {
     expect(Number.parseFloat(content.style.width)).toBeGreaterThanOrEqual(
       TRACK_HEADER_WIDTH + 40 * PPS_DEFAULT,
     )
+  })
+})
+
+describe('track targeting UI', () => {
+  function pairDoc() {
+    const asset = createMediaAsset({ kind: 'video', duration: 4, name: 'pair.mp4' })
+    const videoTrack = createTrack('video', 1)
+    const audioTrack = createTrack('audio', 1)
+    const video = createClip({
+      id: 'ui_v',
+      linkId: 'link_ui',
+      mediaId: asset.id,
+      start: 0,
+      duration: 2,
+      inPoint: 0,
+    })
+    const twin = createClip({
+      id: 'ui_a',
+      linkId: 'link_ui',
+      mediaId: asset.id,
+      start: 0,
+      duration: 2,
+      inPoint: 0,
+      audioOnly: true,
+    })
+    videoTrack.clips = [video]
+    audioTrack.clips = [twin]
+    const doc: Doc = {
+      project: {
+        tracks: [videoTrack, audioTrack],
+        id: 'p_test',
+        name: 'test',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      },
+      media: [asset],
+    }
+    return { doc, videoTrack, audioTrack, video, twin }
+  }
+
+  function openTrackMenu(trackId: string) {
+    fireEvent.contextMenu(screen.getByTestId(`track-header-${trackId}`))
+  }
+
+  function clickMenuItem(testId: string) {
+    const item = screen.getByTestId(testId)
+    fireEvent.pointerDown(item, { button: 0 })
+    fireEvent.pointerUp(item, { button: 0 })
+    fireEvent.click(item, { button: 0 })
+  }
+
+  it('the header exposes the target state and dims the kind icon', () => {
+    const { doc, videoTrack } = pairDoc()
+    useEditorStore.setState({ doc, untargetedTracks: [] })
+    render(<TimelinePanel />)
+    const header = screen.getByTestId(`track-header-${videoTrack.id}`)
+    expect(header).toHaveAttribute('data-targeted', 'true')
+    expect(header.querySelector('svg')?.getAttribute('class')).not.toMatch(/opacity-40/)
+
+    act(() => {
+      useEditorStore.setState({ untargetedTracks: [videoTrack.id] })
+    })
+    const untargetedHeader = screen.getByTestId(`track-header-${videoTrack.id}`)
+    expect(untargetedHeader).toHaveAttribute('data-targeted', 'false')
+    expect(untargetedHeader.querySelector('svg')?.getAttribute('class')).toMatch(/opacity-40/)
+  })
+
+  it('the checkbox item drives the store and reflects the state', () => {
+    const { doc, videoTrack } = pairDoc()
+    useEditorStore.setState({ doc, untargetedTracks: [] })
+    render(<TimelinePanel />)
+
+    openTrackMenu(videoTrack.id)
+    clickMenuItem('track-menu-target')
+    expect(useEditorStore.getState().untargetedTracks).toEqual([videoTrack.id])
+
+    openTrackMenu(videoTrack.id)
+    expect(screen.getByTestId('track-menu-target')).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('Select Track Clips takes the lane plus its cross-lane twin', () => {
+    const { doc, videoTrack, audioTrack, video, twin } = pairDoc()
+    useEditorStore.setState({ doc, untargetedTracks: [] })
+    render(<TimelinePanel />)
+
+    openTrackMenu(videoTrack.id)
+    clickMenuItem('track-menu-select')
+    expect(useEditorStore.getState().selections).toEqual([video.id, twin.id])
+
+    openTrackMenu(audioTrack.id)
+    clickMenuItem('track-menu-select')
+    expect(useEditorStore.getState().selections).toEqual([twin.id, video.id])
+  })
+
+  it('Select Track Clips is disabled on an empty lane', () => {
+    const track = createTrack('video', 1)
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [],
+    }
+    useEditorStore.setState({ doc, untargetedTracks: [] })
+    render(<TimelinePanel />)
+
+    openTrackMenu(track.id)
+    expect(screen.getByTestId('track-menu-select')).toHaveAttribute('aria-disabled', 'true')
   })
 })

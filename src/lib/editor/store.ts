@@ -57,6 +57,14 @@ export interface EditorState {
   snapLine: number | null
   /** Active timeline tool (Premiere: V selection / C razor). UI-only state. */
   activeTool: EditorTool
+  /**
+   * Track ids the user turned OFF for lane-less placement (paste, quick-add,
+   * add text). Session UI state, never part of the Doc: an absent id means
+   * targeted, so the default empty list targets everything and a new track is
+   * targeted with no extra code. Ids of removed tracks stay inert; undo that
+   * restores the track restores its posture.
+   */
+  untargetedTracks: string[]
 
   autosaveStatus: AutosaveStatus
   autosavedAt: number | null
@@ -94,6 +102,14 @@ export interface EditorState {
   toggleSnap: () => void
   setSnapLine: (t: number | null) => void
   setActiveTool: (tool: EditorTool) => void
+  /** Toggle a lane's targeting: session UI state, never a history entry. */
+  setTrackTargeted: (trackId: string, targeted: boolean) => void
+  /**
+   * Select every clip on a lane, expanding each clip's link group so an A/V
+   * pair split across lanes selects both halves. The lane's first clip is the
+   * primary; the marker selection clears.
+   */
+  selectTrackClips: (trackId: string) => void
   setAutosaveStatus: (status: AutosaveStatus) => void
   markAutosaved: () => void
   setPendingRestore: (json: string | null) => void
@@ -169,6 +185,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   snapEnabled: true,
   snapLine: null,
   activeTool: 'select',
+  untargetedTracks: [],
   autosaveStatus: 'idle',
   autosavedAt: null,
   pendingRestore: null,
@@ -296,6 +313,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       selections: [],
       selection: null,
       selectedMarker: null,
+      untargetedTracks: [],
       playhead: 0,
       playing: false,
     })
@@ -310,6 +328,31 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setSelections: (clipIds) =>
     set({ ...normalizeSelections(get().doc, clipIds), selectedMarker: null }),
+
+  setTrackTargeted: (trackId, targeted) => {
+    const { untargetedTracks } = get()
+    const next = targeted
+      ? untargetedTracks.filter((id) => id !== trackId)
+      : untargetedTracks.includes(trackId)
+        ? untargetedTracks
+        : [...untargetedTracks, trackId]
+    set({ untargetedTracks: next })
+  },
+
+  selectTrackClips: (trackId) => {
+    const { doc } = get()
+    const track = doc.project.tracks.find((t) => t.id === trackId)
+    if (!track) return
+    const ids: string[] = []
+    for (const clip of track.clips) {
+      if (ids.includes(clip.id)) continue
+      ids.push(clip.id)
+      for (const member of linkedClips(doc, clip.id)) {
+        if (!ids.includes(member.id)) ids.push(member.id)
+      }
+    }
+    set({ ...normalizeSelections(doc, ids), selectedMarker: null })
+  },
 
   selectMarker: (selection) =>
     set(

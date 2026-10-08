@@ -15,7 +15,8 @@ Stable hooks used across flows and tests:
 - `[data-testid="sequence-marker"]` / `[data-testid="clip-marker"]` (with `data-marker-id`,
   `data-marker-time`, `data-marker-selected`), `[data-testid="marker-dialog"]`,
   `[data-testid="marker-context-menu"]`, `[data-testid^="marker-menu-"]`
-- `[data-testid="track-header-<id>"]`, `[data-testid="track-context-menu"]`, `[data-testid^="track-menu-"]`
+- `[data-testid="track-header-<id>"]`, `[data-testid="track-context-menu"]`, `[data-testid^="track-menu-"]`,
+  and `data-targeted` on the header ("true" / "false")
 - `[data-lane-kind]` on each lane and `[data-track-row]` on the newly inserted row
 - `[data-drop-blocked="true"]` — a lane marked as an illegal drop target for the duration of a drag
 - `[data-timeline-scroll]` — the timeline's scroll container
@@ -139,6 +140,14 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
   even when the pair's halves disagree on rate.
 - The pair selects, moves, splits, duplicates, deletes, cuts/copies/pastes as one unit. `Ctrl+L` or the
   context menu unlinks, after which each half is independent.
+- **Targeting is the destination default for lane-less placements**: `Target Track` in the track
+  header menu (an untargeted lane dims its kind icon) steers bin quick-add and Add Text to the
+  first targeted compatible lane. Paste keeps a compatible original lane while that lane is
+  targeted, and reaches the first targeted compatible lane only when the original lane cannot be
+  used; when no lane of that kind is targeted the legacy landing order applies (original lane,
+  then first compatible). Dropping onto a fitting lane or between rows, and duplicating a clip, keep
+  the destination the pointer or the source lane gives them, and a video's audio twin follows the
+  same rule. `Select Track Clips` takes a whole lane and expands A/V link groups.
 - The inspector shows a "Linked with the audio clip…" hint and routes gain/mute to the twin.
 
 ## Markers

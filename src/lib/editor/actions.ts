@@ -6,6 +6,7 @@ import {
   docDuration,
   findClip,
   firstCompatibleTrack,
+  firstTargetedTrack,
   uid,
 } from './factories'
 import { DEFAULT_IMAGE_DURATION, DEFAULT_TEXT_DURATION, MIN_SPLIT_HEADROOM } from './constants'
@@ -61,13 +62,17 @@ function avPairCommands(
   videoTrackId: string,
   /** When the doc has no audio track: the atIndex for the one to create. */
   audioTrackAtIndex?: number,
+  /** Lanes the user turned off: the twin avoids them (legacy lane when none fit). */
+  untargetedTrackIds: readonly string[] = [],
 ): EditorCommand[] {
   const linkId = uid('link')
   const videoClip: Clip = { ...clipFromAsset(asset, start), linkId }
   const audioClip: Clip = { ...clipFromAsset(asset, start), linkId, audioOnly: true }
   const commands: EditorCommand[] = []
 
-  const audioTrack = doc.project.tracks.find((t) => t.kind === 'audio')
+  const audioTrack =
+    firstTargetedTrack(doc, untargetedTrackIds, (t) => t.kind === 'audio') ??
+    doc.project.tracks.find((t) => t.kind === 'audio')
   let audioTrackId: string
   if (audioTrack) {
     audioTrackId = audioTrack.id
@@ -89,8 +94,10 @@ function avPairCommands(
 }
 
 /**
- * Commands that place a media asset at `start` — on `trackId` when compatible,
- * otherwise on the first compatible track, otherwise on a newly created track.
+ * Commands that place a media asset at `start`: on `trackId` when compatible
+ * (positional, so targeting does not apply), otherwise on the first TARGETED
+ * compatible track, falling back to the first compatible track when nothing of
+ * that kind is targeted, otherwise on a newly created track.
  * Returns null for impossible placements.
  *
  * A video asset with a decodable audio track is placed as a LINKED PAIR:
@@ -102,6 +109,7 @@ export function commandsToAddMedia(
   asset: MediaAsset,
   start: number,
   trackId?: string,
+  untargetedTrackIds: readonly string[] = [],
 ): EditorCommand[] | null {
   const requested = trackId ? doc.project.tracks.find((t) => t.id === trackId) : undefined
   let target: Track | undefined =
@@ -109,6 +117,10 @@ export function commandsToAddMedia(
   const commands: EditorCommand[] = []
 
   if (!target) {
+    target = firstTargetedTrack(doc, untargetedTrackIds, (t) => trackFitsAsset(t, asset.kind))
+  }
+  if (!target) {
+    // Nothing targeted of that kind: the legacy order still applies.
     target = firstCompatibleTrack(doc, asset.kind)
   }
   if (!target) {
@@ -120,7 +132,7 @@ export function commandsToAddMedia(
   if (!target) return null
 
   if (asset.kind === 'video' && assetHasAudio(asset)) {
-    commands.push(...avPairCommands(doc, asset, start, target.id))
+    commands.push(...avPairCommands(doc, asset, start, target.id, undefined, untargetedTrackIds))
   } else {
     commands.push({ type: 'addClip', trackId: target.id, clip: clipFromAsset(asset, start) })
   }
@@ -144,13 +156,14 @@ export function commandsToAddMediaInNewTrack(
   asset: MediaAsset,
   start: number,
   atIndex: number,
+  untargetedTrackIds: readonly string[] = [],
 ): EditorCommand[] {
   const kind = trackKindForMedia(asset.kind)
   const newId = pendingTrackId()
   const commands: EditorCommand[] = [{ type: 'addTrack', kind, trackId: newId, atIndex }]
 
   if (asset.kind === 'video' && assetHasAudio(asset)) {
-    commands.push(...avPairCommands(doc, asset, start, newId, atIndex + 1))
+    commands.push(...avPairCommands(doc, asset, start, newId, atIndex + 1, untargetedTrackIds))
   } else {
     commands.push({ type: 'addClip', trackId: newId, clip: clipFromAsset(asset, start) })
   }
@@ -158,9 +171,15 @@ export function commandsToAddMediaInNewTrack(
 }
 
 /** Commands that add a text clip at `start`, creating a text track if needed. */
-export function commandsToAddText(doc: Doc, start: number): EditorCommand[] {
+export function commandsToAddText(
+  doc: Doc,
+  start: number,
+  untargetedTrackIds: readonly string[] = [],
+): EditorCommand[] {
   const commands: EditorCommand[] = []
-  let textTrack = doc.project.tracks.find((t) => t.kind === 'text')
+  let textTrack =
+    firstTargetedTrack(doc, untargetedTrackIds, (t) => t.kind === 'text') ??
+    doc.project.tracks.find((t) => t.kind === 'text')
   if (!textTrack) {
     const newId = pendingTrackId()
     commands.push({ type: 'addTrack', kind: 'text', trackId: newId })

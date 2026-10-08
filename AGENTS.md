@@ -121,6 +121,12 @@ e2e/battery.sh e2e/run-battery.sh`. If the user started the dev server, leave
 
 ## Workflow
 
+For implementation work (a `PLAN-*.md`, a bug fix, any multi-step change), load the repo skill
+`implementation-discipline` (`.agents/skills/implementation-discipline/SKILL.md`) first. It carries the
+working order and gates, the trigger audit to record with the change, and the failure-adaptation loop
+that appends lessons beside it in `LESSONS.md`. It complements the rules above and `bun run check`; it
+does not replace them.
+
 Read the relevant docs → make the minimal localized change → add or update colocated tests → run
 `bun run check` → verify the UI (`bun run dev`, exercise the flow, keep the console clean) → update the
 owning doc(s) and `CHANGELOG.md` → **do not commit**: the user commits and pushes. Commit messages, only

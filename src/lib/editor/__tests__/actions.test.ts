@@ -2,13 +2,15 @@ import { describe, expect, it } from 'vitest'
 
 import {
   commandsToAddMarker,
+  commandsToAddMedia,
   commandsToAddMediaInNewTrack,
+  commandsToAddText,
   commandsToDeleteMarker,
   trackKindForMedia,
 } from '../actions'
 import { applyCommand, applyCommands } from '../commands'
 import { commandsToDuplicateClips } from '../actions'
-import { createClip, createDoc, createMediaAsset } from '../factories'
+import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 
 /**
  * commandsToAddMediaInNewTrack powers the timeline's drop-between-tracks
@@ -170,5 +172,62 @@ describe('commandsToAddMarker / commandsToDeleteMarker', () => {
     expect(duplicate.markers).toHaveLength(1)
     expect(duplicate.markers![0].id).not.toBe('cm1')
     expect(original.markers!.map((m) => m.id)).toEqual(['cm1'])
+  })
+})
+
+describe('targeting in lane-less placements', () => {
+  function avAsset() {
+    return createMediaAsset({ kind: 'video', name: 't.mp4', duration: 5, hasAudio: true })
+  }
+
+  it('add text lands on the targeted text lane', () => {
+    const doc = createDoc()
+    const first = createTrack('text', 1)
+    const second = createTrack('text', 1)
+    doc.project.tracks = [first, second]
+
+    const next = applyCommands(doc, commandsToAddText(doc, 0, [first.id]))
+    expect(next.project.tracks[0].clips).toHaveLength(0)
+    expect(next.project.tracks[1].clips).toHaveLength(1)
+  })
+
+  it('add text with every text lane targeted keeps the legacy first lane', () => {
+    const doc = createDoc()
+    const first = createTrack('text', 1)
+    const second = createTrack('text', 1)
+    doc.project.tracks = [first, second]
+
+    const next = applyCommands(doc, commandsToAddText(doc, 0))
+    expect(next.project.tracks[0].clips).toHaveLength(1)
+  })
+
+  it('a drop into a new track routes only the audio twin through targeting', () => {
+    const asset = avAsset()
+    const video = createTrack('video', 1)
+    const audio1 = createTrack('audio', 1)
+    const audio2 = createTrack('audio', 1)
+    const doc = createDoc()
+    doc.project.tracks = [video, audio1, audio2]
+    doc.media = [asset]
+
+    const next = applyCommands(doc, commandsToAddMediaInNewTrack(doc, asset, 0, 0, [audio1.id]))
+    expect(next.project.tracks[0].kind).toBe('video')
+    expect(next.project.tracks[0].clips[0].audioOnly).toBeUndefined()
+    expect(next.project.tracks[2].clips).toHaveLength(0)
+    expect(next.project.tracks[3].clips[0].audioOnly).toBe(true)
+  })
+
+  it('an explicitly pointed, fitting lane wins even while untargeted', () => {
+    const asset = avAsset()
+    const video = createTrack('video', 1)
+    const audio = createTrack('audio', 1)
+    const doc = createDoc()
+    doc.project.tracks = [video, audio]
+    doc.media = [asset]
+
+    const commands = commandsToAddMedia(doc, asset, 0, video.id, [video.id])!
+    const next = applyCommands(doc, commands)
+    expect(next.project.tracks[0].clips[0].audioOnly).toBeUndefined()
+    expect(next.project.tracks[1].clips[0].audioOnly).toBe(true)
   })
 })

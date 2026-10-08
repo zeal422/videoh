@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.7.1',
+    date: '2026-10-08',
+    highlights: [
+      'Target any lane: Target Track in the track header menu steers paste, quick-add and Add Text to the first targeted compatible lane',
+      'An untargeted lane dims its kind icon; every track starts targeted, and the choice is session state only',
+      'Select Track Clips takes a whole lane at once, expanding A/V link groups so both halves come along',
+      "Pastes keep the clip's own lane while that lane is still targeted, so a duplicate lands where it came from",
+    ],
+  },
+  {
     version: '0.7.0',
     date: '2026-10-07',
     highlights: [

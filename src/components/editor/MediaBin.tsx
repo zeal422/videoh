@@ -67,7 +67,13 @@ export function MediaBin({ className, heading = true }: { className?: string; he
 
   const quickAdd = (asset: MediaAsset) => {
     const store = useEditorStore.getState()
-    const commands = commandsToAddMedia(store.doc, asset, docDuration(store.doc))
+    const commands = commandsToAddMedia(
+      store.doc,
+      asset,
+      docDuration(store.doc),
+      undefined,
+      store.untargetedTracks,
+    )
     if (!commands) return
     store.apply(commands)
   }

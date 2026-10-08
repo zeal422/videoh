@@ -208,7 +208,7 @@ describe('A/V linked clips (Premiere-style split + unlink)', () => {
     // Clipboard (multi-selection aware).
     expect(keyboard).toMatch(/commandsToCutClips\(doc, selectedIds\)/)
     expect(keyboard).toMatch(/copyClips\(doc, selectedIds\)/)
-    expect(keyboard).toMatch(/commandsToPasteClips\(doc, playhead\)/)
+    expect(keyboard).toMatch(/commandsToPasteClips\(doc, playhead, store\.untargetedTracks\)/)
     // Tools: V selection / C razor / Escape back.
     expect(keyboard).toMatch(/setActiveTool\('razor'\)/)
     expect(keyboard).toMatch(/setActiveTool\('select'\)/)
@@ -252,6 +252,13 @@ describe('track operations are reachable from the timeline UI', () => {
     expect(panel).toMatch(/type: 'removeTrack', trackId: track\.id/)
     expect(panel).toMatch(/data-testid="track-context-menu"/)
     expect(panel).toMatch(/data-testid="track-menu-delete"/)
+    // Targeting: a controlled checkbox item plus select-by-lane.
+    expect(panel).toMatch(/data-testid="track-menu-target"/)
+    expect(panel).toMatch(/checked=\{!untargeted\}/)
+    expect(panel).toMatch(/onCheckedChange=\{\(next\) => setTargeted\(next\)\}/)
+    expect(panel).toMatch(/data-testid="track-menu-select"/)
+    expect(panel).toMatch(/selectTrackClips\(track\.id\)/)
+    expect(panel).toMatch(/data-targeted=\{untargeted \? 'false' : 'true'\}/)
   })
 
   it('delete is offered but disabled for the last remaining lane', () => {
@@ -344,5 +351,52 @@ describe('a clip drag survives crossing lanes (and can reach lanes off screen)',
     expect(geometry).toMatch(/export function autoScrollStep/)
     expect(geometry).toMatch(/AUTOSCROLL_EDGE_PX = 24/)
     expect(geometry).toMatch(/AUTOSCROLL_MAX_STEP_PX = 14/)
+  })
+})
+
+/**
+ * Targeting is optional BY DEFAULT (an omitted list means all-targeted), so a
+ * dropped argument reverts that one entry point to legacy placement while every
+ * unit test stays green — they call the helpers with an explicit list. Each
+ * lane-less call site therefore gets its own source lock.
+ */
+describe('targeting is threaded through every lane-less placement entry point', () => {
+  const keyboard = read('src/hooks/editor/useEditorKeyboard.ts')
+  const menuBar = read('src/components/editor/MenuBar.tsx')
+  const clipView = read('src/components/editor/timeline/ClipView.tsx')
+  const bin = read('src/components/editor/MediaBin.tsx')
+  const panel = read('src/components/editor/timeline/TimelinePanel.tsx')
+  const toolbar = read('src/components/editor/Toolbar.tsx')
+
+  it('paste carries the list from the keyboard, the Edit menu and the clip menu', () => {
+    expect(keyboard).toMatch(/commandsToPasteClips\(doc, playhead, store\.untargetedTracks\)/)
+    // MenuBar wraps the call across lines at printWidth 100.
+    expect(menuBar).toMatch(
+      /commandsToPasteClips\(\s*store\.doc,\s*store\.playhead,\s*store\.untargetedTracks,?\s*\)/,
+    )
+    expect(clipView).toMatch(
+      /commandsToPasteClips\(store\.doc, store\.playhead, store\.untargetedTracks\)/,
+    )
+  })
+
+  it('add text carries the list from the keyboard, the Graphics menu and the toolbar', () => {
+    expect(keyboard).toMatch(/commandsToAddText\(doc, playhead, store\.untargetedTracks\)/)
+    expect(menuBar).toMatch(
+      /commandsToAddText\(store\.doc, store\.playhead, store\.untargetedTracks\)/,
+    )
+    expect(toolbar).toMatch(/commandsToAddText\(doc, playhead, untargetedTracks\)/)
+  })
+
+  it('media placement carries the list from quick-add and both drop paths', () => {
+    // MediaBin passes `undefined` for trackId: quick-add has no pointed lane.
+    expect(bin).toMatch(
+      /commandsToAddMedia\(\s*store\.doc,\s*asset,\s*docDuration\(store\.doc\),\s*undefined,\s*store\.untargetedTracks,?\s*\)/,
+    )
+    expect(panel).toMatch(
+      /commandsToAddMedia\(store\.doc, asset, t, track\.id, store\.untargetedTracks\)/,
+    )
+    expect(panel).toMatch(
+      /commandsToAddMediaInNewTrack\(store\.doc, asset, t, target\.index, store\.untargetedTracks\)/,
+    )
   })
 })

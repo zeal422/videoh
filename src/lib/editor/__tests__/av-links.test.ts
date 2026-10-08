@@ -11,7 +11,7 @@ import {
   commandsToUnlinkClips,
 } from '../actions'
 import { applyCommands, applyCommand, EditorCommandError } from '../commands'
-import { clipFitsTrack, createClip, createDoc, createMediaAsset } from '../factories'
+import { clipFitsTrack, createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 import {
   assetHasAudio,
   audibleClipId,
@@ -26,7 +26,7 @@ import {
   linkedAudioTwin,
   linkedClips,
 } from '../links'
-import type { Clip, Doc, MediaAsset } from '../types'
+import type { Clip, Doc, MediaAsset, Track } from '../types'
 
 /**
  * A/V link semantics (Premiere-style): a video asset WITH audio is placed as
@@ -899,5 +899,54 @@ describe('clipFitsTrack — audioOnly occurrences of video assets', () => {
     expect(clipFitsTrack(doc, plain, audioTrack)).toBe(false)
     expect(clipFitsTrack(doc, plain, doc.project.tracks[0])).toBe(true)
     expect(clipFitsTrack(doc, twin, doc.project.tracks[0])).toBe(true)
+  })
+})
+
+describe('commandsToAddMedia — targeting', () => {
+  function docWith(...tracks: Track[]): Doc {
+    const doc = createDoc()
+    doc.project.tracks = tracks
+    return doc
+  }
+
+  it('quick-add skips an untargeted video lane for a targeted lower one', () => {
+    const asset = avAsset()
+    const top = createTrack('video', 1)
+    const lower = createTrack('video', 1)
+    const audio = createTrack('audio', 1)
+    const doc = docWith(top, lower, audio)
+    doc.media = [asset]
+
+    const next = applyCommands(doc, commandsToAddMedia(doc, asset, 0, undefined, [top.id])!)
+    expect(next.project.tracks[0].clips).toHaveLength(0)
+    expect(next.project.tracks[1].clips[0].audioOnly).toBeUndefined()
+    expect(next.project.tracks[2].clips[0].audioOnly).toBe(true)
+  })
+
+  it('with every lane targeted the legacy landing still applies', () => {
+    const asset = avAsset()
+    const top = createTrack('video', 1)
+    const lower = createTrack('video', 1)
+    const audio = createTrack('audio', 1)
+    const doc = docWith(top, lower, audio)
+    doc.media = [asset]
+
+    const next = applyCommands(doc, commandsToAddMedia(doc, asset, 0)!)
+    expect(next.project.tracks[0].clips[0].audioOnly).toBeUndefined()
+    expect(next.project.tracks[2].clips[0].audioOnly).toBe(true)
+  })
+
+  it('the A/V twin avoids an untargeted audio lane', () => {
+    const asset = avAsset()
+    const video = createTrack('video', 1)
+    const audio1 = createTrack('audio', 1)
+    const audio2 = createTrack('audio', 1)
+    const doc = docWith(video, audio1, audio2)
+    doc.media = [asset]
+
+    const next = applyCommands(doc, commandsToAddMedia(doc, asset, 0, undefined, [audio1.id])!)
+    expect(next.project.tracks[0].clips[0].audioOnly).toBeUndefined()
+    expect(next.project.tracks[1].clips).toHaveLength(0)
+    expect(next.project.tracks[2].clips[0].audioOnly).toBe(true)
   })
 })

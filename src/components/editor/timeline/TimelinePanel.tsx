@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import {
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
@@ -499,7 +500,7 @@ export function TimelinePanel() {
 
     if (target.mode === 'lane') {
       const track = doc.project.tracks[target.index]
-      const commands = commandsToAddMedia(store.doc, asset, t, track.id)
+      const commands = commandsToAddMedia(store.doc, asset, t, track.id, store.untargetedTracks)
       if (!commands) {
         toast({
           title: 'Incompatible track',
@@ -513,7 +514,9 @@ export function TimelinePanel() {
     }
     // Edge strip / empty area below the rows: create a layer at the exact
     // boundary the user pointed at (Premiere-style drop-between-tracks).
-    store.apply(commandsToAddMediaInNewTrack(store.doc, asset, t, target.index))
+    store.apply(
+      commandsToAddMediaInNewTrack(store.doc, asset, t, target.index, store.untargetedTracks),
+    )
   }
 
   // Safety net: drags that end outside the timeline (dropped back on the bin,
@@ -805,6 +808,7 @@ export function TimelinePanel() {
  */
 function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean }) {
   const KindIcon = track.kind === 'video' ? Video : track.kind === 'audio' ? AudioLines : TypeIcon
+  const untargeted = useEditorStore((s) => s.untargetedTracks.includes(track.id))
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(track.name)
   const renameInputRef = useRef<HTMLInputElement>(null)
@@ -815,6 +819,8 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
   const renameFromMenuRef = useRef(false)
   const toggleMute = () =>
     useEditorStore.getState().apply({ type: 'toggleTrackMute', trackId: track.id })
+  const setTargeted = (targeted: boolean) =>
+    useEditorStore.getState().setTrackTargeted(track.id, targeted)
   const deleteTrack = () =>
     useEditorStore.getState().apply({ type: 'removeTrack', trackId: track.id })
   const startRename = () => {
@@ -842,12 +848,14 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
       <ContextMenuTrigger asChild>
         <div
           data-testid={`track-header-${track.id}`}
+          data-targeted={untargeted ? 'false' : 'true'}
           className="sticky left-0 z-30 flex shrink-0 items-center gap-2 border-b border-r border-b-border/60 bg-card px-2"
           style={{ width: TRACK_HEADER_WIDTH }}
         >
           <KindIcon
             className={cn(
               'size-3.5 shrink-0',
+              untargeted && 'opacity-40',
               track.kind === 'video' && 'text-emerald-400',
               track.kind === 'audio' && 'text-amber-400',
               track.kind === 'text' && 'text-violet-400',
@@ -912,6 +920,20 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
           }}
         >
           Rename Track…
+        </ContextMenuItem>
+        <ContextMenuCheckboxItem
+          data-testid="track-menu-target"
+          checked={!untargeted}
+          onCheckedChange={(next) => setTargeted(next)}
+        >
+          Target Track
+        </ContextMenuCheckboxItem>
+        <ContextMenuItem
+          data-testid="track-menu-select"
+          disabled={track.clips.length === 0}
+          onSelect={() => useEditorStore.getState().selectTrackClips(track.id)}
+        >
+          Select Track Clips
         </ContextMenuItem>
         <ContextMenuItem data-testid="track-menu-mute" onSelect={toggleMute}>
           {track.muted ? 'Unmute Track' : 'Mute Track'}

@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-10-08
+
+### Added
+
+- **Track targeting and select-by-lane.** The track header menu gains a checkable `Target Track`
+  item (an untargeted lane dims its kind icon) and `Select Track Clips`. Targeting is session
+  editing state, not saved in the project file: media insertion without an explicit lane (bin
+  quick-add) and Add Text land on the first targeted compatible lane, skipping untargeted ones.
+  Paste lands there too once its original lane cannot be used, so a compatible original lane that
+  is still targeted is kept. The legacy landing order still applies when no lane of that kind is
+  targeted. The audio twin of an inserted video follows the same rule. `Select Track Clips`
+  selects the lane's clips and expands link groups, so a pair split across lanes selects both
+  halves.
+
 ## [0.7.0] - 2026-10-07
 
 ### Added

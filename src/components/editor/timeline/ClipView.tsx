@@ -668,7 +668,7 @@ export function ClipView({
   const onMenuPaste = () =>
     runMenuAction(() => {
       const store = useEditorStore.getState()
-      const commands = commandsToPasteClips(store.doc, store.playhead)
+      const commands = commandsToPasteClips(store.doc, store.playhead, store.untargetedTracks)
       if (!commands) return
       store.apply(commands)
     })

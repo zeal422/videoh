@@ -1,5 +1,5 @@
 import type { EditorCommand } from './commands'
-import { findTrack, firstCompatibleTrack, uid } from './factories'
+import { findTrack, firstCompatibleTrack, firstTargetedTrack, uid } from './factories'
 import { resolveSelectionGroups } from './links'
 import { reIdMarkers } from './markers'
 import type { Clip, Doc, TrackKind } from './types'
@@ -65,23 +65,29 @@ export function commandsToCutClips(doc: Doc, clipIds: string[]): EditorCommand[]
 }
 
 /**
- * Commands that paste the clipboard at `atTime`. Each entry prefers its
- * original track (when it still exists and fits), then the first compatible
- * track, then a new track of that kind. Link bonds survive paste with FRESH
+ * Commands that paste the clipboard at `atTime`. With targeting, an entry
+ * prefers its targeted original track, then the first TARGETED track whose
+ * kind fits it, and falls back to the legacy order (original, then first
+ * compatible, then a new track of that kind) only when nothing of its kind is
+ * targeted. Link bonds survive paste with FRESH
  * ids — one fresh group per ORIGINAL group, so a multi-group clipboard
  * (e.g. a linked pair + an independent clip) pastes as exactly that: the pair
  * re-linked to each other, the independent clip still unlinked. Fresh ids
  * everywhere — paste never reuses clip ids.
  * Returns null when the clipboard is empty.
  */
-export function commandsToPasteClips(doc: Doc, atTime: number): EditorCommand[] | null {
+export function commandsToPasteClips(
+  doc: Doc,
+  atTime: number,
+  untargetedTrackIds: readonly string[] = [],
+): EditorCommand[] | null {
   if (!clipboard || clipboard.length === 0) return null
   // Original group id → fresh group id (one fresh group per original group).
   const freshLinkByOriginal = new Map<string, string>()
 
   const out: EditorCommand[] = []
   for (const entry of clipboard) {
-    const targetTrackId = resolvePasteTrackId(doc, entry)
+    const targetTrackId = resolvePasteTrackId(doc, entry, untargetedTrackIds)
     let linkId: string | undefined
     if (entry.clip.linkId) {
       let fresh = freshLinkByOriginal.get(entry.clip.linkId)
@@ -117,11 +123,25 @@ export function commandsToPasteClips(doc: Doc, atTime: number): EditorCommand[] 
   return out
 }
 
-function resolvePasteTrackId(doc: Doc, entry: ClipboardEntry): string | undefined {
-  if (entry.trackId) {
-    const original = findTrack(doc, entry.trackId)
-    if (original && kindFitsEntry(original.kind, entry)) return original.id
+function resolvePasteTrackId(
+  doc: Doc,
+  entry: ClipboardEntry,
+  untargetedTrackIds: readonly string[],
+): string | undefined {
+  const original = entry.trackId ? findTrack(doc, entry.trackId) : undefined
+  // Lane carried by the data: the original wins while it fits and is targeted.
+  if (
+    original &&
+    kindFitsEntry(original.kind, entry) &&
+    !untargetedTrackIds.includes(original.id)
+  ) {
+    return original.id
   }
+  // First TARGETED lane that fits the entry (text and media alike).
+  const targeted = firstTargetedTrack(doc, untargetedTrackIds, (t) => kindFitsEntry(t.kind, entry))
+  if (targeted) return targeted.id
+  // Legacy order, only when nothing of the entry's kind is targeted.
+  if (original && kindFitsEntry(original.kind, entry)) return original.id
   const kind = fallbackKind(entry)
   // fallbackKind is a TRACK kind (text entries belong on text tracks), while
   // firstCompatibleTrack works on MEDIA kinds — resolve text separately.

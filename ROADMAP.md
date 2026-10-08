@@ -5,7 +5,7 @@ questions, two sections: what has shipped (so a closed gap is not listed twice)
 and what remains, grouped by how often a working editor would feel it.
 
 Research date: September 2026 (Premiere 26.x); every status re-verified against
-the code on 2026-10-07, at 0.7.0. A gap moves to "Shipped" only once the release
+the code on 2026-10-08, at 0.7.1. A gap moves to "Shipped" only once the release
 that closed it is recorded in [CHANGELOG.md](CHANGELOG.md).
 
 The editing core is not tracked as a gap: the multi-track timeline, trim / split
@@ -18,6 +18,7 @@ Newest first. Releases before 0.5.0 are in [CHANGELOG.md](CHANGELOG.md).
 
 | Version   | What landed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **0.7.1** | Track targeting and select-by-lane: `Target Track` in the track header menu toggles a lane (an untargeted lane dims its kind icon) and steers the lane-less placements (paste, bin quick-add, Add Text, and a video's audio twin) onto it, with a compatible original lane kept while it is still targeted; `Select Track Clips` takes a whole lane and expands A/V link groups. Session state, not project data.                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | **0.7.0** | The rest of the Tier 1 bundle: 3D `.cube` LUT import (a project-level library, one copy per unique file, with 1D cubes applied as exact per-channel shapers and 3D cubes run through a shared per-frame pixel pass in the preview and the export alike), a waveform and a vectorscope beside the existing histogram and RGB-balance meters, and frame blending for sub-frame-rate clips in BOTH render paths (the export decodes the pair, the monitor parks a muted second element on it, and one shared weight function grades the two). With those three units the colour and offline-export rows close, and speed / time remapping loses its last partial cell. Three items are recorded as non-goals instead of built: ProRes (no browser encoder), HEVC (a value call, not a platform limit) and spectral or learned noise reduction. |
 | **0.6.4** | The Keyframes gap closes: the Effect Controls graph draws every segment's real bezier curve, the active segment's two handles drag (or arrow-nudge) to shape it beyond the presets, and each property can store a default easing that stamps newly authored keyframes. The easing picker now edits the active segment's start keyframe and is visible on unanimated rows too.                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | **0.6.3** | Trust hardening on the export, the easing UI and the battery. A video clip with no linked twin exports its embedded audio, a manually linked video part keeps its own sound, and a timeline whose only clips are muted, reversed or rate-dropped exports no audio track at all, so the mix can no longer disagree with the preview. Auto-ducking resolves each dialogue clip once instead of once per sample, the eased-segment solve shares the bezier solver, and the battery asserts the exported stream layout before and after muting.                                                                                                                                                                                                                                                                                                 |
@@ -34,24 +35,24 @@ Newest first. Releases before 0.5.0 are in [CHANGELOG.md](CHANGELOG.md).
 
 ## What remains
 
-The 0.7.0 bundle closes the rest of Tier 1, and with it every open cell in the
-tier. Colour grading ships 3D `.cube` LUT import beside the waveform and
-vectorscope scopes, frame blending for sub-frame-rate clips lands in the export
-AND the monitor (so the preview parity cell on the speed row is closed), and the
-release records HEVC plus ProRes as non-goals, with audio shaping recording
-spectral or learned noise reduction the same way, so the fixed broadband chain is
-its end state. Nothing in Tier 2 or Tier 3 has started.
+**Tier 1 is complete.** The 0.7.0 bundle closed its last open cells (3D
+`.cube` LUT import, the waveform and vectorscope scopes, and frame blending in
+both render paths), and the table below records how each of the five original
+gaps closed: four shipped, two cells closed as recorded non-goals. Open cells:
+none. Nothing in Tier 2 or Tier 3 has started.
 
-### Tier 1: felt every day
+### Tier 1: felt every day (complete at 0.7.0)
 
-| Gap                         | What Premiere does                 | Status                                                                                                                 | What is still open                                                      |
-| --------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Clip speed / time remapping | Rate stretch, speed ramps, reverse | Complete (0.5.0 fixed rate / rate stretch / reverse, 0.6.0 curves, 0.7.0 frame blending in the preview and the export) | Nothing: both render paths blend the same frame pair at the same weight |
+| Gap                         | What Premiere does                                                            | Status                                                                                                                                                                              |
+| --------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Keyframes                   | Animate opacity, position, scale, volume; Effect Controls with a graph editor | Shipped: 0.5.0 curves, 0.6.0 easing, 0.6.4 segment handle editing beyond the three presets and per-property default easing                                                          |
+| Clip speed / time remapping | Rate stretch, speed ramps, reverse                                            | Shipped: 0.5.0 fixed rate / rate stretch / reverse, 0.6.0 curves, 0.7.0 frame blending at the same weight in the preview and the export                                             |
+| Colour correction / grading | Lumetri: exposure, contrast, saturation, temperature, LUTs, scopes            | Shipped: 0.5.0 colour set, 0.6.0 temperature / tint with luma and RGB-balance meters, 0.7.0 `.cube` LUT import plus waveform and vectorscope                                        |
+| Audio shaping               | Essential Sound: auto-duck, EQ, compression, pan                              | Shipped: 0.5.0 pan / EQ / compressor / auto-duck, 0.6.0 the fixed broadband denoise chain; spectral or learned noise reduction closed at 0.7.0 as a recorded non-goal               |
+| Offline export              | Offline render, any codec (H.264, HEVC, ProRes)                               | Shipped: 0.5.0 WebCodecs H.264 + AAC (Opus where AAC is unavailable); HEVC and ProRes closed at 0.7.0 as recorded non-goals, with the reasons kept under "Deliberately not planned" |
 
 ### Tier 2: workflow accelerators (longer edits)
 
-- **Track targeting and select-by-lane.** Marquee selection shipped in 0.5.4, but
-  there is no per-track targeting: `store.selections` is a list of clip ids.
 - **Three-point editing.** In / out points on the source, then insert or
   overwrite into the sequence. Today only drag-and-drop and paste place a clip;
   there is no source monitor with in / out.
