@@ -42,14 +42,22 @@ Running the suite (these are the steps agents get wrong):
   steps are the intended signal: update the docs, never the drift test.
 - After `bun run format`, re-run `bun run check`: Prettier can glue markdown
   table rows together, which docs-drift then counts as broken cells.
-- Battery: `BASE_URL=http://localhost:3000 OUT=results.txt bash e2e/battery.sh`
-  (see [docs/testing.md](docs/testing.md)); export `GATE_PASSWORD` from
-  `.env.local` first or step 1 fails. It runs minutes (1080p export included),
-  needs `agent-browser` on PATH, and syntax-checks with `bash -n e2e/battery.sh`.
-  Afterwards close your agent-browser session (the owning tool's close command;
-  attribute leftovers by `ps -o pid,lstart`), and if you started the dev server,
-  stop it and verify the port is free (`curl -s --max-time 3
-http://localhost:3000` exits 7). If the user started it, leave it running.
+- Battery: `bun run battery` (`bash e2e/run-battery.sh`, see
+  [docs/testing.md](docs/testing.md)). The runner starts a dev server only when
+  the port is free, reads `GATE_PASSWORD` from `.env.local` itself, closes its
+  browser session, and stops only a server it started, so nothing is left behind.
+  It runs minutes (1080p export included) and needs `agent-browser` on PATH. For the SHIPPED
+  artifact, build and serve it yourself (`bun run build && bun run start`) and run the battery: it
+  reuses the server already on the port. Dev-green does not imply prod-green (minified chunks, copied
+  `.next/static` + `public`).
+  **Use `DETACH=1` whenever the harness may clean up background children**: a
+  session ending mid-run kills the dev server and the battery with it, and the
+  17 lines that did pass look exactly like a result. The verdict is strict, so a
+  killed run cannot pass: fewer result lines than `step` lines in
+  `e2e/battery.sh` exits nonzero with INCOMPLETE. Never report a battery result
+  that did not come from a full run. Syntax-check edits with `bash -n
+e2e/battery.sh e2e/run-battery.sh`. If the user started the dev server, leave
+  it running.
 
 ## Map
 
@@ -65,8 +73,10 @@ http://localhost:3000` exits 7). If the user started it, leave it running.
 - `src/app/` — `layout.tsx` (dark `<html>`, fonts, Toaster), `page.tsx`, `globals.css` (tokens),
   `icon.svg`.
 - `src/lib/editor/__tests__/` — all tests (`*.test.ts`), plus the mocked browser harness in `mocks/`.
-- `e2e/battery.sh`: 46-step UI battery, first step is the gate login (needs the dev server +
-  `agent-browser`; set `GATE_PASSWORD` when the gate is active).
+- `e2e/battery.sh`: 50-step UI battery, first step is the gate login (needs the dev server +
+  `agent-browser`; set `GATE_PASSWORD` when the gate is active). Drive it through
+  `e2e/run-battery.sh` (`bun run battery`), which owns the server, the password, the session and the
+  strict verdict.
 - `public/samples/` — bundled demo media used by "Load sample media".
 
 ## Critical rules

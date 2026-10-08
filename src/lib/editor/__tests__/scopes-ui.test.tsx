@@ -11,7 +11,8 @@ import { ScopesPanel } from '@/components/editor/ScopesPanel'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { useEditorStore } from '../store'
 import { createClip, createMediaAsset, createTrack } from '../factories'
-import type { Clip, Doc } from '../types'
+import { parseCubeLut } from '../lut'
+import type { Clip, Doc, ProjectLut } from '../types'
 
 /**
  * jsdom tests for the 0.6.0 color UI: the scopes meters (bounded downsample,
@@ -92,6 +93,55 @@ describe('ScopesPanel', () => {
 
     fireEvent.click(screen.getByTestId('scopes-toggle'))
     expect(screen.queryByTestId('scopes-meters')).not.toBeInTheDocument()
+  })
+
+  it('mounts the waveform and vectorscope meters and paints them from the sample', () => {
+    vi.useFakeTimers()
+    const monitor = document.createElement('canvas')
+    monitor.width = 1920
+    monitor.height = 1080
+    render(<Toggler canvas={monitor} />)
+    expect(screen.queryByTestId('scopes-waveform')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('scopes-toggle'))
+    expect(screen.getByTestId('scopes-waveform')).toBeInTheDocument()
+    expect(screen.getByTestId('scopes-vectorscope')).toBeInTheDocument()
+
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    // jsdom has no rasterizer, so the draw is proven by the ops recorded on the
+    // meter canvases. Both drawers stick to fillRect, which the mocked 2D op
+    // list already records (an unrecorded method would silently no-op).
+    const wave = callsOf(screen.getByTestId('scopes-waveform') as HTMLCanvasElement)
+    expect(wave.filter((c) => c.op === 'fillRect').length).toBeGreaterThan(0)
+    const vector = callsOf(screen.getByTestId('scopes-vectorscope') as HTMLCanvasElement)
+    expect(vector.filter((c) => c.op === 'fillRect').length).toBeGreaterThan(0)
+  })
+
+  it('tiles the waveform canvas edge to edge for a sample narrower than the canvas', () => {
+    // A square project downsamples to 144 columns (144x144) while the waveform
+    // canvas is 256 px wide. Integer bar widths printed 144 one-pixel bars and
+    // left 112 px blank on the right; the columns must span the full width.
+    vi.useFakeTimers()
+    const monitor = document.createElement('canvas')
+    monitor.width = 1080
+    monitor.height = 1080
+    render(<Toggler canvas={monitor} />)
+    fireEvent.click(screen.getByTestId('scopes-toggle'))
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+
+    const wave = screen.getByTestId('scopes-waveform') as HTMLCanvasElement
+    const fills = callsOf(wave).filter((c) => c.op === 'fillRect')
+    expect(fills.length).toBeGreaterThan(0)
+    // The trace starts at the left edge and its rightmost painted edge reaches
+    // the canvas edge, so no strip is left unpainted.
+    const left = Math.min(...fills.map((c) => Number(c.args[0])))
+    const right = Math.max(...fills.map((c) => Number(c.args[0]) + Number(c.args[2])))
+    expect(left).toBeLessThanOrEqual(0.5)
+    expect(right).toBeGreaterThanOrEqual(255.5)
   })
 
   it('reads a bounded downsample of the monitor at ~10 Hz, not per frame', () => {
@@ -284,6 +334,89 @@ describe('ScopesPanel', () => {
       0,
     )
     expect(warn).toHaveBeenCalledTimes(1) // the tainted-canvas warning only
+  })
+})
+
+describe('ColorFilterDefs with LUT shapers', () => {
+  const shaper = () => parseCubeLut('LUT_1D_SIZE 2\n0 0 0\n1 1 1', { id: 'shaper' })
+  const cube = () =>
+    parseCubeLut(
+      [
+        'LUT_3D_SIZE 2',
+        '0 0 0',
+        '1 0 0',
+        '0 1 0',
+        '1 1 0',
+        '0 0 1',
+        '1 0 1',
+        '0 1 1',
+        '1 1 1',
+      ].join('\n'),
+      { id: 'cube' },
+    )
+  const docWithLuts = (clip: Clip, luts: ProjectLut[]): Doc => {
+    const doc = docWith(clip)
+    doc.project.luts = luts
+    return doc
+  }
+
+  it('mounts one shaper node per unique 1D LUT, shared by every clip using it', () => {
+    useEditorStore.setState({
+      doc: docWithLuts(createClip({ id: 'c1', mediaId: 'm1', duration: 4, lutId: 'shaper' }), [
+        shaper(),
+      ]),
+    })
+    const { container, rerender } = render(<ColorFilterDefs />)
+    const filters = container.querySelectorAll('filter')
+    expect(filters).toHaveLength(1)
+    expect(filters[0].id).toBe('lut-shaper')
+    const funcs = filters[0].querySelectorAll('feFuncR, feFuncG, feFuncB')
+    expect(funcs).toHaveLength(3)
+    for (const fn of funcs) {
+      expect(fn.getAttribute('type')).toBe('table')
+      expect((fn.getAttribute('tableValues') ?? '').split(' ')).toHaveLength(2)
+    }
+
+    // A second clip on the same LUT shares the node: a 1D table is keyed by the
+    // library entry, not by the clip, so a big tableValues is never mounted twice.
+    const shared = docWithLuts(
+      createClip({ id: 'c1', mediaId: 'm1', duration: 4, lutId: 'shaper' }),
+      [shaper()],
+    )
+    shared.project.tracks[0].clips.push(
+      createClip({ id: 'c2', mediaId: 'm1', start: 4, duration: 4, lutId: 'shaper' }),
+    )
+    useEditorStore.setState({ doc: shared })
+    rerender(<ColorFilterDefs />)
+    expect(container.querySelectorAll('filter')).toHaveLength(1)
+  })
+
+  it('mounts nothing for a 3D cube (its pixel pass rides no SVG node)', () => {
+    useEditorStore.setState({
+      doc: docWithLuts(createClip({ id: 'c1', mediaId: 'm1', duration: 4, lutId: 'cube' }), [
+        cube(),
+      ]),
+    })
+    const { container } = render(<ColorFilterDefs />)
+    expect(container.querySelector('svg')).toBeNull()
+  })
+
+  it('keeps the clip matrix node beside the shaper node', () => {
+    useEditorStore.setState({
+      doc: docWithLuts(
+        createClip({
+          id: 'c1',
+          mediaId: 'm1',
+          duration: 4,
+          lutId: 'shaper',
+          temperature: 40,
+        }),
+        [shaper()],
+      ),
+    })
+    const { container } = render(<ColorFilterDefs />)
+    const ids = [...container.querySelectorAll('filter')].map((f) => f.id)
+    expect(ids.sort()).toEqual(['clip-grade-c1', 'lut-shaper'])
   })
 })
 

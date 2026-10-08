@@ -11,18 +11,27 @@ import {
   colorFilterId,
   describeColorFilter,
   hasColorGrade,
+  hasColorMatrix,
+  lutFilterId,
   sampleLuma,
   sampleRgbBalance,
+  sampleVectorscope,
+  sampleWaveform,
   scopeSampleSize,
+  VECTORSCOPE_SIZE,
 } from '../color'
 import { planVideoFrame } from '../export/offline'
 import { createClip, createMediaAsset, createTrack } from '../factories'
-import type { Clip, Doc } from '../types'
+import type { Clip, Doc, ProjectLut } from '../types'
 
 const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8')
 
 const clip = (over: Partial<Clip> = {}) =>
   createClip({ id: 'c1', mediaId: 'm1', start: 0, duration: 4, ...over })
+
+/** Minimal library entries: the filter-string tests never decode the grid. */
+const lut1d: ProjectLut = { id: 'lutA', name: 'Shaper', kind: '1d', size: 2, data: 'AAAAAAA=' }
+const lut3d: ProjectLut = { id: 'cubeB', name: 'Cube', kind: '3d', size: 2, data: 'AAAAAAA=' }
 
 function docWith(clip: Clip): Doc {
   return {
@@ -83,6 +92,51 @@ describe('clipColorValues + clipFilter', () => {
       brightness: 1,
       hue: 90,
     })
+  })
+
+  it('reports a LUT-only clip as graded, so it is never silently ignored', () => {
+    const lutOnly = clip({ lutId: 'lutA' })
+    expect(hasColorGrade(lutOnly)).toBe(true)
+    expect(clipFilter(lutOnly, 0, lut1d)).toBe('url(#lut-lutA)')
+    // The temperature/tint matrix node is a separate concern: a LUT-only clip
+    // must not mount one (an unused identity matrix per clip).
+    expect(hasColorMatrix(lutOnly)).toBe(false)
+  })
+
+  it('applies a 1D cube as a shaper reference beside the color set', () => {
+    const graded = clip({ animStatics: { hue: 10 }, temperature: 40, lutId: 'lutA' })
+    expect(describeColorFilter(graded, lut1d)).toBe('url(#lut-lutA) url(#clip-grade-c1)')
+    // The shaper comes FIRST: a LUT grades the source pixels, then the color
+    // set and the grade run. The 3D pixel pass applies in the same order.
+    expect(clipFilter(graded, 0, lut1d)).toBe(
+      'hue-rotate(10deg) url(#lut-lutA) url(#clip-grade-c1)',
+    )
+  })
+
+  it('never references a filter node for a 3D cube (the pixel pass owns it)', () => {
+    const lutOnly = clip({ lutId: 'cubeB' })
+    // A url() naming no mounted node invalidates the whole ctx.filter string,
+    // so a cube-only clip must render with no filter at all.
+    expect(clipFilter(lutOnly, 0, lut3d)).toBe('none')
+    expect(describeColorFilter(lutOnly, lut3d)).toBe('none')
+    expect(hasColorMatrix(lutOnly)).toBe(false)
+    // With a grade alongside it, only the grade's node is referenced.
+    const both = clip({ temperature: 40, lutId: 'cubeB' })
+    expect(clipFilter(both, 0, lut3d)).toBe('url(#clip-grade-c1)')
+  })
+
+  it('resolves the LUT reference from the clip alone when no library entry is known', () => {
+    // The third argument is what a caller resolves from `project.luts`; a
+    // dangling id (or a caller that forgot) must not produce a broken url.
+    expect(clipFilter(clip({ lutId: 'lutA' }), 0)).toBe('none')
+    expect(describeColorFilter(clip({ lutId: 'lutA' }))).toBe('none')
+  })
+
+  it('url-encodes a hostile LUT id into the filter id', () => {
+    // Same reason as the per-clip grade id: a space would invalidate the whole
+    // filter string, a ')' could inject extra filter functions.
+    expect(lutFilterId({ ...lut1d, id: 'a b)c' })).toBe('lut-a_20_b_29_c')
+    expect(lutFilterId({ ...lut1d, id: 'plain-Id9' })).toBe('lut-plain-Id9')
   })
 
   it('grades a clip through its id-stable SVG reference', () => {
@@ -206,21 +260,41 @@ describe('color flow: one builder for both render paths', () => {
 
   it('neither render path hand-builds filter strings any more (static lock)', () => {
     const compositor = read('src/lib/editor/playback/compositor.ts')
-    expect(compositor).toMatch(/clipFilter\(clip, local\)/)
+    expect(compositor).toMatch(/clipFilter\(clip, local, lut\)/)
     expect(compositor).not.toMatch(/brightness\(\$\{/)
     expect(compositor).not.toMatch(/function buildFilter/)
+    // Both paths resolve the clip's LUT the same way, so a 1D shaper reference
+    // cannot reach one and miss the other.
+    expect(compositor).toMatch(/findLut\(doc\.project\.luts, clip\.lutId\)/)
 
     const offline = read('src/lib/editor/export/offline.ts')
-    expect(offline).toMatch(/clipFilter\(clip, local\)/)
+    expect(offline).toMatch(/clipFilter\(clip, local, findLut\(doc\.project\.luts, clip\.lutId\)\)/)
     expect(offline).not.toMatch(/saturate\(\$\{/)
     expect(offline).not.toMatch(/function clipFilter/)
+  })
+
+  it('the exporter runs the SAME 3D pixel pass as the preview (static lock)', () => {
+    const mp4 = read('src/lib/editor/export/mp4.ts')
+    const compositor = read('src/lib/editor/playback/compositor.ts')
+    // One definition, two paths: the exporter imports the DRAWS from the
+    // compositor rather than re-implementing them, so a cube cannot grade one
+    // render and not the other. The pass itself is applied inside those shared
+    // draws (`drawContain` for a single frame, `drawBlendedContain` per layer of
+    // a blend pair), which is why the exporter must not call it directly.
+    expect(mp4).toMatch(
+      /import \{ drawBlendedContain, drawContain, drawTextClip \} from '\.\.\/playback\/compositor'/,
+    )
+    expect(mp4).not.toMatch(/applyLut3d\(/)
+    expect(mp4).toMatch(/findLut\(doc\.project\.luts, draw\.clip\.lutId\)/)
+    expect(mp4).toMatch(/drawBlendedContain\(ctx, \{/)
+    expect(compositor).toMatch(/lut\?\.kind === '3d' \? applyLut3d\(/)
   })
 
   it('the preview compositor draws graded clips through the shared helper', () => {
     const compositor = read('src/lib/editor/playback/compositor.ts')
     // The draw call receives the shared string; the SVG reference rides inside
     // it (ctx.filter accepts url() next to the filter functions).
-    expect(compositor).toMatch(/const filter = clipFilter\(clip, local\)/)
+    expect(compositor).toMatch(/const filter = clipFilter\(clip, local, lut\)/)
   })
 })
 
@@ -275,5 +349,96 @@ describe('scope samplers', () => {
     expect(scopeSampleSize(640, 360)).toEqual({ width: 256, height: 144 })
     expect(scopeSampleSize(128, 72)).toEqual({ width: 128, height: 72 })
     expect(scopeSampleSize(0, 0)).toEqual({ width: 1, height: 1 })
+  })
+
+  // A real row stride, unlike the `pixels` helper above: the waveform groups by
+  // COLUMN, so it has to walk `height` rows of `width` pixels instead of
+  // inferring the shape from `data.length`.
+  const grid = (values: number[][], width: number, height: number) => ({
+    data: new Uint8ClampedArray(values.flat()),
+    width,
+    height,
+  })
+
+  it('reads a waveform as a per-column luma min and max pair', () => {
+    const trace = sampleWaveform(
+      grid(
+        [
+          [0, 0, 0, 255],
+          [255, 255, 255, 255],
+          [128, 128, 128, 255],
+          [128, 128, 128, 255],
+        ],
+        2,
+        2,
+      ),
+    )
+    expect(trace.min).toHaveLength(2)
+    expect(trace.max).toHaveLength(2)
+    // Column 0 holds black and mid-grey.
+    expect(trace.min[0]).toBeCloseTo(0, 10)
+    expect(trace.max[0]).toBeCloseTo(128 / 255, 10)
+    // Column 1 holds white and mid-grey.
+    expect(trace.min[1]).toBeCloseTo(128 / 255, 10)
+    expect(trace.max[1]).toBeCloseTo(1, 10)
+  })
+
+  it('weights the waveform by the Rec.709 coefficients and honors the stride', () => {
+    // One pure-red column and one pure-blue column, two rows each. The row
+    // stride is what separates a real read from a data.length guess: a
+    // length-based grouping would put blue and red in the same column.
+    const trace = sampleWaveform(
+      grid(
+        [
+          [255, 0, 0, 255],
+          [0, 0, 255, 255],
+          [255, 0, 0, 255],
+          [0, 0, 255, 255],
+        ],
+        2,
+        2,
+      ),
+    )
+    expect(trace.min[0]).toBeCloseTo(trace.max[0], 10)
+    expect(trace.min[1]).toBeCloseTo(trace.max[1], 10)
+    expect(trace.max[0]).toBeCloseTo(0.2126, 10)
+    expect(trace.max[1]).toBeCloseTo(0.0722, 10)
+  })
+
+  it('handles an empty waveform buffer without throwing', () => {
+    expect(sampleWaveform(grid([], 0, 0))).toEqual({ min: [], max: [] })
+  })
+
+  it('reads a vectorscope as a normalized chroma density grid', () => {
+    const scope = sampleVectorscope(
+      grid(
+        [
+          [255, 0, 0, 255],
+          [0, 0, 255, 255],
+        ],
+        2,
+        1,
+      ),
+    )
+    expect(scope.size).toBe(VECTORSCOPE_SIZE)
+    expect(scope.bins).toHaveLength(VECTORSCOPE_SIZE * VECTORSCOPE_SIZE)
+    expect(scope.bins.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10)
+    // Two saturated primaries, so two occupied cells, neither at the centre
+    // (the centre is neutral grey).
+    const centre = Math.floor(VECTORSCOPE_SIZE / 2)
+    expect(scope.bins[centre * VECTORSCOPE_SIZE + centre]).toBe(0)
+    expect(scope.bins.filter((b) => b > 0)).toHaveLength(2)
+    expect(scope.bins.every((b) => b === 0 || b === 0.5)).toBe(true)
+  })
+
+  it('parks neutral pixels at the vectorscope centre', () => {
+    const centre = Math.floor(VECTORSCOPE_SIZE / 2)
+    const scope = sampleVectorscope(grid([[128, 128, 128, 255]], 1, 1))
+    expect(scope.bins[centre * VECTORSCOPE_SIZE + centre]).toBeCloseTo(1, 10)
+  })
+
+  it('handles an empty vectorscope buffer without throwing', () => {
+    const scope = sampleVectorscope(grid([], 0, 0))
+    expect(scope.bins.every((b) => b === 0)).toBe(true)
   })
 })

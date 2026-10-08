@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   deserializeDoc,
   parseSerializedDoc,
@@ -8,6 +8,21 @@ import {
   SERIALIZATION_VERSION,
 } from '../serialization'
 import { createClip, createDoc, createMediaAsset, createTextClip } from '../factories'
+import { parseCubeLut } from '../lut'
+
+/** An identity cube of the given size, in `.cube` row order (red fastest). */
+function identityCubeText(size: number): string {
+  const rows = [`LUT_3D_SIZE ${size}`]
+  const last = size - 1
+  for (let b = 0; b < size; b++) {
+    for (let g = 0; g < size; g++) {
+      for (let r = 0; r < size; r++) {
+        rows.push(`${(r / last).toFixed(6)} ${(g / last).toFixed(6)} ${(b / last).toFixed(6)}`)
+      }
+    }
+  }
+  return rows.join('\n')
+}
 import {
   FPS_MAX,
   FPS_MIN,
@@ -16,6 +31,10 @@ import {
   PROJECT_MIN_H,
   PROJECT_MIN_W,
 } from '../constants'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 function makeDoc() {
   const doc = createDoc()
@@ -56,7 +75,7 @@ describe('serializeDoc', () => {
     // Pin the WIRE value, not the constant serializeDoc itself stamps: the
     // round-trip contract is "this text is version 2", and a literal here
     // notices a silent constant change instead of restating it.
-    expect(json.version).toBe(2)
+    expect(json.version).toBe(3)
     expect(json.project.tracks[0].clips[0].transitionOut).toEqual({
       type: 'crossfade',
       duration: 0.5,
@@ -370,6 +389,109 @@ describe('marker serialization (0.5.5)', () => {
 
   it('refuses files from a newer app version', () => {
     expect(() => deserializeDoc({ version: SERIALIZATION_VERSION + 1 })).toThrow(SerializationError)
+  })
+
+  it('round-trips the LUT library and the clips that reference it', () => {
+    const lut = parseCubeLut(identityCubeText(2), { id: 'lut_fixed', name: 'Identity' })
+    const doc = makeDoc()
+    doc.project.luts = [lut]
+    doc.project.tracks[0].clips[0].lutId = 'lut_fixed'
+    const json = serializeDoc(doc)
+    expect(json.version).toBe(3)
+    expect(json.project.luts).toEqual([lut])
+    const back = deserializeDoc(json)
+    expect(back.doc.project.luts).toEqual([lut])
+    expect(back.doc.project.tracks[0].clips[0].lutId).toBe('lut_fixed')
+  })
+
+  it('drops malformed LUT entries without throwing', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const good = parseCubeLut(identityCubeText(2), { id: 'lut_ok', name: 'ok' })
+    const { doc } = deserializeDoc({
+      version: SERIALIZATION_VERSION,
+      project: {
+        luts: [
+          null,
+          'nope',
+          { id: 'lut_ok' }, // no kind/size/data
+          { ...good, id: '' },
+          { ...good, kind: 'weird' },
+          { ...good, size: 3 }, // grid does not decode to size^3*3
+          { ...good, data: 'not base64!' },
+          { ...good, data: 'AAAA' }, // decodes, but to the wrong length
+          { ...good, id: 'lut_dup' },
+          { ...good, id: 'lut_dup' },
+          good,
+        ],
+        tracks: [{ kind: 'video', clips: [] }],
+      },
+    })
+    expect(doc.project.luts?.map((l) => l.id)).toEqual(['lut_dup', 'lut_ok'])
+    expect(doc.project.luts?.[0]).toEqual({ ...good, id: 'lut_dup' })
+    // The drops are reported once for the whole load, naming the count.
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toMatch(/dropped 9 LUT library entries/)
+  })
+
+  it('drops an oversized LUT payload instead of trusting it', () => {
+    // A hand-edited file could otherwise inject a multi-megabyte string that
+    // every render pass would try to decode. The drop is reported, not silent.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { doc } = deserializeDoc({
+      version: SERIALIZATION_VERSION,
+      project: {
+        luts: [{ id: 'huge', name: 'huge', kind: '3d', size: 2, data: 'A'.repeat(3_000_001) }],
+        tracks: [{ kind: 'video', clips: [] }],
+      },
+    })
+    expect(doc.project.luts).toBeUndefined()
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toMatch(/dropped 1 LUT library entry/)
+  })
+
+  it('counts every dropped entry in one warning and stays silent on a clean load', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const good = parseCubeLut(identityCubeText(2), { id: 'lut_ok', name: 'ok' })
+    const { doc } = deserializeDoc({
+      version: SERIALIZATION_VERSION,
+      project: {
+        luts: [
+          { id: 'huge', name: 'huge', kind: '3d', size: 2, data: 'A'.repeat(3_000_001) },
+          { ...good, id: '' },
+          good,
+        ],
+        tracks: [{ kind: 'video', clips: [] }],
+      },
+    })
+    expect(doc.project.luts?.map((l) => l.id)).toEqual(['lut_ok'])
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toMatch(/dropped 2 LUT library entries/)
+
+    // One warning per load, and a load with nothing dropped is silent.
+    deserializeDoc({
+      version: SERIALIZATION_VERSION,
+      project: { luts: [good], tracks: [{ kind: 'video', clips: [] }] },
+    })
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+
+  it('hydrates a dangling clip lutId to nothing and loads tables-less docs', () => {
+    const withId = (lutId: unknown) => ({
+      version: SERIALIZATION_VERSION,
+      project: {
+        tracks: [
+          { kind: 'video', clips: [{ id: 'c1', start: 0, duration: 1, inPoint: 0, lutId }] },
+        ],
+      },
+    })
+    expect(
+      deserializeDoc(withId('lut_missing')).doc.project.tracks[0].clips[0].lutId,
+    ).toBeUndefined()
+    expect(deserializeDoc(withId(42)).doc.project.tracks[0].clips[0].lutId).toBeUndefined()
+    expect(deserializeDoc(withId(undefined)).doc.project.luts).toBeUndefined()
+    // A v1/v2 file has no field at all and must keep loading untouched.
+    const v1 = { version: 1, project: { tracks: [{ kind: 'video', clips: [] }] } }
+    expect(deserializeDoc(v1).doc.project.luts).toBeUndefined()
   })
 })
 

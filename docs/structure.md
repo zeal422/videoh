@@ -13,7 +13,8 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── robots.txt           # crawler policy
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
-│   └── battery.sh           # scripted UI battery (46 steps) driven by agent-browser
+│   ├── battery.sh           # scripted UI battery (50 steps) driven by agent-browser
+│   └── run-battery.sh       # runner: dev server, gate password, session cleanup, strict verdict
 ├── docs/                    # this documentation set
 ├── next.config.ts           # output: "standalone"
 ├── vitest.config.ts         # node env, @ alias, coverage include + thresholds
@@ -110,7 +111,7 @@ src/lib/editor/
 ├── constants.ts          # all tuning constants and limits
 ├── factories.ts          # uid + create* constructors, finders, compatibility checks, sourceTimeAt
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
-├── commands.ts           # the 39 EditorCommand variants + applyCommand(s), direction-aware split spans
+├── commands.ts           # the 42 EditorCommand variants + applyCommand(s), direction-aware split spans
 ├── trim.ts               # pure trim/split math: source-fitting bisection, timeScale curve rebases
 ├── snap.ts               # snap-point computation and application
 ├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
@@ -120,13 +121,16 @@ src/lib/editor/
 ├── ease-segment.ts       # per-segment easing DATA: bezier quad storage + exact de Casteljau subdivision
 ├── bezier.ts             # pure cubic-bezier timing solver for the easing presets
 ├── ducking.ts            # auto-duck keyframe analysis from waveform peaks
+├── color.ts              # the shared ctx.filter builder, the temperature/tint matrix, the scope samplers (pure)
+├── lut.ts                # `.cube` parsing/storage/budget (pure) + the 3D trilinear pixel pass
+├── frame-blend.ts        # sub-frame-rate blend math: the partner read + the pair weight BOTH render paths share
 ├── offline.ts            # offline-media detection for the monitor (pure)
 ├── transition.ts         # crossfade span + alpha math
 ├── links.ts              # multi-selection / A/V link-group helpers
 ├── clipboard.ts          # copy / cut / paste (module memory, outside undo)
 ├── actions.ts            # multi-command UI actions (add media/text, group ops, ripple delete)
 ├── store.ts              # zustand store: doc, history, transients, selection, playhead, zoom
-├── serialization.ts      # .veproj.json v2 (v1 still loads): serialize / parse / hydrate
+├── serialization.ts      # .veproj.json v3 (v1 and v2 still load): serialize / parse / hydrate
 ├── persistence.ts        # debounced localStorage autosave + restore
 ├── workspace.ts          # panel layout state (pure)
 ├── workspace-store.ts    # zustand wrapper over workspace.ts
@@ -139,10 +143,10 @@ src/lib/editor/
 ├── media/
 │   ├── probe.ts          # importFile: probe duration/size, thumbnail, waveform peaks, hasAudio
 │   ├── relink.ts         # relinkPatchFrom: patch fields a relink carries (file handle included)
-│   └── elements.ts       # ClipMediaPool: per-clip media elements + source nodes
+│   └── elements.ts       # ClipMediaPool: per-clip media elements, source nodes, the parked blend partner
 ├── playback/
-│   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate
-│   ├── compositor.ts     # drawFrame + drawTextClip (shared with the exporter): compositing, contain-fit, scale-from-center, text, crossfade, opacity
+│   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate, blend partner
+│   ├── compositor.ts     # drawFrame + the draws the exporter shares: contain-fit geometry, text, crossfade, blends, the 3D LUT pass
 │   ├── denoise.ts        # noise-reduction biquad chain, shared by the preview mixer and the export mix
 │   ├── preview.ts        # preview engine singleton (attach/detach)
 │   ├── engine-ref.ts     # PlaybackController ref shared by all UI
@@ -150,9 +154,9 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 53 test files (913 tests) + src/lib/gate.test.ts: see testing.md
+└── __tests__/            # 56 test files (1000 tests) + src/lib/gate.test.ts: see testing.md
     └── mocks/
-        └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / ResizeObserver
+        └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```
 
 `src/lib/utils.ts` holds the shadcn `cn()` class-merge helper.

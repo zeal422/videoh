@@ -4,18 +4,24 @@ import { useEffect, useRef, useState } from 'react'
 
 import {
   LUMA_BUCKETS,
+  VECTORSCOPE_SIZE,
   sampleLuma,
   sampleRgbBalance,
+  sampleVectorscope,
+  sampleWaveform,
   scopeSampleSize,
   type RgbaPixels,
+  type VectorscopeDensity,
+  type WaveformTrace,
 } from '@/lib/editor/color'
 
 /**
  * Scopes, a collapsible section inside the preview panel (0.6.0).
  *
- * Two basic meters: a luma histogram and an RGB balance read. They sample the
- * MONITOR canvas, so what the meters show is what the user sees (grades,
- * opacity and crossfades included) rather than the source frames.
+ * Four meters: a luma histogram, an RGB balance read, a waveform and a
+ * vectorscope. They sample the MONITOR canvas, so what the meters show is what
+ * the user sees (grades, opacity and crossfades included) rather than the
+ * source frames.
  *
  * Cost is bounded two ways: the monitor is drawn into a small offscreen canvas
  * (at most 256x144, see scopeSampleSize) so the pixel read never scales with
@@ -38,6 +44,8 @@ export function ScopesPanel({
 }) {
   const histRef = useRef<HTMLCanvasElement>(null)
   const balanceRef = useRef<HTMLCanvasElement>(null)
+  const waveRef = useRef<HTMLCanvasElement>(null)
+  const vectorRef = useRef<HTMLCanvasElement>(null)
   /** One reusable downsample scratch, never a fresh canvas per read. */
   const scratchRef = useRef<HTMLCanvasElement | null>(null)
   /** The `unavailable` latch, readable from the interval without re-keying it. */
@@ -129,6 +137,8 @@ export function ScopesPanel({
       }
       drawHistogram(histRef.current, sampleLuma(pixels))
       drawBalance(balanceRef.current, sampleRgbBalance(pixels))
+      drawWaveform(waveRef.current, sampleWaveform(pixels))
+      drawVectorscope(vectorRef.current, sampleVectorscope(pixels))
     }, SAMPLE_INTERVAL_MS)
     return () => window.clearInterval(timer)
   }, [open, canvas])
@@ -150,11 +160,13 @@ export function ScopesPanel({
           Scopes {open ? '▾' : '▸'}
         </button>
         {open && (
-          <span className="text-[10px] text-zinc-500">luma histogram · rgb balance · ~10 Hz</span>
+          <span className="text-[10px] text-zinc-500">
+            luma histogram · rgb balance · waveform · vectorscope · ~10 Hz
+          </span>
         )}
       </div>
       {open && (
-        <div className="mt-2 flex items-center gap-3" data-testid="scopes-meters">
+        <div className="mt-2 flex flex-wrap items-center gap-3" data-testid="scopes-meters">
           <div>
             <p className="mb-1 text-[10px] text-zinc-500">Luma</p>
             <canvas
@@ -175,6 +187,26 @@ export function ScopesPanel({
               className="block h-16 w-24 rounded border border-zinc-800 bg-black"
             />
           </div>
+          <div>
+            <p className="mb-1 text-[10px] text-zinc-500">Waveform</p>
+            <canvas
+              ref={waveRef}
+              width={WAVEFORM_WIDTH}
+              height={64}
+              data-testid="scopes-waveform"
+              className="block h-16 w-64 max-w-full rounded border border-zinc-800 bg-black"
+            />
+          </div>
+          <div>
+            <p className="mb-1 text-[10px] text-zinc-500">Vectorscope</p>
+            <canvas
+              ref={vectorRef}
+              width={96}
+              height={96}
+              data-testid="scopes-vectorscope"
+              className="block h-24 w-24 rounded border border-zinc-800 bg-black"
+            />
+          </div>
         </div>
       )}
       {unavailable && (
@@ -185,6 +217,9 @@ export function ScopesPanel({
     </div>
   )
 }
+
+/** Display width of the waveform trace; the sampled columns tile it edge to edge. */
+const WAVEFORM_WIDTH = 256
 
 /** Paints the luma histogram (one bar per bucket, log-friendly scaling). */
 function drawHistogram(canvas: HTMLCanvasElement | null, buckets: number[]): void {
@@ -199,6 +234,57 @@ function drawHistogram(canvas: HTMLCanvasElement | null, buckets: number[]): voi
     const bar = (buckets[b] / peak) * (height - 2)
     if (bar <= 0) continue
     ctx.fillRect(b, height - bar, 1, bar)
+  }
+}
+
+/**
+ * Paints the waveform: one vertical span per sampled column, from the column's
+ * minimum to its maximum luma, the columns tiling the full canvas width. A flat
+ * (all-black) frame still draws a 1px line instead of nothing, so a dark picture
+ * reads as a trace at the floor.
+ */
+function drawWaveform(canvas: HTMLCanvasElement | null, trace: WaveformTrace): void {
+  const ctx = canvas?.getContext('2d')
+  if (!ctx || !canvas) return
+  const { width, height } = canvas
+  ctx.clearRect(0, 0, width, height)
+  const columns = trace.min.length
+  if (columns === 0) return
+  ctx.fillStyle = '#e5e7eb'
+  // Pixel-snapped shared edges: adjacent columns meet, so the trace spans the
+  // whole canvas whether the sample carries 256 columns or 81. A floor()ed bar
+  // width left the right edge blank whenever columns < width.
+  const step = width / columns
+  for (let x = 0; x < columns; x++) {
+    const left = Math.round(x * step)
+    const right = Math.max(left + 1, Math.round((x + 1) * step))
+    const top = Math.min(height - 1, Math.max(0, Math.round(height - trace.max[x] * height)))
+    const bottom = Math.min(height, Math.max(0, Math.round(height - trace.min[x] * height)))
+    const bar = Math.max(1, bottom - top)
+    ctx.fillRect(left, top, right - left, Math.min(bar, height - top))
+  }
+}
+
+/**
+ * Paints the vectorscope: the chroma-plane density as a grid of cells, each
+ * cell's brightness scaled against the busiest one. Only occupied cells draw.
+ */
+function drawVectorscope(canvas: HTMLCanvasElement | null, density: VectorscopeDensity): void {
+  const ctx = canvas?.getContext('2d')
+  if (!ctx || !canvas) return
+  const { width, height } = canvas
+  ctx.clearRect(0, 0, width, height)
+  const { size, bins } = density
+  if (size <= 0 || bins.length < size * size) return
+  const peak = Math.max(...bins, 1e-6)
+  const cell = Math.max(1, Math.floor(Math.min(width, height) / size))
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const weight = bins[y * size + x] / peak
+      if (weight <= 0) continue
+      ctx.fillStyle = `rgba(190, 220, 255, ${(0.25 + 0.75 * weight).toFixed(3)})`
+      ctx.fillRect(x * cell, y * cell, cell, cell)
+    }
   }
 }
 

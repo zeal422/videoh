@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.7.0',
+    date: '2026-10-07',
+    highlights: [
+      'Grade a clip with a .cube LUT: the project keeps one copy of each file, and many clips can share it',
+      '1D LUTs apply as exact per-channel shapers; 3D LUTs run through one shared pixel pass in the preview and the export',
+      'The monitor scopes gain a waveform and a vectorscope beside the luma histogram and the RGB-balance read',
+      'Below the output frame rate both renders blend neighbouring frames, so a slowed or ramped clip stops juddering in the monitor and in the exported file alike',
+    ],
+  },
+  {
     version: '0.6.4',
     date: '2026-10-06',
     highlights: [

@@ -33,6 +33,7 @@ import {
   uid,
 } from './factories'
 import { rehomeSegmentShapes } from './ease-segment'
+import { lutBudgetMessage, lutLibraryChars } from './lut'
 import { clamp } from './time'
 import {
   hasTimeScaleCurve,
@@ -62,6 +63,7 @@ import type {
   MarkerPatch,
   MediaAsset,
   Project,
+  ProjectLut,
   TextStyle,
   Track,
   Transition,
@@ -154,6 +156,9 @@ export type EditorCommand =
       temperature: number
       tint: number
     }
+  // LUT library (0.7.0)
+  | { type: 'importProjectLut'; lut: ProjectLut }
+  | { type: 'setClipLut'; clipId: string; lutId: string | null }
   | {
       type: 'setClipAnimStatic'
       clipId: string
@@ -817,6 +822,37 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       const tint = clamp(command.tint, TINT_MIN, TINT_MAX)
       clip.temperature = temperature === 0 ? undefined : temperature
       clip.tint = tint === 0 ? undefined : tint
+      return
+    }
+
+    case 'importProjectLut': {
+      // The guard lives HERE, not in the Inspector: every path into the
+      // library (the file picker today, a future drop or paste tomorrow) pays
+      // the same check, and the refusal is a normal command error a caller can
+      // surface. The budget is a total on the library, so the message names the
+      // current and the projected size, never just "too big".
+      const luts = doc.project.luts ?? (doc.project.luts = [])
+      if (luts.some((l) => l.id === command.lut.id)) {
+        throw new EditorCommandError(`LUT ${command.lut.id} already exists`)
+      }
+      const message = lutBudgetMessage(lutLibraryChars(luts), command.lut.data.length)
+      if (message) throw new EditorCommandError(message)
+      luts.push(structuredClone(command.lut))
+      return
+    }
+
+    case 'setClipLut': {
+      const { clip } = requireClip(doc, command.clipId)
+      if (command.lutId === null) {
+        clip.lutId = undefined
+        return
+      }
+      // A reference to no entry would render as nothing while the clip still
+      // reads as graded, so the command is the one place that can refuse it.
+      if (!doc.project.luts?.some((l) => l.id === command.lutId)) {
+        throw new EditorCommandError(`Unknown LUT ${command.lutId}`)
+      }
+      clip.lutId = command.lutId
       return
     }
 

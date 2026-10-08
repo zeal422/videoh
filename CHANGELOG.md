@@ -5,6 +5,214 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-10-07
+
+### Added
+
+- **3D `.cube` LUT import.** The Inspector's colour section loads a LUT into a project-level library,
+  so one copy of a file serves every clip that references it. A `LUT_1D_SIZE` file applies as three
+  exact per-channel shaper tables in a single SVG `feComponentTransfer` node shared by every clip
+  using it, which is what keeps it riding the existing filter chain. A `LUT_3D_SIZE` file is a general
+  function of three inputs and is not separable, so it can never take that path: it runs a trilinear
+  pixel pass over the decoded source, from one shared helper, in the preview compositor and the
+  exporter alike. The parser handles `TITLE`, `#` comments, CRLF, `DOMAIN_MIN`/`DOMAIN_MAX` and the
+  0..1 float convention, and refuses a missing or conflicting size, an out-of-bounds size, an inverted
+  domain, a malformed row or a wrong row count with a message the Inspector shows, instead of loading
+  a wrong table. The library holds at most 3,000,000 base64 characters in total (about 2.25 MB of
+  binary); an import that would cross that budget is refused with the current and projected sizes
+  rather than warned about and proceeded, because a proceed that later trips the localStorage quota
+  costs crash recovery. Loading is one command batch, so a `.cube` load and its assignment are one
+  undo step and a refusal writes nothing. Project files become version 3; versions 1 and 2 still load,
+  and a hand-edited file with a malformed or oversized library entry, or a clip `lutId` naming no
+  entry, hydrates to nothing rather than throwing. A clip carrying only a LUT now reads as graded, so
+  it renders graded instead of silently unchanged. The 3D pass grades at source resolution, which is
+  the honest cost of a general three-input table in JavaScript, measured in headless Chromium 151 on
+  this machine with a 33-cube: about 110 ms per 1080p frame per clip and about 480 ms per 4K frame per
+  clip (482 to 653 ms across runs at 4K depending on how detailed the source is; the trilinear loop
+  alone is 390 to 422 ms, so the pixels are the cost, not the canvas round trip). A clip's payload is
+  decoded into its grid ONCE per session and every later frame reuses it (an identity test pins the
+  memo), so the per-frame figure is the pass itself. Memoizing the pass's own per-size lookup tables
+  measured within the run-to-run noise (484 vs 501 ms at 4K, 124 vs 120 ms at 1080p, both directions),
+  so those tables are rebuilt per pass rather than kept in a cache with no measured return. Resolving
+  the RED axis up front is the exception that did measure: one interpolated slab per input red byte
+  (built once per grid, about 6.7 MB for a 33-cube) turns the pixel loop's trilinear blend over eight
+  corners into a bilinear blend over four corners, with the same operand order, so the output is
+  bit-identical (locked by a reference-implementation test at four sizes, one of them over the cap so
+  the fallback is covered). What the slab buys depends on the READ WORKING SET, measured on fresh
+  frames in Chromium (minima of five blocks, 33-cube): a frame whose red channel stays locally coherent
+  runs 417.8 to 206.2 ms at 4K, 2.03x, while a frame with arbitrary red runs 434.1 to 398.3 ms, 1.09x.
+  The slab is 6.7 MB against the grid's 108 KB, so per-pixel slab reads miss L2 (256 KB per core) and
+  land in L3 while the grid stays resident: at 4K the reads alone cost 155 ms on the slab against
+  148 ms on the grid, and 4 x the bytes per pixel offset the arithmetic the axis resolution saves.
+  Nothing cheap buys the locality back. A Float32 slab (3.2 MB, still over L2) reaches only 1.14x on
+  arbitrary red and is SLOWER than the Float64 one once reads are resident (225.8 against 206.2 ms at
+  4K), because every read then needs a float32-to-double conversion. Ordering the pixel loop by input
+  red so one 26 KB plane stays hot is bit-identical but pays only where the table dwarfs the cache
+  (65-cube at 1080p, 1.16x) and loses where an index list hurts (33-cube at 4K, 642.1 against 398.3 ms
+  from the added traffic and scattered stores). A grid whose slab would exceed 32 MB keeps the
+  eight-corner loop. Benchmark note: grading the SAME buffer repeatedly measures a friendlier image
+  than fresh frames do (five in-place passes shrink the red alphabet from 256 to 212 values and the
+  fifth pass costs 350 ms against 401 ms for a fresh copy of the same frame), which is where the
+  earlier 1.25x figure came from.
+- **Waveform and vectorscope scopes.** The monitor's scopes section gains two meters beside the luma
+  histogram and the RGB-balance read. The waveform groups the bounded ~10 Hz downsample by column into
+  a luma min and max per column; the vectorscope bins the same sample over the Rec.709 chroma plane
+  into a 32x32 density. Both consume the buffer the panel already reads, so neither adds a pixel read.
+- The battery gains a 47th step, `f06 scopes: waveform + vectorscope paint real pixels`: it opens the
+  scopes strip, sleeps past one 100 ms sample interval, reads the two new meter canvases for non-zero
+  coverage, and collapses the panel again so the later pixel-reading steps see the full monitor.
+- The battery gains a 48th step, `f05 blend: monitor matches the export plan frame by frame`: a 0.25x
+  clip is stepped through 12 output frames while an in-page decoder builds each frame's plan pair from
+  the same file, and the monitor canvas must equal it pixel for pixel (the step also proves the
+  30 fps sample ladder it derives frames from, and requires at least three genuinely blended frames so
+  a held frame could not pass). It runs while the quick-added clips still sit in their import layout
+  and undoes its speed edit on every exit path (see Fixed).
+- **`e2e/run-battery.sh` takes the UI battery from a cold start to a strict verdict.** Driving
+  `e2e/battery.sh` by hand means remembering the dev server, the gate password in `.env.local`, the
+  session cleanup and the server stop, and it had one silent failure mode: a run killed halfway (an
+  agent harness that cleans up the background children it spawned when its session ends) still leaves
+  a partial `PASS` list behind, and that list reads as a result. The runner owns the lifecycle (it
+  starts a server only when the port is free, stops only the one it started, and closes its browser
+  session on every exit path), and `DETACH=1` re-execs it under `setsid` so the run owns its own
+  session and survives that cleanup. The verdict counts `PASS`/`FAIL` lines against the battery's own
+  `step` lines and fails with `INCOMPLETE` when they disagree, so a truncated or crashed run cannot
+  pass, and it truncates the results file before the battery starts so a stale green file cannot be
+  counted as the new verdict. Reachable as `bun run battery`. The guard was exercised against stub
+  batteries (all-pass exits 0, a `FAIL` exits 1, a crashed battery exits 1, three registered steps
+  with two results exits 1) and is locked by `battery-runner.test.ts`. The full 50-step battery was
+  re-run end to end after this change, against the dev server and against the standalone production
+  build: 50 passed, 0 failed in both.
+- **The battery gains a 50th step, `f06 LUT: an imported .cube grades the monitor`, and the export
+  round gains the same proof.** The fixture is one generated 1D `.cube` whose green and blue tables
+  are zero and whose red table is all one, so every pixel a shaper reaches turns pure red and the
+  oracle (green collapses while red survives) holds whatever the source frame looks like.
+  `f07 export` adds a third render on top of the warm/cool pair: it assigns the cube to the
+  selected video clip under the SAME -100 grade and muted mix as the cool render, so the two
+  produced files differ only in the cube, requires the channel signature in the decoded MP4, and
+  then undoes the batch (the import and its assignment are one undo step) so the later steps run
+  on the clean timeline. The new last step repeats the proof on the monitor through the
+  Inspector's real hidden file input, parked on the 0.60s frame, and requires the same signature
+  plus a full restore on a single Ctrl+Z.
+
+### Changed
+
+- **The battery runner's detached flow now ends on a terminal verdict.** Every run exit path, setup
+  failures (missing `agent-browser`, nothing serving, no steps) and signals included, writes
+  `BATTERY_EXIT=<code>` from the cleanup trap, and the detached launcher prints a unique per-run log
+  path (an explicit `LOG` is preserved) instead of a shared `/tmp/run-battery.log`. The launcher's own
+  exit 0 only means the child started, so a detached caller polls the log for the verdict.
+- **The runner no longer mistakes a timed-out port for a free one.** A `000` HTTP probe is checked
+  against an actual TCP listener before deciding to start a dev server, and the readiness loop refuses
+  to accept a response after the started process has exited, so a second server can no longer race
+  onto the port or hide behind another process's answer.
+- **The detached launcher's per-run id now names `OUT` and `SESSION` too.** Only the log was unique
+  before, so two concurrent detached runs truncated one `results.txt` and shared the `battery`
+  session, where one run's cleanup could close the other's browser mid-step. All three defaults now
+  carry the same `<date>-<pid>` id and `SESSION`/`OUT` are handed to the child explicitly, so the
+  child's cleanup closes exactly the session it was given; an explicit `LOG`, `OUT` or `SESSION` is
+  preserved. The launcher also checks the log truncation before spawning the child and exits 9 with a
+  message when it fails, instead of printing a pid and exit 0 for a run whose verdict can never be
+  read.
+- **The battery gained a pixel proof that the waveform tiles its canvas.** A new step sets the project
+  square (1080x1080, a 144-column sample against the 256 px meter), opens the scopes and reads the
+  meter canvas's first and last columns: both must be painted, so the right-edge regression cannot
+  come back. The battery is 50 steps, and the README command table now describes the runner as
+  reusing an existing `:3000` server instead of claiming it always starts one.
+- **Export now blends frames at sub-frame rates.** A clip slower than the output frame rate, or a
+  time-remapping ramp crossing a frame boundary, used to export a repeated frame and judder. The export
+  plan emits a blend pair for each such output frame, the exporter fetches both decoded samples and
+  weights them by their own timestamps (no nominal frame rate is needed), and composes them additively
+  over black into a scratch canvas before one composite at the clip's alpha, which is a real weighted
+  average rather than two attenuated draws. The monitor blends the same pair the same way (see below),
+  so the two render paths no longer disagree about a slow clip.
+- **The preview now blends too, closing the last open cell on the speed row.** A clip that reads
+  strictly below the source frame rate parks a second MUTED element on the partner read
+  (`ClipMediaPool.getNext`), positioned by the playback engine and never routed into the audio graph,
+  and the compositor draws the pair through the SAME `drawBlendedContain` the exporter calls, so a
+  slowed or ramped clip stops juddering in the monitor as well. The weight comes from the shared
+  `blendWeight` over the frames the two elements report they PRESENTED
+  (`requestVideoFrameCallback`): the preview's counterpart of the exporter's decoded sample
+  timestamps, with no nominal source frame rate assumed on either side. Every case where the pair
+  cannot be trusted falls back to the single stepped frame rather than blending against the wrong one:
+  a browser without that API, a partner frame that has not decoded yet, a presented frame that is
+  stale or ahead of the read, and a seek still in flight. The parked partner gets a tighter seek dead
+  zone than a playing element (0.002 s against the primary's 0.02 s): at 0.5x the partner read moves
+  only 1/60 s per output frame, and the coarser zone left the partner behind often enough to collapse
+  the pair onto a single frame. A speed edit back to realtime releases the parked element instead of
+  leaving a second decoder running.
+- The plan's blend math moved to `frame-blend.ts` (`blendWeight`, `blendPartnerTime`), so the preview
+  and the export resolve the pair from one function; `offline.ts` re-exports the weight for the plan's
+  own callers, and the exporter's pair-composition helpers now live beside the preview's drawing code
+  in `playback/compositor.ts` (`beginBlendPair`, `addBlendLayer`, `drawBlendedContain`, plus the shared
+  `containRect`/`sourceSize` geometry both draw paths use).
+- **HEVC and ProRes are recorded as non-goals, with corrected reasons.** The old wording claimed no
+  reliable browser encoder for both, which is wrong for the muxer half and wrong for HEVC. The muxer is
+  not the limitation: mediabunny carries ProRes fourCC profiles and gates every encode on
+  `canEncodeVideo`, the probe the exporter already uses for its audio codec. ProRes is the platform
+  claim, since no shipping browser exposes a ProRes `VideoEncoder` (per mediabunny's compatibility
+  guide, checked 2026-10-07). HEVC is a value call: an encoder exists and `canEncodeVideo` would gate
+  an option safely, but H.264 at the shipped bitrates covers the upload path, and the probe, the dialog
+  option and per-project even-dimension gating cost more than they return. Spectral or learned noise
+  reduction is recorded the same way, so the fixed broadband chain is the end state for audio shaping.
+  Colour grading and offline export therefore leave the roadmap's open list, and with the preview
+  blending above, the speed row leaves it too: Tier 1 has no open cell left.
+- **The battery's run instructions now cover every path it is actually used on.** `docs/testing.md`
+  states that the runner starts a server only on the default port and reuses whatever already serves
+  any other `BASE_URL`, documents the two-tree A/B recipe the battery was built for (one `SESSION` per
+  tree, the second tree's server started by hand on its own port, then diff the two results files), and
+  records the production-build run: `bun run build && bun run start` followed by `bun run battery`
+  gives 50 passed, 0 failed against the standalone output, the same result as the dev server, with the
+  gate live (307 to `/gate`). `docs/deployment.md`'s script table gained the missing `battery` and
+  `test:watch` rows, and the runner's reuse line no longer calls a production server a dev server.
+
+### Fixed
+
+- **The waveform scope tiles its full canvas width.** `drawWaveform` sized every bar at
+  `floor(256 / columns)` pixels, so any sample with fewer than 256 columns (any project narrower than
+  16:9; a square one left 112 px) painted over part of the canvas and left the right edge blank. The
+  columns now share pixel-snapped edges across the full width.
+- **A load that drops LUT library entries is no longer silent.** A hand-edited file whose LUT entries
+  are malformed, oversized or over the library budget still loads without throwing (that contract is
+  unchanged), but hydration now logs ONE warning naming how many entries it dropped instead of
+  shrinking the library invisibly. Import-time refusals are unchanged.
+- **The still-frame redraw can no longer repaint a stale frame.** A `seeked` listener registered by a
+  paused seek redrew the time its own seek was issued for, so a listener that landed after a newer
+  seek (or after a move inside the 0.02 s dead zone, which issues no new listener at all) put the old
+  frame back on screen with nothing left to repaint the current one. It now redraws the current
+  playhead, the same rule the image-decode refresh already used.
+- **The LUT base64 codec refuses misplaced padding.** It validated only the padding at the very end of
+  the payload, so a padded non-final quad or a third-position `=` left unpadded decoded to silent
+  garbage instead of being rejected. Padding is now required to be the tail of the payload, and the
+  legal padded tails still decode.
+- **Loading a `.cube` no longer dispatches against a deleted clip.** Reading the file is async, and the
+  clip can be deleted while it is in flight. The clip id is captured before the read, and the batch is
+  skipped when that clip is gone instead of failing on an unknown id. The command batch was already
+  atomic, so nothing was written either way.
+- **A read that lands exactly on a source frame boundary now shows the frame the export shows.** The
+  exporter's sample lookup keeps the last sample with `timestamp <= t`, so such a read is the frame
+  that STARTS there, while an element seek to the bare timestamp can present the frame before it. Both
+  parked paths were affected: the blend partner collapsed the pair onto one sample (a blend the file
+  has and the monitor did not) and the primary matched the file against the wrong frame (a blend the
+  file does not have). Every park now sits a hair inside the frame it names, which is far below the
+  dead zones that decide whether a park is needed.
+- **The blend-parity battery step undoes its speed edit on EVERY exit.** A failure between the edit
+  and the restore (the plan dump, the reference probe or ladder, a no-reference frame, the blend
+  coverage or the match count) left the clip at 0.25x for every later step, so one red step could
+  take unrelated steps down with it. Every failure exit routes through one restore that confirms the
+  undo, a restore that cannot confirm it is reported and still fails the step, and when the edit
+  never landed no undo fires (there it could revert the PREVIOUS step's action instead). Red-first
+  proven with a stub harness over the extracted step: each failure scenario must leave exactly one
+  undo, an edit that never landed must leave none.
+- **The red-slab cache is bounded in bytes, not entries.** The old two-entry cap made a timeline
+  compositing three clips graded with three distinct cubes rebuild every slab table every frame
+  (a 33-cube table is 6.7 MB, a 65-cube's 26 MB, so the cap also wasted headroom on small grids).
+  The budget is now 64 MB of resident slabs, evicting just enough OLDEST tables (FIFO) to fit: three
+  distinct 33-cubes stay resident, and any two 65-cubes still do. No output changes (the pixel pass
+  is untouched); the policy is locked by a dedicated cold-cache regression test.
+- The welcome notes now say the monitor blends too, the README command table lists `importProjectLut`
+  and `setClipLut`, and the dangling-`mediaId` note sits under Import media rather than under LUT
+  import.
+
 ## [0.6.4] - 2026-10-06
 
 ### Added

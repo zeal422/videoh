@@ -41,6 +41,32 @@ Stable hooks used across flows and tests:
   overlay names only assets the bin still has), the export refuses until it resolves, and undo is
   the recovery.
 
+## LUT import (.cube)
+
+- The Inspector's **Color grade** section loads a `.cube` per clip (picture clips only: a 3D cube's
+  pass needs a decoded frame). Loading is ONE command batch: `importProjectLut` adds the file to the
+  project's LUT library (one entry per unique import, referenced by `Clip.lutId`) and `setClipLut`
+  assigns it, so the whole load is one undo step and a refusal writes nothing.
+- The library budget is enforced by the command, not the UI: the base64 payloads may total at most
+  `LUT_LIBRARY_MAX_CHARS` (3,000,000 characters, about 2.25 MB of binary). An import that would cross
+  it is REFUSED with the current and projected sizes; it never warns-and-proceeds and never
+  downsamples silently, because a proceed that later trips the localStorage quota costs crash
+  recovery.
+- Load-time hydration is a trust boundary, not an error path: a hand-edited or damaged file's
+  malformed, oversized or over-budget entries are dropped and the load still succeeds. When at least
+  one entry is dropped the loader logs ONE warning naming the count, so the library cannot shrink
+  invisibly.
+- A `LUT_1D_SIZE` file applies as three per-channel shaper tables in one SVG `feComponentTransfer`,
+  referenced as `url(#lut-<lutId>)` BEFORE the clip's grade reference, and shared by every clip using
+  it. A `LUT_3D_SIZE` file is not separable, so it may never take that path: it runs a trilinear
+  pixel pass over the decoded source in BOTH the preview compositor and the exporter (one shared
+  helper, resolving each grid's red axis into a reusable table so the pixel loop blends four corners
+  instead of eight), ahead of the ctx.filter chain. A 3D cube contributes no filter reference at all, since a
+  `url()` naming no mounted node would invalidate the whole filter string.
+- `TITLE`, `#` comments, CRLF, `DOMAIN_MIN`/`DOMAIN_MAX` and the 0..1 float convention are handled; a
+  missing or conflicting size, an out-of-bounds size, an inverted domain, a malformed row or a wrong
+  row count is refused with a message the Inspector shows instead of loading a wrong table.
+
 ## Place media on the timeline
 
 - **Quick-add (`+`)** appends the clip at the end of the timeline on a compatible track.
@@ -207,6 +233,24 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
   while playing pauses playback first (Premiere behavior), so dragging the playhead can never inject
   a force-seek per pointer move into a running clock.
 
+## Color scopes
+
+- The preview panel carries a collapsible **Scopes** section (off by default), local to the panel:
+  it adds no workspace panel id and no menu entry. Four meters read the MONITOR canvas, so what they
+  show is what the user sees (grades, opacity and crossfades included) rather than the source frames:
+  a luma histogram, an RGB balance read, a waveform and a vectorscope.
+- The read is bounded twice. The monitor is drawn down into a scratch canvas of at most 256x144
+  (`scopeSampleSize`), so the pixel read never scales with project resolution, and the interval runs
+  at ~10 Hz instead of per frame. The waveform groups that sample by COLUMN (it walks the real row
+  stride), the vectorscope bins it over the Rec.709 chroma plane into a 32x32 density grid.
+- A tainted canvas (cross-origin media) must not throw into the render loop: the meters log once and
+  report "Meters unavailable" instead. The interval keeps retrying while the banner is up, so a
+  canvas that becomes readable again (a resize resets origin-clean, a relink removes the tainting
+  media) recovers on its own, and closing the scopes, or a parent swapping the monitor node, resets
+  the latch.
+- Testids: `scopes-panel`, `scopes-toggle`, `scopes-meters`, `scopes-luma`, `scopes-balance`,
+  `scopes-waveform`, `scopes-vectorscope`.
+
 ## Export
 
 - `exportTimeline` (WebCodecs) executes the pure frame plan from `export/offline.ts`: per output frame
@@ -218,12 +262,37 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
 - The dialog shows progress, supports cancel, previews the result (`export-result-video`), and
   downloads `<project name>.mp4`. On browsers without WebCodecs it disables itself and says why.
 - Export runs offline (no realtime capture) and does not need tab focus; wall time tracks source
-  decode speed. HEVC/ProRes are deliberately not
-  offered (no reliable browser encoders); see [README](../README.md).
+  decode speed. HEVC and ProRes are deliberately not offered: ProRes has no shipping browser
+  `VideoEncoder`, and HEVC is left out on value grounds (an encoder exists, and a probe could gate it
+  safely); see [README](../README.md).
+
+## Frame blending at sub-frame rates (both render paths)
+
+- A clip whose read is strictly below the source frame rate (a slowed clip, or a time-remapping ramp
+  whose read crosses frame boundaries) gets a partner read one OUTPUT frame later. The decision is one
+  shared function, `blendPartnerTime` in `frame-blend.ts`, so the export plan and the preview engine
+  cannot disagree about which frame pairs with which: `planVideoFrame` carries it as `blendTime`, and
+  the playback engine parks its blend element on it.
+- The WEIGHT also comes from one function, `blendWeight`, over the pair's own timestamps. No nominal
+  source frame rate is assumed anywhere: the exporter weights the two samples its decoder returned,
+  and the preview weights the two frames its elements report they PRESENTED through
+  `requestVideoFrameCallback`.
+- Drawing is one routine, `drawBlendedContain` in `playback/compositor.ts`, called by the preview
+  compositor and the exporter: both layers are graded (a 3D cube runs per layer, because the LUT
+  scratch is reused) and composited ADDITIVELY over black into a scratch canvas sized to the drawn
+  rect, and the result goes down once at the clip's alpha, filter and geometry. Two plain
+  `globalAlpha` draws would attenuate each other rather than average.
+- Every case where the pair cannot be trusted falls back to the single stepped frame the preview had
+  before: a browser without `requestVideoFrameCallback`, a partner frame that has not decoded yet, a
+  presented frame that is stale, ahead of its read, or replaced by a seek still in flight. A speed
+  edit back to realtime releases the parked element.
+- The monitor already draws the export's other rules through shared code (`drawContain` geometry, the
+  shared filter string from `color.ts`, the shared 3D pass), and this closes the last one: a slowed
+  clip looks the same in the program monitor and in the file.
 
 ## Save, load, autosave, restore
 
-- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 2; version 1 files still load) and
+- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 3; versions 1 and 2 still load) and
   downloads it; object URLs are stripped and never persisted.
 - **Open** hydrates every asset with `missing: true`. Bundled samples then refetch themselves
   (`hydrateSampleMedia(doc)`), which the restore path shares: their bytes are the app's own. The merge

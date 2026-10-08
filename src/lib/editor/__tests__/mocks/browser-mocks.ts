@@ -122,6 +122,12 @@ export class FakeAudioContext {
   state: 'suspended' | 'running' | 'closed' = 'suspended'
   sampleRate = 48000
   destination = new FakeAudioNode()
+  /**
+   * Every element handed to createMediaElementSource. The audio graph must hold
+   * exactly ONE per clip: a parked blend partner routed here as well would mix
+   * the clip's sound twice.
+   */
+  elementSources: HTMLMediaElement[] = []
   constructor() {
     FakeAudioContext.instances.push(this)
   }
@@ -155,6 +161,7 @@ export class FakeAudioContext {
     return node
   }
   createMediaElementSource(el: HTMLMediaElement): FakeMediaElementSourceNode {
+    this.elementSources.push(el)
     return new FakeMediaElementSourceNode(el)
   }
   createMediaStreamDestination(): FakeMediaStreamAudioDestinationNode {
@@ -216,6 +223,9 @@ export function createFake2DContext() {
       const height = Math.max(1, Number(h) || 1)
       return { data: new Uint8ClampedArray(width * height * 4), width, height }
     },
+    // The 3D LUT pass writes its graded buffer back into the scratch canvas;
+    // without this entry the call would resolve to undefined and throw.
+    putImageData: (...a: unknown[]) => calls.push({ op: 'putImageData', args: a }),
     fillText: (...a: unknown[]) => calls.push({ op: 'fillText', args: a }),
     strokeText: (...a: unknown[]) => calls.push({ op: 'strokeText', args: a }),
     beginPath: () => calls.push({ op: 'beginPath', args: [] }),
@@ -256,6 +266,33 @@ export function createFake2DContext() {
 
 const kPaused = Symbol('fake-paused')
 
+/**
+ * Frame callbacks queued per element by the requestVideoFrameCallback patch,
+ * drained by `presentFrame`.
+ */
+const pendingFrameCallbacks = new WeakMap<HTMLMediaElement, VideoFrameRequestCallback[]>()
+let nextFrameCallbackId = 1
+
+/**
+ * Presents one frame on an element: runs the callbacks it queued (a real
+ * browser runs them when a decoded frame reaches the compositor) with the media
+ * timestamp the test chooses. A callback that re-arms itself is queued again.
+ */
+export function presentFrame(el: HTMLMediaElement, mediaTime: number): void {
+  const pending = pendingFrameCallbacks.get(el)
+  if (!pending || pending.length === 0) return
+  pendingFrameCallbacks.set(el, [])
+  const metadata: VideoFrameCallbackMetadata = {
+    mediaTime,
+    presentedFrames: 1,
+    expectedDisplayTime: 0,
+    presentationTime: 0,
+    width: 0,
+    height: 0,
+  }
+  for (const cb of pending) cb(performance.now(), metadata)
+}
+
 /** play()/pause()/paused/currentTime/load become deterministic state machines. */
 export function patchMediaElements(): void {
   Object.defineProperty(HTMLMediaElement.prototype, 'paused', {
@@ -280,6 +317,15 @@ export function patchMediaElements(): void {
   ;(HTMLMediaElement.prototype as unknown as Record<string | symbol, unknown>).load = function () {
     /* no-op */
   }
+  // requestVideoFrameCallback: jsdom never presents a frame, so the callbacks
+  // are queued here and run by `presentFrame` with a test-chosen mediaTime.
+  ;(HTMLVideoElement.prototype as unknown as Record<string, unknown>).requestVideoFrameCallback =
+    function (this: HTMLMediaElement, cb: VideoFrameRequestCallback): number {
+      const list = pendingFrameCallbacks.get(this) ?? []
+      list.push(cb)
+      pendingFrameCallbacks.set(this, list)
+      return nextFrameCallbackId++
+    }
   const time = new WeakMap<object, number>()
   Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
     configurable: true,

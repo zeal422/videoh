@@ -51,9 +51,11 @@ excluded by the proxy's matcher. The app bundle never reaches an unauthenticated
 | `bun run lint`          | ESLint                                                                  |
 | `bun run typecheck`     | `tsc --noEmit`                                                          |
 | `bun run test`          | Vitest single pass (never bare `bun test`)                              |
+| `bun run test:watch`    | Vitest watch mode                                                       |
 | `bun run test:coverage` | Vitest with enforced coverage thresholds                                |
 | `bun run format`        | Prettier write (`src/`, docs, root config files)                        |
 | `bun run format:check`  | Prettier check (`src/`, docs, root config files)                        |
+| `bun run battery`       | the scripted UI battery ([below](#end-to-end-battery))                  |
 | `bun run check`         | the full verification gate (below)                                      |
 
 ## The verification gate — `bun run check`
@@ -93,12 +95,26 @@ between server and client.
 The scripted UI battery runs against a live server (see [testing.md](testing.md#end-to-end-battery)):
 
 ```bash
-bun run dev                                   # in one terminal
-BASE_URL=http://localhost:3000 OUT=results.txt bash e2e/battery.sh
+bun run battery                               # starts/reuses a dev server, then stops what it started
+DETACH=1 bun run battery                       # detached, for harnesses that clean up their children
 ```
 
-It requires `agent-browser` on `PATH` and writes `PASS`/`FAIL` lines to `$OUT`. `results*.txt` and
-`tool-results/` are gitignored.
+It requires `agent-browser` on `PATH`, reads `GATE_PASSWORD` from `.env.local`, and writes
+`PASS`/`FAIL` lines to `$OUT` (`results.txt` by default). It exits nonzero on a `FAIL` and on a run
+that produced fewer results than the battery's own `step` lines, so a partial run is never a pass.
+`results*.txt` and `tool-results/` are gitignored.
+
+The dev server is not the shipped artifact. To verify the build that actually ships, serve the
+standalone output and let the runner reuse it (it starts a server only on the default port when
+nothing is serving it):
+
+```bash
+bun run build && bun run start   # production needs GATE_SECRET; the server refuses to boot without it
+bun run battery                  # 50 passed, 0 failed at 0.7.0, same as the dev server
+```
+
+See [testing.md](testing.md#end-to-end-battery) for the A/B two-tree recipe and the runner's full
+environment.
 
 ## Hosting
 

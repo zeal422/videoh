@@ -54,6 +54,12 @@
 # - the clipboard/link steps run after f05 and respect link-group semantics:
 #   duplicate and paste move exactly the clicked clip's link group, read LIVE
 #   from the selection ring, and Shift+Delete ripples the pasted copy away.
+# - the blend-parity step (0.7.0) runs while the quick-added clips are still in
+#   their import layout (video first, so its 0-6s span is alone on screen at the
+#   parked frames it samples). It sets the video clip to 0.25x, steps 12 output
+#   frames, and undoes the speed edit before ANY exit (the success path and
+#   every failure path route through one restore, and a failed restore fails
+#   the step), so every later step sees the timeline it left behind.
 # - the color-grade proof spans two existing steps (0.6.0). f06 parks on a
 #   deterministic frame (18 frames = 0.6s), samples the monitor's red/blue
 #   balance, drives the Temperature slider to +100 and samples again; the
@@ -71,6 +77,22 @@
 #   the a11y snapshot, so export_track_kinds reads the result file's
 #   moov/trak/mdia/hdlr boxes directly, and it runs BEFORE the mute so the
 #   present-track assertion also proves the parser reads non-empty kinds.
+# - the scopes-fill step (0.7.0) runs next to last: it sets the project square
+#   (1080x1080) so the waveform sample is 144 columns against the 256px meter,
+#   opens the scopes and reads the meter canvas's first and last columns (both
+#   must be painted). It leaves the project square; no later step depends on the
+#   dimensions.
+# - the LUT proofs (0.7.0) share ONE generated .cube whose green and blue tables
+#   are zero, so a graded frame turns pure red and the collapse of the green
+#   channel is the oracle (no content-dependent level or ratio can fake it).
+#   f07's export round renders a third time with the cube on the video clip,
+#   under the SAME -100 grade and muted mix as the cool render, asserts the
+#   channel signature, and undoes the import+assignment batch. The separate
+#   f06_lut step runs after the relink flow (only the console check follows it)
+#   and repeats the proof on the monitor: it parks again, selects the first
+#   video part, imports the cube through the Inspector's real hidden file input,
+#   asserts the green collapse, and undoes the one-step batch so the panel reads
+#   None and the frame comes back.
 
 # `pipefail` (with the `set -u` below): every assertion is a `snap | grep`
 # pipeline, and a failed, timed-out or empty snapshot must abort the step rather
@@ -89,11 +111,15 @@ OUT="${OUT:-results.txt}"
 # VARIABLE, never a glob: a glob could delete a PARALLEL battery run's capture
 # (the runner documents A/B runs against two trees).
 PROJECT_CAPTURE=''
+# The generated .cube fixture the LUT proofs upload (f06_lut and f07_export).
+# Like the capture it is removed on every exit path, by VARIABLE, never a glob,
+# so a parallel A/B run's fixture is never deleted.
+LUT_FIXTURE=''
 # The pasted copy's label time, recorded by f02_copy_paste and consumed by
 # f08_ripple_delete: it depends on the clip layout the earlier steps leave, so
 # it is read back live instead of hardcoded.
 PASTED_START=''
-trap '[ -n "$PROJECT_CAPTURE" ] && rm -f "$PROJECT_CAPTURE"' INT TERM EXIT
+trap '[ -n "$PROJECT_CAPTURE" ] && rm -f "$PROJECT_CAPTURE"; [ -n "$LUT_FIXTURE" ] && rm -f "$LUT_FIXTURE"' INT TERM EXIT
 
 ab() { agent-browser --session "$SESSION" "$@"; }
 snap() { ab snapshot -i -c 2>/dev/null; }
@@ -552,6 +578,227 @@ frame_sum() { # frame_sum <css selector for the canvas>
   })()"
 }
 
+# Per-channel sums of one canvas as "r g b" (the same stride-40 sample frame_sum
+# adds together). The LUT proofs need the channels apart: a 1D cube whose green
+# and blue tables are zero makes a graded frame's green collapse, which no
+# content-dependent level or ratio can fake.
+frame_rgb_sums() { # frame_rgb_sums <css selector for the canvas>
+  evaln "(() => {
+    const c = document.querySelector('$1');
+    if (!c || !c.width || !c.height) return '0 0 0';
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let r = 0, g = 0, b = 0;
+    for (let i = 0; i < d.length; i += 40) { r += d[i]; g += d[i+1]; b += d[i+2]; }
+    return r + ' ' + g + ' ' + b;
+  })()"
+}
+
+# The LUT fixture both proofs upload (f06_lut and f07_export): a 1D cube whose
+# red table is all one and whose green and blue tables are all zero, so every
+# pixel the shaper reaches becomes pure red. The oracle is the collapse of the
+# green channel, which holds whatever the source frame happens to look like.
+make_lut() { # make_lut <path>
+  printf 'TITLE "battery-red"\nLUT_1D_SIZE 2\n1.0 0.0 0.0\n1.0 0.0 0.0\n' >"$1"
+}
+
+# The waveform and vectorscope meters paint real pixels (0.7.0). jsdom cannot
+# see this (its mocked getImageData returns zeros), so the browser is the only
+# place the draw is provable. Two constraints: the meters sample the monitor on
+# a 100ms interval with no completion signal, so the step sleeps past one
+# interval after opening the panel, and the read is bounded by the METER
+# canvases, never the monitor. frame_sum is reused for the read: a trace of
+# grey fillRects sums the same way a composited frame does.
+f06_scopes() {
+  ab click '[data-testid=scopes-toggle]' >/dev/null 2>&1
+  sleeps 0.6
+  local wave vector
+  wave=$(frame_sum '[data-testid=scopes-waveform]')
+  vector=$(frame_sum '[data-testid=scopes-vectorscope]')
+  [ -n "$wave" ] && [ -n "$vector" ] || {
+    echo "f06: could not read the scope meters (waveform=$wave vectorscope=$vector)" >&2
+    return 1
+  }
+  awk -v w="$wave" -v v="$vector" 'BEGIN { exit !(w > 0 && v > 0) }' || {
+    echo "f06: scope meters are blank (waveform=$wave vectorscope=$vector)" >&2
+    return 1
+  }
+  # Collapse again: the later steps expect the panel closed, and an open
+  # scopes strip narrows the monitor area for every pixel-reading step after it.
+  ab click '[data-testid=scopes-toggle]' >/dev/null 2>&1
+  sleeps 0.3
+}
+
+# The waveform must TILE its meter canvas, not just start at its left edge: a
+# sample narrower than the canvas (a square project downsamples to 144 columns
+# against the 256px meter) used to paint one-pixel bars and leave the right side
+# blank. The unit suite locks the geometry; this is the browser proof that the
+# pixels actually land on the last column.
+f06_scopes_fill() {
+  # The project width/height spinbuttons the settings step just used (Inspector's
+  # project section; the first two spinbuttons in the snapshot at this point).
+  local w h
+  w=$(spinrefs | sed -n '1p')
+  [ -n "$w" ] || { echo "f06_scopes_fill: no project width spinbutton" >&2; return 1; }
+  ab scrollintoview "@$w" >/dev/null 2>&1 && sleeps 0.2
+  ab fill "@$w" '1080' >/dev/null && ab press Enter >/dev/null && sleeps 0.6
+  h=$(spinrefs | sed -n '2p')
+  [ -n "$h" ] || { echo "f06_scopes_fill: no project height spinbutton" >&2; return 1; }
+  ab scrollintoview "@$h" >/dev/null 2>&1 && sleeps 0.2
+  ab fill "@$h" '1080' >/dev/null && ab press Enter >/dev/null && sleeps 0.6
+  [ "$(evaln 'document.querySelector("[data-testid=preview-canvas]").width')" = "1080" ] &&
+    [ "$(evaln 'document.querySelector("[data-testid=preview-canvas]").height')" = "1080" ] || {
+    echo "f06_scopes_fill: the project did not become 1080x1080" >&2
+    return 1
+  }
+
+  # Open the scopes unless they are already open (the panel state persists
+  # across steps), and restore that state at the end.
+  local was_open
+  was_open=$(evaln 'document.querySelectorAll("[data-testid=scopes-meters]").length')
+  if [ "$was_open" = "0" ]; then
+    ab scrollintoview '[data-testid=scopes-toggle]' >/dev/null 2>&1 && sleeps 0.2
+    ab click '[data-testid=scopes-toggle]' >/dev/null 2>&1
+  fi
+  # Past one 100ms sample interval after the resize, then read the METER canvas
+  # (never the monitor): the alpha sum of its first and last pixel columns.
+  sleeps 0.6
+  local edges
+  edges=$(evaln '(() => {
+    const c = document.querySelector("[data-testid=scopes-waveform]");
+    if (!c) return "none";
+    const ctx = c.getContext("2d");
+    const col = (x) => {
+      const d = ctx.getImageData(x, 0, 1, c.height).data;
+      let a = 0;
+      for (let i = 3; i < d.length; i += 4) a += d[i];
+      return a;
+    };
+    return col(0) + ":" + col(c.width - 1);
+  })()')
+  local ok=1
+  case "$edges" in
+    none)
+      echo "f06_scopes_fill: the waveform meter is not mounted" >&2
+      ok=0
+      ;;
+    *:*)
+      local l r
+      l=${edges%%:*}
+      r=${edges##*:}
+      awk -v l="$l" -v r="$r" 'BEGIN { exit !(l > 0 && r > 0) }' || {
+        echo "f06_scopes_fill: the waveform misses a canvas edge (left=$l right=$r)" >&2
+        ok=0
+      }
+      ;;
+    *)
+      echo "f06_scopes_fill: unreadable edge sample ($edges)" >&2
+      ok=0
+      ;;
+  esac
+  if [ "$was_open" = "0" ]; then
+    ab click '[data-testid=scopes-toggle]' >/dev/null 2>&1
+    sleeps 0.3
+  fi
+  [ "$ok" = "1" ]
+}
+
+# The .cube import is the one path that turns a file the app does not own into a
+# grade, and the monitor is where the shaper can be seen. It runs after the
+# relink flow, with only the console check following it, so the
+# import+assignment batch and its undo cannot disturb the export round that ran
+# earlier. The fixture makes every graded
+# pixel pure red (make_lut), so the proof is the green channel collapsing while
+# red stays: an oracle that does not depend on what the frame looks like.
+f06_lut() {
+  local cube="${TMPDIR:-/tmp}/battery-red-$$.cube"
+  make_lut "$cube"
+  LUT_FIXTURE="$cube"
+
+  # Park on the 0.60s frame again and require content before touching the LUT.
+  ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
+  local i
+  for i in $(seq 1 18); do ab press ArrowRight >/dev/null 2>&1; done
+  sleeps 0.6
+  # The FIRST video part covers the parked time (the split put it at 0.00).
+  click_clip 'sample-video.mp4 from 0.00 to' || {
+    echo "f06_lut: the first video part did not select" >&2
+    return 1
+  }
+  ab eval 'document.querySelector("[data-testid=inspector-tab-clip]")?.click()' >/dev/null 2>&1
+  sleeps 0.4
+  insp '[data-testid=lut-load]'
+
+  local before after back b_g a_r a_g u_g ok=1
+  before=$(frame_rgb_sums '[data-testid=preview-canvas]')
+  awk -v v="${before:-}" 'BEGIN {
+    n = split(v, f, " ");
+    if (n != 3) exit 1;
+    for (i = 1; i <= 3; i++) if (f[i] !~ /^[0-9]+$/) exit 1;
+  }' || {
+    echo "f06_lut: could not sample the monitor before the LUT ($before)" >&2
+    return 1
+  }
+  b_g=${before#* }; b_g=${b_g%% *}
+
+  ab upload '[data-testid=lut-file]' "$cube" >/dev/null 2>&1 || {
+    echo "f06_lut: the cube upload into the Inspector failed" >&2
+    return 1
+  }
+  # The import is async (file.text() then one command batch): poll the LUT row
+  # for the name instead of sleeping a guess.
+  local landed=0
+  for i in $(seq 1 20); do
+    if [ "$(evaln 'document.querySelector("aside[aria-label=Inspector]")?.innerText.includes("battery-red") ? "yes" : "no"')" = "yes" ]; then
+      landed=1
+      break
+    fi
+    sleep 0.25
+  done
+  [ "$landed" = "1" ] || {
+    echo "f06_lut: the imported cube was never assigned to the clip" >&2
+    return 1
+  }
+  sleeps 0.6
+
+  after=$(frame_rgb_sums '[data-testid=preview-canvas]')
+  awk -v v="${after:-}" 'BEGIN {
+    n = split(v, f, " ");
+    if (n != 3) exit 1;
+    for (i = 1; i <= 3; i++) if (f[i] !~ /^[0-9]+$/) exit 1;
+  }' || {
+    echo "f06_lut: could not sample the monitor after the LUT ($after)" >&2
+    return 1
+  }
+  a_r=${after%% *}
+  a_g=${after#* }; a_g=${a_g%% *}
+  awk -v ar="$a_r" -v bg="$b_g" -v ag="$a_g" 'BEGIN {
+    if (bg <= 0) exit 1
+    exit !(ar > 0 && ag < bg * 0.25)
+  }' || {
+    echo "f06_lut: the monitor did not grade (before=$before after=$after)" >&2
+    ok=0
+  }
+
+  # The batch (library entry plus assignment) is ONE undo step: a single Ctrl+Z
+  # must return the row to None and the parked frame to its pre-LUT pixels.
+  ab eval 'document.activeElement && document.activeElement.blur()' >/dev/null 2>&1
+  ab press Control+z >/dev/null 2>&1
+  sleeps 0.7
+  local sel
+  sel=$(evaln 'document.querySelector("aside[aria-label=Inspector]")?.innerText.includes("battery-red") ? "yes" : "no"')
+  [ "$sel" = "no" ] || {
+    echo "f06_lut: the undo left the LUT assigned" >&2
+    ok=0
+  }
+  back=$(frame_rgb_sums '[data-testid=preview-canvas]')
+  u_g=${back#* }; u_g=${u_g%% *}
+  awk -v bg="$b_g" -v ug="${u_g:-}" 'BEGIN { exit !(ug >= bg * 0.8) }' || {
+    echo "f06_lut: the undo did not restore the ungraded frame (before=$before undo=$back)" >&2
+    ok=0
+  }
+  [ "$ok" = "1" ]
+}
+
 # ————— F6 playback + compositing —————
 f06_play() {
   local t0 t1
@@ -692,6 +939,260 @@ f05_mute() {
     return 1
   }
 }
+# ————— F5 blend parity (0.7.0) —————
+# A parked monitor must equal the export plan's blend, frame by frame. The step
+# rides the real plan (dumped from export/offline.ts) and builds its own
+# reference IN the page: a second <video> decodes the pair the plan names for
+# each output frame, composites it the way drawBlendedContain does (black base,
+# additive layers at 1-w / w, one blit to the dest rect), and its stride-40 sum
+# is compared with the monitor canvas. The clip is set to 0.25x, so one output
+# frame reads a quarter of a source frame and the plan asks for a blend every
+# fourth output frame, which is exactly a source frame boundary: the case an
+# element seek can resolve to the previous frame.
+f05_blend_parity() {
+  local root; root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+  click_clip 'sample-video.mp4 from 0.00 to 6.00 seconds' || {
+    echo "f05_blend_parity: the video clip did not select" >&2
+    return 1
+  }
+  ab eval 'document.querySelector("[data-testid=inspector-tab-effects]").click()' >/dev/null 2>&1
+  sleeps 0.5
+  insp '[data-testid=speed-section] [role=slider]'
+  ab eval '(() => { const t = document.querySelector("[data-testid=speed-section] [role=slider]"); if (t) t.focus(); })()' >/dev/null 2>&1
+  ab press Home >/dev/null 2>&1 && sleeps 0.6 # the speed slider's minimum is 0.25x
+
+  # Every exit past the speed edit undoes the edit, so later steps see the
+  # timeline they left behind; a restore that cannot confirm the undo is
+  # reported and still fails the step. When the edit never landed (the slider
+  # still reads 1, or its read broke) no undo fires: an undo there could
+  # revert the PREVIOUS step's action instead.
+  f05_blend_parity_restore() {
+    local msg=$1 now
+    echo "$msg" >&2
+    now=$(evaln 'document.querySelector("[data-testid=speed-section] [role=slider]").getAttribute("aria-valuenow")')
+    case "$now" in
+      1 | '') return 1 ;;
+    esac
+    ab press Control+z >/dev/null 2>&1 && sleeps 0.6
+    now=$(evaln 'document.querySelector("[data-testid=speed-section] [role=slider]").getAttribute("aria-valuenow")')
+    [ "$now" = "1" ] || echo "f05_blend_parity: the restore undo left the speed at $now" >&2
+    return 1
+  }
+  local speed
+  speed=$(evaln 'document.querySelector("[data-testid=speed-section] [role=slider]").getAttribute("aria-valuenow")')
+  [ "$speed" = "0.25" ] || {
+    f05_blend_parity_restore "f05_blend_parity: speed slider is $speed, expected 0.25"
+    return 1
+  }
+
+  # The plan for the 12 output frames the sweep covers (sourceTime + blendTime).
+  local plan
+  plan=$(bun -e "
+import { planVideoFrame } from '$root/src/lib/editor/export/offline.ts'
+import { createClip, createTrack } from '$root/src/lib/editor/factories.ts'
+const asset = { id: 'm1', name: 'sample-video.mp4', kind: 'video', duration: 6, width: 640, height: 360, url: 'x' }
+const clip = createClip({ id: 'cv', mediaId: 'm1', start: 0, duration: 6, inPoint: 0, speed: 0.25 })
+const doc = { project: { id: 'p', name: 'n', width: 1920, height: 1080, fps: 30, tracks: [createTrack('video', 1, { id: 't0', clips: [clip] })] }, media: [asset] }
+const rows = []
+for (let k = 0; k <= 11; k++) { const d = planVideoFrame(doc, k / 30).draws[0]; rows.push(k + ' ' + d.sourceTime + ' ' + d.blendTime) }
+console.log(rows.join('\n'))
+" 2>/dev/null)
+  [ -n "$plan" ] || {
+    f05_blend_parity_restore "f05_blend_parity: could not dump the export plan"
+    return 1
+  }
+
+  # In-page reference decoder. `probe` must see real pixels and `ladder` must
+  # confirm the 30 fps frame ladder the reference derives frames from: a seek
+  # inside a frame's window shows that frame, and the next frame differs.
+  local ref
+  ref=$(cat <<'REFJS'
+window.__bpar = (() => {
+  const v = document.createElement('video')
+  v.muted = true
+  v.preload = 'auto'
+  v.playsInline = true
+  v.src = '/samples/sample-video.mp4'
+  v.style.position = 'fixed'
+  v.style.left = '-10000px'
+  v.style.width = '640px'
+  v.style.height = '360px'
+  document.body.appendChild(v)
+  const preview = document.querySelector('[data-testid=preview-canvas]')
+  const W = preview.width
+  const H = preview.height
+  const canvas = document.createElement('canvas')
+  canvas.width = W
+  canvas.height = H
+  const ctx = canvas.getContext('2d')
+  const fit = Math.min(W / 640, H / 360)
+  const dw = 640 * fit
+  const dh = 360 * fit
+  const dx = (W - dw) / 2
+  const dy = (H - dh) / 2
+  const rw = Math.max(1, Math.round(dw))
+  const rh = Math.max(1, Math.round(dh))
+  const scratch = document.createElement('canvas')
+  scratch.width = rw
+  scratch.height = rh
+  const sctx = scratch.getContext('2d')
+  const sum = () => {
+    const d = ctx.getImageData(0, 0, W, H).data
+    let s = 0
+    for (let i = 0; i < d.length; i += 40) s += d[i] + d[i + 1] + d[i + 2]
+    return s
+  }
+  const ready = new Promise((res) => {
+    if (v.readyState >= 2) return res()
+    const done = () => res()
+    v.addEventListener('loadeddata', done, { once: true })
+    v.addEventListener('canplay', done, { once: true })
+    setTimeout(done, 8000)
+  })
+  // `seeked` alone can fire before the new frame is painted, so the wait
+  // continues into a presented-frame callback.
+  const presented = async (t) => {
+    await ready
+    await new Promise((res) => {
+      const h = () => { v.removeEventListener('seeked', h); res() }
+      v.addEventListener('seeked', h, { once: true })
+      v.currentTime = t
+      setTimeout(res, 4000)
+    })
+    await new Promise((res) => {
+      if (typeof v.requestVideoFrameCallback !== 'function') return setTimeout(res, 60)
+      let done = false
+      const id = v.requestVideoFrameCallback(() => { done = true; res() })
+      setTimeout(() => { if (!done) { try { v.cancelVideoFrameCallback(id) } catch (e) {} ; res() } }, 600)
+    })
+  }
+  const black = (c, w, h) => {
+    c.globalCompositeOperation = 'source-over'
+    c.globalAlpha = 1
+    c.fillStyle = '#000000'
+    c.fillRect(0, 0, w, h)
+  }
+  // The sample is 30 fps CFR with PTS 0, 1/30, 2/30, ...: the frame a read lands
+  // in is floor(t * 30), the timestamp the exporter's decoder reports. The park
+  // sits a hair inside the frame so a boundary seek cannot show the frame before.
+  const frameAt = (i) => i / 30 + 0.0001
+  const drawOne = async (i) => {
+    black(ctx, W, H)
+    await presented(frameAt(i))
+    ctx.globalAlpha = 1
+    ctx.drawImage(v, dx, dy, dw, dh)
+  }
+  const drawPair = async (ia, ib, w) => {
+    black(sctx, rw, rh)
+    sctx.globalCompositeOperation = 'lighter'
+    await presented(frameAt(ia))
+    sctx.globalAlpha = 1 - w
+    sctx.drawImage(v, 0, 0, rw, rh)
+    await presented(frameAt(ib))
+    sctx.globalAlpha = w
+    sctx.drawImage(v, 0, 0, rw, rh)
+    black(ctx, W, H)
+    ctx.globalAlpha = 1
+    ctx.drawImage(scratch, dx, dy, dw, dh)
+  }
+  const probe = async () => {
+    await drawOne(0)
+    return String(sum())
+  }
+  const ladder = async () => {
+    const ok = []
+    for (let i = 0; i <= 3; i++) {
+      await drawOne(i)
+      const at = sum()
+      await drawOne(i + 1)
+      ok.push(at > 0 && at !== sum())
+    }
+    return ok.every(Boolean) ? 'ok' : 'bad'
+  }
+  // The plan's pair for one output frame, composited the way the exporter does.
+  // Returns `expectedSum|weight|firstFrame|secondFrame` so the shell needs no
+  // JSON parser.
+  const parity = async (sourceTime, blendTime) => {
+    const ia = Math.max(0, Math.floor(sourceTime * 30 + 1e-6))
+    const ib = Math.max(0, Math.floor(blendTime * 30 + 1e-6))
+    const aTs = ia / 30
+    const bTs = ib / 30
+    let w = 0
+    if (bTs > aTs) w = Math.min(1, Math.max(0, (sourceTime - aTs) / (bTs - aTs)))
+    if (w > 0 && w < 1) await drawPair(ia, ib, w)
+    else await drawOne(ia)
+    return sum() + '|' + w.toFixed(4) + '|' + ia + '|' + ib
+  }
+  return { probe, ladder, parity }
+})()
+'ready'
+REFJS
+)
+  ab eval "$ref" >/dev/null 2>&1
+
+  local probe; probe=$(evaln 'window.__bpar.probe()')
+  case "$probe" in
+    '' | 0 | *[!0-9]*)
+      f05_blend_parity_restore "f05_blend_parity: the reference decoder produced no pixels ($probe)"
+      return 1
+      ;;
+  esac
+  local ladder; ladder=$(evaln 'window.__bpar.ladder()')
+  [ "$ladder" = "ok" ] || {
+    f05_blend_parity_restore "f05_blend_parity: the 30fps frame ladder did not validate ($ladder)"
+    return 1
+  }
+
+  # Park on every output frame, sample the monitor, compare with the plan.
+  local k src blend expected weight ia ib preview info
+  local matched=0 blended=0 frames=0
+  while read -r k src blend; do
+    [ -n "$k" ] || continue
+    ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1 && sleeps 0.35
+    local j=0
+    while [ "$j" -lt "$k" ]; do
+      ab press ArrowRight >/dev/null 2>&1
+      sleeps 0.12
+      j=$((j + 1))
+    done
+    sleeps 0.9
+    preview=$(frame_sum "[data-testid=preview-canvas]")
+    info=$(evaln "window.__bpar.parity($src, $blend)")
+    IFS='|' read -r expected weight ia ib <<<"$info"
+    [ -n "$expected" ] || {
+      f05_blend_parity_restore "f05_blend_parity: no reference for k=$k"
+      return 1
+    }
+    frames=$((frames + 1))
+    case "$weight" in
+      0.0000 | 1.0000) : ;;
+      *) blended=$((blended + 1)) ;;
+    esac
+    if [ "$preview" = "$expected" ]; then
+      matched=$((matched + 1))
+    else
+      echo "f05_blend_parity: k=$k monitor $preview != plan $expected (weight $weight, source frames $ia/$ib)" >&2
+    fi
+  done <<<"$plan"
+
+  # A sweep that never blends could not tell a blend from a held frame.
+  if [ "$blended" -lt 3 ]; then
+    f05_blend_parity_restore "f05_blend_parity: only $blended of $frames frames blend, no discriminating power"
+    return 1
+  fi
+  [ "$matched" = "$frames" ] || {
+    f05_blend_parity_restore "f05_blend_parity: $matched of $frames frames matched the export plan"
+    return 1
+  }
+
+  # Restore the clip: one undo returns the speed edit, so later steps see the
+  # timeline they left behind.
+  ab press Control+z >/dev/null 2>&1 && sleeps 0.6
+  speed=$(evaln 'document.querySelector("[data-testid=speed-section] [role=slider]").getAttribute("aria-valuenow")')
+  [ "$speed" = "1" ] || { echo "f05_blend_parity: undo left the speed at $speed" >&2; return 1; }
+  return 0
+}
+
 f05_gain() {
   # f05_mute switched the Inspector to its Effect Controls tab to reach the
   # denoise switch, and the tab is component state: it persists across steps and
@@ -1529,8 +2030,9 @@ f07_export() {
   # render is the warm one. A second render at -100 is the cool one: the two
   # exports differ ONLY in the grade, so any red-channel gap between them can
   # only come from the temperature matrix reaching the export.
-  local warm cool warm_kinds cool_kinds
-  warm=$(export_red_sum)
+  local warm_rgb cool_rgb warm cool warm_kinds cool_kinds
+  warm_rgb=$(export_rgb_sums)
+  warm=${warm_rgb%% *}
   [ -n "$warm" ] && [ "$warm" -gt 0 ] 2>/dev/null || {
     echo "f07: could not sample the exported +100 frame" >&2
     return 1
@@ -1571,7 +2073,8 @@ f07_export() {
   ab find role button click --name 'Export' >/dev/null && sleep 0.8
   ab find role button click --name 'Start export' >/dev/null && sleep 1
   export_done || return 1
-  cool=$(export_red_sum)
+  cool_rgb=$(export_rgb_sums)
+  cool=${cool_rgb%% *}
   [ -n "$cool" ] && [ "$cool" -gt 0 ] 2>/dev/null || {
     echo "f07: could not sample the exported -100 frame" >&2
     return 1
@@ -1592,6 +2095,83 @@ f07_export() {
     return 1
   }
 
+  # The exported pixels carry a 1D LUT too (0.7.0). The third render changes
+  # exactly ONE thing from the cool one: the cube assigned to the still-selected
+  # video clip, whose green and blue tables are zero and red table all one. Both
+  # renders share the -100 grade and the muted mix, so the cube's arrival is a
+  # channel signature: the LUT frame's green must collapse while its red cannot
+  # (the shaper makes red 255, and the -100 matrix scales it back down to the
+  # same ceiling the cool source's own red is already bounded by).
+  local lut_rgb lut_r lut_g cool_g
+  local cube="${TMPDIR:-/tmp}/battery-red-$$.cube"
+  make_lut "$cube"
+  LUT_FIXTURE="$cube"
+  ab find role button click --name 'Close' >/dev/null 2>&1 && sleeps 0.5
+  insp '[data-testid=lut-load]'
+  ab upload '[data-testid=lut-file]' "$cube" >/dev/null 2>&1 || {
+    echo "f07: the cube upload into the Inspector failed" >&2
+    ab press Control+Shift+a >/dev/null 2>&1
+    return 1
+  }
+  local lut_landed=0 i
+  for i in $(seq 1 20); do
+    if [ "$(evaln 'document.querySelector("aside[aria-label=Inspector]")?.innerText.includes("battery-red") ? "yes" : "no"')" = "yes" ]; then
+      lut_landed=1
+      break
+    fi
+    sleep 0.25
+  done
+  [ "$lut_landed" = "1" ] || {
+    echo "f07: the imported cube was never assigned to the video clip" >&2
+    ab press Control+Shift+a >/dev/null 2>&1
+    return 1
+  }
+  sleeps 0.5
+
+  # Every exit past the assignment restores it: the import plus assignment is
+  # ONE command batch, so a single Ctrl+Z must clear the clip and the later
+  # steps must see the timeline they left behind. Before the batch lands no
+  # undo fires: one there could revert the PREVIOUS step's action instead (the
+  # f05 blend-parity lesson).
+  f07_lut_restore() {
+    local sel
+    ab find role button click --name 'Close' >/dev/null 2>&1 && sleeps 0.5
+    ab eval 'document.activeElement && document.activeElement.blur()' >/dev/null 2>&1
+    ab press Control+z >/dev/null 2>&1 && sleeps 0.7
+    sel=$(evaln 'document.querySelector("aside[aria-label=Inspector]")?.innerText.includes("battery-red") ? "yes" : "no"')
+    [ "$sel" = "no" ]
+  }
+
+  # A failed step must not take the later steps down with it: the settings step
+  # below reads the FIRST spinbutton as the project width, so no clip may stay
+  # selected on any exit of this block.
+  f07_lut_fail() { # f07_lut_fail <message>
+    echo "$1" >&2
+    f07_lut_restore || echo "f07: could not restore the LUT after the failure" >&2
+    ab press Control+Shift+a >/dev/null 2>&1 && sleeps 0.4
+    return 1
+  }
+
+  ab find role button click --name 'Export' >/dev/null && sleep 0.8
+  ab find role button click --name 'Start export' >/dev/null && sleep 1
+  export_done || { f07_lut_fail "f07: no export-complete signal for the LUT render"; return 1; }
+  lut_rgb=$(export_rgb_sums)
+  [ -n "$lut_rgb" ] || { f07_lut_fail "f07: could not sample the LUT export"; return 1; }
+  lut_r=${lut_rgb%% *}
+  lut_g=${lut_rgb#* }; lut_g=${lut_g%% *}
+  cool_g=${cool_rgb#* }; cool_g=${cool_g%% *}
+  if ! awk -v lr="$lut_r" -v lg="$lut_g" -v cr="$cool" -v cg="$cool_g" 'BEGIN {
+    if (cg <= 0) exit 1
+    exit !(lr > 0 && lg < cg * 0.25 && lr >= cr * 0.9)
+  }'; then
+    f07_lut_fail "f07: the export ignored the LUT (cool r=$cool g=$cool_g, lut r=$lut_r g=$lut_g)"
+    return 1
+  fi
+  f07_lut_restore || {
+    echo "f07: the LUT undo did not clear the clip's assignment" >&2
+    return 1
+  }
+
   # Leave no clip selected: the settings step below reads the FIRST spinbutton in
   # the a11y snapshot, which must stay the project width and not a clip's Timing
   # field.
@@ -1602,31 +2182,36 @@ f07_close_dialog() {
   ! snap | grep -q 'Export video'
 }
 
-# The red sum of the export dialog's decoded output at 0.60s (the doc time f06
-# sampled). Seek failures are harmless: both exports are read the same way, so
-# the differential stays valid even if the element never seeks. "" on failure.
-export_red_sum() {
+# The per-channel sums ("r g b") of the export dialog's decoded output at
+# 0.60s (the doc time f06 sampled). Every read seeks the same way, so the
+# differentials stay valid even if the element never seeks. "" on failure.
+export_rgb_sums() {
   ab eval '(() => {
     const v = document.querySelector("[data-testid=export-result-video]");
     if (v) { v.pause(); v.currentTime = 0.6; }
   })()' >/dev/null 2>&1
   sleeps 1.5
-  local r
-  r=$(evaln '(() => {
+  local out r g b
+  out=$(evaln '(() => {
     const v = document.querySelector("[data-testid=export-result-video]");
-    if (!v || !v.videoWidth) return "0";
+    if (!v || !v.videoWidth) return "";
     const c = document.createElement("canvas");
     c.width = v.videoWidth; c.height = v.videoHeight;
     const ctx = c.getContext("2d");
     ctx.drawImage(v, 0, 0);
     const d = ctx.getImageData(0, 0, c.width, c.height).data;
-    let r = 0;
-    for (let i = 0; i < d.length; i += 40) r += d[i];
-    return String(r);
+    let r = 0, g = 0, b = 0;
+    for (let i = 0; i < d.length; i += 40) { r += d[i]; g += d[i+1]; b += d[i+2]; }
+    return r + " " + g + " " + b;
   })()')
-  case "${r:-}" in
-    '' | *[!0-9]*) echo "" ;;
-    *) echo "$r" ;;
+  read -r r g b <<<"${out:-}"
+  if [ -z "${r:-}" ] || [ -z "${g:-}" ] || [ -z "${b:-}" ]; then
+    echo ""
+    return
+  fi
+  case "$r$g$b" in
+    *[!0-9]*) echo "" ;;
+    *) echo "$r $g $b" ;;
   esac
 }
 
@@ -1862,6 +2447,7 @@ step "f01 import: sample media loads 3 assets"     f01_import
 step "f01b import: a real (non-bundled) file imports" f01b_import_real_file
 step "f02 add: video+audio+image quick-added"      f02_add
 step "f02 zoom: all clips reachable in snapshot"   zoom_out
+step "f05 blend: monitor matches the export plan frame by frame" f05_blend_parity
 step "f09 marquee: box drag selects every clip"    f09_marquee
 step "f09 marquee: empty-space click clears it"    f09_marquee_clear
 step "f11 whats-new: Help > What's new opens the modal" f11_whatsnew_opens
@@ -1870,6 +2456,7 @@ step "f10 markers: sequence add/nav/drag/delete"    f10_markers_sequence
 step "f10 markers: clip marker + dialog edit"       f10_markers_clip
 step "f06 play: transport runs, time advances"     f06_play
 step "f06 sync: preview canvas renders + temperature grades it" f06_canvas
+step "f06 scopes: waveform + vectorscope paint real pixels" f06_scopes
 step "f02 split: select + 2.0s + Ctrl+K splits clip" f02_split
 step "f08 undo: Ctrl+Z removes the split"          f08_undo
 step "f08 redo: Ctrl+Shift+Z re-applies it"        f08_redo
@@ -1899,7 +2486,9 @@ step "f07 export prep: normalize aux clips"        f07_prep
 step "f07 export: renders graded pixels to completion" f07_export
 step "f07 export: dialog closes cleanly"           f07_close_dialog
 step "settings: width change resizes canvas"       settings_width
+step "f06 scopes: waveform tiles the meter canvas on a square project" f06_scopes_fill
 step "f02 rate stretch: relinked-shorter asset recovers" f02_ratestretch_relinked
+step "f06 LUT: an imported .cube grades the monitor" f06_lut
 step "console: zero page errors across battery"    console_clean
 
 passed=$(grep -c '^PASS' "$OUT"); failed=$(grep -c '^FAIL' "$OUT")

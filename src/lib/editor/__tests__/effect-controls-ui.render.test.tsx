@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { InspectorPanel } from '@/components/editor/InspectorPanel'
@@ -9,7 +9,13 @@ import { useEditorKeyboard } from '@/hooks/editor/useEditorKeyboard'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { playbackRef, type PlaybackController } from '../playback/engine-ref'
 import { isTransientActive, useEditorStore } from '../store'
-import { clipFitsTrack, createClip, createMediaAsset, createTrack } from '../factories'
+import {
+  clipFitsTrack,
+  createClip,
+  createMediaAsset,
+  createTextClip,
+  createTrack,
+} from '../factories'
 import { linkGroupChangesRate } from '../links'
 import { EASING_PRESETS } from '../bezier'
 import type { Clip, Doc } from '../types'
@@ -1612,5 +1618,69 @@ describe('keyframe curve, handles and easing defaults', () => {
     // stored default: defaults stamp NEW keyframes only.
     expect(boundary?.easeOut).toBeDefined()
     expect(boundary?.easeOut).not.toEqual(EASING_PRESETS.easeIn)
+  })
+})
+
+describe('InspectorPanel LUT import', () => {
+  const SHAPER = ['LUT_1D_SIZE 2', '0 0 0', '1 1 1'].join('\n')
+
+  it('loads a .cube into the library and assigns it in ONE undo step', async () => {
+    docWithSelectedVideoClip()
+    render(<InspectorPanel />)
+    expect(screen.getByTestId('lut-select')).toBeInTheDocument()
+
+    const file = new File([SHAPER], 'My Grade.cube', { type: 'text/plain' })
+    fireEvent.change(screen.getByTestId('lut-file'), { target: { files: [file] } })
+
+    await waitFor(() => {
+      expect(useEditorStore.getState().doc.project.luts).toHaveLength(1)
+    })
+    const state = useEditorStore.getState()
+    const lut = state.doc.project.luts![0]
+    expect(lut.name).toBe('My Grade')
+    expect(lut.kind).toBe('1d')
+    expect(state.doc.project.tracks[0].clips[0].lutId).toBe(lut.id)
+    // Import and assignment are one batch: one undo entry, and one Ctrl+Z
+    // removes the clip's grade AND the library entry together.
+    expect(state.past).toHaveLength(1)
+    state.undo()
+    expect(useEditorStore.getState().doc.project.luts).toBeUndefined()
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].lutId).toBeUndefined()
+  })
+
+  it('hides the LUT row for a text clip (a 3D pass needs a decoded frame)', () => {
+    const track = createTrack('text', 1, {
+      id: 't-text',
+      clips: [createTextClip({ id: 'clip_txt', start: 0, duration: 4 })],
+    })
+    const asset = createMediaAsset({ kind: 'video', duration: 30, name: 'demo.mp4' })
+    useEditorStore.setState({
+      doc: {
+        project: { tracks: [track], id: 'p', name: 't', width: 1920, height: 1080, fps: 30 },
+        media: [asset],
+      },
+      selection: 'clip_txt',
+      selections: ['clip_txt'],
+    })
+    render(<InspectorPanel />)
+    expect(screen.getByRole('slider', { name: 'Temperature' })).toBeInTheDocument()
+    expect(screen.queryByTestId('lut-select')).not.toBeInTheDocument()
+  })
+
+  it('writes nothing when the .cube cannot be read (the refusal is a toast)', async () => {
+    docWithSelectedVideoClip()
+    render(<InspectorPanel />)
+
+    const file = new File(['not a cube at all'], 'broken.cube', { type: 'text/plain' })
+    fireEvent.change(screen.getByTestId('lut-file'), { target: { files: [file] } })
+
+    // The parse rejects (proven in lut.test.ts) and the Inspector surfaces it
+    // through `showError`; that the whole batch is refused is what matters here:
+    // no library entry, no clip reference, no undo entry.
+    await waitFor(() => {
+      expect(useEditorStore.getState().doc.project.luts).toBeUndefined()
+    })
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].lutId).toBeUndefined()
+    expect(useEditorStore.getState().past).toHaveLength(0)
   })
 })

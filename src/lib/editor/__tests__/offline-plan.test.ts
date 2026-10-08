@@ -10,6 +10,9 @@ import {
   videoAssetIds,
 } from '../export/offline'
 import { closeDecodedFrames, pickAudioCodec, preloadImage, renderAudioMix } from '../export/mp4'
+import { blendWeight } from '../export/offline'
+import { addBlendLayer, beginBlendPair } from '../playback/compositor'
+import { createFake2DContext } from './mocks/browser-mocks'
 import { clampSourceTime, createClip, createTextClip, createTrack } from '../factories'
 import { animatedValue } from '../keyframes'
 import type { Clip, Doc, MediaAsset } from '../types'
@@ -384,6 +387,93 @@ describe('reversed source reads', () => {
     )
     expect(planVideoFrame(d, 0).draws[0].sourceTime).toBe(5)
     expect(planVideoFrame(d, 1).draws[0].sourceTime).toBe(3)
+  })
+})
+
+describe('frame blending for sub-frame-rate playback (0.7.0)', () => {
+  it('emits the source time one output frame later as the blend pair', () => {
+    const d = doc([{ kind: 'video', clips: [videoClip({ speed: 0.5 })] }], [asset()])
+    const draw = planVideoFrame(d, 1).draws[0]
+    expect(draw.sourceTime).toBeCloseTo(0.5, 10)
+    // local 1 + 1/30 at 0.5x = 0.51667 source seconds: the NEXT output frame's
+    // read, which is what brackets the source frame this one straddles.
+    expect(draw.blendTime).toBeCloseTo(0.5 + 0.5 / 30, 10)
+  })
+
+  it('emits no blend pair at or above realtime, or for a still/text clip', () => {
+    const realtime = doc([{ kind: 'video', clips: [videoClip()] }], [asset()])
+    expect(planVideoFrame(realtime, 1).draws[0].blendTime).toBeUndefined()
+
+    const faster = doc([{ kind: 'video', clips: [videoClip({ speed: 2 })] }], [asset()])
+    expect(planVideoFrame(faster, 1).draws[0].blendTime).toBeUndefined()
+
+    const still = doc(
+      [{ kind: 'video', clips: [videoClip({ speed: 0.5 })] }],
+      [asset({ kind: 'image' })],
+    )
+    expect(planVideoFrame(still, 1).draws[0].blendTime).toBeUndefined()
+
+    const text = doc([{ kind: 'text', clips: [createTextClip({ start: 0, duration: 4 })] }], [])
+    expect(planVideoFrame(text, 1).draws[0].blendTime).toBeUndefined()
+  })
+
+  it('blends only the slow half of a ramp', () => {
+    // 2x -> 0.5x over the clip: the early span is faster than realtime, the tail
+    // is below it, so only there does the plan ask for a second sample.
+    const ramp: Clip = videoClip({
+      keyframes: {
+        timeScale: [
+          { time: 0, value: 2 },
+          { time: 4, value: 0.5 },
+        ],
+      },
+    })
+    const d = doc([{ kind: 'video', clips: [ramp] }], [asset()])
+    expect(planVideoFrame(d, 0.2).draws[0].blendTime).toBeUndefined()
+    expect(planVideoFrame(d, 3.8).draws[0].blendTime).toBeDefined()
+  })
+
+  it('derives the blend weight from two sample timestamps, with no nominal fps', () => {
+    expect(blendWeight(0.5, 0.4, 0.6)).toBeCloseTo(0.5, 10)
+    expect(blendWeight(0.45, 0.4, 0.6)).toBeCloseTo(0.25, 10)
+    // A pair the decoder did not advance (or a backwards one) has no weight to
+    // give: the frame is drawn once, unblended.
+    expect(blendWeight(0.5, 0.4, 0.4)).toBe(0)
+    expect(blendWeight(0.5, 0.6, 0.4)).toBe(0)
+    // The read can sit outside the pair (a clamped source): the weight clamps.
+    expect(blendWeight(2, 0.4, 0.6)).toBe(1)
+    expect(blendWeight(0, 0.4, 0.6)).toBe(0)
+  })
+})
+
+describe('frame blend composition (export draw)', () => {
+  it('composes the pair ADDITIVELY over black, then composites once', () => {
+    const ctx = createFake2DContext()
+    beginBlendPair(ctx, 100, 50)
+    addBlendLayer(ctx, 'A' as unknown as CanvasImageSource, 0.4, 100, 50)
+    addBlendLayer(ctx, 'B' as unknown as CanvasImageSource, 0.6, 100, 50)
+    const ops = ctx.calls.map((c) => c.op)
+    expect(ops).toEqual([
+      'save',
+      'set:globalCompositeOperation',
+      'set:globalAlpha',
+      'set:fillStyle',
+      'fillRect',
+      'set:globalCompositeOperation',
+      'set:globalAlpha',
+      'drawImage',
+      'set:globalAlpha',
+      'drawImage',
+    ])
+    // The base is black and opaquely painted, and the layers go on with
+    // 'lighter': two plain source-over draws would NOT average, each landing on
+    // whatever the previous one left (0.6 over red lands at 0.360, not 0.600).
+    expect(ctx.props.get('fillStyle')).toBe('#000000')
+    expect(ctx.props.get('globalCompositeOperation')).toBe('lighter')
+    expect(ctx.props.get('globalAlpha')).toBe(0.6)
+    expect(ctx.calls[4].args).toEqual([0, 0, 100, 50])
+    expect(ctx.calls[7].args).toEqual(['A', 0, 0, 100, 50])
+    expect(ctx.calls[9].args).toEqual(['B', 0, 0, 100, 50])
   })
 })
 

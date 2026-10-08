@@ -118,6 +118,31 @@ export type KeyframeDefaults = Partial<Record<KeyframeProperty, KeyframeInterpol
  */
 export type AnimStaticProperty = Exclude<KeyframeProperty, 'opacity' | 'volume' | 'timeScale'>
 
+/** Cube LUT kinds: a 1D shaper (three per-channel tables) or a 3D cube. */
+export type LutKind = '1d' | '3d'
+
+/**
+ * One project-level LUT library entry (0.7.0), parsed from a `.cube` file.
+ *
+ * The grid is stored as base64 of 8-bit RGB bytes, which is what keeps a
+ * project file small: a 33-cube is about 144 KB here instead of roughly 1 MB of
+ * JSON decimals. `size` is the entries per axis (`LUT_1D_SIZE` / `LUT_3D_SIZE`),
+ * so `data` decodes to `size * 3` bytes for a shaper and `size^3 * 3` for a
+ * cube, red varying fastest (the `.cube` row order). 8 bits costs nothing
+ * visible because the render pass runs on a `Uint8ClampedArray` canvas buffer.
+ *
+ * A library entry is shared: many clips can hold the same `lutId`, and the
+ * library holds one copy per unique import.
+ */
+export interface ProjectLut {
+  id: string
+  name: string
+  kind: LutKind
+  size: number
+  /** base64 of the 8-bit RGB grid (see the interface doc for the byte count). */
+  data: string
+}
+
 /**
  * A clip is an occurrence of media (or text) on a track.
  * `duration` may differ from the source length: trimming changes
@@ -207,6 +232,14 @@ export interface Clip {
    * Static, same SVG matrix path as `temperature`.
    */
   tint?: number
+  /**
+   * Reference into `Project.luts` (0.7.0): the `.cube` this clip grades
+   * through. Undefined = no LUT. A `1d` entry rides the shared SVG filter
+   * string as per-channel shapers; a `3d` entry runs a per-frame pixel pass
+   * (see `lut.ts`). A `lutId` naming no library entry hydrates to nothing, so a
+   * set id always resolves.
+   */
+  lutId?: string
 }
 
 export interface Track {
@@ -231,6 +264,12 @@ export interface Project {
    * reads as linear (see {@link KeyframeDefaults}).
    */
   keyframeDefaults?: KeyframeDefaults
+  /**
+   * The project's LUT library (0.7.0): one entry per unique imported `.cube`,
+   * referenced by `Clip.lutId`. Lives on the project (not on `Doc`) so it
+   * travels with the edit and hydrates beside `keyframeDefaults`.
+   */
+  luts?: ProjectLut[]
   /** Index 0 = topmost layer. Conventional order: text tracks, video tracks, audio tracks. */
   tracks: Track[]
 }

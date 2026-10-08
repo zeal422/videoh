@@ -9,16 +9,20 @@ import {
   FakeStereoPannerNode,
   installBrowserMocks,
   installRAFPump,
+  presentFrame,
   type MockHarness,
 } from './mocks/browser-mocks'
 import {
+  clampSourceTime,
   createClip,
   createDoc,
   createMediaAsset,
   createTextClip,
   createTrack,
+  sourceTimeAt,
   uid,
 } from '../factories'
+import { planVideoFrame } from '../export/offline'
 import { DENOISE_HIGHPASS_HZ, DENOISE_HISS_DB } from '../constants'
 import type { Clip, Doc, MediaAsset } from '../types'
 
@@ -93,6 +97,24 @@ function masterGainOf(ctx: FakeAudioContext): FakeGainNode {
 
 const closeTo = (value: number) => (actual: unknown) =>
   typeof actual === 'number' && Math.abs(actual - value) < 1e-5
+
+/**
+ * The engine parks an element a hair PAST the read it was asked for
+ * (SEEK_FRAME_NUDGE): a read that sits exactly on a source frame's start
+ * timestamp has to land inside the frame that starts there, because the
+ * exporter's sample lookup resolves that timestamp to that frame (`<=`) while a
+ * bare element seek can present the frame before it. Both bounds still catch a
+ * position that drifted by a step.
+ */
+const PARK_NUDGE = 1e-4
+function expectParkedOn(el: HTMLVideoElement, read: number, what = 'read'): void {
+  expect(el.currentTime, `parked past the ${what}`).toBeGreaterThanOrEqual(read)
+  expect(el.currentTime - read, `parked on the ${what}`).toBeLessThanOrEqual(1e-3)
+}
+
+/** The source frame index a real element would show at `t` (30 fps fixture): a
+ * seek to a frame's exact start can present the frame BEFORE it. */
+const shownFrame = (t: number, fps = 30) => Math.floor((t - 1e-9) * fps)
 
 describe('PlaybackCore (mocked browser)', () => {
   it('sizes the canvas to the project resolution on construction', () => {
@@ -206,13 +228,13 @@ describe('PlaybackCore (mocked browser)', () => {
     await h.pump.pump(1)
     expect(el.paused).toBe(true)
     expect(el.playbackRate).toBe(1) // the curve never reaches playbackRate
-    expect(el.currentTime).toBeCloseTo(1.125, 5)
+    expectParkedOn(el, 1.125, 'ramp read')
 
     // The next tick seeks again (stepped preview), still parked.
     h.lastAudioContext().currentTime += 1
     await h.pump.pump(1)
     expect(el.paused).toBe(true)
-    expect(el.currentTime).toBeCloseTo(2.5, 5)
+    expectParkedOn(el, 2.5, 'ramp read')
   })
 
   it('silences both halves of a ramped A/V pair in the preview mixer', async () => {
@@ -570,7 +592,7 @@ describe('PlaybackCore (mocked browser)', () => {
     expect(core.isPlaying).toBe(true)
     const el = document.querySelector('video') as HTMLVideoElement
     expect(el.src).toContain('blob:video')
-    expect(el.currentTime).toBeCloseTo(0.5, 5) // positioned at inPoint
+    expectParkedOn(el, 0.5, 'inPoint') // positioned at inPoint
 
     // One second of audio-clock time: the element "drifted" (stayed at 0.5),
     // so the DRIFT_THRESHOLD (0.4 s) guard must resync it to the expected
@@ -579,12 +601,12 @@ describe('PlaybackCore (mocked browser)', () => {
     await h.pump.pump(1)
     expect(core.currentTime).toBeCloseTo(1, 5)
     expect(frames.at(-1)).toBeCloseTo(1, 5)
-    expect(el.currentTime).toBeCloseTo(1.5, 5) // inPoint 0.5 + 1s
+    expectParkedOn(el, 1.5, 'resynced read') // inPoint 0.5 + 1s
 
     // Small drift inside the threshold must NOT be corrected.
     el.currentTime = 1.45
     await h.pump.pump(1)
-    expect(el.currentTime).toBeCloseTo(1.45, 5)
+    expect(el.currentTime).toBe(1.45)
   })
 
   it('routes element audio through per-clip gains and applies gain × mute', async () => {
@@ -696,7 +718,7 @@ describe('PlaybackCore (mocked browser)', () => {
     core.seek(2)
 
     const el = document.querySelector('video') as HTMLVideoElement
-    expect(el.currentTime).toBeCloseTo(2.5, 5)
+    expectParkedOn(el, 2.5, 'still read')
     // The element becomes decodable; the registered one-shot `seeked` listener
     // redraws the still frame with the frame now available.
     primeVideoElement(el)
@@ -713,6 +735,86 @@ describe('PlaybackCore (mocked browser)', () => {
     core.seek(-5)
     expect(core.currentTime).toBe(0)
     expect(frames.at(-1)).toBe(0)
+  })
+
+  it('a landing seek redraws the current playhead, not the time its seek was issued for', () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    addVideoClip(doc, { mediaId: asset.id, start: 0.515, duration: 1, inPoint: 0 })
+    const { core, ctx } = makeCore(doc)
+
+    // Hold the one-shot `seeked` listeners so the first seek's decode can be
+    // made to land only after the playhead has moved on, which is what a slow
+    // decode does in a real browser.
+    const held: { el: HTMLMediaElement; fn: () => void }[] = []
+    const realAdd = HTMLMediaElement.prototype.addEventListener
+    const spy = vi
+      .spyOn(HTMLMediaElement.prototype, 'addEventListener')
+      .mockImplementation(function (
+        this: HTMLMediaElement,
+        type: string,
+        fn: EventListenerOrEventListenerObject,
+        options?: boolean | AddEventListenerOptions,
+      ) {
+        if (type === 'seeked' && typeof fn === 'function') {
+          held.push({ el: this, fn: fn as () => void })
+          return
+        }
+        realAdd.call(this, type, fn, options)
+      })
+
+    try {
+      core.seek(0.5) // clip A is positioned; its seek listener is held
+      const elA = document.querySelector('video') as HTMLVideoElement
+      expectParkedOn(elA, 0.5, 'still read')
+      expect(held.filter((h) => h.el === elA)).toHaveLength(1)
+
+      // 0.015 s on: inside clip A's 0.02 s dead zone, so no new seek (and so no
+      // new listener) is issued for it, while the second clip becomes active.
+      // Only the held listener can repaint A, and a captured time would put the
+      // stale 0.5 s frame back on screen after this newer seek already drew.
+      core.seek(0.515)
+      // Both elements have to be decodable for the compositor to draw them, the
+      // same readiness gate the app passes in a browser.
+      for (const v of document.querySelectorAll('video')) primeVideoElement(v as HTMLVideoElement)
+      ctx.calls.length = 0
+      held.filter((h) => h.el === elA)[0].fn()
+      // Both clips are live at the CURRENT playhead; 0.5 s draws only the first.
+      expect(ctx.calls.filter((c) => c.op === 'drawImage')).toHaveLength(2)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('keeps a stepped slow clip on the frame the read falls in', () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      mediaId: asset.id,
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+      speed: 0.25,
+    })
+    const { core } = makeCore(doc)
+
+    // One output frame at 0.25x moves the source read by 1/120 s, well inside the
+    // flat 0.02 s dead zone the still path used to carry. The element has to
+    // follow every step, or the monitor holds a frame the export has moved past.
+    for (let k = 0; k <= 11; k++) {
+      const t = k / 30
+      core.seek(t)
+      const el = document.querySelector('video') as HTMLVideoElement
+      const expected = clampSourceTime(sourceTimeAt(clip, t - clip.start), asset)
+      expectParkedOn(el, expected, `output frame ${k}`)
+    }
+
+    // The dead zone still exists: a move smaller than half an output frame's
+    // read must not restart a decode.
+    const el = document.querySelector('video') as HTMLVideoElement
+    const at = el.currentTime
+    core.seek(11 / 30 + 1 / 300)
+    expect(el.currentTime).toBe(at)
+    core.dispose()
   })
 
   it('stepFrames pauses and moves the playhead by whole frames', async () => {
@@ -1061,6 +1163,315 @@ describe('PlaybackCore (mocked browser)', () => {
 
     // No duplicate chains accumulated from identical ticks.
     expect(masterGainOf(h.lastAudioContext()).inputs.length).toBe(1)
+    core.dispose()
+  })
+})
+
+/**
+ * Sub-frame-rate frame blending, the engine half (0.7.0): a slow clip parks a
+ * muted second element on the following source read, and the pair the
+ * compositor draws is weighted from the frames the decoder PRESENTED (the
+ * preview's counterpart of the exporter's sample timestamps).
+ */
+describe('PlaybackCore sub-frame-rate blending (mocked browser)', () => {
+  const drawOps = (ctx: unknown, op: string) =>
+    (ctx as { calls: { op: string; args: unknown[] }[] }).calls.filter((c) => c.op === op)
+
+  const slowClip = (doc: Doc, asset: MediaAsset): Clip =>
+    addVideoClip(doc, {
+      mediaId: asset.id,
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+      speed: 0.5,
+    })
+
+  it('parks a muted partner on the following source read, outside the audio graph', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+
+    const primary = document.querySelector('video') as HTMLVideoElement
+    const partner = core['pool'].peekNext(clip.id)
+    expect(partner).toBeDefined()
+    expect(partner).not.toBe(primary)
+    // Muted: a partner that kept the clip's audio would double it.
+    expect(partner!.muted).toBe(true)
+    expect(primary.muted).toBe(false)
+    // Parked on the read one output frame later: local 0 + 1/30 at 0.5x = 1/60 s.
+    expectParkedOn(partner!, 0.5 / 30, 'partner read')
+    expect(partner!.paused).toBe(true)
+    // And it is NOT in the audio graph: only the clip's own element is routed.
+    expect(h.lastAudioContext().elementSources).toEqual([primary])
+    core.dispose()
+  })
+
+  it('parks the partner on the source read the export plan asks for', () => {
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const { core } = makeCore(doc)
+
+    // The pair both paths blend is the plan's `blendTime`, so the parked element
+    // must hold the frame that timestamp names at every position: a drift here is
+    // a monitor that blends a different pair than the exported file. The frame,
+    // not the raw position, is the contract (the park sits a hair inside it).
+    for (const k of [0, 3, 7, 11]) {
+      const t = k / 30
+      const planned = planVideoFrame(doc, t).draws[0].blendTime
+      expect(planned, `plan at ${t}`).toBeDefined()
+      const read = clampSourceTime(planned!, asset)
+      core.seek(t)
+      const partner = core['pool'].peekNext(clip.id)
+      expect(partner, `partner at ${t}`).toBeDefined()
+      expectParkedOn(partner!, read, 'planned partner read')
+      expect(shownFrame(partner!.currentTime), `frame at ${t}`).toBe(shownFrame(read + PARK_NUDGE))
+    }
+    core.dispose()
+  })
+
+  it('parks a frame-boundary read inside the frame the export plan names', () => {
+    // 0.5x over a 30 fps source: the plan's pair straddles a source frame at
+    // k = 1, 5, 9, ... (local 1/30, 5/30, 9/30), where `blendTime` is EXACTLY a
+    // source frame start. The exporter's sample lookup keeps the last sample with
+    // `timestamp <= t`, so its frame is the one that STARTS there, and the
+    // monitor has to park inside that same frame: on the bare boundary a real
+    // element can present the frame before it, which collapses the pair.
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const { core } = makeCore(doc)
+
+    for (const k of [1, 5, 9]) {
+      const t = k / 30
+      const plan = planVideoFrame(doc, t).draws[0]
+      expect(plan.blendTime, `plan at ${t}`).toBeDefined()
+      core.seek(t)
+      const primary = document.querySelector('video') as HTMLVideoElement
+      const partner = core['pool'].peekNext(clip.id)!
+      expect(shownFrame(primary.currentTime), `primary frame at ${t}`).toBe(
+        Math.floor(plan.sourceTime * 30 + 1e-9),
+      )
+      expect(shownFrame(partner.currentTime), `partner frame at ${t}`).toBe(
+        Math.floor(clampSourceTime(plan.blendTime!, asset) * 30 + 1e-9),
+      )
+    }
+    core.dispose()
+  })
+
+  it('blends the planned pair when the read lands on a frame boundary', () => {
+    // The browser half of the same rule: an element seeked to a frame's exact
+    // start can present the frame before it (float rounding at the edge), which
+    // is what made the parked monitor hold one frame where the file blends two.
+    // The frames presented here are the ones such an element would show.
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const { core, ctx } = makeCore(doc)
+    const t = 1 / 30 // 0.5x: read 1/60 s, partner read 1/30 s (a boundary)
+    core.seek(t)
+
+    const primary = document.querySelector('video') as HTMLVideoElement
+    const partner = core['pool'].peekNext(clip.id)!
+    primeVideoElement(primary)
+    primeVideoElement(partner)
+    expect(primary.currentTime).toBeGreaterThan(1 / 60)
+    expect(partner.currentTime).toBeGreaterThan(1 / 30)
+
+    // Present what a boundary-ambiguous element shows for each parked position.
+    presentFrame(primary, shownFrame(primary.currentTime) / 30)
+    presentFrame(partner, shownFrame(partner.currentTime) / 30)
+    ctx.calls.length = 0
+    core.seek(t)
+
+    // The pair must still blend, at the plan's weight (1/60 between 0 and 1/30).
+    const draws = drawOps(ctx, 'drawImage')
+    expect(draws).toHaveLength(1)
+    const scratch = draws[0].args[0] as HTMLCanvasElement
+    expect(scratch).toBeInstanceOf(HTMLCanvasElement)
+    const sctx = (scratch as unknown as { __fakeCtx: unknown }).__fakeCtx
+    ;(sctx as { calls: unknown[] }).calls.length = 0
+    core.seek(t)
+    const layers = drawOps(sctx, 'drawImage')
+    expect(layers.map((c) => c.args[0])).toEqual([primary, partner])
+    const alphas = drawOps(sctx, 'set:globalAlpha').map((c) => c.args[0]) as number[]
+    expect(alphas[0]).toBe(1)
+    expect(alphas[1]).toBeCloseTo(0.5, 12)
+    expect(alphas[2]).toBeCloseTo(0.5, 12)
+    core.dispose()
+  })
+
+  it('re-seeks the partner for a step below the primary element dead zone', () => {
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const { core } = makeCore(doc)
+
+    // Two consecutive output frames at 0.5x move the partner read by 1/60 s,
+    // which is below the 0.02 s dead zone the PRIMARY element uses. The partner
+    // must move anyway: its whole job is to hold the frame next to the read, and
+    // a partner left behind collapses the pair onto one frame. The browser
+    // measurement that found this read a blended sum the collapsed pair could
+    // not produce, so the parked path gets the tighter threshold.
+    // The first step lands exactly on source frame 16's start (32/60 = 16/30 at
+    // 0.5x), the tightest case for the park: inside that frame, not on its edge.
+    core.seek(31 / 30)
+    const partner = core['pool'].peekNext(clip.id)!
+    expectParkedOn(partner, 32 / 60, 'partner step')
+    expect(shownFrame(partner.currentTime)).toBe(16)
+
+    core.seek(32 / 30)
+    expectParkedOn(partner, 33 / 60, 'partner step')
+    expect(shownFrame(partner.currentTime)).toBe(16)
+    core.dispose()
+  })
+
+  it('drops the parked partner when the clip stops reading below realtime', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    expect(core['pool'].peekNext(clip.id)).toBeDefined()
+
+    // A speed edit back to realtime: the pair nothing will ask for is released
+    // instead of holding a second decode alive.
+    doc.project.tracks[0].clips[0].speed = 2
+    await h.pump.pump(1)
+    expect(core['pool'].peekNext(clip.id)).toBeUndefined()
+    core.dispose()
+  })
+
+  it('blends the pair at the weight its presented frames report', () => {
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const { core, ctx } = makeCore(doc)
+    // Source 30 fps, timeline 30 fps, 0.5x: this output frame reads 0.516667 s
+    // and its partner 0.533333 s, so the read sits between source frames 15 and
+    // 16. The export's plan asks for the same pair at the same weights.
+    const t = 31 / 30
+    core.seek(t)
+
+    const primary = document.querySelector('video') as HTMLVideoElement
+    const partner = core['pool'].peekNext(clip.id)!
+    primeVideoElement(primary)
+    primeVideoElement(partner)
+    expectParkedOn(primary, 0.5 + 0.5 / 30, 'primary read')
+    expectParkedOn(partner, 0.5 + 1 / 30, 'partner read')
+
+    // No frame presented yet, so neither element can vouch for what it shows:
+    // the draw stays the single stepped frame.
+    core.seek(t)
+    expect(drawOps(ctx, 'drawImage')[0].args[0]).toBe(primary)
+
+    // Present the pair as a decoder would: frame 15 at 0.5 s, frame 16 at
+    // 0.533333 s. The read 0.516667 s sits exactly halfway between them.
+    presentFrame(primary, 0.5)
+    presentFrame(partner, 0.5 + 1 / 30)
+    ctx.calls.length = 0
+    core.seek(t)
+
+    const draws = drawOps(ctx, 'drawImage')
+    expect(draws).toHaveLength(1)
+    const scratch = draws[0].args[0] as HTMLCanvasElement
+    expect(scratch).not.toBe(primary)
+    expect(scratch).toBeInstanceOf(HTMLCanvasElement)
+    // Geometry is untouched by the blend: contain-fit 640x360 -> 1920x1080.
+    expect(draws[0].args.slice(1)).toEqual([0, 0, 1920, 1080])
+
+    // Clear the scratch's trace so the composite can be read exactly: the pair
+    // goes in additively at 1-w / w, and the result composites once.
+    const sctx = (scratch as unknown as { __fakeCtx: unknown }).__fakeCtx
+    ;(sctx as { calls: unknown[] }).calls.length = 0
+    core.seek(t)
+    const layers = drawOps(sctx, 'drawImage')
+    expect(layers.map((c) => c.args[0])).toEqual([primary, partner])
+    expect(drawOps(sctx, 'set:globalCompositeOperation').map((c) => c.args[0])).toEqual([
+      'source-over',
+      'lighter',
+    ])
+    const alphas = drawOps(sctx, 'set:globalAlpha').map((c) => c.args[0]) as number[]
+    expect(alphas[0]).toBe(1) // the black base of the pair
+    expect(alphas[1]).toBeCloseTo(0.5, 12) // 1 - w for the frame the read is on
+    expect(alphas[2]).toBeCloseTo(0.5, 12) // w for the partner frame
+    core.dispose()
+  })
+
+  it('repaints the parked pair when the presented frame lands after seeked', () => {
+    // `seeked` fires when the position lands, which can be before the decoded
+    // frame reaches the compositor. A draw at that moment pairs the new frame
+    // with the old one, or falls back to a single frame, and the parked canvas
+    // had nothing left to revisit it: the monitor kept showing one frame where
+    // the file blends two. The presented frame itself has to repaint.
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const { core, ctx } = makeCore(doc)
+    const t = 1 / 30
+    core.seek(t)
+
+    const primary = document.querySelector('video') as HTMLVideoElement
+    const partner = core['pool'].peekNext(clip.id)!
+    primeVideoElement(primary)
+    primeVideoElement(partner)
+
+    // The primary's frame is already on record; the partner still reports the
+    // frame from before its seek landed. No blend is possible yet.
+    presentFrame(primary, 0)
+    presentFrame(partner, 0)
+    ctx.calls.length = 0
+    core.seek(t)
+    expect(drawOps(ctx, 'drawImage')[0].args[0]).toBe(primary)
+
+    // The partner's own frame arrives. Presenting it must repaint the parked
+    // canvas, because nothing else will: the read is parked, so no clock tick
+    // and no further seek is coming.
+    ctx.calls.length = 0
+    presentFrame(partner, 1 / 30)
+    const draws = drawOps(ctx, 'drawImage')
+    expect(draws.length).toBeGreaterThanOrEqual(1)
+    expect(draws[0].args[0]).toBeInstanceOf(HTMLCanvasElement)
+    expect(draws[0].args[0]).not.toBe(primary)
+    core.dispose()
+  })
+
+  it('steps rather than blending against a frame the element cannot vouch for', () => {
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const { core, ctx } = makeCore(doc)
+    const t = 31 / 30
+    core.seek(t)
+    const primary = document.querySelector('video') as HTMLVideoElement
+    const partner = core['pool'].peekNext(clip.id)!
+    primeVideoElement(primary)
+    primeVideoElement(partner)
+
+    // The partner still SHOWS a frame from further down the clip, left over
+    // from the position it held before this seek landed. Blending against it
+    // would ghost a distant part of the clip, so the draw stays the single
+    // stepped frame.
+    presentFrame(primary, 0.5)
+    presentFrame(partner, 0.9)
+    ctx.calls.length = 0
+    core.seek(t)
+    expect(drawOps(ctx, 'drawImage')[0].args[0]).toBe(primary)
+
+    // And the other side of the same rule: the PRIMARY's frame is more than a
+    // frame behind the read, so it cannot be the frame the pair starts from
+    // either (a weight measured against it would blend in the wrong content).
+    presentFrame(primary, 0.2)
+    presentFrame(partner, 0.5 + 1 / 30)
+    ctx.calls.length = 0
+    core.seek(t)
+    expect(drawOps(ctx, 'drawImage')[0].args[0]).toBe(primary)
+
+    // And the third: a seek still in flight. The element keeps displaying its
+    // old frame until the decode lands, so the pair is not usable yet even
+    // though the timestamps on record look plausible.
+    presentFrame(primary, 0.5)
+    presentFrame(partner, 0.5 + 1 / 30)
+    Object.defineProperty(partner, 'seeking', { configurable: true, value: true })
+    ctx.calls.length = 0
+    core.seek(t)
+    expect(drawOps(ctx, 'drawImage')[0].args[0]).toBe(primary)
+    Object.defineProperty(partner, 'seeking', { configurable: true, value: false })
     core.dispose()
   })
 })

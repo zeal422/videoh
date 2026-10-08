@@ -21,6 +21,13 @@ import {
   isKeyframeInterpolation,
   sanitizeKeyframes,
 } from './keyframes'
+import {
+  LUT_LIBRARY_MAX_CHARS,
+  LUT_MAX_SIZE_1D,
+  LUT_MAX_SIZE_3D,
+  base64ToBytes,
+  lutGridByteLength,
+} from './lut'
 import { applyMarkerPatch, isMarkerColor } from './markers'
 import { clamp } from './time'
 import type {
@@ -31,9 +38,11 @@ import type {
   KeyframeDefaults,
   KeyframeMap,
   KeyframeProperty,
+  LutKind,
   Marker,
   MediaAsset,
   Project,
+  ProjectLut,
 } from './types'
 
 /**
@@ -45,11 +54,12 @@ import type {
  */
 
 /**
- * v2 added markers (0.5.5). The loader accepts every version from 1 up to the
- * current one, so v1 files and autosaves load with no markers attached; only
- * files from a NEWER app version are refused.
+ * v2 added markers (0.5.5); v3 added the LUT library (0.7.0). The loader
+ * accepts every version from 1 up to the current one, so v1 files and autosaves
+ * load with no markers attached and v1/v2 files with no LUT library; only files
+ * from a NEWER app version are refused.
  */
-export const SERIALIZATION_VERSION = 2
+export const SERIALIZATION_VERSION = 3
 export const PROJECT_FILE_EXTENSION = '.veproj.json'
 
 export interface SerializedMedia {
@@ -141,6 +151,7 @@ export function deserializeDoc(data: unknown): {
 
   const projectMarkers = hydrateMarkers(projectRaw.markers)
   const projectDefaults = hydrateKeyframeDefaults(projectRaw.keyframeDefaults)
+  const projectLuts = hydrateLuts(projectRaw.luts)
   const project: Project = {
     id: typeof projectRaw.id === 'string' ? projectRaw.id : 'proj_loaded',
     name: typeof projectRaw.name === 'string' ? projectRaw.name : 'Imported Project',
@@ -153,6 +164,7 @@ export function deserializeDoc(data: unknown): {
     fps: clamp(Math.round(numOr(projectRaw.fps, 30)), FPS_MIN, FPS_MAX),
     ...(projectMarkers ? { markers: projectMarkers } : {}),
     ...(projectDefaults ? { keyframeDefaults: projectDefaults } : {}),
+    ...(projectLuts ? { luts: projectLuts } : {}),
     tracks: (projectRaw.tracks as Record<string, unknown>[]).map((t) => ({
       id: typeof t.id === 'string' ? t.id : `track_${Math.random().toString(36).slice(2)}`,
       kind: (t.kind === 'audio' || t.kind === 'text'
@@ -167,11 +179,15 @@ export function deserializeDoc(data: unknown): {
   }
 
   const mediaIds = new Set(media.map((m) => m.id))
+  const lutIds = new Set((project.luts ?? []).map((l) => l.id))
   const missingMediaIds = media.filter((m) => m.missing).map((m) => m.id)
-  // Clips whose media did not survive the round-trip also count as missing refs.
+  // Clips whose media did not survive the round-trip also count as missing refs
+  // (and the same for a lutId naming no library entry: a dangling reference
+  // must hydrate to nothing, never to a url() that names no mounted node).
   for (const track of project.tracks) {
     for (const clip of track.clips) {
       if (clip.mediaId && !mediaIds.has(clip.mediaId)) clip.mediaId = undefined
+      if (clip.lutId !== undefined && !lutIds.has(clip.lutId)) clip.lutId = undefined
     }
   }
 
@@ -238,6 +254,9 @@ function hydrateClip(raw: Record<string, unknown>, media: MediaAsset[]): Clip {
     const tint = clamp(raw.tint, TINT_MIN, TINT_MAX)
     if (tint !== 0) clip.tint = tint
   }
+  // Kept only when it names a hydrated library entry: the caller clears a
+  // dangling reference once the whole project is built.
+  if (typeof raw.lutId === 'string' && raw.lutId) clip.lutId = raw.lutId
   if (raw.animStatics && typeof raw.animStatics === 'object') {
     const statics: NonNullable<Clip['animStatics']> = {}
     for (const [property, value] of Object.entries(raw.animStatics as Record<string, unknown>)) {
@@ -346,6 +365,81 @@ function hydrateMarkers(raw: unknown): Marker[] | undefined {
   if (markers.length === 0) return undefined
   markers.sort((a, b) => a.time - b.time)
   return markers
+}
+
+/**
+ * The LUT library from a file, every entry gated: a non-object entry, a
+ * duplicate or empty id, an unknown kind, a size outside the supported bounds,
+ * a payload over the per-entry cap, a payload that is not base64 or does not
+ * decode to the grid its kind and size promise, and any entry past the
+ * library's total budget are all DROPPED rather than trusted. A hand-edited
+ * file must not be able to inject a multi-megabyte string (or a thousand
+ * entries) that every render pass then decodes. Throwing is never an option on
+ * this path, so when at least one entry is dropped the load logs ONE warning
+ * naming the count instead of shrinking the library silently.
+ */
+function hydrateLuts(raw: unknown): ProjectLut[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const seen = new Set<string>()
+  const luts: ProjectLut[] = []
+  let total = 0
+  let dropped = 0
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) {
+      dropped += 1
+      continue
+    }
+    const rec = entry as Record<string, unknown>
+    const id = typeof rec.id === 'string' && rec.id ? rec.id : undefined
+    if (!id || seen.has(id)) {
+      dropped += 1
+      continue
+    }
+    const kind: LutKind | undefined = rec.kind === '1d' || rec.kind === '3d' ? rec.kind : undefined
+    if (!kind) {
+      dropped += 1
+      continue
+    }
+    const size = rec.size
+    if (typeof size !== 'number' || !Number.isInteger(size) || size < 2) {
+      dropped += 1
+      continue
+    }
+    if (size > (kind === '1d' ? LUT_MAX_SIZE_1D : LUT_MAX_SIZE_3D)) {
+      dropped += 1
+      continue
+    }
+    const data = rec.data
+    if (typeof data !== 'string' || data.length > LUT_LIBRARY_MAX_CHARS) {
+      dropped += 1
+      continue
+    }
+    const bytes = base64ToBytes(data)
+    if (!bytes || bytes.length !== lutGridByteLength(kind, size)) {
+      dropped += 1
+      continue
+    }
+    if (total + data.length > LUT_LIBRARY_MAX_CHARS) {
+      dropped += 1
+      continue
+    }
+    total += data.length
+    seen.add(id)
+    luts.push({
+      id,
+      name: typeof rec.name === 'string' && rec.name ? rec.name : 'LUT',
+      kind,
+      size,
+      data,
+    })
+  }
+  if (dropped > 0) {
+    console.warn(
+      `[serialization] dropped ${dropped} LUT library ${dropped === 1 ? 'entry' : 'entries'} ` +
+        'while loading (malformed, oversized or over budget)',
+    )
+  }
+  return luts.length === 0 ? undefined : luts
 }
 
 /**

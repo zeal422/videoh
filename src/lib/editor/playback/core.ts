@@ -1,4 +1,5 @@
 import { clampSourceTime, docDuration, findMedia, mediaPlayable, sourceTimeAt } from '../factories'
+import { blendPartnerTime, blendWeight } from '../frame-blend'
 import { denoiseFilters } from './denoise'
 import { EQ_DB_MAX, EQ_DB_MIN, SPEED_MAX, SPEED_MIN } from '../constants'
 import { getTransitionSpan } from '../transition'
@@ -7,7 +8,7 @@ import { animatedValue, constantTimeScaleRate, hasTimeScaleRamp } from '../keyfr
 import { ClipMediaPool } from '../media/elements'
 import { clamp } from '../time'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
-import { drawFrame } from './compositor'
+import { drawFrame, type FrameBlendSource } from './compositor'
 
 /**
  * PlaybackCore — the playback/export engine.
@@ -22,6 +23,9 @@ import { drawFrame } from './compositor'
  * - Drift correction: element position is compared with the expected source
  *   time every frame; a gap wider than DRIFT_THRESHOLD (0.4 s) triggers a
  *   resync. Reversed and ramped clips are stepped instead (see syncMedia).
+ * - Sub-frame-rate blending: a clip reading below the source frame rate parks a
+ *   SECOND, muted element on the partner read (frame-blend.ts) and the
+ *   compositor blends the pair, exactly as the exporter blends it.
  */
 
 export interface PlaybackCoreOptions {
@@ -51,6 +55,60 @@ const DRIFT_THRESHOLD = 0.4
  * position the element has not reached yet.
  */
 const SEEK_QUIET_MS = 350
+/**
+ * How far behind its read position a frame may sit and still be the frame the
+ * element is showing. The presented frame's timestamp is at most one source
+ * frame before the read, so a window this wide admits every sane source rate
+ * (0.1 s covers down to 10 fps) while rejecting a frame left over from a seek
+ * the element has not finished: blending against that stale frame would mix in
+ * a distant part of the clip.
+ */
+const PRESENTED_STALE_WINDOW = 0.1
+/**
+ * Slack above a read position: a presented frame may sit marginally ahead of the
+ * position reported for it, but a frame well ahead belongs to a position the
+ * clip has already moved away from, which is not the frame to blend.
+ */
+const PRESENTED_LEAD_EPS = 1e-3
+/**
+ * How far a parked blend partner's target has to move before the paused path
+ * re-seeks it. Much tighter than the primary element's 0.02 s dead zone in
+ * `drawStill`: the partner read sits only a FRACTION of a source frame ahead of
+ * the clip's own read (a quarter of one at 0.25x, a half at 0.5x), so with the
+ * primary's threshold the partner would often never leave the frame the primary
+ * shows, the pair would collapse onto one sample, and a scrubbed slow clip would
+ * keep the very stepping this feature removes.
+ */
+const PARTNER_SEEK_EPS = 0.002
+/**
+ * How far INSIDE a frame a parked element is seeked, past the read it was asked
+ * for (0.7.0).
+ *
+ * A read that lands exactly on a source frame's start timestamp is resolved
+ * differently by the two decoders: the exporter's sample lookup keeps the last
+ * sample with `timestamp <= t`, so the read shows the frame that STARTS there,
+ * while an element seek to that same value can present the frame BEFORE it (the
+ * position sits within float rounding of the boundary). Both the painted frame
+ * and the blend weight depend on it: a partner left on the earlier frame
+ * collapses the pair onto one sample (a blend the file has and the monitor does
+ * not), and a primary left there matches the file against the wrong frame (a
+ * blend the file does not have). Seeking a hair past the read removes the
+ * ambiguity without changing which frame any read lands in: the offset is far
+ * below every threshold the parked paths compare against (the tightest is half
+ * of one output frame's source read, 5e-4 s at the slowest supported read).
+ */
+const SEEK_FRAME_NUDGE = 1e-4
+
+/**
+ * The position an element is parked at for a read: the read itself, a hair
+ * inside the frame it names (see SEEK_FRAME_NUDGE). Every park goes through
+ * this, because the played, stepped and still paths all have to agree on which
+ * frame a read lands in; the dead zones that decide whether a park is needed
+ * keep comparing the RAW read, so the offset never triggers a re-seek.
+ */
+function parkedTarget(read: number): number {
+  return read + SEEK_FRAME_NUDGE
+}
 
 /**
  * The clip's effective CONSTANT rate, for elements that can follow one: the
@@ -118,6 +176,18 @@ export class PlaybackCore {
    * each rAF re-seeked a seek that never completed).
    */
   private seekingEls = new Map<HTMLMediaElement, { started: number; onSeeked: () => void }>()
+  /**
+   * The media timestamp of the frame each element last PRESENTED (0.7.0), from
+   * requestVideoFrameCallback. Sub-frame-rate blending needs the timestamps of
+   * the frames the decoder actually delivered, not the element's continuous read
+   * position: the read of a slow clip sits between two source frames, and only
+   * the pair's own timestamps give the weight the export computes. Browsers
+   * without requestVideoFrameCallback never report one, and the preview then
+   * keeps the stepped draw it always had.
+   */
+  private presentedTimes = new WeakMap<HTMLMediaElement, number>()
+  /** Elements already registered with requestVideoFrameCallback. */
+  private watchingFrames = new WeakSet<HTMLMediaElement>()
 
   constructor(private opts: PlaybackCoreOptions) {
     opts.canvas.width = opts.getDoc().project.width
@@ -304,6 +374,11 @@ export class PlaybackCore {
         live.add(clip.id)
       }
     }
+    // Parked blend partners follow the same rule: a clip that is gone must not
+    // keep a second decode alive.
+    for (const id of this.pool.nextIds()) {
+      if (!live.has(id)) this.pool.releaseNext(id)
+    }
     for (const id of this.pool.ids()) {
       if (live.has(id)) continue
       const el = this.pool.peek(id)
@@ -398,8 +473,136 @@ export class PlaybackCore {
           el.pause()
           this.endSeek(el)
         }
+        this.syncBlendElement(clip, asset, t, active, forceSeek)
       }
     }
+  }
+
+  /**
+   * Positions (or drops) the parked blend partner of one clip (0.7.0).
+   *
+   * The partner is PARKED and seeked to the exact partner read, like a reversed
+   * or ramped clip's element: it only has to hold one frame, and a second
+   * element playing alongside the first would drift from it. While a seek is in
+   * flight the element is left alone, because an interrupted seek restarts its
+   * decode (see trackingSeek). A clip that no longer reads below the frame rate
+   * (a speed edit) drops its partner: the element would otherwise keep a second
+   * decode alive for a pair nothing will ask for.
+   */
+  private syncBlendElement(
+    clip: Clip,
+    asset: MediaAsset,
+    t: number,
+    active: boolean,
+    forceSeek: boolean,
+  ): void {
+    const partner = blendPartnerTime(clip, t - clip.start, asset, this.opts.getDoc().project.fps)
+    if (partner === undefined) {
+      this.pool.releaseNext(clip.id)
+      return
+    }
+    const el = this.pool.getNext(clip, asset)
+    if (!el) return
+    this.watchPresentedFrames(el)
+    if (!active) {
+      if (!el.paused) el.pause()
+      return
+    }
+    if (this.trackingSeek(el)) return
+    const target = clampSourceTime(partner, asset)
+    if (forceSeek || Math.abs(el.currentTime - target) > PARTNER_SEEK_EPS) {
+      this.seekElement(el, target)
+    }
+  }
+
+  /**
+   * Tracks the media timestamp of the frame an element presents, through
+   * requestVideoFrameCallback (0.7.0). The callback is one-shot, so it re-arms
+   * itself; an element that never presents another frame (parked, or a browser
+   * without the API) simply never reports one.
+   */
+  private watchPresentedFrames(el: HTMLMediaElement): void {
+    const video = el as HTMLVideoElement
+    if (typeof video.requestVideoFrameCallback !== 'function') return
+    if (this.watchingFrames.has(el)) return
+    this.watchingFrames.add(el)
+    const onFrame: VideoFrameRequestCallback = (_now, metadata) => {
+      this.presentedTimes.set(el, metadata.mediaTime)
+      // A parked monitor repaints on the presented frame itself (0.7.0). `seeked`
+      // fires when the position lands, which can be BEFORE the decoded frame
+      // reaches the compositor: a draw at that moment pairs the newly presented
+      // frame with the one before it, or falls back to a single frame, and
+      // nothing else would revisit the parked canvas. One repaint per presented
+      // frame, and none while playing (the render loop already repaints).
+      if (!this.playingState) this.render(this.time)
+      video.requestVideoFrameCallback(onFrame)
+    }
+    video.requestVideoFrameCallback(onFrame)
+  }
+
+  /**
+   * The media timestamp of the frame an element is SHOWING near `target`, or
+   * undefined when the element cannot vouch for one: nothing reported yet, a seek
+   * still in flight (the element keeps displaying its OLD frame until the decode
+   * lands), a frame from a position already moved away from, or a frame too far
+   * behind the target to be the one the read asks for. Each case falls back to
+   * the single-frame draw rather than blending against the wrong frame.
+   */
+  private presentedTime(el: HTMLMediaElement, target: number): number | undefined {
+    if (el.seeking) return undefined
+    const ts = this.presentedTimes.get(el)
+    if (ts === undefined) return undefined
+    if (ts > target + PRESENTED_LEAD_EPS) return undefined
+    if (target - ts > PRESENTED_STALE_WINDOW) return undefined
+    return ts
+  }
+
+  /**
+   * The blend pair for one clip's sub-frame-rate read: the parked partner
+   * element, plus the weight between the two frames the decoder is showing. The
+   * weight comes from the shared `blendWeight`, so the preview and the export
+   * compute it the same way; only its inputs differ (presented-frame timestamps
+   * here, the exporter's decoded sample timestamps there).
+   */
+  private blendFor(
+    clip: Clip,
+    primary: HTMLMediaElement,
+    asset: MediaAsset,
+    t: number,
+  ): FrameBlendSource | undefined {
+    const { fps } = this.opts.getDoc().project
+    const local = t - clip.start
+    const partnerTime = blendPartnerTime(clip, local, asset, fps)
+    if (partnerTime === undefined) return undefined
+    const partner = this.pool.peekNext(clip.id)
+    if (!partner || partner.readyState < 2) return undefined
+    // The primary's own read position is the reference for its frame: the
+    // element plays on the element clock, so its presented frame can sit a hair
+    // ahead of the playhead-derived source time.
+    const a = this.presentedTime(primary, primary.currentTime)
+    const b = this.presentedTime(partner, clampSourceTime(partnerTime, asset))
+    if (a === undefined || b === undefined) return undefined
+    const weight = blendWeight(this.sourceTime(clip, t), a, b)
+    // Strictly inside (0, 1): the ends reduce to a single frame, and the export
+    // skips the pair there too.
+    if (!(weight > 0 && weight < 1)) return undefined
+    return { el: partner, weight }
+  }
+
+  /**
+   * The still path's seek dead zone (0.7.0): HALF the source time one output
+   * frame consumes at the playhead, capped at the old flat 0.02 s.
+   *
+   * A flat 0.02 s is 0.6 of a 30 fps source frame, so a clip reading slower than
+   * realtime only re-seeked every few steps and the monitor held a frame the
+   * export would already have moved past. Half of one frame's read keeps the
+   * element on the frame the read falls in (a step of one output frame always
+   * crosses it) while a sub-frame scrub jitter still does not restart a decode.
+   */
+  private stillSeekEps(clip: Clip, t: number, fps: number): number {
+    const step = 1 / Math.max(1, fps)
+    const perFrame = Math.abs(this.sourceTime(clip, t + step) - this.sourceTime(clip, t))
+    return Math.min(0.02, perFrame / 2)
   }
 
   /** True while the element has a seek in flight (and keeps tracking it). */
@@ -427,13 +630,17 @@ export class PlaybackCore {
     // and an async browser keeps it until the decode lands.
     this.beginSeek(el)
     const prev = el.currentTime
+    // Land inside the frame the read names rather than on its edge (see
+    // SEEK_FRAME_NUDGE): the exporter resolves an exact frame start to the frame
+    // that begins there, and an element seek to the bare value does not.
+    const target = parkedTarget(expected)
     try {
-      el.currentTime = expected
+      el.currentTime = target
     } catch {
       this.endSeek(el)
       return // seek before metadata: nothing to track
     }
-    if (Math.abs(prev - expected) <= 1e-9) this.endSeek(el)
+    if (Math.abs(prev - target) <= 1e-9) this.endSeek(el)
   }
 
   private beginSeek(el: HTMLMediaElement): void {
@@ -597,7 +804,13 @@ export class PlaybackCore {
       ctx: this.ctx2d,
       doc: this.opts.getDoc(),
       time: t,
-      resolve: (clip) => this.resolveClip(clip),
+      // The frame time is threaded through, never read back off the engine, so
+      // one draw is internally consistent: the compositor, the still-frame
+      // resolver and the blend pair all use the time this render was asked for.
+      // A landing seek asks for the CURRENT playhead (see drawStill), never the
+      // time its own seek was issued for, so a superseded seek cannot repaint a
+      // stale frame over a newer one.
+      resolve: (clip) => this.resolveClip(clip, t),
     })
   }
 
@@ -607,6 +820,10 @@ export class PlaybackCore {
    */
   private drawStill(t: number): void {
     const doc = this.opts.getDoc()
+    // Paused edits (Delete, undo, relink) never reach syncMedia, so the release
+    // pass runs here too: a clip deleted while paused must not leave its
+    // parked blend element holding a decode for the rest of the session.
+    this.releaseMissingClips()
     for (const track of doc.project.tracks) {
       if (track.kind === 'text') continue
       for (const clip of track.clips) {
@@ -622,16 +839,46 @@ export class PlaybackCore {
         // Clamped into the asset: a ramp may over-consume its source, and the
         // excess freezes on the last readable frame (mp4.ts clamps identically).
         const expected = clampSourceTime(this.sourceTime(clip, t), asset)
-        if (Math.abs(el.currentTime - expected) > 0.02) {
+        if (Math.abs(el.currentTime - expected) > this.stillSeekEps(clip, t, doc.project.fps)) {
           try {
-            el.currentTime = expected
+            el.currentTime = parkedTarget(expected)
           } catch {
             // ignore
           }
           el.addEventListener(
             'seeked',
             () => {
-              if (!this.playingState) this.render(t)
+              // this.time, not t: a seek superseded by a later one still fires
+              // its listener, and repainting the captured t would put a stale
+              // frame back on screen after the newer seek already drew.
+              if (!this.playingState) this.render(this.time)
+            },
+            { once: true },
+          )
+        }
+        // The blend partner is parked on its own frame here too, so a still
+        // frame blends exactly like a playing one. Its seek landing has to
+        // redraw: until it does, the pair falls back to the single frame.
+        const partner = blendPartnerTime(clip, t - clip.start, asset, doc.project.fps)
+        if (partner === undefined) {
+          this.pool.releaseNext(clip.id)
+          continue
+        }
+        const next = this.pool.getNext(clip, asset)
+        if (!next) continue
+        this.watchPresentedFrames(next)
+        const target = clampSourceTime(partner, asset)
+        if (Math.abs(next.currentTime - target) > PARTNER_SEEK_EPS) {
+          try {
+            next.currentTime = parkedTarget(target)
+          } catch {
+            // ignore
+          }
+          next.addEventListener(
+            'seeked',
+            () => {
+              // Same rule as the primary element above.
+              if (!this.playingState) this.render(this.time)
             },
             { once: true },
           )
@@ -643,7 +890,10 @@ export class PlaybackCore {
 
   private resolveClip(
     clip: Clip,
-  ): { asset: MediaAsset; el?: HTMLVideoElement | HTMLImageElement } | undefined {
+    t: number,
+  ):
+    | { asset: MediaAsset; el?: HTMLVideoElement | HTMLImageElement; blend?: FrameBlendSource }
+    | undefined {
     const doc = this.opts.getDoc()
     const asset = findMedia(doc, clip.mediaId)
     if (!asset) return undefined
@@ -665,7 +915,12 @@ export class PlaybackCore {
     if (asset.kind === 'video') {
       // Missing (restored) assets have no URL: never build an element for them.
       if (asset.missing || !asset.url) return undefined
-      return { asset, el: this.pool.get(clip, asset) as HTMLVideoElement }
+      const el = this.pool.get(clip, asset) as HTMLVideoElement
+      this.watchPresentedFrames(el)
+      // Sub-frame-rate reads hand the compositor the parked partner as well, so
+      // the monitor blends the pair the exporter blends instead of holding a
+      // source frame for two output frames.
+      return { asset, el, blend: this.blendFor(clip, el, asset, t) }
     }
     return { asset } // audio-only
   }

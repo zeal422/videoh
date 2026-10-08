@@ -28,6 +28,30 @@ describe('inspector tabs', () => {
   })
 })
 
+describe('inspector LUT row (0.7.0)', () => {
+  const inspector = read('src/components/editor/InspectorPanel.tsx')
+  const commands = read('src/lib/editor/commands.ts')
+
+  it('wires the .cube picker to one import+assign command batch', () => {
+    expect(inspector).toMatch(/data-testid="lut-file"/)
+    expect(inspector).toMatch(/accept=\"\.cube\"/)
+    expect(inspector).toMatch(/parseCubeLut\(await file\.text\(\)/)
+    expect(inspector).toMatch(/type: 'importProjectLut', lut/)
+    expect(inspector).toMatch(/type: 'setClipLut', clipId, lutId: lut\.id/)
+    // The id is captured before the async read, and the batch is skipped when
+    // that clip is gone, so a deletion mid-read cannot dispatch against a dead
+    // clip (the command layer would refuse the whole batch with a raw error).
+    expect(inspector).toMatch(/const clipId = clip\.id/)
+    expect(inspector).toMatch(
+      /if \(!findClip\(useEditorStore\.getState\(\)\.doc, clipId\)\) return/,
+    )
+    // The library budget is refused by the COMMAND, so every path into the
+    // library pays it and the batch above writes nothing on refusal.
+    expect(commands).toMatch(/lutBudgetMessage\(/)
+    expect(commands).toMatch(/Unknown LUT \$\{command\.lutId\}/)
+  })
+})
+
 describe('effect controls surface', () => {
   const ec = read('src/components/editor/effect-controls/EffectControlsPanel.tsx')
 

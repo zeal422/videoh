@@ -18,11 +18,18 @@ import { EQ_DB_MAX, EQ_DB_MIN } from '../constants'
 import { clampSourceTime, docDuration, findMedia } from '../factories'
 import { constantTimeScaleRate } from '../keyframes'
 import { clipRendersAudio, linkGroupChangesRate } from '../links'
-import { drawTextClip } from '../playback/compositor'
+import { findLut } from '../lut'
+import { drawBlendedContain, drawContain, drawTextClip } from '../playback/compositor'
 import { denoiseFilters } from '../playback/denoise'
 import { clamp } from '../time'
-import { clipCrossfadeSchedule, clipGainSchedule, planVideoFrame, type ClipDraw } from './offline'
-import type { Clip, Doc, Track } from '../types'
+import {
+  blendWeight,
+  clipCrossfadeSchedule,
+  clipGainSchedule,
+  planVideoFrame,
+  type ClipDraw,
+} from './offline'
+import type { Clip, Doc, ProjectLut, Track } from '../types'
 
 /**
  * WebCodecs/MP4 export, offline (no realtime capture), frame-accurate.
@@ -98,6 +105,7 @@ function compositeFrame(
   frames: Map<string, VideoFrame | ImageBitmap | HTMLImageElement>,
   width: number,
   height: number,
+  blends: Map<string, BlendSample>,
 ): void {
   ctx.save()
   ctx.globalAlpha = 1
@@ -114,45 +122,34 @@ function compositeFrame(
     }
     const source = frames.get(draw.clip.id)
     if (!source) continue
-    drawPlannedClip(ctx, draw, source, width, height)
+    // The clip's LUT, resolved exactly the way the preview compositor resolves
+    // it: a 1D shaper already rides `draw.filter`, a 3D cube is applied here.
+    const lut = findLut(doc.project.luts, draw.clip.lutId)
+    // Alpha is clamped here: the plan carries the clip's own opacity stack and
+    // a malformed doc must not draw outside 0..1. Both paths then share the
+    // geometry, the grading and the blend compositing (playback/compositor.ts).
+    const alpha = Math.min(1, Math.max(0, draw.alpha))
+    const blend = blends.get(draw.clip.id)
+    if (blend && blend.frame !== source) {
+      drawBlendedContain(ctx, {
+        blend: { first: source, second: blend.frame, weight: blend.weight },
+        width,
+        height,
+        alpha,
+        filter: draw.filter,
+        transform: draw.transform,
+        lut,
+      })
+      continue
+    }
+    drawContain(ctx, source, width, height, alpha, draw.filter, draw.transform, lut)
   }
-  void doc
 }
 
-function drawPlannedClip(
-  ctx: CanvasRenderingContext2D,
-  draw: ClipDraw,
-  source: VideoFrame | ImageBitmap | HTMLImageElement,
-  width: number,
-  height: number,
-): void {
-  const sw =
-    source instanceof HTMLImageElement
-      ? source.naturalWidth
-      : 'displayWidth' in source
-        ? (source as VideoFrame).displayWidth
-        : (source as ImageBitmap).width
-  const sh =
-    source instanceof HTMLImageElement
-      ? source.naturalHeight
-      : 'displayHeight' in source
-        ? (source as VideoFrame).displayHeight
-        : (source as ImageBitmap).height
-  if (!sw || !sh) return
-
-  const scale = draw.transform?.scale ?? 1
-  const fit = Math.min(width / sw, height / sh)
-  const dw = sw * fit * scale
-  const dh = sh * fit * scale
-  // Same geometry as the preview compositor: offsets from the scaled size.
-  const dx = (width - dw) / 2 + (draw.transform?.posX ?? 0)
-  const dy = (height - dh) / 2 + (draw.transform?.posY ?? 0)
-
-  ctx.save()
-  ctx.globalAlpha = Math.min(1, Math.max(0, draw.alpha))
-  if (draw.filter !== 'none') ctx.filter = draw.filter
-  ctx.drawImage(source as CanvasImageSource, dx, dy, dw, dh)
-  ctx.restore()
+/** The second decoded frame of a sub-frame-rate draw, with its blend weight. */
+interface BlendSample {
+  frame: VideoFrame | ImageBitmap | HTMLImageElement
+  weight: number
 }
 
 /**
@@ -365,6 +362,9 @@ export async function exportTimeline(
 
   const totalFrames = Math.max(0, Math.round(duration * fps))
   const frames = new Map<string, VideoFrame | ImageBitmap | HTMLImageElement>()
+  // The second decoded frame of a blended draw, keyed by clip id like `frames`
+  // (which the blend never extends: a blended clip keeps its primary sample).
+  const blends = new Map<string, BlendSample>()
 
   // Image elements once (they never decode per-frame). Await the decode before
   // the loop: a still-decoding image would leave the first frames blank. A
@@ -396,6 +396,8 @@ export async function exportTimeline(
       // previous frame's decoded surfaces first: they hold memory until closed.
       closeDecodedFrames(frames)
       frames.clear()
+      for (const blend of blends.values()) closeDecodedFrame(blend.frame)
+      blends.clear()
       for (const draw of plan.draws) {
         const asset = draw.asset
         if (!asset) continue
@@ -420,13 +422,33 @@ export async function exportTimeline(
           draw.clip.reverse ? nextLowerFrame(sourceTime, fps) : sourceTime,
         )
         if (sample) {
+          const primaryTimestamp = sample.timestamp
           const bitmap = await createImageBitmap(sample.toCanvasImageSource() as CanvasImageSource)
           sample.close()
           frames.set(draw.clip.id, bitmap)
+          if (draw.blendTime !== undefined) {
+            // One extra sample per blended frame, and only when the decoder
+            // actually advanced: a pair that snaps to the same frame has no
+            // weight to give, so it is closed again and nothing is stored.
+            const blendTime = clampSourceTime(draw.blendTime, asset)
+            const second = await sink.getSample(
+              draw.clip.reverse ? nextLowerFrame(blendTime, fps) : blendTime,
+            )
+            if (second) {
+              const weight = blendWeight(sourceTime, primaryTimestamp, second.timestamp)
+              if (weight > 0 && weight < 1) {
+                const blendBitmap = await createImageBitmap(
+                  second.toCanvasImageSource() as CanvasImageSource,
+                )
+                blends.set(draw.clip.id, { frame: blendBitmap, weight })
+              }
+              second.close()
+            }
+          }
         }
       }
 
-      compositeFrame(ctx, doc, plan, frames, width, height)
+      compositeFrame(ctx, doc, plan, frames, width, height, blends)
       await videoSource.add(t, 1 / fps)
       opts.onProgress?.(t + 1 / fps, duration)
     }
@@ -439,6 +461,8 @@ export async function exportTimeline(
     finalized = true
   } finally {
     closeDecodedFrames(frames)
+    for (const blend of blends.values()) closeDecodedFrame(blend.frame)
+    blends.clear()
     // A cancel, an encoder error, or any throw leaves the Output holding a
     // live VideoEncoder; `Output.cancel()` is what force-closes the track
     // sources and releases it (mediabunny reaches `_flushOrWaitForOngoingClose`
@@ -525,14 +549,22 @@ export function preloadImage(img: HTMLImageElement, onFailure: () => void): Prom
 export function closeDecodedFrames(
   frames: Map<string, VideoFrame | ImageBitmap | HTMLImageElement>,
 ): void {
-  for (const frame of frames.values()) {
-    const closable = frame as { close?: () => void }
-    if (typeof closable.close !== 'function') continue
-    try {
-      closable.close()
-    } catch {
-      // already closed
-    }
+  for (const frame of frames.values()) closeDecodedFrame(frame)
+}
+
+/**
+ * Closes one decoded surface (a no-op for an image element, and for an already
+ * closed surface). Frame blending holds a SECOND surface per blended clip, so
+ * the single-surface form is what the blend map can reuse.
+ * @internal exported for tests
+ */
+export function closeDecodedFrame(frame: VideoFrame | ImageBitmap | HTMLImageElement): void {
+  const closable = frame as { close?: () => void }
+  if (typeof closable.close !== 'function') return
+  try {
+    closable.close()
+  } catch {
+    // already closed
   }
 }
 

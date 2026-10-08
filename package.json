@@ -1,6 +1,6 @@
 {
   "name": "nextjs_tailwind_shadcn_ts",
-  "version": "0.6.4",
+  "version": "0.7.0",
   "private": true,
   "scripts": {
     "dev": "set -o pipefail && next dev -p 3000 2>&1 | tee dev.log",
@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "battery": "bash e2e/run-battery.sh",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "format": "prettier --write \"src/**/*.{ts,tsx}\" \"*.{ts,md,json}\" \"docs/**/*.md\"",

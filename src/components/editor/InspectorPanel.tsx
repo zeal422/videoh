@@ -20,8 +20,9 @@ import { Separator } from '@/components/ui/separator'
 import { toast } from '@/hooks/use-toast'
 
 import { EditorCommandError } from '@/lib/editor/commands'
-import { findMedia, nextClipOnTrack } from '@/lib/editor/factories'
+import { findClip, findMedia, nextClipOnTrack } from '@/lib/editor/factories'
 import { linkedAudioTwin } from '@/lib/editor/links'
+import { parseCubeLut } from '@/lib/editor/lut'
 import { formatTime } from '@/lib/editor/time'
 import {
   TEMPERATURE_MAX,
@@ -108,6 +109,9 @@ function ClipPanel({ clip, trackKind }: { clip: Clip; trackKind: string }) {
   )
 }
 
+/** Radix Select cannot carry an empty value, so "no LUT" gets a sentinel. */
+const LUT_NONE = '__none__'
+
 /** The two static color-grade controls and their bounds (0 = neutral). */
 const GRADE_CONTROLS = [
   { key: 'temperature', label: 'Temperature', min: TEMPERATURE_MIN, max: TEMPERATURE_MAX },
@@ -142,6 +146,8 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
 
   const track = doc.project.tracks.find((t) => t.clips.some((c) => c.id === clip.id))
   const nextClip = track ? nextClipOnTrack(track, clip) : undefined
+  const luts = doc.project.luts ?? []
+  const lutFileRef = useRef<HTMLInputElement>(null)
 
   const showError = (error: unknown) =>
     toast({
@@ -156,6 +162,31 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
     } catch (error) {
       if (error instanceof EditorCommandError) showError(error)
       else throw error
+    }
+  }
+
+  // Import and assignment ride ONE command batch, so a load is one undo step and
+  // a refusal (an unreadable file, a full library) writes nothing at all.
+  const onLutFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // re-picking the same file must fire again
+    if (!file) return
+    // The id is captured BEFORE the await. Reading a .cube is async, so the
+    // clip can be deleted while it is in flight; dispatching then would fail on
+    // a clip that is gone and toast a failure for a benign race, so the whole
+    // batch (import + assign) is skipped instead.
+    const clipId = clip.id
+    try {
+      const lut = parseCubeLut(await file.text(), {
+        name: file.name.replace(/\.cube$/i, ''),
+      })
+      if (!findClip(useEditorStore.getState().doc, clipId)) return
+      apply([
+        { type: 'importProjectLut', lut },
+        { type: 'setClipLut', clipId, lutId: lut.id },
+      ])
+    } catch (error) {
+      showError(error)
     }
   }
 
@@ -310,6 +341,75 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                   </div>
                 )
               })}
+              {!isText && (
+                <div>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <Label htmlFor="clip-lut" className="text-xs">
+                      LUT (.cube)
+                    </Label>
+                    <span className="text-[11px] text-muted-foreground">
+                      {clip.lutId
+                        ? (luts.find((l) => l.id === clip.lutId)?.name ?? 'missing')
+                        : 'None'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={clip.lutId ?? LUT_NONE}
+                      onValueChange={(value) =>
+                        tryApply(() =>
+                          apply({
+                            type: 'setClipLut',
+                            clipId: clip.id,
+                            lutId: value === LUT_NONE ? null : value,
+                          }),
+                        )
+                      }
+                    >
+                      <SelectTrigger
+                        id="clip-lut"
+                        aria-label="Clip LUT"
+                        data-testid="lut-select"
+                        className="h-8 text-xs"
+                      >
+                        <SelectValue placeholder="None" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={LUT_NONE}>None</SelectItem>
+                        {luts.map((lut) => (
+                          <SelectItem key={lut.id} value={lut.id}>
+                            {lut.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      data-testid="lut-load"
+                      className="h-8 shrink-0 text-xs"
+                      onClick={() => lutFileRef.current?.click()}
+                    >
+                      Load .cube
+                    </Button>
+                    <input
+                      ref={lutFileRef}
+                      type="file"
+                      accept=".cube"
+                      aria-label="Load .cube file"
+                      data-testid="lut-file"
+                      className="hidden"
+                      onChange={onLutFile}
+                    />
+                  </div>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                    Loading a cube adds it to the project library and assigns it to this clip. A 1D
+                    cube applies as per-channel shapers through the shared filter; a 3D cube runs a
+                    pixel pass in both the preview and the export.
+                  </p>
+                </div>
+              )}
               <p className="text-[11px] leading-relaxed text-muted-foreground">
                 Temperature warms (right) or cools (left) the picture; tint shifts it between green
                 and magenta. Both grade the preview and the export through one shared SVG matrix, so

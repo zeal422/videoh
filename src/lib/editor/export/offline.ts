@@ -1,5 +1,7 @@
 import { clipFilter } from '../color'
 import { docDuration, findMedia, sourceTimeAt } from '../factories'
+import { blendPartnerTime } from '../frame-blend'
+import { findLut } from '../lut'
 import { getTransitionSpan, transitionAlphas } from '../transition'
 import { animatedValue } from '../keyframes'
 import { segmentControls } from '../ease-segment'
@@ -14,13 +16,32 @@ import type { Clip, Doc, MediaAsset, Track } from '../types'
  * with which opacity/filter/transform) and the audio mix plan (which audible
  * clips contribute at which gain). The browser-side exporter (mp4.ts) executes
  * this plan against decoded frames; tests verify it in Node.
+ *
+ * The sub-frame-rate blend pair it plans is shared math, not export-only: the
+ * preview engine parks its second element from the same function, so a slow
+ * clip cannot be stepped in the monitor and blended in the file. That math
+ * lives in frame-blend.ts; `blendWeight` is re-exported here because the plan
+ * carries the pair.
  */
+
+export { blendWeight } from '../frame-blend'
 
 export interface ClipDraw {
   clip: Clip
   asset: MediaAsset | undefined
   /** Source timestamp (seconds in the asset) this frame should show. */
   sourceTime: number
+  /**
+   * The source timestamp one OUTPUT frame later, when the clip plays below the
+   * frame rate (0.7.0). It is the partner the exporter blends the decoded frame
+   * with, so a slow clip reads a weighted pair instead of a held frame.
+   *
+   * Set for VIDEO draws only, and only when that read is strictly ahead (see
+   * blendPartnerTime in frame-blend.ts): a still image, a text clip, a clip
+   * playing at or above realtime and a reversed clip (whose read walks
+   * backwards) all keep their single sample.
+   */
+  blendTime?: number
   alpha: number
   filter: string
   transform: { posX: number; posY: number; scale: number } | null
@@ -97,12 +118,17 @@ export function planVideoFrame(doc: Doc, t: number): FramePlan {
       const alpha = alphas.get(clip.id)
       if (alpha === undefined || alpha <= 0) continue
       const local = t - clip.start
+      const drawAsset = findMedia(doc, clip.mediaId)
       draws.push({
         clip,
-        asset: findMedia(doc, clip.mediaId),
+        asset: drawAsset,
         sourceTime: sourceTimeAt(clip, local),
+        blendTime: blendPartnerTime(clip, local, drawAsset, doc.project.fps),
         alpha: alpha * animatedValue(clip, 'opacity', local),
-        filter: clipFilter(clip, local),
+        // The clip's LUT is resolved here so both render paths hand `clipFilter`
+        // the same entry: a 1D shaper lands in this string, a 3D cube is applied
+        // to the decoded frames by the renderer instead.
+        filter: clipFilter(clip, local, findLut(doc.project.luts, clip.lutId)),
         transform: clipTransform(clip, local),
       })
     }

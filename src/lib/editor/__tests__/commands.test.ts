@@ -14,8 +14,22 @@ import {
 } from '../factories'
 import { decideTrimStart, trimRooms } from '../clip-gesture'
 import { evaluateKeyframes, integrateKeyframes } from '../keyframes'
-import type { Clip, Doc, Keyframe, MediaAsset, Track } from '../types'
+import { LUT_LIBRARY_MAX_CHARS, lutLibraryChars, parseCubeLut } from '../lut'
+import type { Clip, Doc, Keyframe, MediaAsset, ProjectLut, Track } from '../types'
 import { MIN_CLIP_DURATION } from '../constants'
+
+/** A 2-cube in `.cube` row order (red fastest): enough to exercise the model. */
+const CUBE_3D = [
+  'LUT_3D_SIZE 2',
+  '0 0 0',
+  '1 0 0',
+  '0 1 0',
+  '1 1 0',
+  '0 0 1',
+  '1 0 1',
+  '0 1 1',
+  '1 1 1',
+].join('\n')
 
 /** Deterministic test doc: V1 (video track) + A1 (audio track), one video + one audio asset. */
 function makeDoc(): {
@@ -554,6 +568,73 @@ describe('setClipColorParams (temperature/tint grade)', () => {
         tint: 0,
       }),
     ).toThrow(EditorCommandError)
+  })
+})
+
+describe('LUT library commands', () => {
+  function clipInDoc() {
+    const { doc, videoAsset } = makeDoc()
+    const withClip = applyCommand(doc, {
+      type: 'addClip',
+      trackId: videoTrack(doc).id,
+      clip: createClip({ mediaId: videoAsset.id, start: 0, duration: 4 }),
+    })
+    return { doc: withClip, clipId: videoTrack(withClip).clips[0].id }
+  }
+
+  it('imports a LUT into the project library and references it from a clip', () => {
+    const { doc, clipId } = clipInDoc()
+    const lut = parseCubeLut(CUBE_3D, { id: 'lut_warm', name: 'warm' })
+    const withLut = applyCommand(doc, { type: 'importProjectLut', lut })
+    expect(withLut.project.luts).toEqual([lut])
+    // The input doc is never mutated.
+    expect(doc.project.luts).toBeUndefined()
+
+    const assigned = applyCommand(withLut, { type: 'setClipLut', clipId, lutId: 'lut_warm' })
+    expect(videoTrack(assigned).clips[0].lutId).toBe('lut_warm')
+
+    const cleared = applyCommand(assigned, { type: 'setClipLut', clipId, lutId: null })
+    expect(videoTrack(cleared).clips[0].lutId).toBeUndefined()
+  })
+
+  it('rejects a duplicate LUT id and a clip reference to no entry', () => {
+    const { doc, clipId } = clipInDoc()
+    const lut = parseCubeLut(CUBE_3D, { id: 'lut_warm', name: 'warm' })
+    const withLut = applyCommand(doc, { type: 'importProjectLut', lut })
+    expect(() => applyCommand(withLut, { type: 'importProjectLut', lut })).toThrow(
+      EditorCommandError,
+    )
+    expect(() =>
+      applyCommand(withLut, { type: 'setClipLut', clipId, lutId: 'lut_missing' }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
+      applyCommand(withLut, { type: 'setClipLut', clipId: 'nope', lutId: 'lut_warm' }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('refuses an import that would cross the library budget, naming both sizes', () => {
+    const { doc } = clipInDoc()
+    // A payload that fits on its own, then a library pushed to the edge.
+    const big = parseCubeLut(CUBE_3D, { id: 'lut_big', name: 'big' })
+    const filler: ProjectLut = {
+      id: 'lut_filler',
+      name: 'filler',
+      kind: '1d',
+      size: 2,
+      data: 'A'.repeat(LUT_LIBRARY_MAX_CHARS - big.data.length),
+    }
+    const loaded = applyCommand(doc, { type: 'importProjectLut', lut: big })
+    const full = applyCommand(loaded, { type: 'importProjectLut', lut: filler })
+    expect(lutLibraryChars(full.project.luts!)).toBe(LUT_LIBRARY_MAX_CHARS)
+
+    let message = ''
+    try {
+      applyCommand(full, { type: 'importProjectLut', lut: { ...big, id: 'lut_again' } })
+    } catch (error) {
+      message = (error as Error).message
+    }
+    expect(message).toMatch(/LUT library is full/)
+    expect(message).toMatch(/3,000,000/)
   })
 })
 
