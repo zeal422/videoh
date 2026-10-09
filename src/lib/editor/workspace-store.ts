@@ -27,7 +27,7 @@ interface WorkspaceStoreState extends WorkspaceState {
   toggleHidden: (id: PanelId) => void
   toggleCollapsed: (id: PanelId) => void
   setCollapsed: (id: PanelId, collapsed: boolean) => void
-  setSize: (id: 'media' | 'inspector' | 'timeline', size: number) => void
+  setSize: (id: 'media' | 'source' | 'inspector' | 'timeline', size: number) => void
   resetWorkspace: () => void
 }
 

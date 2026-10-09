@@ -110,7 +110,7 @@ nothing is serving it):
 
 ```bash
 bun run build && bun run start   # production needs GATE_SECRET; the server refuses to boot without it
-bun run battery                  # 50 passed, 0 failed at 0.7.0, same as the dev server
+bun run battery                  # 51 passed, 0 failed at 0.7.2, same as the dev server
 ```
 
 See [testing.md](testing.md#end-to-end-battery) for the A/B two-tree recipe and the runner's full

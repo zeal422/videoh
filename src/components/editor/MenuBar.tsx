@@ -153,6 +153,7 @@ export function MenuBar({
       PANEL_IDS.some((id) => panelHidden[id]) ||
       PANEL_IDS.some((id) => collapsed[id]) ||
       sizes.media !== PANEL_BOUNDS.media.default ||
+      sizes.source !== PANEL_BOUNDS.source.default ||
       sizes.inspector !== PANEL_BOUNDS.inspector.default ||
       sizes.timeline !== PANEL_BOUNDS.timeline.default,
   }
@@ -401,6 +402,9 @@ export function MenuBar({
           case 'window.togglePreview':
             toggleHidden('preview')
             break
+          case 'window.toggleSource':
+            toggleHidden('source')
+            break
           case 'window.toggleInspector':
             toggleHidden('inspector')
             break
@@ -605,6 +609,8 @@ const SHORTCUT_ROWS: [string, string][] = [
   ['M', 'Add marker at playhead (clip marker when a clip is selected)'],
   ['Shift+M / Ctrl+Shift+M', 'Go to next / previous marker'],
   ['Shift+E', 'Mute / unmute the selected clip’s audio side'],
+  ['I / O', 'Mark source In / Out at the source playhead'],
+  [', / .', 'Insert / overwrite the marked source at the playhead'],
   ['G', 'Audio Gain dialog'],
   ['T', 'Add text clip at playhead (Type tool)'],
   ['Ctrl+Z / Ctrl+Shift+Z', 'Undo / redo'],

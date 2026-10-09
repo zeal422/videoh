@@ -12,6 +12,7 @@ import { MenuBar } from './MenuBar'
 import { Toolbar } from './Toolbar'
 import { MediaBin } from './MediaBin'
 import { PreviewPanel } from './PreviewPanel'
+import { SourcePanel } from './SourcePanel'
 import { InspectorPanel } from './InspectorPanel'
 import { TimelinePanel } from './timeline/TimelinePanel'
 import { MarkerDialog } from './timeline/MarkerDialog'
@@ -101,13 +102,25 @@ export function EditorShell() {
     },
     [hidden.timeline, setSize],
   )
-  const handleInspectorLayout = useCallback(
+  /**
+   * Upper row: `preview | source | inspector`. A hidden panel is not rendered,
+   * so each panel's index is its position among the VISIBLE panels (0-based).
+   * Source: 0 or 1; inspector: 0, 1 or 2. The all-visible case is the
+   * documented `layout[1]` (source) / `layout[2]` (inspector).
+   */
+  const handleUpperRowLayout = useCallback(
     (layout: number[]) => {
-      if (!hidden.inspector && !hidden.preview && layout[1] !== undefined) {
-        setSize('inspector', layout[1])
+      const previewCount = hidden.preview ? 0 : 1
+      if (!hidden.source) {
+        const sourceIndex = previewCount
+        if (layout[sourceIndex] !== undefined) setSize('source', layout[sourceIndex])
+      }
+      if (!hidden.inspector) {
+        const inspectorIndex = previewCount + (hidden.source ? 0 : 1)
+        if (layout[inspectorIndex] !== undefined) setSize('inspector', layout[inspectorIndex])
       }
     },
-    [hidden.inspector, hidden.preview, setSize],
+    [hidden.inspector, hidden.preview, hidden.source, setSize],
   )
 
   // Autosave lifecycle: subscribe once; check for a restorable session on mount.
@@ -233,7 +246,7 @@ export function EditorShell() {
     useEditorStore.getState().setPendingRestore(null)
   }
 
-  const showUpperRow = !hidden.preview || !hidden.inspector
+  const showUpperRow = !hidden.preview || !hidden.source || !hidden.inspector
 
   return (
     /* Theme lives on <html> (layout.tsx) so Radix portals — menubar dropdowns,
@@ -317,11 +330,11 @@ export function EditorShell() {
             >
               <ResizablePanel id="panel-upper" order={1} className="min-h-0">
                 {showUpperRow ? (
-                  /* Upper row: program monitor | inspector */
+                  /* Upper row: program monitor | source | inspector */
                   <ResizablePanelGroup
                     direction="horizontal"
                     className="min-h-0"
-                    onLayout={handleInspectorLayout}
+                    onLayout={handleUpperRowLayout}
                   >
                     {!hidden.preview && (
                       /* `flex` on the Panel div is required: react-resizable-panels
@@ -332,7 +345,36 @@ export function EditorShell() {
                         <PreviewPanel />
                       </ResizablePanel>
                     )}
-                    {!hidden.preview && !hidden.inspector && (
+                    {!hidden.preview && !hidden.source && (
+                      <HandleWithReset
+                        ariaLabel="Resize source panel (double-click to reset)"
+                        onReset={() => resetPanel('source')}
+                      />
+                    )}
+                    {!hidden.source && (
+                      <PanelShell
+                        id="source"
+                        title="Source Monitor"
+                        side="right"
+                        order={2}
+                        minSize={PANEL_BOUNDS.source.min}
+                        maxSize={PANEL_BOUNDS.source.max}
+                        defaultSize={sizes.source}
+                        registerRef={registerRef}
+                        className="bg-card"
+                      >
+                        <SourcePanel className="flex-1" />
+                      </PanelShell>
+                    )}
+                    {!hidden.source && !hidden.inspector && (
+                      <HandleWithReset
+                        ariaLabel="Resize inspector panel (double-click to reset)"
+                        onReset={() => resetPanel('inspector')}
+                      />
+                    )}
+                    {/* Program monitor | inspector adjacency when the Source
+                        panel is hidden (the handle is per-boundary). */}
+                    {hidden.source && !hidden.preview && !hidden.inspector && (
                       <HandleWithReset
                         ariaLabel="Resize inspector panel (double-click to reset)"
                         onReset={() => resetPanel('inspector')}
@@ -343,7 +385,7 @@ export function EditorShell() {
                         id="inspector"
                         title="Inspector"
                         side="right"
-                        order={2}
+                        order={3}
                         minSize={PANEL_BOUNDS.inspector.min}
                         maxSize={PANEL_BOUNDS.inspector.max}
                         defaultSize={sizes.inspector}

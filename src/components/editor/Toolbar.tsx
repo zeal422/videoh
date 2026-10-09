@@ -58,8 +58,10 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
   const snapEnabled = useEditorStore((s) => s.snapEnabled)
   const pxPerSec = useEditorStore((s) => s.pxPerSec)
   const activeTool = useEditorStore((s) => s.activeTool)
+  const dropMode = useEditorStore((s) => s.dropMode)
   const untargetedTracks = useEditorStore((s) => s.untargetedTracks)
-  const { apply, undo, redo, toggleSnap, setPxPerSec, setActiveTool } = useEditorStore.getState()
+  const { apply, undo, redo, toggleSnap, setPxPerSec, setActiveTool, setDropMode } =
+    useEditorStore.getState()
 
   const loadInputRef = useRef<HTMLInputElement>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -176,6 +178,42 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
           active={activeTool === 'razor'}
           icon={<Slice className="size-4" />}
         />
+
+        <Separator orientation="vertical" className="mx-1 h-6" />
+
+        {/* Placement mode (Premiere-style Place / Insert / Overwrite). Sticky
+            and session-only; `,`/`.` are independent one-shot insert/overwrite
+            keys and ignore this toggle. */}
+        <div
+          role="group"
+          aria-label="Placement mode"
+          className="border-border flex items-center overflow-hidden rounded-md border"
+        >
+          {PLACEMENT_MODES.map(({ mode, label, hint }) => (
+            <Tooltip key={mode}>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={dropMode === mode ? 'secondary' : 'ghost'}
+                  size="sm"
+                  aria-pressed={dropMode === mode}
+                  aria-label={`${label} placement${hint ? ` (${hint})` : ''}`}
+                  data-testid={`placement-mode-${mode}`}
+                  onClick={() => setDropMode(mode)}
+                  className="h-7 rounded-none px-2 text-xs"
+                >
+                  {label}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {mode === 'place'
+                  ? 'Place lane drops plainly (default)'
+                  : mode === 'insert'
+                    ? 'Insert: ripple later clips right (key: ,)'
+                    : 'Overwrite: replace the covered span (key: .)'}
+              </TooltipContent>
+            </Tooltip>
+          ))}
+        </div>
 
         <Separator orientation="vertical" className="mx-1 h-6" />
 
@@ -303,6 +341,13 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
     </TooltipProvider>
   )
 }
+
+/** The sticky placement-mode control's options (order = display order). */
+const PLACEMENT_MODES: { mode: 'place' | 'insert' | 'overwrite'; label: string; hint: string }[] = [
+  { mode: 'place', label: 'Place', hint: '' },
+  { mode: 'insert', label: 'Insert', hint: ',' },
+  { mode: 'overwrite', label: 'Overwrite', hint: '.' },
+]
 
 function ToolButton({
   label,

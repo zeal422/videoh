@@ -261,6 +261,92 @@ zoom_out() { # keep every quick-added clip inside the visible snapshot
   snap | grep -q 'Clip sample-audio'
 }
 
+# F2b three-point insert (, / I / O)
+# The bin selection feeds the Source monitor, I/O mark the source range at the
+# source monitor's own playhead, and `,` inserts that range at the sequence
+# playhead. Nothing here drags or scrolls, so the step is keyboard-driven end to
+# end and cannot depend on the window height like the clip/Inspector targets do.
+# The source time moves the way the app itself owns it: the preview element's
+# `seeked` callback writes sourcePlayhead, so `o` records a real seeked position
+# instead of a value poked into the store.
+clip_start() { # clip_start <aria-label substring> -> the clip's start seconds ("" when absent)
+  evaln '(() => {
+    const label = [...document.querySelectorAll("[data-testid^=clip-]")]
+      .map((e) => e.getAttribute("aria-label") || "")
+      .find((l) => l.indexOf("'"$1"'") >= 0);
+    const m = label && label.match(/from ([0-9.]+) to ([0-9.]+) seconds/);
+    return m ? m[1] : "";
+  })()'
+}
+f02b_insert_place() {
+  # Load the sample video into the Source monitor by clicking its bin row.
+  ab eval '(() => {
+    const row = [...document.querySelectorAll("[data-testid^=media-item-]")]
+      .find((r) => (r.textContent || "").indexOf("sample-video") >= 0);
+    if (!row) return "no-bin-row";
+    row.click();
+    return "clicked";
+  })()' >/dev/null 2>&1
+  sleeps 0.6
+  local sel
+  sel=$(evaln 'document.querySelector("[data-testid=source-panel]")?.getAttribute("data-selected-asset") || ""')
+  [ -n "$sel" ] || { echo "f02b: the Source monitor did not load the sample" >&2; return 1; }
+
+  # Mark In at the source head (selecting an asset resets the source time to 0).
+  ab press i >/dev/null 2>&1
+  sleeps 0.3
+
+  # Seek the source element to 0.50s, then wait for its own callback to land.
+  ab eval 'document.querySelector("[data-testid=source-preview]").currentTime = 0.5' >/dev/null 2>&1
+  local t='' k
+  for k in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    t=$(evaln 'document.querySelector("[data-testid=source-time]").textContent')
+    [ "$t" = "0.50s" ] && break
+    sleeps 0.3
+  done
+  [ "$t" = "0.50s" ] || { echo "f02b: source seek did not land (readout=$t)" >&2; return 1; }
+  ab press o >/dev/null 2>&1
+  sleeps 0.3
+  local span
+  span=$(evaln 'document.querySelector("[data-testid=source-span]").textContent')
+  case "$span" in
+    *'In 0.00s'*'Out 0.50s'*) ;;
+    *) echo "f02b: I/O did not record the marks (span reads: $span)" >&2; return 1 ;;
+  esac
+
+  # Park the sequence playhead at the head, then measure the downstream clip.
+  ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1
+  sleeps 0.4
+  local before_c before_t after_c after_t back_c back_t
+  before_c=$(clipcount)
+  before_t=$(clip_start 'sample-image')
+  [ -n "$before_t" ] || { echo "f02b: no sample-image clip to measure" >&2; return 1; }
+
+  # The key is spelled `,` on purpose: agent-browser's `Comma` key name arrives
+  # with an EMPTY `e.key` (verified against a keydown listener), so the app's
+  # `case ','` never matches and the placement silently does nothing.
+  ab press , >/dev/null 2>&1
+  sleeps 0.7
+  after_c=$(clipcount)
+  after_t=$(clip_start 'sample-image')
+  # The placed pair lands at the playhead: video part + audio twin.
+  [ "$after_c" = "$((before_c + 2))" ] || {
+    echo "f02b: placement added $((after_c - before_c)) clips, expected 2" >&2; return 1; }
+  # Every downstream clip moves right by exactly the marked span (0.50s).
+  awk -v b="$before_t" -v a="$after_t" 'BEGIN { d = a - b; exit !(d > 0.48 && d < 0.52) }' || {
+    echo "f02b: downstream clip moved $before_t -> $after_t, expected the 0.50s span" >&2
+    return 1; }
+
+  # One undo removes the whole placement (displacement + placement, one entry).
+  ab press Control+z >/dev/null 2>&1
+  sleeps 0.6
+  back_c=$(clipcount)
+  back_t=$(clip_start 'sample-image')
+  [ "$back_c" = "$before_c" ] || { echo "f02b: undo left $back_c clips, expected $before_c" >&2; return 1; }
+  awk -v b="$before_t" -v r="$back_t" 'BEGIN { exit !(r == b) }' || {
+    echo "f02b: undo did not restore the shift ($before_t -> $back_t)" >&2; return 1; }
+}
+
 # ————— F9 marquee (box) selection —————
 selected_ids() { # testids of clips wearing the selection ring (the a11y snapshot cannot see it)
   # `:not([data-testid$=badge])` drops the link/speed/reverse badges nested in
@@ -2447,6 +2533,7 @@ step "f01 import: sample media loads 3 assets"     f01_import
 step "f01b import: a real (non-bundled) file imports" f01b_import_real_file
 step "f02 add: video+audio+image quick-added"      f02_add
 step "f02 zoom: all clips reachable in snapshot"   zoom_out
+step "f02b place: insert moves a downstream clip by the marked span" f02b_insert_place
 step "f05 blend: monitor matches the export plan frame by frame" f05_blend_parity
 step "f09 marquee: box drag selects every clip"    f09_marquee
 step "f09 marquee: empty-space click clears it"    f09_marquee_clear

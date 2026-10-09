@@ -43,6 +43,11 @@ beforeEach(() => {
     selectedMarker: null,
     untargetedTracks: [],
     activeTool: 'select',
+    dropMode: 'place',
+    sourceAssetId: null,
+    sourceIn: null,
+    sourceOut: null,
+    sourcePlayhead: 0,
   })
 })
 
@@ -645,5 +650,125 @@ describe('track targeting', () => {
 
     useEditorStore.getState().selectTrackClips(audioTrack.id)
     expect(useEditorStore.getState().selections).toEqual([twin.id, video.id])
+  })
+})
+
+describe('placement and source session fields (0.7.2)', () => {
+  it('defaults to place mode with no source selection', () => {
+    const s = useEditorStore.getState()
+    expect(s.dropMode).toBe('place')
+    expect(s.sourceAssetId).toBeNull()
+    expect(s.sourceIn).toBeNull()
+    expect(s.sourceOut).toBeNull()
+    expect(s.sourcePlayhead).toBe(0)
+  })
+
+  it('setDropMode is session-only: no history entry', () => {
+    const past = useEditorStore.getState().past.length
+    useEditorStore.getState().setDropMode('overwrite')
+    expect(useEditorStore.getState().dropMode).toBe('overwrite')
+    expect(useEditorStore.getState().past).toHaveLength(past)
+
+    useEditorStore.getState().setDropMode('insert')
+    expect(useEditorStore.getState().dropMode).toBe('insert')
+    expect(useEditorStore.getState().past).toHaveLength(past)
+  })
+
+  it('replaceDoc clears the source fields but KEEPS dropMode', () => {
+    const asset = createMediaAsset({ kind: 'video', name: 'a.mp4', duration: 10, url: 'blob:a' })
+    useEditorStore.setState({ doc: { ...createDoc(), media: [asset] } })
+    useEditorStore.getState().setSourceAsset(asset.id)
+    useEditorStore.getState().setSourcePlayhead(4)
+    useEditorStore.getState().markSourceIn()
+    useEditorStore.getState().setDropMode('insert')
+
+    useEditorStore.getState().replaceDoc(createDoc())
+    const s = useEditorStore.getState()
+    expect(s.sourceAssetId).toBeNull()
+    expect(s.sourceIn).toBeNull()
+    expect(s.sourceOut).toBeNull()
+    expect(s.sourcePlayhead).toBe(0)
+    expect(s.dropMode).toBe('insert') // tool posture survives, like activeTool
+  })
+
+  it('changing the source selection clears both marks and the time together', () => {
+    const a = createMediaAsset({ kind: 'video', name: 'a.mp4', duration: 10, url: 'blob:a' })
+    const b = createMediaAsset({ kind: 'video', name: 'b.mp4', duration: 8, url: 'blob:b' })
+    useEditorStore.setState({ doc: { ...createDoc(), media: [a, b] } })
+
+    useEditorStore.getState().setSourceAsset(a.id)
+    useEditorStore.getState().setSourcePlayhead(3)
+    useEditorStore.getState().markSourceIn()
+    useEditorStore.getState().setSourcePlayhead(7)
+    useEditorStore.getState().markSourceOut()
+    expect(useEditorStore.getState().sourceIn).toBe(3)
+    expect(useEditorStore.getState().sourceOut).toBe(7)
+
+    useEditorStore.getState().setSourceAsset(b.id)
+    const s = useEditorStore.getState()
+    expect(s.sourceAssetId).toBe(b.id)
+    expect(s.sourceIn).toBeNull()
+    expect(s.sourceOut).toBeNull()
+    expect(s.sourcePlayhead).toBe(0)
+
+    // Re-selecting the SAME asset is a no-op (marks survive a re-click).
+    useEditorStore.getState().setSourcePlayhead(2)
+    useEditorStore.getState().markSourceIn()
+    useEditorStore.getState().setSourceAsset(b.id)
+    expect(useEditorStore.getState().sourceIn).toBe(2)
+  })
+
+  it('removing the selected asset normalizes the source state', () => {
+    const a = createMediaAsset({ kind: 'video', name: 'a.mp4', duration: 10, url: 'blob:a' })
+    useEditorStore.setState({ doc: { ...createDoc(), media: [a] } })
+    useEditorStore.getState().setSourceAsset(a.id)
+    useEditorStore.getState().setSourcePlayhead(5)
+    useEditorStore.getState().markSourceIn()
+
+    const doc = useEditorStore.getState().doc
+    useEditorStore.getState().apply({ type: 'removeMediaAsset', mediaId: a.id })
+    const s = useEditorStore.getState()
+    expect(s.doc.media).toHaveLength(0)
+    expect(s.sourceAssetId).toBeNull()
+    expect(s.sourceIn).toBeNull()
+    expect(s.sourceOut).toBeNull()
+    expect(s.sourcePlayhead).toBe(0)
+    expect(doc.media).toHaveLength(1) // input untouched (commands clone)
+  })
+
+  it('marks record the source playhead and clamp to the asset window', () => {
+    const a = createMediaAsset({ kind: 'video', name: 'a.mp4', duration: 6, url: 'blob:a' })
+    useEditorStore.setState({ doc: { ...createDoc(), media: [a] } })
+    useEditorStore.getState().setSourceAsset(a.id)
+
+    useEditorStore.getState().setSourcePlayhead(2.5)
+    useEditorStore.getState().markSourceIn()
+    useEditorStore.getState().setSourcePlayhead(4)
+    useEditorStore.getState().markSourceOut()
+    expect(useEditorStore.getState().sourceIn).toBe(2.5)
+    expect(useEditorStore.getState().sourceOut).toBe(4)
+
+    // The playhead clamps into [0, duration]; marks clamp with it.
+    useEditorStore.getState().setSourcePlayhead(99)
+    expect(useEditorStore.getState().sourcePlayhead).toBe(6)
+    useEditorStore.getState().markSourceOut()
+    expect(useEditorStore.getState().sourceOut).toBe(6)
+    useEditorStore.getState().setSourcePlayhead(-1)
+    expect(useEditorStore.getState().sourcePlayhead).toBe(0)
+
+    useEditorStore.getState().clearSourceMarks()
+    expect(useEditorStore.getState().sourceIn).toBeNull()
+    expect(useEditorStore.getState().sourceOut).toBeNull()
+  })
+
+  it('images have no source window: marks are a no-op', () => {
+    const img = createMediaAsset({ kind: 'image', name: 'a.png', duration: 0 })
+    useEditorStore.setState({ doc: { ...createDoc(), media: [img] } })
+    useEditorStore.getState().setSourceAsset(img.id)
+    useEditorStore.getState().setSourcePlayhead(2)
+    useEditorStore.getState().markSourceIn()
+    useEditorStore.getState().markSourceOut()
+    expect(useEditorStore.getState().sourceIn).toBeNull()
+    expect(useEditorStore.getState().sourceOut).toBeNull()
   })
 })

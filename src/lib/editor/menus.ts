@@ -58,6 +58,7 @@ export type MenuActionId =
   | 'view.toggleSnap'
   | 'window.toggleMedia'
   | 'window.togglePreview'
+  | 'window.toggleSource'
   | 'window.toggleInspector'
   | 'window.toggleTimeline'
   | 'window.resetLayout'
@@ -446,6 +447,13 @@ export const MENU_SPECS: MenuSpec[] = [
         label: 'Program Monitor',
         action: 'window.togglePreview',
         checked: (ctx) => !ctx.panelHidden.preview,
+      },
+      {
+        id: 'window.source',
+        kind: 'checkbox',
+        label: 'Source Monitor',
+        action: 'window.toggleSource',
+        checked: (ctx) => !ctx.panelHidden.source,
       },
       {
         id: 'window.inspector',

@@ -4,6 +4,7 @@ import { applyCommand, applyCommands, EditorCommand } from './commands'
 import { createDoc } from './factories'
 import { linkedClips } from './links'
 import { markerSelectionExists, type MarkerSelection } from './markers'
+import type { PlacementMode } from './sequence-ops'
 import { pruneEmptiedTracks } from './tracks'
 import type { Doc } from './types'
 
@@ -58,6 +59,27 @@ export interface EditorState {
   /** Active timeline tool (Premiere: V selection / C razor). UI-only state. */
   activeTool: EditorTool
   /**
+   * Sticky placement mode for lane drops (Premiere-style Place / Insert /
+   * Overwrite). Session UI state, never part of the Doc, and it survives a
+   * project open like `activeTool`. `,`/`.` are independent one-shot keys.
+   */
+  dropMode: PlacementMode
+  /**
+   * The media bin asset the Source monitor shows, or null. Session state: the
+   * marks and the source playhead belong to it and clear whenever it changes.
+   */
+  sourceAssetId: string | null
+  /** Marked source in point (seconds), null = open end. */
+  sourceIn: number | null
+  /** Marked source out point (seconds), null = open end. */
+  sourceOut: number | null
+  /**
+   * The ONE owner of the source monitor's time: the source preview element
+   * writes it from its playback/seek callbacks, and the panel readout, I/O
+   * marks and the placement range all read this field.
+   */
+  sourcePlayhead: number
+  /**
    * Track ids the user turned OFF for lane-less placement (paste, quick-add,
    * add text). Session UI state, never part of the Doc: an absent id means
    * targeted, so the default empty list targets everything and a new track is
@@ -102,6 +124,16 @@ export interface EditorState {
   toggleSnap: () => void
   setSnapLine: (t: number | null) => void
   setActiveTool: (tool: EditorTool) => void
+  setDropMode: (mode: PlacementMode) => void
+  /** Select the Source monitor's asset; changing it clears the marks and the time. */
+  setSourceAsset: (assetId: string | null) => void
+  /** Write the source time (clamped into the asset), from element callbacks. */
+  setSourcePlayhead: (t: number) => void
+  /** Mark In at the source playhead (no-op without a duration-bearing asset). */
+  markSourceIn: () => void
+  /** Mark Out at the source playhead. */
+  markSourceOut: () => void
+  clearSourceMarks: () => void
   /** Toggle a lane's targeting: session UI state, never a history entry. */
   setTrackTargeted: (trackId: string, targeted: boolean) => void
   /**
@@ -113,6 +145,34 @@ export interface EditorState {
   setAutosaveStatus: (status: AutosaveStatus) => void
   markAutosaved: () => void
   setPendingRestore: (json: string | null) => void
+}
+
+/**
+ * The asset the Source monitor is showing, or undefined when none is selected
+ * (or the asset has no source window: images have none).
+ */
+function sourceAssetOf(state: {
+  doc: Doc
+  sourceAssetId: string | null
+}): { id: string; duration: number } | undefined {
+  const asset = state.sourceAssetId
+    ? state.doc.media.find((m) => m.id === state.sourceAssetId)
+    : undefined
+  if (!asset || asset.kind === 'image' || asset.duration <= 0) return undefined
+  return asset
+}
+
+/**
+ * Drops the source selection when its asset no longer exists (a media
+ * removal); a live selection whose asset is present is untouched.
+ */
+function normalizeSourceState(
+  doc: Doc,
+  state: { sourceAssetId: string | null },
+): Partial<EditorState> {
+  if (!state.sourceAssetId) return {}
+  if (doc.media.some((m) => m.id === state.sourceAssetId)) return {}
+  return { sourceAssetId: null, sourceIn: null, sourceOut: null, sourcePlayhead: 0 }
 }
 
 /**
@@ -185,6 +245,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   snapEnabled: true,
   snapLine: null,
   activeTool: 'select',
+  dropMode: 'place',
+  sourceAssetId: null,
+  sourceIn: null,
+  sourceOut: null,
+  sourcePlayhead: 0,
   untargetedTracks: [],
   autosaveStatus: 'idle',
   autosavedAt: null,
@@ -209,6 +274,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // Commands may delete selected clips — drop dangling selection ids.
       ...normalizeSelections(pruned, get().selections),
       selectedMarker: normalizeMarkerSelection(pruned, get().selectedMarker),
+      // A removed media asset takes the Source monitor's selection with it.
+      ...normalizeSourceState(pruned, get()),
     })
   },
 
@@ -313,6 +380,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       selections: [],
       selection: null,
       selectedMarker: null,
+      // The source selection references doc assets, so a project open drops
+      // it. `dropMode` is a tool posture (like `activeTool`) and survives.
+      sourceAssetId: null,
+      sourceIn: null,
+      sourceOut: null,
+      sourcePlayhead: 0,
       untargetedTracks: [],
       playhead: 0,
       playing: false,
@@ -394,6 +467,36 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   toggleSnap: () => set({ snapEnabled: !get().snapEnabled }),
   setSnapLine: (t) => set({ snapLine: t }),
   setActiveTool: (tool) => set({ activeTool: tool }),
+  setDropMode: (dropMode) => set({ dropMode }),
+
+  setSourceAsset: (assetId) => {
+    if (get().sourceAssetId === assetId) return
+    // Both marks and the time belong to the asset, so a selection change
+    // clears them together (the panel and keys read one truth).
+    set({ sourceAssetId: assetId, sourceIn: null, sourceOut: null, sourcePlayhead: 0 })
+  },
+
+  setSourcePlayhead: (t) => {
+    const { doc, sourceAssetId } = get()
+    const asset = sourceAssetId ? doc.media.find((m) => m.id === sourceAssetId) : undefined
+    const max = asset && asset.kind !== 'image' && asset.duration > 0 ? asset.duration : undefined
+    set({ sourcePlayhead: Math.max(0, max === undefined ? t : Math.min(t, max)) })
+  },
+
+  markSourceIn: () => {
+    const asset = sourceAssetOf(get())
+    if (!asset) return
+    set({ sourceIn: Math.min(Math.max(0, get().sourcePlayhead), asset.duration) })
+  },
+
+  markSourceOut: () => {
+    const asset = sourceAssetOf(get())
+    if (!asset) return
+    set({ sourceOut: Math.min(Math.max(0, get().sourcePlayhead), asset.duration) })
+  },
+
+  clearSourceMarks: () => set({ sourceIn: null, sourceOut: null }),
+
   setAutosaveStatus: (status) => set({ autosaveStatus: status }),
   markAutosaved: () => set({ autosavedAt: Date.now() }),
   setPendingRestore: (json) => set({ pendingRestore: json }),

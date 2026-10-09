@@ -11,7 +11,15 @@ import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { editorStore, useEditorStore } from '../store'
 import { PPS_DEFAULT } from '@/lib/editor/constants'
 import { createClip, createDoc, createMediaAsset, createTrack, sourceTimeAt } from '../factories'
+import { toast } from '@/hooks/use-toast'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
+
+// Only `toast` is mocked (every other export stays real): the routing tests
+// assert the one refusal toast, and no test in this file renders the Toaster.
+vi.mock('@/hooks/use-toast', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/use-toast')>()
+  return { ...actual, toast: vi.fn() }
+})
 
 /**
  * First React-render tests in the gate (jsdom + Testing Library): the timeline
@@ -947,5 +955,225 @@ describe('track targeting UI', () => {
 
     openTrackMenu(track.id)
     expect(screen.getByTestId('track-menu-select')).toHaveAttribute('aria-disabled', 'true')
+  })
+})
+
+/**
+ * Lane-drop routing by placement mode (0.7.2): `handleDrop` runs the planner
+ * selected by `store.dropMode`, refuses a wrong-kind lane in the two new
+ * modes (today's silent relocation survives only in `place`), and keeps the
+ * edge strip a create-track target that ignores the mode.
+ *
+ * Driven through a REAL React drop: a MouseEvent-based `drop` carrying a
+ * DataTransfer-shaped stub (jsdom has no DragEvent/DataTransfer ctors, and
+ * fireEvent's plain drop drops the coordinates). jsdom reports zero-size
+ * rects, so the content origin is (0, 0): `clientX = header + t * pps` lands
+ * at second `t`, `clientY = ruler + y` lands `y` px into the rows region (row
+ * 0 is a 64px video row; the edge strips are the first/last 12px).
+ */
+describe('lane-drop routing by placement mode (0.7.2)', () => {
+  const RULER_HEIGHT = 28
+  const PPS = PPS_DEFAULT
+
+  const atX = (t: number) => TRACK_HEADER_WIDTH + t * PPS
+  const atRowY = (y: number) => RULER_HEIGHT + y
+
+  function fireLaneDrop(asset: MediaAsset, x: number, y: number) {
+    const content = document.querySelector('[data-timeline-scroll] > div')
+    if (!content) throw new Error('timeline content not rendered')
+    const dataTransfer = {
+      types: ['application/x-media-id', `application/x-media-kind-${asset.kind}`],
+      getData: (key: string) => (key === 'application/x-media-id' ? asset.id : '1'),
+      dropEffect: 'copy',
+      effectAllowed: 'copy',
+    }
+    const event = new MouseEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y,
+    })
+    Object.defineProperty(event, 'dataTransfer', { value: dataTransfer })
+    fireEvent(content, event)
+  }
+
+  /** One video lane with `clips` on a 10s asset, plus a 3s drop candidate. */
+  function dropDoc(clips: { id: string; start: number; duration: number }[]) {
+    const media = createMediaAsset({ kind: 'video', name: 'land.mp4', duration: 10 })
+    const incoming = createMediaAsset({ kind: 'video', name: 'drop.mp4', duration: 3 })
+    const track = createTrack('video', 1)
+    track.clips = clips.map((c) =>
+      createClip({ id: c.id, mediaId: media.id, start: c.start, duration: c.duration }),
+    )
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [media, incoming],
+    }
+    return { doc, media, incoming, track }
+  }
+
+  beforeEach(() => {
+    vi.mocked(toast).mockClear()
+  })
+
+  it('insert mode drives the planner: downstream clips shift, then the drop places', () => {
+    const { doc, incoming, track } = dropDoc([{ id: 'c1', start: 6, duration: 3 }])
+    useEditorStore.setState({ doc, dropMode: 'insert' })
+    render(<TimelinePanel />)
+
+    fireLaneDrop(incoming, atX(2), atRowY(32)) // 64px row: 32 is its middle
+
+    const clips = useEditorStore.getState().doc.project.tracks[0].clips
+    expect(clips.find((c) => c.id === 'c1')!.start).toBe(9) // 6 + span 3
+    const placed = clips.find((c) => c.mediaId === incoming.id)!
+    expect(placed).toMatchObject({ start: 2, duration: 3 })
+    expect(useEditorStore.getState().past).toHaveLength(1) // one undo step
+    expect(track.clips.find((c) => c.id === 'c1')!.start).toBe(6) // input untouched
+  })
+
+  it('overwrite mode drives the planner: the covered span is replaced', () => {
+    const { doc, incoming } = dropDoc([{ id: 'c1', start: 0, duration: 4 }])
+    useEditorStore.setState({ doc, dropMode: 'overwrite' })
+    render(<TimelinePanel />)
+
+    fireLaneDrop(incoming, atX(1), atRowY(32)) // window [1, 4]
+
+    const clips = useEditorStore.getState().doc.project.tracks[0].clips
+    const c1 = clips.find((c) => c.id === 'c1')!
+    expect(c1.start + c1.duration).toBeCloseTo(1, 6) // tail trimmed to the edit point
+    const placed = clips.find((c) => c.mediaId === incoming.id)!
+    expect(placed).toMatchObject({ start: 1, duration: 3 })
+    expect(useEditorStore.getState().past).toHaveLength(1)
+  })
+
+  it('place mode keeps the plain drop: no displacement at all', () => {
+    const { doc, incoming } = dropDoc([{ id: 'c1', start: 6, duration: 3 }])
+    useEditorStore.setState({ doc, dropMode: 'place' })
+    render(<TimelinePanel />)
+
+    fireLaneDrop(incoming, atX(2), atRowY(32))
+
+    const clips = useEditorStore.getState().doc.project.tracks[0].clips
+    expect(clips.find((c) => c.id === 'c1')!.start).toBe(6) // NOT shifted
+    const placed = clips.find((c) => c.mediaId === incoming.id)!
+    expect(placed).toMatchObject({ start: 2, duration: 3 })
+    expect(useEditorStore.getState().past).toHaveLength(1)
+    expect(vi.mocked(toast)).not.toHaveBeenCalled()
+  })
+
+  it('a wrong-kind lane drop toasts and writes NOTHING in insert mode', () => {
+    const { doc } = dropDoc([])
+    const audioAsset = createMediaAsset({ kind: 'audio', name: 'a.wav', duration: 3 })
+    doc.media.push(audioAsset)
+    useEditorStore.setState({ doc, dropMode: 'insert' })
+    render(<TimelinePanel />)
+
+    fireLaneDrop(audioAsset, atX(2), atRowY(32)) // video-only lane
+
+    expect(vi.mocked(toast)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Incompatible track' }),
+    )
+    expect(useEditorStore.getState().doc.project.tracks).toHaveLength(1)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips).toHaveLength(0)
+    expect(useEditorStore.getState().past).toHaveLength(0) // nothing written
+  })
+
+  it('a wrong-kind lane drop toasts and writes NOTHING in overwrite mode', () => {
+    const { doc } = dropDoc([])
+    const audioAsset = createMediaAsset({ kind: 'audio', name: 'a.wav', duration: 3 })
+    doc.media.push(audioAsset)
+    useEditorStore.setState({ doc, dropMode: 'overwrite' })
+    render(<TimelinePanel />)
+
+    fireLaneDrop(audioAsset, atX(2), atRowY(32))
+
+    expect(vi.mocked(toast)).toHaveBeenCalledTimes(1)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips).toHaveLength(0)
+    expect(useEditorStore.getState().past).toHaveLength(0)
+  })
+
+  it('insert mode refuses a wrong-kind lane even when a COMPATIBLE lane exists', () => {
+    // The legacy relocation would have somewhere to go here, so this pins the
+    // behavior change itself: in the two new modes the pointed lane decides,
+    // and a compatible lane sitting right there does NOT rescue the drop.
+    const { doc } = dropDoc([])
+    doc.project.tracks.push(createTrack('audio', 1))
+    const audioAsset = createMediaAsset({ kind: 'audio', name: 'a.wav', duration: 3 })
+    doc.media.push(audioAsset)
+    useEditorStore.setState({ doc, dropMode: 'insert' })
+    render(<TimelinePanel />)
+
+    fireLaneDrop(audioAsset, atX(2), atRowY(32)) // row 0 is the video lane
+
+    expect(vi.mocked(toast)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Incompatible track',
+        description: 'audio material cannot go on a video track',
+      }),
+    )
+    const tracks = useEditorStore.getState().doc.project.tracks
+    expect(tracks[0].clips).toHaveLength(0)
+    expect(tracks[1].clips).toHaveLength(0) // NOT relocated onto the audio lane
+    expect(useEditorStore.getState().past).toHaveLength(0) // nothing written
+  })
+
+  it('insert mode refuses a sub-floor placement span before anything is written', () => {
+    // A 0.05s import is readable but not placeable: the span pre-check runs
+    // before the planner, so no shift, no placement and no history entry.
+    const { doc } = dropDoc([{ id: 'c1', start: 6, duration: 3 }])
+    const tiny = createMediaAsset({ kind: 'video', name: 'tiny.mp4', duration: 0.05 })
+    doc.media.push(tiny)
+    useEditorStore.setState({ doc, dropMode: 'insert' })
+    render(<TimelinePanel />)
+
+    fireLaneDrop(tiny, atX(2), atRowY(32))
+
+    expect(vi.mocked(toast)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Placement refused',
+        description: 'Placement span is shorter than the minimum',
+      }),
+    )
+    const clips = useEditorStore.getState().doc.project.tracks[0].clips
+    expect(clips.find((c) => c.id === 'c1')!.start).toBe(6) // downstream clip NOT shifted
+    expect(clips).toHaveLength(1) // nothing placed
+    expect(useEditorStore.getState().past).toHaveLength(0)
+  })
+
+  it('the SAME wrong-kind drop in place mode keeps the relocation fallback', () => {
+    const { doc } = dropDoc([])
+    const audioAsset = createMediaAsset({ kind: 'audio', name: 'a.wav', duration: 3 })
+    doc.media.push(audioAsset)
+    useEditorStore.setState({ doc, dropMode: 'place' })
+    render(<TimelinePanel />)
+
+    fireLaneDrop(audioAsset, atX(2), atRowY(32)) // pointed video lane does not fit
+
+    // No audio lane exists, so the fallback creates one and places there.
+    const tracks = useEditorStore.getState().doc.project.tracks
+    expect(tracks).toHaveLength(2)
+    expect(tracks[1].kind).toBe('audio')
+    expect(tracks[1].clips).toHaveLength(1)
+    expect(tracks[0].clips).toHaveLength(0) // the video lane stayed empty
+    expect(vi.mocked(toast)).not.toHaveBeenCalled()
+    expect(useEditorStore.getState().past).toHaveLength(1)
+  })
+
+  it('the edge strip still creates a track and ignores the placement mode', () => {
+    const { doc, incoming } = dropDoc([{ id: 'c1', start: 6, duration: 3 }])
+    useEditorStore.setState({ doc, dropMode: 'insert' })
+    render(<TimelinePanel />)
+
+    fireLaneDrop(incoming, atX(2), atRowY(2)) // top edge strip of row 0
+
+    const tracks = useEditorStore.getState().doc.project.tracks
+    expect(tracks).toHaveLength(2)
+    expect(tracks[0]).toMatchObject({ kind: 'video' }) // created ABOVE row 0
+    expect(tracks[0].clips).toHaveLength(1)
+    expect(tracks[1].clips.find((c) => c.id === 'c1')!.start).toBe(6) // no shift
+    expect(useEditorStore.getState().past).toHaveLength(1)
   })
 })

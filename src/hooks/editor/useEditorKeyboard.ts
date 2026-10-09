@@ -8,6 +8,7 @@ import {
   commandsToDeleteMarker,
   commandsToDuplicateClips,
   commandsToLinkClips,
+  commandsToPlaceSource,
   commandsToRippleDeleteClips,
   commandsToSplitAllAt,
   commandsToSplitClipsAt,
@@ -17,6 +18,13 @@ import { commandsToCutClips, commandsToPasteClips, copyClips } from '@/lib/edito
 import { audibleClipId, anySelectionLinked, canLinkClips } from '@/lib/editor/links'
 import { markerSelectionExists, neighborMarker } from '@/lib/editor/markers'
 import { docDuration } from '@/lib/editor/factories'
+import {
+  placementRefusalMessage,
+  sourceRangeFor,
+  sourceRangeInvalid,
+  SOURCE_RANGE_MESSAGE,
+} from '@/lib/editor/sequence-ops'
+import { toast } from '@/hooks/use-toast'
 import { FRAME_STEPS, PPS_MAX, PPS_MIN, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { useEditorStore } from '@/lib/editor/store'
@@ -52,6 +60,8 @@ import { useEditorStore } from '@/lib/editor/store'
  * | D                      | Duplicate selection                                |
  * | M                      | Add marker (clip marker when a clip is selected)   |
  * | Shift+M / Ctrl+Shift+M | Go to next / previous marker                       |
+ * | I / O                  | Mark source In / Out at the source playhead        |
+ * | , / .                  | Insert / overwrite the marked source at the playhead |
  * | Shift+E                | Mute / unmute the selected clip's audio side (app   |
  * |                        | mapping: Premiere uses Shift+E for clip enable)     |
  * | T                      | Add text clip at playhead (Premiere Type tool)     |
@@ -312,6 +322,60 @@ export function useEditorKeyboard(onSave: () => void): void {
         case 'T': {
           e.preventDefault()
           store.apply(commandsToAddText(doc, playhead, store.untargetedTracks))
+          break
+        }
+        case 'i':
+        case 'I': {
+          // Premiere: I marks the source In at the source monitor's playhead.
+          // Ignored without a source selection (and inside form fields, like
+          // every binding here).
+          if (mod || !store.sourceAssetId) break
+          store.markSourceIn()
+          break
+        }
+        case 'o':
+        case 'O': {
+          if (mod || !store.sourceAssetId) break
+          store.markSourceOut()
+          break
+        }
+        case ',':
+        case '.': {
+          // Three-point editing: place the marked span (or the whole asset)
+          // at the sequence playhead. `,` inserts, `.` overwrites. Independent
+          // of the sticky drop-mode toggle, like Premiere's defaults.
+          if (mod) break
+          const source = store.sourceAssetId
+            ? doc.media.find((m) => m.id === store.sourceAssetId)
+            : undefined
+          if (!source) break // no source selected: a no-op
+          const range = sourceRangeFor(source, store.sourceIn, store.sourceOut)
+          if (sourceRangeInvalid(range)) {
+            toast({
+              title: 'Cannot place source',
+              description: SOURCE_RANGE_MESSAGE,
+              variant: 'destructive',
+            })
+            break
+          }
+          e.preventDefault()
+          const outcome = commandsToPlaceSource(
+            doc,
+            source,
+            playhead,
+            e.key === ',' ? 'insert' : 'overwrite',
+            range,
+            store.untargetedTracks,
+          )
+          if (!outcome.commands) {
+            toast({
+              title: 'Placement refused',
+              description: placementRefusalMessage(outcome.refusal ?? 'span'),
+              variant: 'destructive',
+            })
+            break
+          }
+          store.apply(outcome.commands)
           break
         }
         case 'ArrowLeft': {

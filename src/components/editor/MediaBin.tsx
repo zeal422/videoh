@@ -29,6 +29,8 @@ import { cn } from '@/lib/utils'
 /** Left panel: media assets (import, relink, remove, drag onto the timeline). */
 export function MediaBin({ className, heading = true }: { className?: string; heading?: boolean }) {
   const media = useEditorStore((s) => s.doc.media)
+  const sourceAssetId = useEditorStore((s) => s.sourceAssetId)
+  const setSourceAsset = useEditorStore((s) => s.setSourceAsset)
   const [importing, setImporting] = useState(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
   // Re-entrancy guard: "Load sample media" is async (3 fetches + probes), so
@@ -183,6 +185,8 @@ export function MediaBin({ className, heading = true }: { className?: string; he
           <MediaItem
             key={asset.id}
             asset={asset}
+            selected={asset.id === sourceAssetId}
+            onSelect={() => setSourceAsset(asset.id)}
             onQuickAdd={() => quickAdd(asset)}
             onRemove={() => removeAsset(asset)}
             onRelink={(file) => void relink(asset, file)}
@@ -195,11 +199,16 @@ export function MediaBin({ className, heading = true }: { className?: string; he
 
 function MediaItem({
   asset,
+  selected,
+  onSelect,
   onQuickAdd,
   onRemove,
   onRelink,
 }: {
   asset: MediaAsset
+  /** True when this asset is the Source monitor's selection. */
+  selected: boolean
+  onSelect: () => void
   onQuickAdd: () => void
   onRemove: () => void
   onRelink: (file: File) => void
@@ -213,8 +222,13 @@ function MediaItem({
       className={cn(
         'group flex cursor-grab items-center gap-2 rounded-md border bg-background/60 p-2 transition-colors hover:bg-accent/60 active:cursor-grabbing',
         asset.missing && 'border-amber-500/40 bg-amber-500/5',
+        // Selection ring mirrors the timeline's rose selection ring.
+        selected && 'border-rose-400/70 bg-rose-500/10 ring-1 ring-rose-400/60',
       )}
       data-testid={`media-item-${asset.id}`}
+      data-selected={selected}
+      aria-pressed={selected}
+      onClick={onSelect}
       draggable={!asset.missing}
       onDragStart={(e) => {
         e.dataTransfer.setData('application/x-media-id', asset.id)

@@ -14,6 +14,8 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/
 - **Markers** — press `M` to drop a marker at the playhead: on the primary selected clip when one is selected (source-anchored, so trims, speed changes and reversal keep it on the same media frame), otherwise on the sequence ruler. Markers take a name, one of eight colors and notes (double-click one or use Marker › Edit Selected Marker); `Shift+M` / `Ctrl+Shift+M` jump between markers, markers are snap targets for clip drags and trims, and `Delete` removes the selected one. Sequence markers live in `project.markers`, clip markers in `clip.markers` (source seconds); both persist in the project file.
 - **A/V linked clips** — dropping a video that HAS audio places it as a linked pair: the video part on the video track and an audio-only twin on the audio track (waveform included). The pair selects, moves, splits, duplicates and deletes together, and the audio twin is the sole sound carrier (no double audio). **Right-click any clip** for the Premiere-style menu — Cut, Copy, Paste at playhead, Split, Duplicate, **Link / Unlink Audio/Video**, Delete, **Ripple Delete** — and after unlinking, each half is fully independent.
 - **Drop-between-tracks** — drag media from the bin onto the middle of a row to drop it onto that track, or onto a row's edge (or the empty strip below the tracks) to insert a brand-new layer at exactly that z-position: a kind-colored insertion line with a `+ V2` / `+ A2` preview shows where the layer will land — the Premiere-style way to build stacked compositions (put one video above/below/between others in one gesture).
+- **Insert / overwrite placement modes**. A sticky three-way toolbar control (`Place` / `Insert` / `Overwrite`, all in one segmented group) picks how a media drop lands in the middle of a lane: **Place** is today's plain drop and stays the default, **Insert** shifts every clip at or after the edit point right by the placed span (a straddler splits at the point and its right half moves, and link groups move as one unit, so an A/V pair stays in sync; a clip too close to the split headroom is left alone and the drop still commits) and **Overwrite** replaces the covered span (partial coverage trims to the window edge, interior coverage splits once and head-trims the right fragment, a sub-0.1 s remnant is deleted, and an unrepresentable cut refuses the WHOLE placement with one toast, so a mixed batch can never land half-applied). While you drag, the lane under the pointer wears an `Insert` / `Overwrite` badge; a drop onto a lane of the wrong kind refuses in the two new modes instead of silently relocating (which `Place` still does). One placement is one undo step, and the mode is session-only state, like the active tool.
+- **Source monitor + three-point editing**. Clicking an asset in the media bin loads it into the **Source Monitor** panel (the fifth workspace panel, toggleable from the Window menu; a still shows the still itself), where you can play it and scrub it, then mark **In / Out** with `I` / `O` and place that marked span at the sequence playhead with `,` (insert) or `.` (overwrite), independent of the sticky placement-mode toggle above. One-sided marks leave the other end open, marks clamp to the asset, an inverted or sub-floor range refuses with one toast and places nothing, and images have no source window (their controls disable and they place 4 s). Source selection and marks are session state: they clear when a different asset is selected and when the project is replaced. The source time has one owner (the preview element's own callbacks write `sourcePlayhead`), so the readout, the marks and the placed range cannot disagree.
 - **Cross-dissolve transitions** — per-clip `transitionOut` with real overlap; the compositor and audio mixer both ramp.
 - **Text overlays** — text tracks and clips with font size, color, family, bold/italic, alignment, position, and shadow. **Drag the text directly in the program monitor** to reposition it (a dashed outline shows the box; one drag = one undo step; precise control stays in the Inspector's Position X/Y sliders).
 - **Layer compositing** — per-clip **opacity** (0–100 %) that stacks with crossfade alphas: put a clip on a higher track, lower its opacity, and the track below shows through — the same model as Photoshop/Premiere layering.
@@ -28,7 +30,7 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/
 - **Save/load project JSON** — `.veproj.json` files; media references survive, object URLs do not.
 - **Autosave/restore** — debounced localStorage writes with a restore-or-discard banner on the next visit.
 - **Premiere-style menu bar** — File · Edit · Clip · Sequence · Marker · Graphics · View · Window · Help, driven by a pure, unit-tested menu model; items whose preconditions are unmet render disabled (no dead entries).
-- **Resizable workspace** — every panel (Media, Program Monitor, Inspector, Timeline) is user-resizable and collapsible; sizes, collapsed strips, and panel visibility persist across sessions. Window menu toggles panels, double-click a resize handle to reset its neighbor, and small screens fall back to a fixed stacked layout.
+- **Resizable workspace**. Every panel (Media, Source Monitor, Program Monitor, Inspector, Timeline) is user-resizable and collapsible; sizes, collapsed strips, and panel visibility persist across sessions. Window menu toggles panels, double-click a resize handle to reset its neighbor, and small screens fall back to a fixed stacked layout.
 
 ## Quick start
 
@@ -67,6 +69,8 @@ The map mirrors Adobe Premiere Pro's default keybindings (verified against Adobe
 | `M`                        | Add a marker at the playhead (clip marker when a clip is selected) |
 | `Shift+M` / `Ctrl+Shift+M` | Go to next / previous marker                                       |
 | `Shift+E`                  | Mute / unmute the selected clip's audio side                       |
+| `I` / `O`                  | Mark source In / Out at the source monitor's playhead              |
+| `,` / `.`                  | Insert / overwrite the marked source (whole asset when unmarked)   |
 | `G`                        | Audio Gain dialog                                                  |
 | `T`                        | Add a text clip at the playhead (Premiere Type tool)               |
 | `Ctrl+Z` / `Ctrl+Shift+Z`  | Undo / redo                                                        |
@@ -76,6 +80,21 @@ The map mirrors Adobe Premiere Pro's default keybindings (verified against Adobe
 | `\`                        | Zoom the timeline to fit the whole sequence                        |
 
 Shortcuts are ignored while typing in inputs, textareas, selects, or content-editable elements (see `src/hooks/editor/useEditorKeyboard.ts`).
+
+**Placing media, end to end.** There are two routes and they are independent:
+
+1. **A bin drop onto a lane** follows the sticky **Place / Insert / Overwrite** toolbar control. Drag the
+   asset onto the middle of a row to drop it there (a mode badge on the lane previews Insert or
+   Overwrite), or onto a row edge / below the last row to create a new layer at that z-position (that
+   path always means "create a track" and ignores the mode). Place is the default, so nothing becomes
+   destructive without picking a mode; Insert and Overwrite are one click away and stay armed until you
+   switch back.
+2. **Three-point editing from the Source Monitor.** Click a bin row to load that asset into the Source
+   Monitor (a still shows the still itself), scrub or play to the frame you want, press `I` and `O` to
+   mark the in and out points, park the sequence playhead, then press `,` to insert the marked span
+   there or `.` to overwrite with it. These keys ignore the toolbar control, and with no marks set they
+   place the whole asset. Both routes apply as one undo step, so a single `Ctrl+Z` reverses a
+   placement whatever moved with it.
 
 ## Architecture
 
@@ -316,7 +335,7 @@ bun run battery        # scripted UI battery (reuses a server already on :3000, 
 
 The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **1048 tests across 57 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **1124 tests across 59 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -361,12 +380,13 @@ src/
 │   ├── ducking.ts               # auto-duck keyframe analysis from waveform peaks
 │   ├── offline.ts               # offline-media detection for the monitor (pure)
 │   ├── clip-gesture.ts          # pure gesture decisions: move/trim/rate-stretch
+│   ├── sequence-ops.ts          # insert/overwrite placement planner + source in/out ranges
 │   ├── marquee.ts               # box-selection rect math + group resolution
 │   ├── markers.ts               # sequence/clip marker math, colors, navigation, selection
 │   ├── transition.ts            # getTransitionSpan, transitionAlphas, maxTransitionDuration
 │   ├── links.ts                 # multi-selection + A/V link-group helpers
 │   ├── clipboard.ts             # copy / cut / paste (module memory, outside undo)
-│   ├── actions.ts               # multi-command UI actions (add media/text, group ops)
+│   ├── actions.ts               # multi-command UI actions (add media/text, group ops, placement)
 │   ├── menus.ts                 # menu bar model: structure, states, action ids
 │   ├── workspace.ts             # panel layout state: bounds, sanitize, persist
 │   ├── workspace-store.ts       # zustand wrapper over workspace.ts
@@ -387,18 +407,20 @@ src/
 │   │   ├── compositor.ts        # drawFrame: tracks, contain-fit, text, crossfades, blends, LUT pass
 │   │   ├── denoise.ts           # noise-reduction biquad chain (shared with the export mix)
 │   │   ├── preview.ts           # preview engine singleton (attach/detach)
+│   │   ├── source-preview.ts    # source monitor element singleton (attach/detach)
 │   │   ├── engine-ref.ts        # PlaybackController ref shared by all UI
 │   │   └── text-box.ts          # text-box measurement (preview drag outline)
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 57 test files (1048 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
+│   └── __tests__/               # 59 test files (1124 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs
 │   ├── PanelShell.tsx           # resizable/collapsible panel frame (header, strip)
 │   ├── Toolbar.tsx              # history, edit tools, tracks, zoom, save/open, export
-│   ├── MediaBin.tsx             # import, samples, relink, drag source
+│   ├── MediaBin.tsx             # import, samples, relink, drag source, bin selection
+│   ├── SourcePanel.tsx           # source monitor: preview, transport, mark In/Out
 │   ├── PreviewPanel.tsx         # program monitor canvas + transport
 │   ├── InspectorPanel.tsx       # clip properties / project settings
 │   ├── StatusBar.tsx            # pinned footer: project info, autosave state

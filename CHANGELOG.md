@@ -5,6 +5,45 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.2] - 2026-10-09
+
+### Added
+
+- **Insert and overwrite placement.** A sticky three-way toolbar control (Place / Insert / Overwrite)
+  changes what a media drop does when it lands in the middle of a lane. `Place` is the previous
+  behavior and stays the default, so nothing becomes destructive by default. `Insert` shifts every
+  clip at or after the drop point to the right by the placed span, splitting a clip that straddles the
+  point and moving its right half, and it is link-group aware: a partner lane joins the affected set,
+  so both halves of an A/V pair stay in sync. A straddler that cannot respect the split headroom
+  (either side of the cut at or under 0.1 s) is left alone together with its group, and the rest of the
+  placement still commits, which is the overlap behavior the timeline already allowed. `Overwrite`
+  replaces the material the span covers: a fully covered clip is deleted, a partial one is trimmed to
+  the window's edge, and interior coverage splits once at the point and head-trims the right fragment.
+  Overwrite is all-or-nothing: an unrepresentable retained side, or a trim that would read past the
+  end of a clip's source, refuses the WHOLE placement with one toast and writes nothing, so a mixed
+  batch can never land half-applied. A span under the 0.1 s floor refuses in both modes. The planners
+  live in the new pure `sequence-ops.ts` and emit existing commands, so one placement (multi-lane
+  shifts, splits and trims included) is one history entry. In the two new modes a drop onto a
+  wrong-kind lane now refuses with a toast instead of silently relocating to a compatible lane, which
+  is what `Place` still does.
+- **Three-point editing.** A new Source Monitor panel (visible by default, `Window > Source Monitor`)
+  takes the asset selected by clicking a Media bin row, and shows its preview, a transport, the source
+  time, the in/out span and Mark In / Mark Out / Clear. `I` and `O` mark the in and out points at the
+  source playhead, and `,` / `.` then place the marked span (or the whole asset when nothing is
+  marked) at the sequence playhead as an insert or an overwrite, independent of the sticky toolbar
+  mode. The window maps onto the placed clip's source anchor and duration, and both halves of an A/V
+  pair receive the same window, so a pair stays aligned. One-sided marks leave the other end open (in
+  only: the mark to the end of the asset; out only: the start to the mark), marks clamp into the asset,
+  an inverted or sub-floor range toasts and places nothing, and images have no source window (their
+  controls are disabled and they place 4 s). The source time has ONE owner: the preview element's
+  playback and seek callbacks write `sourcePlayhead`, and the readout, the marks and the range all read
+  that field, so the panel and the keys cannot disagree. A still is drawn by the panel itself; a
+  `<video>` cannot demux a PNG, and one attached to it left a black box behind with a demuxer error. The selection and the marks are session state,
+  cleared when the project is replaced and normalized when the selected asset disappears.
+- The UI battery gains a keyboard-only step for the whole flow: it selects the sample in the bin, marks
+  I and O through a real element seek, presses `,`, and asserts that a downstream clip moved right by
+  exactly the marked span before one Ctrl+Z restores it (51 steps).
+
 ## [0.7.1] - 2026-10-08
 
 ### Added

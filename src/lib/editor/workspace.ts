@@ -13,7 +13,7 @@
  * the editor on boot.
  */
 
-export type PanelId = 'media' | 'preview' | 'inspector' | 'timeline'
+export type PanelId = 'media' | 'preview' | 'source' | 'inspector' | 'timeline'
 
 export interface PanelInfo {
   id: PanelId
@@ -24,6 +24,7 @@ export interface PanelInfo {
 export const PANELS: PanelInfo[] = [
   { id: 'media', title: 'Media' },
   { id: 'preview', title: 'Program Monitor' },
+  { id: 'source', title: 'Source Monitor' },
   { id: 'inspector', title: 'Inspector' },
   { id: 'timeline', title: 'Timeline' },
 ]
@@ -40,8 +41,9 @@ export interface PanelBounds {
   max: number
 }
 
-export const PANEL_BOUNDS: Record<'media' | 'inspector' | 'timeline', PanelBounds> = {
+export const PANEL_BOUNDS: Record<'media' | 'source' | 'inspector' | 'timeline', PanelBounds> = {
   media: { default: 20, min: 12, max: 42 },
+  source: { default: 24, min: 14, max: 44 },
   inspector: { default: 26, min: 16, max: 46 },
   timeline: { default: 38, min: 15, max: 72 },
 }
@@ -57,6 +59,7 @@ export const COLLAPSED_EPSILON = 0.6
 export interface WorkspaceState {
   sizes: {
     media: number
+    source: number
     inspector: number
     timeline: number
   }
@@ -71,11 +74,12 @@ export function defaultWorkspace(): WorkspaceState {
   return {
     sizes: {
       media: PANEL_BOUNDS.media.default,
+      source: PANEL_BOUNDS.source.default,
       inspector: PANEL_BOUNDS.inspector.default,
       timeline: PANEL_BOUNDS.timeline.default,
     },
-    collapsed: { media: false, preview: false, inspector: false, timeline: false },
-    hidden: { media: false, preview: false, inspector: false, timeline: false },
+    collapsed: { media: false, preview: false, source: false, inspector: false, timeline: false },
+    hidden: { media: false, preview: false, source: false, inspector: false, timeline: false },
   }
 }
 
@@ -104,7 +108,7 @@ export function sanitizeWorkspace(raw: unknown): WorkspaceState {
   const obj = raw as Record<string, unknown>
 
   // Only known panel sizes are read; unknown keys are ignored (forward compat).
-  const sizeKeys = ['media', 'inspector', 'timeline'] as const
+  const sizeKeys = ['media', 'source', 'inspector', 'timeline'] as const
   const sizes = { ...fallback.sizes }
   for (const key of sizeKeys) {
     const value = (obj.sizes as Record<string, unknown> | null)?.[key]
@@ -170,7 +174,7 @@ export function withCollapsed(
 /** Immutable update helper: store a panel size observed from the layout engine. */
 export function withSize(
   state: WorkspaceState,
-  id: 'media' | 'inspector' | 'timeline',
+  id: 'media' | 'source' | 'inspector' | 'timeline',
   size: number,
 ): WorkspaceState {
   const clamped = clamp(size, PANEL_BOUNDS[id].min, PANEL_BOUNDS[id].max)

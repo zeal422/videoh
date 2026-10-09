@@ -5,7 +5,7 @@ questions, two sections: what has shipped (so a closed gap is not listed twice)
 and what remains, grouped by how often a working editor would feel it.
 
 Research date: September 2026 (Premiere 26.x); every status re-verified against
-the code on 2026-10-08, at 0.7.1. A gap moves to "Shipped" only once the release
+the code on 2026-10-09, at 0.7.2. A gap moves to "Shipped" only once the release
 that closed it is recorded in [CHANGELOG.md](CHANGELOG.md).
 
 The editing core is not tracked as a gap: the multi-track timeline, trim / split
@@ -18,6 +18,7 @@ Newest first. Releases before 0.5.0 are in [CHANGELOG.md](CHANGELOG.md).
 
 | Version   | What landed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **0.7.2** | Two Tier 2 items: insert / overwrite placement (a sticky Place / Insert / Overwrite toolbar control; Insert shifts the clips at and after the drop point, splitting straddlers, Overwrite replaces the covered material with an all-or-nothing refusal, both link-group aware, both one undo step) and three-point editing (a Source Monitor panel fed by the bin selection, `I`/`O` marks, and `,`/`.` placing the marked span at the playhead). In the two new modes a drop onto a wrong-kind lane refuses instead of relocating.                                                                                                                                                                                                                                                                                                         |
 | **0.7.1** | Track targeting and select-by-lane: `Target Track` in the track header menu toggles a lane (an untargeted lane dims its kind icon) and steers the lane-less placements (paste, bin quick-add, Add Text, and a video's audio twin) onto it, with a compatible original lane kept while it is still targeted; `Select Track Clips` takes a whole lane and expands A/V link groups. Session state, not project data.                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | **0.7.0** | The rest of the Tier 1 bundle: 3D `.cube` LUT import (a project-level library, one copy per unique file, with 1D cubes applied as exact per-channel shapers and 3D cubes run through a shared per-frame pixel pass in the preview and the export alike), a waveform and a vectorscope beside the existing histogram and RGB-balance meters, and frame blending for sub-frame-rate clips in BOTH render paths (the export decodes the pair, the monitor parks a muted second element on it, and one shared weight function grades the two). With those three units the colour and offline-export rows close, and speed / time remapping loses its last partial cell. Three items are recorded as non-goals instead of built: ProRes (no browser encoder), HEVC (a value call, not a platform limit) and spectral or learned noise reduction. |
 | **0.6.4** | The Keyframes gap closes: the Effect Controls graph draws every segment's real bezier curve, the active segment's two handles drag (or arrow-nudge) to shape it beyond the presets, and each property can store a default easing that stamps newly authored keyframes. The easing picker now edits the active segment's start keyframe and is visible on unanimated rows too.                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -39,7 +40,8 @@ Newest first. Releases before 0.5.0 are in [CHANGELOG.md](CHANGELOG.md).
 `.cube` LUT import, the waveform and vectorscope scopes, and frame blending in
 both render paths), and the table below records how each of the five original
 gaps closed: four shipped, two cells closed as recorded non-goals. Open cells:
-none. Nothing in Tier 2 or Tier 3 has started.
+none. Tier 2 has started: 0.7.2 closed its first two items (insert / overwrite
+placement and three-point editing). Nothing in Tier 3 has started.
 
 ### Tier 1: felt every day (complete at 0.7.0)
 
@@ -53,13 +55,8 @@ none. Nothing in Tier 2 or Tier 3 has started.
 
 ### Tier 2: workflow accelerators (longer edits)
 
-- **Three-point editing.** In / out points on the source, then insert or
-  overwrite into the sequence. Today only drag-and-drop and paste place a clip;
-  there is no source monitor with in / out.
 - **Nested sequences / compound clips.** Group clips into one reusable unit.
 - **Proxies.** A lower-resolution preview path for smooth playback of 4K+ imports.
-- **Insert / overwrite drop modes** that shift downstream clips. Today only
-  explicit ripple delete closes gaps.
 - **Bounded export memory.** The exporter assembles the whole MP4 in memory, so
   project length competes with the tab heap. A streaming write path would bound
   memory instead.

@@ -71,6 +71,21 @@ The video surfaces stay dark regardless of the token theme, the way an NLE's mon
 - **Responsive shell.** At ≥768 px the shell is the resizable panel workspace; below 768 px it falls
   back to a fixed stacked layout. Panel sizes, collapsed state, and visibility persist via
   `workspace.ts`.
+- **The Source monitor is the fifth workspace panel** (`panel-source`, the upper row is
+  `preview | source | inspector`), built exactly like the inspector: a `PanelShell` plus a
+  `HandleWithReset` inside the upper `ResizablePanelGroup`. It follows the flex-chain rule above.
+  Its root is `flex min-h-0 flex-1 flex-col`, the preview host is `aspect-video shrink-0`, and the
+  transport/marks rows sit under it. Desktop-only: the mobile `CompactLayout` mounts no workspace
+  panels. Empty state is muted text ("No source selected"); the marked-span readout turns
+  `text-rose-400` and sets `data-invalid` on an inverted or sub-floor range. A timed asset gets the
+  singleton `<video data-testid="source-preview">`; a still renders as
+  `<img data-testid="source-image">` inside the same `aspect-video` black host instead, because a
+  `<video>` cannot decode a PNG (left alone it showed a black box with a demuxer error).
+- **The placement-mode control is a segmented group, not three tool buttons.** It renders as one
+  `role="group" aria-label="Placement mode"` bordered box with three square-cornered `Button`s
+  (`placement-mode-place|insert|overwrite`); the active one takes `variant="secondary"` and
+  `aria-pressed="true"`, the others stay `ghost`. It is session-only state, so the control never
+  implies persistence, and the one-shot `,` / `.` keys work regardless of the toggle.
 - **Scrollbars.** Editor scroll containers use the `.editor-scroll` class (thin dark thumb).
   `[data-timeline-scroll]` disables text selection while dragging clips.
 - **Blocked drop target.** `[data-drop-blocked='true']` outlines a lane in `--destructive` with a

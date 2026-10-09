@@ -10,6 +10,14 @@ import {
   uid,
 } from './factories'
 import { DEFAULT_IMAGE_DURATION, DEFAULT_TEXT_DURATION, MIN_SPLIT_HEADROOM } from './constants'
+import {
+  normalizePlacementSpan,
+  planInsert,
+  planOverwrite,
+  type PlacementMode,
+  type PlacementRefusal,
+  type SourceRange,
+} from './sequence-ops'
 import { assetHasAudio, canLinkClips, linkedClips, resolveSelectionGroups } from './links'
 import {
   createMarker,
@@ -37,13 +45,23 @@ export function trackKindForMedia(kind: MediaKind): 'video' | 'audio' {
   return kind === 'audio' ? 'audio' : 'video'
 }
 
-function clipFromAsset(asset: MediaAsset, start: number): Clip {
+/** The source window a placement maps onto its clips (ranged source edits). */
+interface SourceWindow {
+  inPoint: number
+  duration: number
+}
+
+/** Whole-asset placement duration (images have no intrinsic length). */
+function clipDurationFor(asset: MediaAsset): number {
+  return asset.kind === 'image' || asset.duration <= 0 ? DEFAULT_IMAGE_DURATION : asset.duration
+}
+
+function clipFromAsset(asset: MediaAsset, start: number, sourceWindow?: SourceWindow | null): Clip {
   return createClip({
     mediaId: asset.id,
     start: Math.max(0, start),
-    duration:
-      asset.kind === 'image' || asset.duration <= 0 ? DEFAULT_IMAGE_DURATION : asset.duration,
-    inPoint: 0,
+    duration: sourceWindow ? sourceWindow.duration : clipDurationFor(asset),
+    inPoint: sourceWindow ? sourceWindow.inPoint : 0,
   })
 }
 
@@ -64,15 +82,19 @@ function avPairCommands(
   audioTrackAtIndex?: number,
   /** Lanes the user turned off: the twin avoids them (legacy lane when none fit). */
   untargetedTrackIds: readonly string[] = [],
+  /** Ranged source placement: the SAME window on both halves (equal spans). */
+  sourceWindow?: SourceWindow | null,
 ): EditorCommand[] {
   const linkId = uid('link')
-  const videoClip: Clip = { ...clipFromAsset(asset, start), linkId }
-  const audioClip: Clip = { ...clipFromAsset(asset, start), linkId, audioOnly: true }
+  const videoClip: Clip = { ...clipFromAsset(asset, start, sourceWindow), linkId }
+  const audioClip: Clip = {
+    ...clipFromAsset(asset, start, sourceWindow),
+    linkId,
+    audioOnly: true,
+  }
   const commands: EditorCommand[] = []
 
-  const audioTrack =
-    firstTargetedTrack(doc, untargetedTrackIds, (t) => t.kind === 'audio') ??
-    doc.project.tracks.find((t) => t.kind === 'audio')
+  const audioTrack = resolveAudioTwinTrack(doc, untargetedTrackIds)
   let audioTrackId: string
   if (audioTrack) {
     audioTrackId = audioTrack.id
@@ -104,18 +126,21 @@ function avPairCommands(
  * video part on the video track + audio-only twin on the audio track
  * (Premiere-style A/V split on insert).
  */
-export function commandsToAddMedia(
+/**
+ * The lane a lane-less placement lands on, in the documented order: the
+ * pointed lane when it fits, then the first TARGETED compatible lane, then
+ * the first compatible lane, then a newly created one. `newTrackId` is set
+ * only for the created case (the caller emits the `addTrack` command).
+ */
+function resolveMediaTarget(
   doc: Doc,
   asset: MediaAsset,
-  start: number,
-  trackId?: string,
-  untargetedTrackIds: readonly string[] = [],
-): EditorCommand[] | null {
+  trackId: string | undefined,
+  untargetedTrackIds: readonly string[],
+): { target: Track; newTrackId: string | null } {
   const requested = trackId ? doc.project.tracks.find((t) => t.id === trackId) : undefined
   let target: Track | undefined =
     requested && trackFitsAsset(requested, asset.kind) ? requested : undefined
-  const commands: EditorCommand[] = []
-
   if (!target) {
     target = firstTargetedTrack(doc, untargetedTrackIds, (t) => trackFitsAsset(t, asset.kind))
   }
@@ -126,10 +151,34 @@ export function commandsToAddMedia(
   if (!target) {
     const kind = trackKindForMedia(asset.kind)
     const newId = pendingTrackId()
-    commands.push({ type: 'addTrack', kind, trackId: newId })
-    target = { id: newId, kind, name: '', clips: [] }
+    return { target: { id: newId, kind, name: '', clips: [] }, newTrackId: newId }
   }
+  return { target, newTrackId: null }
+}
+
+/**
+ * The audio lane an A/V pair's twin lands on: the first TARGETED audio lane,
+ * else the legacy first audio lane. Shared by the pair builder and the
+ * placement planner, so both resolve the same twin lane.
+ */
+function resolveAudioTwinTrack(doc: Doc, untargetedTrackIds: readonly string[]): Track | undefined {
+  return (
+    firstTargetedTrack(doc, untargetedTrackIds, (t) => t.kind === 'audio') ??
+    doc.project.tracks.find((t) => t.kind === 'audio')
+  )
+}
+
+export function commandsToAddMedia(
+  doc: Doc,
+  asset: MediaAsset,
+  start: number,
+  trackId?: string,
+  untargetedTrackIds: readonly string[] = [],
+): EditorCommand[] | null {
+  const { target, newTrackId } = resolveMediaTarget(doc, asset, trackId, untargetedTrackIds)
   if (!target) return null
+  const commands: EditorCommand[] = []
+  if (newTrackId) commands.push({ type: 'addTrack', kind: target.kind, trackId: newTrackId })
 
   if (asset.kind === 'video' && assetHasAudio(asset)) {
     commands.push(...avPairCommands(doc, asset, start, target.id, undefined, untargetedTrackIds))
@@ -429,10 +478,135 @@ function requireTrackIdOf(doc: Doc, clipId: string): string {
   throw new Error(`Clip ${clipId} not found`)
 }
 
-function trackFitsAsset(track: Track, kind: MediaKind): boolean {
+/**
+ * Lane/material compatibility (the same rule `commandsToAddMedia` applies):
+ * video/image material goes on video lanes, audio on audio lanes, text clips
+ * only on text lanes. Exported for the drop routing's explicit kind check.
+ */
+export function trackFitsAsset(track: Track, kind: MediaKind): boolean {
   if (track.kind === 'text') return false
   if (track.kind === 'video') return kind === 'video' || kind === 'image'
   return kind === 'audio'
+}
+
+/**
+ * Outcome of a placement action: a command batch to apply, or the refusal
+ * that stopped it (the UI maps each reason to its one toast). `commands` and
+ * `refusal` are mutually exclusive; a successful batch carries a null refusal.
+ */
+export interface PlacementOutcome {
+  commands: EditorCommand[] | null
+  refusal: PlacementRefusal | null
+}
+
+function refused(refusal: PlacementRefusal): PlacementOutcome {
+  return { commands: null, refusal }
+}
+
+/**
+ * A lane-drop placement in insert or overwrite mode: resolve the placement
+ * lanes (the pointed/compatible lane plus, for an A/V pair, the same audio
+ * twin lane the pair builder uses), plan the displacement through the shared
+ * planner, then append the placement itself. One undoable batch.
+ * `place` mode delegates to `commandsToAddMedia` (today's behavior,
+ * including its silent lane relocation).
+ */
+export function commandsToPlaceMedia(
+  doc: Doc,
+  asset: MediaAsset,
+  start: number,
+  mode: PlacementMode,
+  trackId?: string,
+  untargetedTrackIds: readonly string[] = [],
+): PlacementOutcome {
+  if (mode === 'place') {
+    const commands = commandsToAddMedia(doc, asset, start, trackId, untargetedTrackIds)
+    return commands ? { commands, refusal: null } : refused('span')
+  }
+  // The span pre-check runs before anything is built, so a refused placement
+  // never reaches `addClip`'s own floor mid-batch.
+  const span = normalizePlacementSpan(clipDurationFor(asset))
+  if (span === null) return refused('span')
+
+  const { target, newTrackId } = resolveMediaTarget(doc, asset, trackId, untargetedTrackIds)
+  const paired = asset.kind === 'video' && assetHasAudio(asset)
+  const laneIds = [target.id]
+  if (paired) {
+    const twin = resolveAudioTwinTrack(doc, untargetedTrackIds)
+    if (twin) laneIds.push(twin.id)
+  }
+  const plan =
+    mode === 'insert'
+      ? planInsert(doc, laneIds, start, span)
+      : planOverwrite(doc, laneIds, start, span)
+  if (!plan.commands) return refused(plan.refusal)
+
+  const commands: EditorCommand[] = []
+  if (newTrackId) {
+    commands.push({ type: 'addTrack', kind: trackKindForMedia(asset.kind), trackId: newTrackId })
+  }
+  commands.push(...plan.commands)
+  if (paired) {
+    commands.push(...avPairCommands(doc, asset, start, target.id, undefined, untargetedTrackIds))
+  } else {
+    commands.push({ type: 'addClip', trackId: target.id, clip: clipFromAsset(asset, start) })
+  }
+  return { commands, refusal: null }
+}
+
+/**
+ * Three-point placement from the Source monitor: the marked source range (or
+ * the whole asset) lands at the sequence playhead in insert or overwrite
+ * mode. The lane resolution is the targeting rule (no pointed lane on this
+ * route); images ignore `range` and take `DEFAULT_IMAGE_DURATION`. Both
+ * halves of an A/V pair receive the SAME window, so the pair stays aligned.
+ */
+export function commandsToPlaceSource(
+  doc: Doc,
+  asset: MediaAsset,
+  start: number,
+  mode: PlacementMode,
+  range: SourceRange | null,
+  untargetedTrackIds: readonly string[] = [],
+): PlacementOutcome {
+  const effective = asset.kind === 'image' || asset.duration <= 0 ? null : range
+  const base = effective ? effective.outPoint - effective.inPoint : clipDurationFor(asset)
+  const span = normalizePlacementSpan(base)
+  if (span === null) return refused('span')
+  const sourceWindow: SourceWindow | null = effective
+    ? { inPoint: Math.max(0, effective.inPoint), duration: span }
+    : null
+
+  const { target, newTrackId } = resolveMediaTarget(doc, asset, undefined, untargetedTrackIds)
+  const paired = asset.kind === 'video' && assetHasAudio(asset)
+  const laneIds = [target.id]
+  if (paired) {
+    const twin = resolveAudioTwinTrack(doc, untargetedTrackIds)
+    if (twin) laneIds.push(twin.id)
+  }
+  const plan =
+    mode === 'insert'
+      ? planInsert(doc, laneIds, start, span)
+      : planOverwrite(doc, laneIds, start, span)
+  if (!plan.commands) return refused(plan.refusal)
+
+  const commands: EditorCommand[] = []
+  if (newTrackId) {
+    commands.push({ type: 'addTrack', kind: trackKindForMedia(asset.kind), trackId: newTrackId })
+  }
+  commands.push(...plan.commands)
+  if (paired) {
+    commands.push(
+      ...avPairCommands(doc, asset, start, target.id, undefined, untargetedTrackIds, sourceWindow),
+    )
+  } else {
+    commands.push({
+      type: 'addClip',
+      trackId: target.id,
+      clip: clipFromAsset(asset, start, sourceWindow),
+    })
+  }
+  return { commands, refusal: null }
 }
 
 /** True when the given clip could be dropped onto the track (UI affordance). */

@@ -1,6 +1,6 @@
 {
   "name": "nextjs_tailwind_shadcn_ts",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "private": true,
   "scripts": {
     "dev": "set -o pipefail && next dev -p 3000 2>&1 | tee dev.log",

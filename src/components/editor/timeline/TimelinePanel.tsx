@@ -27,8 +27,11 @@ import { SequenceMarkers } from './SequenceMarkers'
 import {
   commandsToAddMedia,
   commandsToAddMediaInNewTrack,
+  commandsToPlaceMedia,
+  trackFitsAsset,
   trackKindForMedia,
 } from '@/lib/editor/actions'
+import { placementRefusalMessage } from '@/lib/editor/sequence-ops'
 import { previewTrackName } from '@/lib/editor/commands'
 import { computeTrackDropTarget, mediaKindFromDragEvent } from '@/lib/editor/timeline-drop'
 import {
@@ -113,6 +116,7 @@ export function TimelinePanel() {
   const playing = useEditorStore((s) => s.playing)
   const snapLine = useEditorStore((s) => s.snapLine)
   const activeTool = useEditorStore((s) => s.activeTool)
+  const dropMode = useEditorStore((s) => s.dropMode)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -500,6 +504,39 @@ export function TimelinePanel() {
 
     if (target.mode === 'lane') {
       const track = doc.project.tracks[target.index]
+      const incompatible = !trackFitsAsset(track, asset.kind)
+      // Refusal precedence: an incompatible lane beats the mode, and an atomic
+      // placement refusal beats the commit. In the two new modes a wrong-kind
+      // lane refuses outright instead of silently relocating (behavior change).
+      if (incompatible && store.dropMode !== 'place') {
+        toast({
+          title: 'Incompatible track',
+          description: `${asset.kind} material cannot go on a ${track.kind} track`,
+          variant: 'destructive',
+        })
+        return
+      }
+      if (store.dropMode !== 'place') {
+        const outcome = commandsToPlaceMedia(
+          store.doc,
+          asset,
+          t,
+          store.dropMode,
+          track.id,
+          store.untargetedTracks,
+        )
+        if (!outcome.commands) {
+          toast({
+            title: 'Placement refused',
+            description: placementRefusalMessage(outcome.refusal ?? 'span'),
+            variant: 'destructive',
+          })
+          return
+        }
+        store.apply(outcome.commands)
+        return
+      }
+      // `place` keeps today's plain drop, including its silent lane relocation.
       const commands = commandsToAddMedia(store.doc, asset, t, track.id, store.untargetedTracks)
       if (!commands) {
         toast({
@@ -691,6 +728,20 @@ export function TimelinePanel() {
                 )}
                 style={{ width: contentWidth }}
               >
+                {/* Pending lane-drop behavior: a mode badge on the lane only.
+                    The between-rows insertion line keeps its create-track
+                    meaning and is never relabeled as a placement mode. */}
+                {dropIndicator?.mode === 'lane' &&
+                  dropIndicator.index === rowIndex &&
+                  dropMode !== 'place' && (
+                    <span
+                      aria-hidden="true"
+                      data-testid="lane-drop-mode"
+                      className="pointer-events-none absolute left-2 top-1 z-10 rounded bg-rose-500/90 px-1.5 py-0.5 text-[10px] font-semibold text-rose-50 shadow-md"
+                    >
+                      {dropMode === 'insert' ? 'Insert' : 'Overwrite'}
+                    </span>
+                  )}
                 {track.clips.map((clip, i) => (
                   <ClipView
                     key={clip.id}

@@ -68,7 +68,7 @@ function baseCtx(overrides: Partial<MenuContext> = {}): MenuContext {
     hasMarkers: false,
     hasSelectedMarker: false,
     snapEnabled: true,
-    panelHidden: { media: false, preview: false, inspector: false, timeline: false },
+    panelHidden: { media: false, preview: false, source: false, inspector: false, timeline: false },
     workspaceDirty: false,
     ...overrides,
   }
@@ -178,15 +178,17 @@ describe('menu structure (Premiere Pro–style)', () => {
     expect(itemOf('Sequence', 'sequence.settings').action).toBe('sequence.settings')
   })
 
-  it('Window menu toggles all four workspace panels + reset', () => {
+  it('Window menu toggles all five workspace panels + reset', () => {
     const menu = findMenu('Window')
     const toggles = menu.items.filter((i) => i.kind === 'checkbox')
     expect(toggles.map((i) => i.action)).toEqual([
       'window.toggleMedia',
       'window.togglePreview',
+      'window.toggleSource',
       'window.toggleInspector',
       'window.toggleTimeline',
     ])
+    expect(itemOf('Window', 'window.source').label).toBe('Source Monitor')
     expect(itemOf('Window', 'window.reset').action).toBe('window.resetLayout')
   })
 
@@ -318,6 +320,7 @@ describe('menu state resolution (buildMenus)', () => {
     const hiddenPanels: Partial<Record<PanelId, boolean>> = {
       media: true,
       inspector: true,
+      source: true,
     }
     const ctx = baseCtx({
       panelHidden: { ...defaultWorkspace().hidden, ...hiddenPanels } as MenuContext['panelHidden'],
@@ -325,6 +328,7 @@ describe('menu state resolution (buildMenus)', () => {
     const window = buildMenus(ctx).find((m) => m.spec.id === 'window')!
     expect(window.items.find((i) => i.spec.id === 'window.media')!.checked).toBe(false)
     expect(window.items.find((i) => i.spec.id === 'window.inspector')!.checked).toBe(false)
+    expect(window.items.find((i) => i.spec.id === 'window.source')!.checked).toBe(false)
     expect(window.items.find((i) => i.spec.id === 'window.preview')!.checked).toBe(true)
     expect(window.items.find((i) => i.spec.id === 'window.timeline')!.checked).toBe(true)
   })
@@ -339,7 +343,13 @@ describe('menu state resolution (buildMenus)', () => {
     // A hidden panel counts as dirty…
     const oneHidden = buildMenus(
       baseCtx({
-        panelHidden: { media: true, preview: false, inspector: false, timeline: false },
+        panelHidden: {
+          media: true,
+          preview: false,
+          source: false,
+          inspector: false,
+          timeline: false,
+        },
         workspaceDirty: true,
       }),
     )

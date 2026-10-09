@@ -400,3 +400,39 @@ describe('targeting is threaded through every lane-less placement entry point', 
     )
   })
 })
+
+/**
+ * Placement modes (0.7.2): the sticky three-way toolbar control and the lane
+ * -drop routing are locked at the source because jsdom cannot perform a real
+ * HTML5 drag; `timeline-panel-ui.test.tsx` drives the routing through a
+ * DataTransfer-shaped stub, and these locks pin the wiring around it.
+ */
+describe('placement mode control and drop routing (0.7.2)', () => {
+  const toolbar = read('src/components/editor/Toolbar.tsx')
+  const panel = read('src/components/editor/timeline/TimelinePanel.tsx')
+
+  it('the toolbar renders one pressed button per mode with stable testids', () => {
+    expect(toolbar).toMatch(/data-testid=\{`placement-mode-\$\{mode\}`\}/)
+    expect(toolbar).toMatch(/aria-pressed=\{dropMode === mode\}/)
+    expect(toolbar).toMatch(/onClick=\{\(\) => setDropMode\(mode\)\}/)
+    // The three modes, in display order, with their one-shot key hints.
+    expect(toolbar).toMatch(/mode: 'place', label: 'Place'/)
+    expect(toolbar).toMatch(/mode: 'insert', label: 'Insert', hint: ','/)
+    expect(toolbar).toContain("{ mode: 'overwrite', label: 'Overwrite', hint: '.' }")
+    // Session-only: the control drives the store setter (no command, no Doc).
+    const store = read('src/lib/editor/store.ts')
+    expect(store).toMatch(/setDropMode: \(dropMode\) => set\(\{ dropMode \}\)/)
+    expect(toolbar).not.toMatch(/type: 'setDropMode'/)
+  })
+
+  it('the lane drop routes through the planner ONLY outside place mode', () => {
+    expect(panel).toMatch(/if \(incompatible && store\.dropMode !== 'place'\)/)
+    expect(panel).toMatch(/if \(store\.dropMode !== 'place'\)/)
+    expect(panel).toMatch(/commandsToPlaceMedia\(/)
+    expect(panel).toMatch(/placementRefusalMessage\(outcome\.refusal \?\? 'span'\)/)
+    // The create-track path (edge strip) never honors the mode.
+    expect(panel).toMatch(
+      /commandsToAddMediaInNewTrack\(store\.doc, asset, t, target\.index, store\.untargetedTracks\)/,
+    )
+  })
+})

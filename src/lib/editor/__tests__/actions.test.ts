@@ -6,9 +6,11 @@ import {
   commandsToAddMediaInNewTrack,
   commandsToAddText,
   commandsToDeleteMarker,
+  commandsToPlaceMedia,
+  commandsToPlaceSource,
   trackKindForMedia,
 } from '../actions'
-import { applyCommand, applyCommands } from '../commands'
+import { applyCommand, applyCommands, type EditorCommand } from '../commands'
 import { commandsToDuplicateClips } from '../actions'
 import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 
@@ -229,5 +231,214 @@ describe('targeting in lane-less placements', () => {
     const next = applyCommands(doc, commands)
     expect(next.project.tracks[0].clips[0].audioOnly).toBeUndefined()
     expect(next.project.tracks[1].clips[0].audioOnly).toBe(true)
+  })
+})
+
+/**
+ * Insert/overwrite placement actions: the displacement planner is composed
+ * with the actual placement into ONE batch, `place` mode stays the old path,
+ * and a refusal returns null commands with its reason (the routes toast it).
+ */
+describe('commandsToPlaceMedia / commandsToPlaceSource', () => {
+  function laneDoc(clips: { id: string; start: number; duration: number }[], assetDuration = 30) {
+    const asset = createMediaAsset({ kind: 'video', name: 'a.mp4', duration: assetDuration })
+    const track = createTrack('video', 1)
+    track.clips = clips.map((c) =>
+      createClip({ id: c.id, mediaId: asset.id, start: c.start, duration: c.duration }),
+    )
+    const doc = createDoc()
+    doc.project.tracks = [track]
+    doc.media = [asset]
+    return { doc, asset, track }
+  }
+
+  function pairLaneDoc(assetDuration = 10) {
+    const asset = createMediaAsset({
+      kind: 'video',
+      name: 'pair.mp4',
+      duration: assetDuration,
+      hasAudio: true,
+    })
+    const video = createTrack('video', 1)
+    const audio = createTrack('audio', 1)
+    const doc = createDoc()
+    doc.project.tracks = [video, audio]
+    doc.media = [asset]
+    return { doc, asset, video, audio }
+  }
+
+  it('an insert lane drop shifts downstream clips, then places at the drop point', () => {
+    const { doc, asset, track } = laneDoc([{ id: 'c1', start: 4, duration: 3 }], 3)
+    const outcome = commandsToPlaceMedia(doc, asset, 1, 'insert', track.id)
+    expect(outcome.refusal).toBeNull()
+    const commands = outcome.commands!
+    expect(commands[0]).toEqual({ type: 'moveClip', clipId: 'c1', trackId: track.id, start: 7 })
+    expect(commands[1]).toMatchObject({ type: 'addClip', trackId: track.id })
+    const next = applyCommands(doc, commands)
+    expect(next.project.tracks[0].clips.map((c) => [c.id, c.start])).toEqual([
+      [expect.any(String), 1],
+      ['c1', 7],
+    ])
+  })
+
+  it('an overwrite lane drop replaces the covered span before placing', () => {
+    const { doc, asset, track } = laneDoc(
+      [
+        { id: 'c1', start: 0, duration: 2 },
+        { id: 'c2', start: 6, duration: 2 },
+      ],
+      3,
+    )
+    const outcome = commandsToPlaceMedia(doc, asset, 1, 'overwrite', track.id)
+    const commands = outcome.commands!
+    expect(commands.map((c) => c.type)).toEqual(['trimClip', 'addClip'])
+    // A 3s overwrite at 1s: c1's tail trims to 1s; c2 (6..8) is outside the window.
+    const next = applyCommands(doc, commands)
+    const c1 = next.project.tracks[0].clips.find((c) => c.id === 'c1')!
+    expect(c1.start + c1.duration).toBeCloseTo(1, 6)
+    expect(next.project.tracks[0].clips.find((c) => c.id === 'c2')).toBeTruthy()
+  })
+
+  it('place mode keeps the plain drop (command composition unchanged)', () => {
+    const { doc, asset, track } = laneDoc([{ id: 'c1', start: 4, duration: 3 }])
+    const outcome = commandsToPlaceMedia(doc, asset, 1, 'place', track.id)
+    expect(outcome.refusal).toBeNull()
+    // Each call mints its own clip id, so normalize before comparing the rest.
+    const normalize = (commands: EditorCommand[] | null) =>
+      (commands ?? []).map((c) =>
+        c.type === 'addClip' ? { ...c, clip: { ...c.clip, id: 'x' } } : c,
+      )
+    expect(normalize(outcome.commands)).toEqual(
+      normalize(commandsToAddMedia(doc, asset, 1, track.id)),
+    )
+  })
+
+  it('resolves the lane through targeting when no lane is pointed', () => {
+    const asset = createMediaAsset({ kind: 'video', name: 'a.mp4', duration: 4 })
+    const untargeted = createTrack('video', 1)
+    const targeted = createTrack('video', 1)
+    const doc = createDoc()
+    doc.project.tracks = [untargeted, targeted]
+    doc.media = [asset]
+
+    const outcome = commandsToPlaceSource(doc, asset, 0, 'insert', null, [untargeted.id])
+    const placement = outcome.commands![outcome.commands!.length - 1]
+    expect(placement).toMatchObject({ type: 'addClip', trackId: targeted.id })
+  })
+
+  it('an insert of a video-with-audio asset shifts the twin audio lane in the SAME batch', () => {
+    const { doc, asset, video, audio } = pairLaneDoc(5)
+    video.clips = [createClip({ id: 'v2', mediaId: asset.id, start: 4, duration: 2 })]
+    audio.clips = [
+      createClip({ id: 'a2', mediaId: asset.id, start: 4, duration: 2, audioOnly: true }),
+    ]
+
+    const outcome = commandsToPlaceMedia(doc, asset, 0, 'insert', video.id)
+    const commands = outcome.commands!
+    expect(commands.filter((c) => c.type === 'moveClip')).toEqual([
+      { type: 'moveClip', clipId: 'v2', trackId: video.id, start: 9 },
+      { type: 'moveClip', clipId: 'a2', trackId: audio.id, start: 9 },
+    ])
+    // One batch: both lanes shifted and the pair landed.
+    const next = applyCommands(doc, commands)
+    expect(next.project.tracks[0].clips.find((c) => c.id === 'v2')!.start).toBe(9)
+    expect(next.project.tracks[1].clips.find((c) => c.id === 'a2')!.start).toBe(9)
+    expect(next.project.tracks[0].clips.filter((c) => c.linkId)).toHaveLength(1)
+  })
+
+  it('places an A/V pair on both lanes with one shared linkId', () => {
+    const { doc, asset, video, audio } = pairLaneDoc(5)
+    const outcome = commandsToPlaceSource(doc, asset, 2, 'insert', null)
+    const next = applyCommands(doc, outcome.commands!)
+    const placedVideo = next.project.tracks[0].clips[0]
+    const placedAudio = next.project.tracks[1].clips[0]
+    expect(placedVideo.start).toBe(2)
+    expect(placedAudio.audioOnly).toBe(true)
+    expect(placedVideo.linkId).toBeTruthy()
+    expect(placedAudio.linkId).toBe(placedVideo.linkId)
+    expect(video.clips).toHaveLength(0) // input doc untouched
+    expect(audio.clips).toHaveLength(0)
+  })
+
+  it('maps a source range onto a single placed clip (inPoint + duration)', () => {
+    const { doc, asset } = laneDoc([], 20)
+    const next = applyCommands(
+      doc,
+      commandsToPlaceSource(doc, asset, 1, 'insert', { inPoint: 2, outPoint: 5 }).commands!,
+    )
+    const placed = next.project.tracks[0].clips[0]
+    expect(placed).toMatchObject({ start: 1, inPoint: 2, duration: 3 })
+  })
+
+  it('maps the SAME range onto both halves of a pair (equal spans, shared link)', () => {
+    const { doc, asset } = pairLaneDoc(20)
+    const next = applyCommands(
+      doc,
+      commandsToPlaceSource(doc, asset, 0, 'insert', { inPoint: 4, outPoint: 9 }).commands!,
+    )
+    const [video, audio] = [next.project.tracks[0].clips[0], next.project.tracks[1].clips[0]]
+    expect(video).toMatchObject({ inPoint: 4, duration: 5 })
+    expect(audio).toMatchObject({ inPoint: 4, duration: 5 })
+    expect(audio.linkId).toBe(video.linkId)
+  })
+
+  it('a span inside the -EPS floor band is clamped up, so addClip never throws', () => {
+    const { doc, asset } = laneDoc([], 20)
+    const outcome = commandsToPlaceSource(doc, asset, 0, 'insert', {
+      inPoint: 0,
+      outPoint: 0.1 - 5e-7,
+    })
+    const next = applyCommands(doc, outcome.commands!)
+    expect(next.project.tracks[0].clips[0].duration).toBeCloseTo(0.1, 6)
+  })
+
+  it('a sub-floor placement span refuses atomically in insert and overwrite', () => {
+    const { doc, asset, track } = laneDoc([], 0.05)
+    for (const mode of ['insert', 'overwrite'] as const) {
+      const outcome = commandsToPlaceMedia(doc, asset, 0, mode, track.id)
+      expect(outcome.commands).toBeNull()
+      expect(outcome.refusal).toBe('span')
+    }
+    const source = commandsToPlaceSource(doc, asset, 0, 'insert', null)
+    expect(source.commands).toBeNull()
+    expect(source.refusal).toBe('span')
+  })
+
+  it('an incompatible pointed lane still relocates inside the ACTION (the drop route refuses first)', () => {
+    // The wrong-kind refusal in insert/overwrite is a ROUTE decision: given an
+    // explicit lane that does not fit, `commandsToPlaceMedia` resolves it
+    // through the documented fallback instead of refusing. Pinned here so the
+    // policy cannot move into (or out of) this function unnoticed; the route's
+    // refusal itself is locked in timeline-panel-ui.test.tsx.
+    const { doc, track } = laneDoc([], 5) // a video lane
+    const audioTrack = createTrack('audio', 1)
+    doc.project.tracks.push(audioTrack)
+    const audioAsset = createMediaAsset({ kind: 'audio', name: 'a.wav', duration: 3 })
+    doc.media.push(audioAsset)
+
+    const outcome = commandsToPlaceMedia(doc, audioAsset, 1, 'insert', track.id)
+
+    expect(outcome.refusal).toBeNull()
+    const next = applyCommands(doc, outcome.commands!)
+    expect(next.project.tracks[0].clips).toHaveLength(0) // pointed video lane stayed empty
+    expect(next.project.tracks[1].clips).toHaveLength(1) // relocated onto the audio lane
+  })
+
+  it('an unrepresentable overwrite refuses the whole placement (nothing written)', () => {
+    // The cut lands 0.05s into the clip: both sides are retained, but the left
+    // side sits under the split headroom, so no representable edit exists.
+    const media = createMediaAsset({ kind: 'video', name: 'm.mp4', duration: 10 })
+    const track = createTrack('video', 1)
+    track.clips = [createClip({ id: 'c1', mediaId: media.id, start: 0, duration: 4 })]
+    const doc = createDoc()
+    doc.project.tracks = [track]
+    doc.media = [media]
+    const incoming = createMediaAsset({ kind: 'video', name: 'b.mp4', duration: 3 })
+
+    const outcome = commandsToPlaceMedia(doc, incoming, 0.05, 'overwrite', track.id)
+    expect(outcome.commands).toBeNull()
+    expect(outcome.refusal).toBe('geometry')
+    // Nothing written: the input doc is untouched (the batch never exists).
+    expect(doc.project.tracks[0].clips[0].duration).toBe(4)
   })
 })

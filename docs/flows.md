@@ -20,7 +20,13 @@ Stable hooks used across flows and tests:
 - `[data-lane-kind]` on each lane and `[data-track-row]` on the newly inserted row
 - `[data-drop-blocked="true"]` — a lane marked as an illegal drop target for the duration of a drag
 - `[data-timeline-scroll]` — the timeline's scroll container
-- Panel ids `panel-media`, `panel-preview`, `panel-inspector`, `panel-timeline`
+- Panel ids `panel-media`, `panel-source`, `panel-preview`, `panel-inspector`, `panel-timeline`
+- `[data-testid="source-panel"]` (with `data-selected-asset`), `[data-testid="source-preview"]`,
+  `[data-testid="source-image"]` (stills), `[data-testid="source-time"]`, `[data-testid="source-mark-in"]`,
+  `[data-testid="source-mark-out"]`, `[data-testid="source-clear"]`, `[data-testid="source-span"]`
+  (with `data-invalid`)
+- `[data-testid^="placement-mode-"]` (the sticky Place / Insert / Overwrite toolbar control),
+  `aria-pressed` mirrors the active mode
 - Drag payloads `application/x-media-id` and `application/x-media-kind-<kind>`
 
 ## Import media
@@ -71,12 +77,59 @@ Stable hooks used across flows and tests:
 ## Place media on the timeline
 
 - **Quick-add (`+`)** appends the clip at the end of the timeline on a compatible track.
-- **Drag from the bin onto a lane** drops the media on that track.
+- **Drag from the bin onto a lane** drops the media on that track. How the drop lands is picked by
+  the sticky three-way toolbar control (`dropMode`, session-only, never saved):
+  - **Place** (default): today's plain drop. The pointed lane is used when it fits, otherwise the
+    drop silently relocates to the first targeted compatible lane, the first compatible lane, or a
+    newly created one. Nothing is displaced, so same-lane overlap stays legal (crossfades rely on it).
+  - **Insert**: clips at or after the edit point shift right by the placement span, and a clip
+    straddling the point splits there with its right half shifting. Link groups are always in sync:
+    the affected-lane set expands through every group a shift or split touches, so a pair moves as one
+    unit and split right-halves re-pair under one fresh `linkId`. A clip whose cut cannot respect the
+    split headroom (either side at or under `MIN_SPLIT_HEADROOM` within the `+ EPS` band, the
+    comparison rule's `length <= MIN_SPLIT_HEADROOM + EPS`) is left untouched with its group partners
+    and the rest of the batch still commits (per-clip fallback, no toast).
+  - **Overwrite**: the span `[at, at + span)` is replaced. Partial coverage trims the covered edge,
+    interior coverage splits once at `at` then head-trims the right fragment (the kept fragment stores
+    the POST-move source anchor), sub-`MIN_CLIP_DURATION` remnants are deleted with the clip, and fully
+    covered clips go entirely (taking their lane with them, invariant 17). It is all-or-nothing: when
+    a retained side cannot be represented (the left side sits at or under the split headroom, or the
+    right side would land under the floor) or a trim would read past its source, the WHOLE placement
+    is refused before anything is written, with one toast naming the reason. A placement span under
+    the 0.1 s floor refuses the same way in both modes (one toast, nothing built).
+- A **wrong-kind lane drop refuses** in Insert and Overwrite (one toast, nothing written) instead of
+  relocating; Place keeps its documented fallback. Refusal precedence: an incompatible lane beats the
+  mode, and an atomic placement refusal beats commit. Every refusal decides and toasts BEFORE
+  `store.apply`, so a refusal never leaves a partial batch.
 - **Drag onto a row edge (12 px) or below the last track** shows a kind-coloured insertion line plus a
   `+ V2` / `+ A2` preview label and inserts a **new track at that exact z-position** (`addTrack` with
-  `atIndex`, skipping the convention sort). The drop is one undoable `[addTrack, addClip]` batch.
+  `atIndex`, skipping the convention sort). The drop is one undoable `[addTrack, addClip]` batch. This
+  path still means "create a track": it does not honor `dropMode`.
 - The ruler zone and the sticky header column never show a drop indicator.
+- Every lane placement (any mode) applies as ONE command batch, so one undo restores the whole
+  operation.
 - Dropping a video **with audio** places two clips sharing a `linkId` — see [A/V links](#av-links).
+
+## Three-point editing (Source monitor)
+
+- Clicking a bin row selects it (`data-selected`, `aria-pressed`) and feeds the **Source Monitor**
+  panel; selecting a different asset clears both marks and the source time, and removing the selected
+  asset clears the selection. The panel's `<video>` element is a singleton: switching assets or
+  unmounting the panel releases the previous element, so at most one is ever live. A still image has
+  no source window and never attaches that element: the panel draws
+  `<img data-testid="source-image">` itself, and its in/out controls and transport disable.
+- `sourcePlayhead` is the ONE owner of the source time: the preview element's playback/seek callbacks
+  write it, and the panel readout, the `I`/`O` marks and the placement range all read it, so panel,
+  keys and marks cannot disagree.
+- **`I` / `O`** mark In / Out at the source playhead (no-op without a source selection; ignored inside
+  form fields like every other binding). Marks clamp to `[0, asset.duration]`; one-sided marks leave
+  the other end open (in only: `[in, end]`, out only: `[0, out]`).
+- **`,` (insert) / `.` (overwrite)** place the marked span (or the whole asset when unmarked) at the
+  sequence playhead, independent of the sticky toolbar toggle. Lane resolution is the targeting rule
+  (first targeted compatible lane → legacy compatible lane → create one). Images have no source
+  window: the in/out controls disable and `,`/`.` place `DEFAULT_IMAGE_DURATION` (4 s). An inverted
+  or sub-floor range (`out <= in`, or an effective span under `MIN_CLIP_DURATION - EPS`) is refused
+  with one toast and places nothing. No source selected is a no-op.
 
 ## Select, link, and razor
 

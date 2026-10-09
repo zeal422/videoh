@@ -36,27 +36,42 @@ function fakeStorage(initial: Record<string, string> = {}) {
 describe('defaults and catalog', () => {
   it('default workspace: all panels visible, expanded, with bounded sizes', () => {
     const ws = defaultWorkspace()
-    expect(ws.hidden).toEqual({ media: false, preview: false, inspector: false, timeline: false })
+    expect(ws.hidden).toEqual({
+      media: false,
+      preview: false,
+      source: false,
+      inspector: false,
+      timeline: false,
+    })
     expect(ws.collapsed).toEqual({
       media: false,
       preview: false,
+      source: false,
       inspector: false,
       timeline: false,
     })
     expect(ws.sizes.media).toBe(PANEL_BOUNDS.media.default)
+    expect(ws.sizes.source).toBe(PANEL_BOUNDS.source.default)
     expect(ws.sizes.inspector).toBe(PANEL_BOUNDS.inspector.default)
     expect(ws.sizes.timeline).toBe(PANEL_BOUNDS.timeline.default)
   })
 
-  it('panel catalog covers exactly the four workspace panels', () => {
-    expect(PANELS.map((p) => p.id).sort()).toEqual(['inspector', 'media', 'preview', 'timeline'])
+  it('panel catalog covers exactly the five workspace panels', () => {
+    expect(PANELS.map((p) => p.id).sort()).toEqual([
+      'inspector',
+      'media',
+      'preview',
+      'source',
+      'timeline',
+    ])
+    expect(PANELS.find((p) => p.id === 'source')!.title).toBe('Source Monitor')
     for (const p of PANELS) {
       expect(p.title.length).toBeGreaterThan(0)
     }
   })
 
   it('default sizes respect the panel bounds', () => {
-    for (const key of ['media', 'inspector', 'timeline'] as const) {
+    for (const key of ['media', 'source', 'inspector', 'timeline'] as const) {
       const b = PANEL_BOUNDS[key]
       expect(b.default).toBeGreaterThanOrEqual(b.min)
       expect(b.default).toBeLessThanOrEqual(b.max)
@@ -90,6 +105,12 @@ describe('immutable update helpers', () => {
     expect(same).toBe(ws) // no-op returns the same object
   })
 
+  it('withSize clamps the source panel too (the new workspace panel)', () => {
+    const ws = withSize(defaultWorkspace(), 'source', 500)
+    expect(ws.sizes.source).toBe(PANEL_BOUNDS.source.max)
+    expect(ws.sizes.source).toBeGreaterThan(0)
+  })
+
   it('isCollapsedSize only matches collapsed-strip sizes', () => {
     expect(isCollapsedSize(2.5)).toBe(true)
     expect(isCollapsedSize(0)).toBe(true)
@@ -107,11 +128,25 @@ describe('sanitizeWorkspace', () => {
   })
 
   it('clamps out-of-range sizes into bounds', () => {
-    const ws = sanitizeWorkspace({ sizes: { media: 99, inspector: -5, timeline: 12 } })
+    const ws = sanitizeWorkspace({ sizes: { media: 99, source: 90, inspector: -5, timeline: 12 } })
     expect(ws.sizes.media).toBe(PANEL_BOUNDS.media.max)
+    expect(ws.sizes.source).toBe(PANEL_BOUNDS.source.max)
     expect(ws.sizes.inspector).toBe(PANEL_BOUNDS.inspector.min)
     // Below min → clamped to min.
     expect(ws.sizes.timeline).toBe(PANEL_BOUNDS.timeline.min)
+  })
+
+  it('a stored layout from before the Source panel simply lacks the key', () => {
+    // Forward-compat migration: the old four-panel shape loads as valid, with
+    // the new panel taking its default (and staying visible).
+    const legacy = sanitizeWorkspace({
+      sizes: { media: 22, inspector: 30, timeline: 40 },
+      collapsed: { media: true, preview: false, inspector: false, timeline: false },
+      hidden: { media: false, preview: false, inspector: false, timeline: false },
+    })
+    expect(legacy.sizes.source).toBe(PANEL_BOUNDS.source.default)
+    expect(legacy.hidden.source).toBe(false)
+    expect(legacy.collapsed.media).toBe(true)
   })
 
   it('ignores non-numeric and unknown size keys', () => {
@@ -140,7 +175,11 @@ describe('persistence (injected storage)', () => {
   it('round-trips through save/load', () => {
     const storage = fakeStorage()
     const ws = withHidden(
-      withSize(withCollapsed(defaultWorkspace(), 'media', true), 'timeline', 50),
+      withSize(
+        withSize(withCollapsed(defaultWorkspace(), 'media', true), 'timeline', 50),
+        'source',
+        30,
+      ),
       'preview',
       true,
     )
@@ -149,6 +188,9 @@ describe('persistence (injected storage)', () => {
     expect(storage.getItem(WORKSPACE_STORAGE_KEY)).toBeTruthy()
     const loaded = loadWorkspace(storage)
     expect(loaded).toEqual(ws)
+    // The new panel's size really survives the round trip (it is not dropped
+    // by the sanitizer's known-key filter).
+    expect(loaded.sizes.source).toBe(30)
   })
 
   it('load with empty storage yields defaults', () => {

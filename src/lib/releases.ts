@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.7.2',
+    date: '2026-10-09',
+    highlights: [
+      'Insert and overwrite placement: the toolbar switches between Place, Insert and Overwrite, so a drop can shift or replace what is already there',
+      'Three-point editing: click a clip in the Media bin, mark In and Out with I and O, then press , (insert) or . (overwrite) to place that span at the playhead',
+      'The new Source Monitor shows the selected asset with its own preview, transport and marked window',
+      'Insert and overwrite are link-group aware, and one Ctrl+Z undoes a whole placement',
+    ],
+  },
+  {
     version: '0.7.1',
     date: '2026-10-08',
     highlights: [
