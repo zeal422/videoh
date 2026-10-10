@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.7.3',
+    date: '2026-10-10',
+    highlights: [
+      'Collapsing the Source Monitor now really collapses it: the panel shrinks to a thin strip instead of keeping its full width',
+      'Both the Source Monitor and the Inspector can be collapsed at once, with the Program Monitor filling the space between them',
+      'A refused collapse no longer leaves a ghost strip or reopens a panel at its maximum size',
+      'The workspace layout no longer fights you when two panels are collapsed together',
+    ],
+  },
+  {
     version: '0.7.2',
     date: '2026-10-09',
     highlights: [

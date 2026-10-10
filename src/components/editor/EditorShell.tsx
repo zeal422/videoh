@@ -103,20 +103,18 @@ export function EditorShell() {
     [hidden.timeline, setSize],
   )
   /**
-   * Upper row: `preview | source | inspector`. A hidden panel is not rendered,
-   * so each panel's index is its position among the VISIBLE panels (0-based).
-   * Source: 0 or 1; inspector: 0, 1 or 2. The all-visible case is the
-   * documented `layout[1]` (source) / `layout[2]` (inspector).
+   * Upper row: `source | preview | inspector`. A hidden panel is not rendered, so
+   * each panel's index is its position among the VISIBLE panels (0-based).
+   * Source: always 0. Preview: 0 or 1 (and it stores no size). Inspector:
+   * `(hidden.source ? 0 : 1) + (hidden.preview ? 0 : 1)`.
    */
   const handleUpperRowLayout = useCallback(
     (layout: number[]) => {
-      const previewCount = hidden.preview ? 0 : 1
-      if (!hidden.source) {
-        const sourceIndex = previewCount
-        if (layout[sourceIndex] !== undefined) setSize('source', layout[sourceIndex])
-      }
+      // The upper row is `source | preview | inspector`, so the source is always
+      // first among the visible panels.
+      if (!hidden.source && layout[0] !== undefined) setSize('source', layout[0])
       if (!hidden.inspector) {
-        const inspectorIndex = previewCount + (hidden.source ? 0 : 1)
+        const inspectorIndex = (hidden.source ? 0 : 1) + (hidden.preview ? 0 : 1)
         if (layout[inspectorIndex] !== undefined) setSize('inspector', layout[inspectorIndex])
       }
     },
@@ -330,33 +328,18 @@ export function EditorShell() {
             >
               <ResizablePanel id="panel-upper" order={1} className="min-h-0">
                 {showUpperRow ? (
-                  /* Upper row: program monitor | source | inspector */
+                  /* Upper row: source monitor | program monitor | inspector */
                   <ResizablePanelGroup
                     direction="horizontal"
                     className="min-h-0"
                     onLayout={handleUpperRowLayout}
                   >
-                    {!hidden.preview && (
-                      /* `flex` on the Panel div is required: react-resizable-panels
-                         renders a plain block box, so without it PreviewPanel's
-                         flex column never inherits the panel height and the
-                         transport row gets clipped when this row is resized short. */
-                      <ResizablePanel id="panel-preview" order={1} className="flex min-h-0 min-w-0">
-                        <PreviewPanel />
-                      </ResizablePanel>
-                    )}
-                    {!hidden.preview && !hidden.source && (
-                      <HandleWithReset
-                        ariaLabel="Resize source panel (double-click to reset)"
-                        onReset={() => resetPanel('source')}
-                      />
-                    )}
                     {!hidden.source && (
                       <PanelShell
                         id="source"
                         title="Source Monitor"
-                        side="right"
-                        order={2}
+                        side="left"
+                        order={1}
                         minSize={PANEL_BOUNDS.source.min}
                         maxSize={PANEL_BOUNDS.source.max}
                         defaultSize={sizes.source}
@@ -366,15 +349,29 @@ export function EditorShell() {
                         <SourcePanel className="flex-1" />
                       </PanelShell>
                     )}
-                    {!hidden.source && !hidden.inspector && (
+                    {!hidden.source && !hidden.preview && (
+                      <HandleWithReset
+                        ariaLabel="Resize source panel (double-click to reset)"
+                        onReset={() => resetPanel('source')}
+                      />
+                    )}
+                    {!hidden.preview && (
+                      /* `flex` on the Panel div is required: react-resizable-panels
+                         renders a plain block box, so without it PreviewPanel's
+                         flex column never inherits the panel height and the
+                         transport row gets clipped when this row is resized short. */
+                      <ResizablePanel id="panel-preview" order={2} className="flex min-h-0 min-w-0">
+                        <PreviewPanel />
+                      </ResizablePanel>
+                    )}
+                    {!hidden.preview && !hidden.inspector && (
                       <HandleWithReset
                         ariaLabel="Resize inspector panel (double-click to reset)"
                         onReset={() => resetPanel('inspector')}
                       />
                     )}
-                    {/* Program monitor | inspector adjacency when the Source
-                        panel is hidden (the handle is per-boundary). */}
-                    {hidden.source && !hidden.preview && !hidden.inspector && (
+                    {/* The preview is hidden, so the source and the inspector meet directly. */}
+                    {hidden.preview && !hidden.source && !hidden.inspector && (
                       <HandleWithReset
                         ariaLabel="Resize inspector panel (double-click to reset)"
                         onReset={() => resetPanel('inspector')}

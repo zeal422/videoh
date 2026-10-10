@@ -15,12 +15,18 @@ import { useWorkspaceStore } from '@/lib/editor/workspace-store'
  * A workspace panel frame: slim header (title + actions + collapse chevron)
  * wrapped in a resizable, collapsible `Panel`.
  *
- * Collapse behavior (best practice from VS Code / Premiere-style layouts):
- * - The chevron (or dragging the resize handle past the minimum) collapses
- *   the panel to a slim strip.
- * - The strip shows the panel title rotated (vertical panels) or inline
- *   (bottom panel); clicking it expands the panel again.
- * - Collapse/expand state lives in the workspace store and is persisted.
+ * Collapse behavior: the chevron (or dragging the resize handle past the
+ * minimum) collapses the panel to a slim strip that shows the title rotated
+ * (vertical panels) or inline (bottom panel); clicking it expands the panel
+ * again. Collapse/expand state lives in the workspace store and is persisted.
+ *
+ * A collapsible panel only collapses cleanly when the space it frees can be
+ * absorbed by the panel to its right: `react-resizable-panels` flows the
+ * collapse delta that way, so a panel placed in the middle depends on its
+ * neighbour's headroom. When the delta cannot be absorbed the library refuses
+ * and leaves the layout untouched, which is why the effect below reconciles the
+ * store against the library's real state. Prefer placing collapsible panels
+ * first in a group rather than in the middle.
  *
  * The parent registers the imperative panel handle so a double-click on a
  * resize handle can reset the neighboring panel to its default size.
@@ -69,10 +75,24 @@ export function PanelShell({
 
   useEffect(() => {
     if (prevCollapsed.current === collapsed) return
+    // On the mount pass the panel already mounts at the right size via
+    // `initialSize`, so there is nothing to reconcile, and the library has no
+    // computed layout yet (jsdom never has one, and `isCollapsed()` asserts).
+    // Only a real transition can be refused, so only it needs the check.
+    const isMount = prevCollapsed.current === null
     prevCollapsed.current = collapsed
+
     if (collapsed) panelRef.current?.collapse()
     else panelRef.current?.expand()
-  }, [collapsed])
+
+    if (isMount) return
+
+    // The library owns the geometry and can refuse: its layout math falls back to
+    // the previous layout when the delta has nowhere to go. Read its answer back
+    // and correct ours, or the store claims a collapse that never happened.
+    const actuallyCollapsed = panelRef.current?.isCollapsed() === true
+    if (actuallyCollapsed !== collapsed) setCollapsed(id, actuallyCollapsed)
+  }, [collapsed, id, setCollapsed])
 
   const expand = () => {
     setCollapsed(id, false)

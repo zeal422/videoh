@@ -36,6 +36,9 @@ describe('preview panel layout wiring', () => {
     expect(at, 'EditorShell must render a panel-preview ResizablePanel').toBeGreaterThan(-1)
     const element = shell.slice(at, shell.indexOf('/>', at))
     expect(element).toMatch(/className="flex min-h-0 min-w-0"/)
+    // The Source Monitor must render before the preview panel: a middle panel's
+    // collapse cannot be absorbed, so the order is load-bearing (0.7.3).
+    expect(shell.indexOf('id="source"')).toBeLessThan(shell.indexOf('id="panel-preview"'))
   })
 
   it('keeps the transport row fixed-height and shrink-0 (always visible)', () => {

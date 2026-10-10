@@ -1849,6 +1849,20 @@ panels_collapse() {
   ab find role button click --name 'Collapse Media panel' >/dev/null && sleep 0.5
   snap | grep -q 'Expand Media panel' # stays collapsed: keeps workspace dirty for reset
 }
+panels_collapse_pair() {
+  ab find role button click --name 'Collapse Source Monitor panel' >/dev/null && sleep 0.5
+  ab find role button click --name 'Collapse Inspector panel' >/dev/null && sleep 0.5
+  # BOTH strips must be thin at the same time. Before the fix the Source Monitor
+  # could not collapse at all (it kept its full width with a strip drawn inside),
+  # and collapsing the Inspector reopened it, so this reads not-thin.
+  #
+  # The measurement MUST be the last command of the function. A bash function
+  # returns the status of its last command, battery.sh runs without `set -e`, and
+  # step() keys PASS/FAIL on that status. Appending ANY command after this line
+  # (an expand click, a sleep, a bare `true`) silently discards the verdict and
+  # the red proof stops working.
+  [ "$(evaln '(() => { const w = (id) => document.querySelector("[data-panel-id=" + id + "]").getBoundingClientRect().width; return (w("panel-source") < 80 && w("panel-inspector") < 80) ? "both-thin" : "not-thin"; })()')" = "both-thin" ]
+}
 panels_reset() {
   ab find role menuitem click --name 'Window' >/dev/null && sleep 0.4
   ab find role menuitem click --name 'Reset Workspace Layout' >/dev/null && sleep 0.8
@@ -2563,6 +2577,7 @@ step "f08 ripple: Shift+Delete removes the pasted copy" f08_ripple_delete
 step "menus: all 9 application menus open"         menus_open
 step "menus: View > Snapping toggles off"          menu_snapping
 step "panels: collapse Media panel (strip shown)"  panels_collapse
+step "panels: collapse Source and Inspector (both strips, no reopen)" panels_collapse_pair
 step "panels: Window > Reset Workspace Layout"     panels_reset
 step "panels: reset expanded Media again"          panels_expand_after_reset
 step "f08 autosave: reload -> restore session"     f08_autosave

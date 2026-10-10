@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.3] - 2026-10-10
+
+### Fixed
+
+- **Source Monitor collapse.** Collapsing the Source Monitor drew a thin strip inside a panel that kept
+  its full width, and collapsing anything next to it reopened the Source Monitor at its 44% maximum, so
+  the two upper-row panels could not both be collapsed. The cause was the panel's position:
+  `react-resizable-panels` only flows a middle panel's freed space into the panel to its right, and the
+  Inspector is pinned at its own maximum, so the collapse was refused outright while `PanelShell` drew
+  the strip from the store flag regardless. The upper row is now `source | preview | inspector`, so the
+  Source Monitor's space flows into the unbounded Program Monitor and collapses cleanly, and the
+  Inspector still collapses into the space to its left. `PanelShell` also reconciles the workspace store
+  against the library's real layout after every collapse or expand, so a refused collapse (which still
+  happens when the Program Monitor is hidden from the Window menu) reverts the flag instead of leaving a
+  phantom strip, and a neighbour's collapse can never resurrect a panel at its maximum. Both upper-row
+  panels can now be collapsed together at `[2.5, 95, 2.5]` with the Program Monitor filling the middle.
+  Two static locks and a new battery step (`panels_collapse_pair`) pin the behaviour.
+
 ## [0.7.2] - 2026-10-09
 
 ### Added

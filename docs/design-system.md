@@ -72,8 +72,12 @@ The video surfaces stay dark regardless of the token theme, the way an NLE's mon
   back to a fixed stacked layout. Panel sizes, collapsed state, and visibility persist via
   `workspace.ts`.
 - **The Source monitor is the fifth workspace panel** (`panel-source`, the upper row is
-  `preview | source | inspector`), built exactly like the inspector: a `PanelShell` plus a
-  `HandleWithReset` inside the upper `ResizablePanelGroup`. It follows the flex-chain rule above.
+  `source | preview | inspector`), built exactly like the inspector: a `PanelShell` plus a
+  `HandleWithReset` inside the upper `ResizablePanelGroup`. The Source Monitor sits FIRST, not in the
+  middle: in a shared row a collapsible panel's freed space can only flow into the panel to its right,
+  so a collapsible panel placed first flows into the unbounded Program Monitor and always collapses
+  cleanly, while one placed in the middle depends on its neighbour's headroom and can refuse. It
+  follows the flex-chain rule above.
   Its root is `flex min-h-0 flex-1 flex-col`, the preview host is `aspect-video shrink-0`, and the
   transport/marks rows sit under it. Desktop-only: the mobile `CompactLayout` mounts no workspace
   panels. Empty state is muted text ("No source selected"); the marked-span readout turns
