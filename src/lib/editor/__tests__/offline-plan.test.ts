@@ -3,13 +3,22 @@ import { readFileSync } from 'node:fs'
 import {
   clipCrossfadeSchedule,
   clipGainSchedule,
+  estimateExportBytes,
   exportFrameTimes,
   needsReverse,
   planAudioFrame,
   planVideoFrame,
   videoAssetIds,
 } from '../export/offline'
-import { closeDecodedFrames, pickAudioCodec, preloadImage, renderAudioMix } from '../export/mp4'
+import {
+  closeDecodedFrames,
+  createExportOutput,
+  exportTimeline,
+  pickAudioCodec,
+  preloadImage,
+  renderAudioMix,
+} from '../export/mp4'
+import { BufferTarget, StreamTarget } from 'mediabunny'
 import { blendWeight } from '../export/offline'
 import { addBlendLayer, beginBlendPair } from '../playback/compositor'
 import { createFake2DContext } from './mocks/browser-mocks'
@@ -999,5 +1008,130 @@ describe('videoAssetIds + needsReverse', () => {
     expect(needsReverse(d)).toBe(false)
     const d2 = doc([{ kind: 'video', clips: [videoClip({ reverse: true })] }], [a])
     expect(needsReverse(d2)).toBe(true)
+  })
+})
+
+describe('estimateExportBytes', () => {
+  it('is duration times the tier bitrates over 8', () => {
+    expect(estimateExportBytes(10, 'low')).toBe(Math.round((10 * (2_500_000 + 192_000)) / 8))
+    expect(estimateExportBytes(10, 'medium')).toBe(Math.round((10 * (6_000_000 + 192_000)) / 8))
+    expect(estimateExportBytes(10, 'high')).toBe(Math.round((10 * (12_000_000 + 192_000)) / 8))
+  })
+
+  it('is zero for a non-positive duration', () => {
+    expect(estimateExportBytes(0, 'medium')).toBe(0)
+    expect(estimateExportBytes(-5, 'medium')).toBe(0)
+  })
+
+  it('scales linearly with duration', () => {
+    expect(estimateExportBytes(20, 'medium')).toBe(estimateExportBytes(10, 'medium') * 2)
+  })
+})
+
+describe('createExportOutput (bounded export target)', () => {
+  it('buffers in memory by default', () => {
+    const { output, target, streamed } = createExportOutput()
+    expect(streamed).toBe(false)
+    expect(target).toBeInstanceOf(BufferTarget)
+    expect(output).toBeDefined()
+  })
+
+  it('streams through a StreamTarget over the file sink', () => {
+    const sink = { write: async () => {}, close: async () => {}, abort: async () => {} }
+    const { target, streamed } = createExportOutput(sink)
+    expect(streamed).toBe(true)
+    expect(target).toBeInstanceOf(StreamTarget)
+  })
+
+  it('bounds retained chunks under a slow sink', async () => {
+    // A slow sink: writes are not awaited by the target, so chunks can pile up
+    // if the target does not bound them.
+    const sink = {
+      write: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1))
+      },
+      close: async () => {},
+      abort: async () => {},
+    }
+    const { target } = createExportOutput(sink)
+    const t = target as unknown as {
+      _start(): void
+      _write(data: Uint8Array, position: number): void
+      _flush(): Promise<void>
+      _finalize(): Promise<void>
+      _chunks: unknown[]
+    }
+    t._start()
+    const CHUNK = 2 ** 24
+    // One byte at six distinct chunk-aligned positions: six non-contiguous
+    // chunks in one flush, which must not all be retained.
+    for (let i = 0; i < 6; i++) t._write(new Uint8Array([i]), i * CHUNK)
+    await t._flush()
+    expect(t._chunks.length).toBeLessThanOrEqual(3)
+    await t._finalize()
+  })
+
+  it('sets chunked: true so the target buffer is bounded (static lock)', () => {
+    const src = readFileSync(new URL('../export/mp4.ts', import.meta.url), 'utf8')
+    expect(src).toMatch(/new StreamTarget\(writable, \{ chunked: true \}\)/)
+  })
+
+  it('returns a discriminated result with blob and file kinds (static lock)', () => {
+    const src = readFileSync(new URL('../export/mp4.ts', import.meta.url), 'utf8')
+    expect(src).toMatch(/kind: 'blob'/)
+    expect(src).toMatch(/kind: 'file'/)
+    // The streamed path commits only after finalize resolves.
+    expect(src).toMatch(/await opts\.fileStream\.close\(\)/)
+  })
+})
+
+describe('export sink lifecycle (static locks)', () => {
+  const src = () => readFileSync(new URL('../export/mp4.ts', import.meta.url), 'utf8')
+
+  it('runs setup inside the try so a setup failure aborts the sink', () => {
+    const s = src()
+    const startAt = s.indexOf('await output.start()')
+    const catchAt = s.indexOf('} catch (error) {')
+    expect(startAt).toBeGreaterThan(-1)
+    expect(catchAt).toBeGreaterThan(startAt)
+    expect(s.slice(catchAt)).toMatch(/if \(streamed\) await safeAbort\(opts\.fileStream\)/)
+  })
+
+  it('aborts the sink when the commit fails too (close is inside the try)', () => {
+    const s = src()
+    const closeAt = s.indexOf('await opts.fileStream.close()')
+    const catchAt = s.indexOf('} catch (error) {')
+    expect(closeAt).toBeGreaterThan(-1)
+    expect(closeAt).toBeLessThan(catchAt)
+  })
+})
+
+describe('export dialog streamed path (static locks)', () => {
+  const src = () =>
+    readFileSync(new URL('../../../components/editor/ExportDialog.tsx', import.meta.url), 'utf8')
+
+  it('calls showSaveFilePicker through window and separates dismissal from failure', () => {
+    const s = src()
+    expect(s).toMatch(/picker\.call\(window,/)
+    expect(s).toMatch(/error\.name === 'AbortError'/)
+    expect(s).toMatch(/await handle\.createWritable\(\)/)
+  })
+})
+
+describe('exportTimeline preflight (file sink)', () => {
+  it('aborts a provided file sink when the preflight fails', async () => {
+    const calls: string[] = []
+    const sink = {
+      write: async () => {},
+      close: async () => {
+        calls.push('close')
+      },
+      abort: async () => {
+        calls.push('abort')
+      },
+    }
+    // In Node there is no WebCodecs, so the preflight throws before any encode.
+    await expect(exportTimeline(doc([], []), { fileStream: sink })).rejects.toThrow()
+    expect(calls).toEqual(['abort'])
   })
 })

@@ -1,5 +1,6 @@
 'use client'
 
+import { effectiveMediaUrl } from '../media/proxies'
 import { useEditorStore } from '../store'
 import type { MediaAsset } from '../types'
 
@@ -32,7 +33,8 @@ export function attachSourcePreview(
   el.setAttribute('aria-label', `${asset.name} source preview`)
   el.playsInline = true
   el.preload = 'metadata'
-  if (asset.url) el.src = asset.url
+  const url = effectiveMediaUrl(asset)
+  if (url) el.src = url
   el.addEventListener('timeupdate', () => writeTime(el))
   el.addEventListener('seeked', () => writeTime(el))
   el.addEventListener('play', () => notify?.())

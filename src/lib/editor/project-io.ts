@@ -4,6 +4,8 @@ import { toast } from '@/hooks/use-toast'
 
 import { relinkPatchFrom, type RelinkMode } from './media/relink'
 import { importFile } from './media/probe'
+import { buildProxy, revokeAllProxies } from './media/proxies'
+import { shouldProxy } from './proxy'
 import {
   planSampleLoad,
   sampleImportAction,
@@ -70,6 +72,7 @@ export async function importMediaFiles(
 ): Promise<number> {
   const sampleMode = options?.sampleMode ?? 'sample'
   let imported = 0
+  const heavy: MediaAsset[] = []
   for (const file of Array.from(files)) {
     try {
       const asset = await importFile(file)
@@ -88,6 +91,7 @@ export async function importMediaFiles(
         continue
       } else {
         store.apply({ type: 'addMediaAsset', asset })
+        if (shouldProxy(asset)) heavy.push(asset)
       }
       imported += 1
     } catch (error) {
@@ -95,6 +99,17 @@ export async function importMediaFiles(
         title: `Could not import ${file.name}`,
         description: error instanceof Error ? error.message : String(error),
         variant: 'destructive',
+      })
+    }
+  }
+  // Heavy sources: build a proxy now when proxies are on, else prompt once.
+  if (heavy.length > 0) {
+    if (useEditorStore.getState().proxiesEnabled) {
+      for (const asset of heavy) void buildProxy(asset)
+    } else {
+      toast({
+        title: 'Heavy source imported',
+        description: `${heavy.map((a) => a.name).join(', ')} exceeds 1920 px. Enable View > Use Proxies for smoother preview.`,
       })
     }
   }
@@ -323,6 +338,8 @@ export async function openProjectFile(file: File): Promise<void> {
     // still needs the user's file.
     const { doc, relinked, remaining, failed } = await hydrateSampleMedia(loaded)
     if (!isCurrentProjectLoad(loadId)) return // a newer request superseded this one
+    // The old project's proxy object URLs belong to it; revoke them.
+    revokeAllProxies()
     useEditorStore.getState().replaceDoc(doc)
     for (const name of failed) {
       // Hydration failures are REPORTED here, not toasted mid-fetch by the

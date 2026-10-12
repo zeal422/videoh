@@ -36,15 +36,19 @@ export class ClipMediaPool {
     return el
   }
 
-  /** Returns the element for this clip, creating it (or re-creating after relink). */
-  get(clip: Clip, asset: MediaAsset): HTMLVideoElement | HTMLAudioElement {
+  /**
+   * Returns the element for this clip, creating it (or re-creating after relink
+   * or a proxy URL change). `url` is the effective source URL: the original by
+   * default, or the proxy when proxies are enabled and ready.
+   */
+  get(clip: Clip, asset: MediaAsset, url: string = asset.url): HTMLVideoElement | HTMLAudioElement {
     const existing = this.els.get(clip.id)
-    if (existing && existing.dataset.assetId === asset.id && existing.src === asset.url) {
+    if (existing && existing.dataset.assetId === asset.id && existing.src === url) {
       return existing
     }
     if (existing) this.release(clip.id)
 
-    const el = this.create(asset)
+    const el = this.create(asset, url)
     if (el instanceof HTMLVideoElement) el.muted = false // it must stay audible
     this.els.set(clip.id, el)
     return el
@@ -53,31 +57,32 @@ export class ClipMediaPool {
   /**
    * The parked element showing the frame AFTER this clip's current one, for
    * sub-frame-rate blending, or undefined for a non-video asset. Created (or
-   * re-created after a relink) on demand; positioned by the playback engine.
+   * re-created after a relink or proxy change) on demand; positioned by the
+   * playback engine.
    *
    * It is MUTED: it must never add a second copy of the clip's audio, and it is
    * never handed to `getSourceNode`, so it stays out of the Web Audio graph.
    */
-  getNext(clip: Clip, asset: MediaAsset): HTMLVideoElement | undefined {
+  getNext(clip: Clip, asset: MediaAsset, url: string = asset.url): HTMLVideoElement | undefined {
     if (asset.kind !== 'video') return undefined
     const existing = this.nextEls.get(clip.id)
-    if (existing && existing.dataset.assetId === asset.id && existing.src === asset.url) {
+    if (existing && existing.dataset.assetId === asset.id && existing.src === url) {
       return existing
     }
     if (existing) this.releaseNext(clip.id)
-    const el = this.create(asset) as HTMLVideoElement
+    const el = this.create(asset, url) as HTMLVideoElement
     el.muted = true
     this.nextEls.set(clip.id, el)
     return el
   }
 
-  /** Creates a hidden element wired to an asset and parks it in the container. */
-  private create(asset: MediaAsset): HTMLVideoElement | HTMLAudioElement {
+  /** Creates a hidden element wired to a URL and parks it in the container. */
+  private create(asset: MediaAsset, url: string): HTMLVideoElement | HTMLAudioElement {
     const el =
       asset.kind === 'video' ? document.createElement('video') : document.createElement('audio')
     el.dataset.assetId = asset.id
     el.preload = 'auto'
-    el.src = asset.url
+    el.src = url
     if (el instanceof HTMLVideoElement) el.playsInline = true
     this.ensureContainer().appendChild(el)
     return el

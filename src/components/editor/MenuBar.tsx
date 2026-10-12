@@ -57,6 +57,7 @@ import { buildMenus, type MenuActionId, type MenuContext } from '@/lib/editor/me
 import { CURRENT_VERSION } from '@/lib/releases'
 import { hasNavigableMarkers, markerSelectionExists, neighborMarker } from '@/lib/editor/markers'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
+import { revokeAllProxies } from '@/lib/editor/media/proxies'
 import {
   downloadProjectJSON,
   importMediaFiles,
@@ -95,6 +96,7 @@ export function MenuBar({
   const selectedMarker = useEditorStore((s) => s.selectedMarker)
   const playhead = useEditorStore((s) => s.playhead)
   const snapEnabled = useEditorStore((s) => s.snapEnabled)
+  const proxiesEnabled = useEditorStore((s) => s.proxiesEnabled)
   const pxPerSec = useEditorStore((s) => s.pxPerSec)
   const doc = useEditorStore((s) => s.doc)
 
@@ -148,6 +150,7 @@ export function MenuBar({
     hasMarkers,
     hasSelectedMarker: !!selectedMarker && markerSelectionExists(doc, selectedMarker),
     snapEnabled,
+    proxiesEnabled,
     panelHidden,
     workspaceDirty:
       PANEL_IDS.some((id) => panelHidden[id]) ||
@@ -204,6 +207,7 @@ export function MenuBar({
             // flight: without the bump, a pending open could overwrite this
             // brand-new project when its hydration lands.
             bumpProjectGeneration()
+            revokeAllProxies()
             store.replaceDoc(createDoc())
             toast({ title: 'New project created' })
             break
@@ -394,6 +398,9 @@ export function MenuBar({
             break
           case 'view.toggleSnap':
             store.toggleSnap()
+            break
+          case 'view.useProxies':
+            store.setProxiesEnabled(!store.proxiesEnabled)
             break
 
           case 'window.toggleMedia':

@@ -38,6 +38,10 @@ export function SourcePanel({ className }: { className?: string }) {
   const asset = sourceAssetId ? doc.media.find((m) => m.id === sourceAssetId) : undefined
   const assetId = asset?.id
   const assetUrl = asset?.url
+  // The mounted preview must reroute when proxies toggle or a build completes,
+  // not only when the selected asset or the original URL changes.
+  const proxiesEnabled = useEditorStore((s) => s.proxiesEnabled)
+  const proxyUrl = useEditorStore((s) => (assetId ? s.proxyByAssetId[assetId]?.url : undefined))
   const hasWindow = !!asset && asset.kind !== 'image' && asset.duration > 0
   const playing = sourcePreviewIsPlaying()
 
@@ -45,6 +49,10 @@ export function SourcePanel({ className }: { className?: string }) {
   // Transport icon state lives on the element, so event callbacks force one
   // re-render (the store owns the time; this only mirrors play/pause).
   const [, forceRender] = useReducer((n: number) => n + 1, 0)
+  // Records the live element's state when it is released, so a re-attach for the
+  // SAME asset (a proxy toggle or a finished build) can restore it. An asset
+  // change is a fresh selection and intentionally starts at zero.
+  const releasedRef = useRef<{ id: string; time: number; playing: boolean } | null>(null)
 
   useEffect(() => {
     const host = hostRef.current
@@ -55,9 +63,24 @@ export function SourcePanel({ className }: { className?: string }) {
     // image itself below. Attaching a video element to a PNG only ever left a
     // black box behind (the demuxer cannot open it).
     if (current.kind === 'image') return
+    const resume = releasedRef.current?.id === assetId ? releasedRef.current : null
     attachSourcePreview(host, current, () => forceRender())
-    return () => detachSourcePreview()
-  }, [assetId, assetUrl])
+    // attachSourcePreview seeds the readout from the fresh element (0); restore
+    // the time and playing state captured when the same asset was released, so
+    // toggling proxies does not jump the source monitor back to zero.
+    if (resume) {
+      if (resume.time > 0) sourcePreviewSeek(resume.time)
+      if (resume.playing) sourcePreviewPlay()
+    }
+    return () => {
+      releasedRef.current = {
+        id: assetId,
+        time: useEditorStore.getState().sourcePlayhead,
+        playing: sourcePreviewIsPlaying(),
+      }
+      detachSourcePreview()
+    }
+  }, [assetId, assetUrl, proxiesEnabled, proxyUrl])
 
   if (!asset) {
     return (

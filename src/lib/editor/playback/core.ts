@@ -31,6 +31,12 @@ import { drawFrame, type FrameBlendSource } from './compositor'
 export interface PlaybackCoreOptions {
   canvas: HTMLCanvasElement
   getDoc: () => Doc
+  /**
+   * The effective source URL for an asset: the proxy URL when proxies are on
+   * and ready, else `asset.url`. Omitted by the export engine and by tests,
+   * which always read the original.
+   */
+  resolveMediaUrl?: (asset: MediaAsset) => string
   onFrame?: (t: number) => void
   onEnd?: () => void
   onPlayingChange?: (playing: boolean) => void
@@ -427,7 +433,7 @@ export class PlaybackCore {
         // touch has always just had its element released.
         if (!mediaPlayable(asset)) continue
         const active = t >= clip.start && t < clip.start + clip.duration
-        const el = this.pool.get(clip, asset)
+        const el = this.pool.get(clip, asset, this.mediaUrl(asset))
         // Clamped into the asset: a ramp may over-consume its source, and the
         // excess freezes on the last readable frame (mp4.ts clamps identically).
         const expected = clampSourceTime(this.sourceTime(clip, t), asset)
@@ -501,7 +507,7 @@ export class PlaybackCore {
       this.pool.releaseNext(clip.id)
       return
     }
-    const el = this.pool.getNext(clip, asset)
+    const el = this.pool.getNext(clip, asset, this.mediaUrl(asset))
     if (!el) return
     this.watchPresentedFrames(el)
     if (!active) {
@@ -798,6 +804,10 @@ export class PlaybackCore {
     }
   }
 
+  private mediaUrl(asset: MediaAsset): string {
+    return this.opts.resolveMediaUrl?.(asset) ?? asset.url
+  }
+
   private render(t: number): void {
     if (!this.ctx2d) return
     drawFrame({
@@ -835,7 +845,7 @@ export class PlaybackCore {
         if (asset.missing || !asset.url) continue
         const active = t >= clip.start && t < clip.start + clip.duration
         if (!active) continue
-        const el = this.pool.get(clip, asset)
+        const el = this.pool.get(clip, asset, this.mediaUrl(asset))
         // Clamped into the asset: a ramp may over-consume its source, and the
         // excess freezes on the last readable frame (mp4.ts clamps identically).
         const expected = clampSourceTime(this.sourceTime(clip, t), asset)
@@ -864,7 +874,7 @@ export class PlaybackCore {
           this.pool.releaseNext(clip.id)
           continue
         }
-        const next = this.pool.getNext(clip, asset)
+        const next = this.pool.getNext(clip, asset, this.mediaUrl(asset))
         if (!next) continue
         this.watchPresentedFrames(next)
         const target = clampSourceTime(partner, asset)
@@ -915,7 +925,7 @@ export class PlaybackCore {
     if (asset.kind === 'video') {
       // Missing (restored) assets have no URL: never build an element for them.
       if (asset.missing || !asset.url) return undefined
-      const el = this.pool.get(clip, asset) as HTMLVideoElement
+      const el = this.pool.get(clip, asset, this.mediaUrl(asset)) as HTMLVideoElement
       this.watchPresentedFrames(el)
       // Sub-frame-rate reads hand the compositor the parked partner as well, so
       // the monitor blends the pair the exporter blends instead of holding a

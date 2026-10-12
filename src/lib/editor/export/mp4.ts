@@ -11,6 +11,8 @@ import {
   Mp4OutputFormat,
   Output,
   Quality,
+  StreamTarget,
+  type StreamTargetChunk,
   VideoSampleSink,
   VideoSampleSource,
 } from 'mediabunny'
@@ -26,6 +28,8 @@ import {
   blendWeight,
   clipCrossfadeSchedule,
   clipGainSchedule,
+  EXPORT_AUDIO_BITRATE,
+  EXPORT_VIDEO_BITRATES,
   planVideoFrame,
   type ClipDraw,
 } from './offline'
@@ -57,21 +61,32 @@ export interface ExportHandle {
   cancelled: boolean
 }
 
-export interface ExportResult {
-  blob: Blob
-  mimeType: string
-  duration: number
+/**
+ * The outcome of an export: a Blob for the in-memory Download, or the file
+ * name and byte count for a streamed Export to file (no Blob exists there).
+ */
+export type ExportResult =
+  | { kind: 'blob'; blob: Blob; mimeType: string; duration: number }
+  | { kind: 'file'; fileName: string; bytes: number; mimeType: string; duration: number }
+
+/**
+ * The file-like sink a streamed export writes to. A `FileSystemWritableFileStream`
+ * satisfies this structurally; keeping it minimal keeps the streamed target
+ * Node-testable.
+ */
+export interface ExportFileSink {
+  write(chunk: StreamTargetChunk): Promise<void>
+  close(): Promise<void>
+  abort(reason?: unknown): Promise<void>
 }
 
 export interface ExportOptions {
   onProgress?: (t: number, duration: number) => void
   quality?: 'low' | 'medium' | 'high'
-}
-
-const BITRATES: Record<NonNullable<ExportOptions['quality']>, number> = {
-  low: 2_500_000,
-  medium: 6_000_000,
-  high: 12_000_000,
+  /** Stream the MP4 to this file sink instead of buffering it in memory. */
+  fileStream?: ExportFileSink
+  /** The name reported for a streamed export. */
+  fileName?: string
 }
 
 const AUDIO_SAMPLE_RATE = 48_000
@@ -314,79 +329,130 @@ async function decodeAudio(file: File, ctx: BaseAudioContext): Promise<AudioBuff
   }
 }
 
+/**
+ * The muxer target for an export: an in-memory BufferTarget by default, or a
+ * chunked StreamTarget over the caller's file sink. Node-constructible so the
+ * streamed target shape is testable.
+ *
+ * The wrapper's `close()` deliberately does NOT touch the file: mediabunny
+ * closes unfinalized targets in `Output.finalize()`'s `finally` even when
+ * finalization threw, so a wrapper that committed on close would commit a
+ * partial file on failure. The caller commits the file only after finalize
+ * resolves.
+ */
+export function createExportOutput(fileStream?: ExportFileSink): {
+  output: Output
+  target: BufferTarget | StreamTarget
+  streamed: boolean
+} {
+  if (!fileStream) {
+    const target = new BufferTarget()
+    return {
+      output: new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target }),
+      target,
+      streamed: false,
+    }
+  }
+  const writable = new WritableStream<StreamTargetChunk>({
+    write: (chunk) => fileStream.write(chunk),
+  })
+  const target = new StreamTarget(writable, { chunked: true })
+  return {
+    output: new Output({ format: new Mp4OutputFormat(), target }),
+    target,
+    streamed: true,
+  }
+}
+
+/** Aborts a file sink, ignoring one that is already closed. */
+async function safeAbort(sink: ExportFileSink | undefined): Promise<void> {
+  if (!sink) return
+  try {
+    await sink.abort()
+  } catch {
+    // already closed or aborted
+  }
+}
+
 /** Renders the whole timeline to an MP4 blob (H.264 + AAC/Opus). Throws on unsupported browsers. */
 export async function exportTimeline(
   doc: Doc,
   opts: ExportOptions = {},
   handle: ExportHandle = { cancelled: false },
 ): Promise<ExportResult> {
-  if (!webCodecsSupported()) {
-    throw new Error(
-      'This browser does not support WebCodecs export (use a current Chromium, Edge, Firefox 130+, or Safari 26+)',
-    )
+  // Create the output (and any streamed sink) FIRST: every failure below,
+  // including the preflight, must be able to abort a sink the caller opened.
+  const { output, target, streamed } = createExportOutput(opts.fileStream)
+  // The final file size, from the target's write ranges (the largest end offset).
+  let bytes = 0
+  if (streamed) {
+    target.on('write', ({ end }) => {
+      bytes = Math.max(bytes, end)
+    })
   }
-  const duration = docDuration(doc)
-  if (duration <= 0) throw new Error('Timeline is empty, nothing to export')
 
-  const { width, height, fps } = doc.project
-
-  // Offscreen export canvas.
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('Canvas 2D context unavailable')
-
-  // MP4 output (H.264 + AAC/Opus, in memory; timelines here are MVP-scale).
-  const output = new Output({
-    format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
-    target: new BufferTarget(),
-  })
-  const videoSource = new CanvasSource(canvas, {
-    codec: 'avc',
-    quality: new Quality({ bitrate: BITRATES[opts.quality ?? 'medium'] }),
-  })
-  output.addVideoTrack(videoSource, { frameRate: fps })
-
-  // Decode contexts per video asset (frame-accurate reads).
-  const decode = await createDecodeContext(doc)
-
-  // Audio mix first (fast, offline). Every track must exist before the output
-  // is started, Mediabunny rejects `addTrack` afterwards, so the audio
-  // source is created and attached here, then fed after the video loop.
-  const audioBuffer = await renderAudioMix(doc, duration)
-  const audioSource = audioBuffer ? await createAudioSource() : null
-  if (audioSource) output.addAudioTrack(audioSource)
-
-  await output.start()
-
-  const totalFrames = Math.max(0, Math.round(duration * fps))
   const frames = new Map<string, VideoFrame | ImageBitmap | HTMLImageElement>()
   // The second decoded frame of a blended draw, keyed by clip id like `frames`
   // (which the blend never extends: a blended clip keeps its primary sample).
   const blends = new Map<string, BlendSample>()
-
-  // Image elements once (they never decode per-frame). Await the decode before
-  // the loop: a still-decoding image would leave the first frames blank. A
-  // failed decode only drops that image, it never aborts the export.
-  const imageCache = new Map<string, HTMLImageElement>()
-  const pendingImages: Promise<void>[] = []
-  for (const asset of doc.media) {
-    if (asset.kind !== 'image' || !asset.url) continue
-    const img = new Image()
-    img.src = asset.url
-    imageCache.set(asset.id, img)
-    // A failed decode drops the entry: the cache only ever holds drawable
-    // images, so the export does not have to defend against broken ones.
-    pendingImages.push(preloadImage(img, () => imageCache.delete(asset.id)))
-  }
-  await Promise.all(pendingImages)
-
   // Set once `finalize()` resolves: a finalized output must not be cancelled
   // (cancel on it is a harmless no-op, but the flag keeps the intent exact).
   let finalized = false
 
   try {
+    if (!webCodecsSupported()) {
+      throw new Error(
+        'This browser does not support WebCodecs export (use a current Chromium, Edge, Firefox 130+, or Safari 26+)',
+      )
+    }
+    const duration = docDuration(doc)
+    if (duration <= 0) throw new Error('Timeline is empty, nothing to export')
+
+    const { width, height, fps } = doc.project
+
+    // Offscreen export canvas.
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('Canvas 2D context unavailable')
+
+    const totalFrames = Math.max(0, Math.round(duration * fps))
+
+    const videoSource = new CanvasSource(canvas, {
+      codec: 'avc',
+      quality: new Quality({ bitrate: EXPORT_VIDEO_BITRATES[opts.quality ?? 'medium'] }),
+    })
+    output.addVideoTrack(videoSource, { frameRate: fps })
+
+    // Decode contexts per video asset (frame-accurate reads).
+    const decode = await createDecodeContext(doc)
+
+    // Audio mix first (fast, offline). Every track must exist before the output
+    // is started, Mediabunny rejects `addTrack` afterwards, so the audio
+    // source is created and attached here, then fed after the video loop.
+    const audioBuffer = await renderAudioMix(doc, duration)
+    const audioSource = audioBuffer ? await createAudioSource() : null
+    if (audioSource) output.addAudioTrack(audioSource)
+
+    await output.start()
+
+    // Image elements once (they never decode per-frame). Await the decode before
+    // the loop: a still-decoding image would leave the first frames blank. A
+    // failed decode only drops that image, it never aborts the export.
+    const imageCache = new Map<string, HTMLImageElement>()
+    const pendingImages: Promise<void>[] = []
+    for (const asset of doc.media) {
+      if (asset.kind !== 'image' || !asset.url) continue
+      const img = new Image()
+      img.src = asset.url
+      imageCache.set(asset.id, img)
+      // A failed decode drops the entry: the cache only ever holds drawable
+      // images, so the export does not have to defend against broken ones.
+      pendingImages.push(preloadImage(img, () => imageCache.delete(asset.id)))
+    }
+    await Promise.all(pendingImages)
+
     for (let i = 0; i < totalFrames; i++) {
       if (handle.cancelled) throw new Error('Export cancelled')
       const t = i / fps
@@ -459,6 +525,34 @@ export async function exportTimeline(
 
     await output.finalize()
     finalized = true
+
+    if (handle.cancelled) throw new Error('Export cancelled')
+
+    if (streamed && opts.fileStream) {
+      // finalize resolved: NOW commit the file (close, not abort).
+      await opts.fileStream.close()
+      return {
+        kind: 'file',
+        fileName: opts.fileName ?? 'export.mp4',
+        bytes,
+        mimeType: 'video/mp4',
+        duration,
+      }
+    }
+
+    const buffer = (target as BufferTarget).buffer
+    if (!buffer) throw new Error('Export produced no data')
+    return {
+      kind: 'blob',
+      blob: new Blob([buffer], { type: 'video/mp4' }),
+      mimeType: 'video/mp4',
+      duration,
+    }
+  } catch (error) {
+    // Any failure discards the destination: a streamed file is aborted, never
+    // committed (the wrapper's close() is a no-op, so nothing partial lands).
+    if (streamed) await safeAbort(opts.fileStream)
+    throw error
   } finally {
     closeDecodedFrames(frames)
     for (const blend of blends.values()) closeDecodedFrame(blend.frame)
@@ -475,16 +569,6 @@ export async function exportTimeline(
         // already cancelled or closed
       }
     }
-  }
-
-  if (handle.cancelled) throw new Error('Export cancelled')
-
-  const buffer = (output.target as BufferTarget).buffer
-  if (!buffer) throw new Error('Export produced no data')
-  return {
-    blob: new Blob([buffer], { type: 'video/mp4' }),
-    mimeType: 'video/mp4',
-    duration,
   }
 }
 
@@ -505,7 +589,7 @@ export async function pickAudioCodec(
 async function createAudioSource(): Promise<AudioBufferSource> {
   return new AudioBufferSource({
     codec: await pickAudioCodec(() => canEncodeAudio('aac')),
-    quality: new Quality({ bitrate: 192_000 }),
+    quality: new Quality({ bitrate: EXPORT_AUDIO_BITRATE }),
   })
 }
 

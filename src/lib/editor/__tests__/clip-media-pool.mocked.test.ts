@@ -77,6 +77,33 @@ describe('ClipMediaPool (mocked browser)', () => {
     expect(e1).not.toBe(e2)
   })
 
+  it('re-creates the element when the effective URL changes (proxy toggle)', () => {
+    const pool = new ClipMediaPool()
+    const c = clip('c1')
+    const a = asset()
+    const original = pool.get(c, a)
+    expect(original.src).toContain('blob:video')
+    const proxied = pool.get(c, a, 'blob:proxy')
+    expect(proxied).not.toBe(original)
+    expect(proxied.src).toContain('blob:proxy')
+    expect(document.body.contains(original)).toBe(false)
+    // Reverting the toggle restores the original URL.
+    const back = pool.get(c, a)
+    expect(back).not.toBe(proxied)
+    expect(back.src).toContain('blob:video')
+  })
+
+  it('routes the parked blend partner through the same effective URL', () => {
+    const pool = new ClipMediaPool()
+    const c = clip('c1')
+    const a = asset()
+    const first = pool.getNext(c, a)
+    expect(first?.src).toContain('blob:video')
+    const proxied = pool.getNext(c, a, 'blob:proxy')
+    expect(proxied).not.toBe(first)
+    expect(proxied?.src).toContain('blob:proxy')
+  })
+
   it('creates an audio element for audio assets', () => {
     const pool = new ClipMediaPool()
     const el = pool.get(clip('c1'), asset('audio'))

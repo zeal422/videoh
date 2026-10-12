@@ -34,6 +34,7 @@ import {
 } from '@/lib/editor/persistence'
 import { projectFileName, serializeDoc } from '@/lib/editor/serialization'
 import { hydrateSampleMedia, bumpProjectGeneration } from '@/lib/editor/project-io'
+import { revokeAllProxies } from '@/lib/editor/media/proxies'
 import { toast } from '@/hooks/use-toast'
 
 /**
@@ -214,6 +215,7 @@ export function EditorShell() {
       // Installing a project invalidates any in-flight project load; the bump
       // and the install are one step, so no load can land in between them.
       bumpProjectGeneration()
+      revokeAllProxies()
       useEditorStore.getState().replaceDoc(doc)
       useEditorStore.getState().setPendingRestore(null)
       // Hydration returns failures instead of toasting them, so they are

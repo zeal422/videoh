@@ -305,3 +305,31 @@ export function videoAssetIds(plan: FramePlan[]): Set<string> {
 export function needsReverse(doc: Doc): boolean {
   return doc.project.tracks.some((t) => t.clips.some((c) => c.reverse))
 }
+
+/**
+ * Video bitrate per quality tier (bits per second). The single source shared by
+ * the exporter's encoder and the dialog's size estimate, so the two cannot
+ * disagree about what a tier costs.
+ */
+export const EXPORT_VIDEO_BITRATES = {
+  low: 2_500_000,
+  medium: 6_000_000,
+  high: 12_000_000,
+} as const
+
+/** The MP4 audio bitrate (bits per second), matching the exporter's audio track. */
+export const EXPORT_AUDIO_BITRATE = 192_000
+
+/**
+ * Estimated MP4 size in bytes for a duration and quality tier, from the same
+ * bitrates the exporter encodes at. A hint for the dialog, not a guarantee:
+ * the real file size varies with encoder decisions.
+ */
+export function estimateExportBytes(
+  duration: number,
+  quality: keyof typeof EXPORT_VIDEO_BITRATES,
+): number {
+  if (!(duration > 0)) return 0
+  const bits = duration * (EXPORT_VIDEO_BITRATES[quality] + EXPORT_AUDIO_BITRATE)
+  return Math.round(bits / 8)
+}

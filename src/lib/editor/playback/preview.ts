@@ -1,6 +1,7 @@
 'use client'
 
 import { docDuration } from '../factories'
+import { effectiveMediaUrl } from '../media/proxies'
 import { useEditorStore } from '../store'
 import type { PlaybackController } from './engine-ref'
 import { playbackRef } from './engine-ref'
@@ -17,6 +18,7 @@ export function attachPreviewEngine(canvas: HTMLCanvasElement): PlaybackControll
   core = new PlaybackCore({
     canvas,
     getDoc: () => useEditorStore.getState().doc,
+    resolveMediaUrl: effectiveMediaUrl,
     onFrame: (t) => {
       const state = useEditorStore.getState()
       if (state.playhead !== t) state.setPlayhead(t)

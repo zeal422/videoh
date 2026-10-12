@@ -68,6 +68,7 @@ function baseCtx(overrides: Partial<MenuContext> = {}): MenuContext {
     hasMarkers: false,
     hasSelectedMarker: false,
     snapEnabled: true,
+    proxiesEnabled: false,
     panelHidden: { media: false, preview: false, source: false, inspector: false, timeline: false },
     workspaceDirty: false,
     ...overrides,

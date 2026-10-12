@@ -391,6 +391,33 @@ describe('Source monitor (three-point editing, 0.7.2)', () => {
     expect(document.querySelectorAll('[data-testid="source-preview"]')).toHaveLength(0)
   })
 
+  it('reroutes the mounted source preview when proxies toggle or a proxy becomes ready', () => {
+    const a = videoAsset('a.mp4', { width: 3840, height: 2160 })
+    installDoc([a])
+    useEditorStore.getState().setSourceAsset(a.id)
+    render(<SourcePanel />)
+
+    const preview = () =>
+      document.querySelector('[data-testid="source-preview"]') as HTMLVideoElement
+    expect(preview().getAttribute('src')).toContain('blob:a.mp4')
+
+    // A re-attach for the same asset must not reset the source playhead.
+    act(() => useEditorStore.getState().setSourcePlayhead(4))
+
+    // A ready proxy plus the toggle reroutes the already-mounted element.
+    act(() => {
+      useEditorStore.getState().setProxyEntry(a.id, { status: 'ready', url: 'blob:proxy' })
+      useEditorStore.getState().setProxiesEnabled(true)
+    })
+    expect(preview().getAttribute('src')).toContain('blob:proxy')
+    expect(useEditorStore.getState().sourcePlayhead).toBe(4)
+
+    // Turning proxies off restores the original and still keeps the playhead.
+    act(() => useEditorStore.getState().setProxiesEnabled(false))
+    expect(preview().getAttribute('src')).toContain('blob:a.mp4')
+    expect(useEditorStore.getState().sourcePlayhead).toBe(4)
+  })
+
   it('a still shows the still itself and never mounts a source <video>', () => {
     // Regression lock: the singleton used to be attached for EVERY asset with
     // a url, so a selected PNG got a <video src="blob:...png"> that could not

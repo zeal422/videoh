@@ -56,6 +56,7 @@ export type MenuActionId =
   | 'view.zoomOut'
   | 'view.zoomFit'
   | 'view.toggleSnap'
+  | 'view.useProxies'
   | 'window.toggleMedia'
   | 'window.togglePreview'
   | 'window.toggleSource'
@@ -88,6 +89,8 @@ export interface MenuContext {
   /** ≥2 selected clips in distinct groups — "Link" would do something. */
   canLink: boolean
   snapEnabled: boolean
+  /** Proxies are enabled for preview (View > Use Proxies). */
+  proxiesEnabled: boolean
   /** At least one reachable marker exists (sequence or visible clip marker). */
   hasMarkers: boolean
   /** A marker is selected (Edit/Delete Selected Marker are meaningful). */
@@ -427,6 +430,13 @@ export const MENU_SPECS: MenuSpec[] = [
         action: 'view.toggleSnap',
         shortcut: 'S',
         checked: (ctx) => ctx.snapEnabled,
+      },
+      {
+        id: 'view.useProxies',
+        kind: 'checkbox',
+        label: 'Use Proxies',
+        action: 'view.useProxies',
+        checked: (ctx) => ctx.proxiesEnabled,
       },
     ],
   },

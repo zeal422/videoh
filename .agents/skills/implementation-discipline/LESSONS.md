@@ -35,3 +35,30 @@ Would-have-caught: trigger 7 (proof names the action and the observed result) re
 ACTION's effect, not only the end state, after each step.
 Action: kept as a note (the workaround is dispatching a `contextmenu` event and clicking by role);
 no checklist rule needs it.
+
+## 2026-10-10 - plan review (fixing one defect introduced another)
+What happened: fixing the "proxy drops preview audio" finding, `PLAN-0.8.0-tier2.md` described the proxy
+audio decode as `Input -> getPrimaryAudioTrack() ... the exact pattern mp4.ts:160,505 already uses`.
+`mp4.ts` never calls `getPrimaryAudioTrack` (grep is empty); it decodes with `ctx.decodeAudioData` on the
+file (`mp4.ts:308`), and `toAudioBuffer()` is on a decoded `AudioSample` (`sample.d.ts:569`), not on an
+`InputAudioTrack`. The plan cited a precedent the repo does not have.
+Would-have-caught: rule 2 (read before you climb) applied to citations: a "the existing X already does
+this" line is a claim about the code, so open X and confirm the exact mechanism before writing it down.
+Action: kept as a note. In the plan this became a standing habit: every `file:line` and every
+"already does this" is opened before it ships.
+
+## 2026-10-10 - plan claim audit (a "pass" that was hand-counted)
+What happened: the plan's Class A audit claimed "pass (37 citations)" but had not opened every line, so
+it passed `core.ts:668` where the intended comment sits at `:671` (668 is the `computeGain` signature).
+A reviewer's line-by-line pass caught it.
+Would-have-caught: rule 7 (proof names the action and the observed result) applied to the audit itself: a
+citation check's result is the opened line, not a count of citations.
+Action: promoted the wording into the plan's Class A row ("read the named thing on that EXACT line; a
+list of line numbers is not a pass until each is opened").
+
+## 2026-10-11 - Feature C source inventory (search root was too narrow)
+What happened: the first `project.tracks` inventory searched editor modules and components but omitted
+`src/hooks/editor/useEditorKeyboard.ts`, reporting 90 line occurrences in 27 files instead of 92 in 28.
+Would-have-caught: rule 4 now requires structural sweeps from the full `src/` root, with test exclusions,
+separate line and file counts, and each source location opened.
+Action: promoted into rule 4.

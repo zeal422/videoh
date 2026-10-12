@@ -45,10 +45,13 @@ run starts smarter than the last.
       can do.
    5. Only then the minimum code that works: shortest working diff, fewest
       files, boring over clever.
-4. **Root cause, before patching a symptom.** Grep every caller of the
-   function you are about to touch. One guard in the shared function beats a
-   guard in every caller. When one instance is confirmed, sweep the module for
-   siblings and fix them in one pass.
+ 4. **Root cause, before patching a symptom.** Grep every caller of the
+    function you are about to touch. One guard in the shared function beats a
+    guard in every caller. When one instance is confirmed, sweep the module for
+    siblings and fix them in one pass. Structural sweeps start at the full
+    `src/` root, not guessed paths; exclude test trees explicitly, count matched
+    lines and distinct files, then open each source location before claiming the
+    inventory is complete.
 5. **Non-vacuous lock, for every new test.** Write it first, watch it fail on
    the unfixed code, then watch it pass. A lock never seen failing is
    decoration. Match the project's existing test tool and style, and leave the

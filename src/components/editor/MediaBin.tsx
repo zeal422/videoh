@@ -5,6 +5,7 @@ import {
   FileAudio,
   FileImage,
   FileVideo,
+  Gauge,
   Import,
   Link2,
   Loader2,
@@ -19,6 +20,8 @@ import { toast } from '@/hooks/use-toast'
 
 import { importFile } from '@/lib/editor/media/probe'
 import { relinkPatchFrom } from '@/lib/editor/media/relink'
+import { buildProxy, dropProxy } from '@/lib/editor/media/proxies'
+import { shouldProxy } from '@/lib/editor/proxy'
 import { commandsToAddMedia } from '@/lib/editor/actions'
 import { docDuration } from '@/lib/editor/factories'
 import { importMediaFiles, loadSampleMedia } from '@/lib/editor/project-io'
@@ -83,6 +86,8 @@ export function MediaBin({ className, heading = true }: { className?: string; he
   const removeAsset = (asset: MediaAsset) => {
     try {
       useEditorStore.getState().apply({ type: 'removeMediaAsset', mediaId: asset.id })
+      // The remove succeeded: the proxy's bytes belong to a gone asset.
+      dropProxy(asset.id)
     } catch (error) {
       toast({
         title: 'Could not remove media',
@@ -100,6 +105,8 @@ export function MediaBin({ className, heading = true }: { className?: string; he
         mediaId: asset.id,
         patch: relinkPatchFrom(fresh, 'manual'),
       })
+      // The source bytes changed, so any proxy built for the old file is stale.
+      dropProxy(asset.id)
       toast({ title: 'Media relinked', description: asset.name })
     } catch (error) {
       toast({
@@ -216,6 +223,10 @@ function MediaItem({
   const KindIcon =
     asset.kind === 'video' ? FileVideo : asset.kind === 'audio' ? FileAudio : FileImage
   const relinkInputRef = useRef<HTMLInputElement>(null)
+  const proxy = useEditorStore((s) => s.proxyByAssetId[asset.id])
+  // A proxy can only be built from a live source file: an offline (restored)
+  // heavy asset qualifies by size but has nothing to transcode.
+  const canProxy = shouldProxy(asset) && !!asset.file
 
   return (
     <div
@@ -263,6 +274,13 @@ function MediaItem({
                 : `${asset.duration.toFixed(1)}s`}
             </span>
           )}
+          {proxy?.status === 'ready' && <span className="text-[10px] text-emerald-500">proxy</span>}
+          {proxy?.status === 'building' && (
+            <span className="text-[10px] text-muted-foreground">proxy…</span>
+          )}
+          {proxy?.status === 'failed' && (
+            <span className="text-[10px] text-destructive">proxy failed</span>
+          )}
         </div>
       </div>
       <div className="flex shrink-0 flex-col gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
@@ -278,6 +296,11 @@ function MediaItem({
         <IconMiniButton label="Remove from bin" onClick={onRemove}>
           <Trash2 className="size-3.5" />
         </IconMiniButton>
+        {canProxy && proxy?.status !== 'building' && proxy?.status !== 'ready' && (
+          <IconMiniButton label="Build proxy" onClick={() => void buildProxy(asset)}>
+            <Gauge className="size-3.5" />
+          </IconMiniButton>
+        )}
       </div>
       <input
         ref={relinkInputRef}

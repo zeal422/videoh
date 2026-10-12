@@ -6,6 +6,7 @@ import { linkedClips } from './links'
 import { markerSelectionExists, type MarkerSelection } from './markers'
 import type { PlacementMode } from './sequence-ops'
 import { pruneEmptiedTracks } from './tracks'
+import type { ProxyEntry } from './proxy'
 import type { Doc } from './types'
 
 /**
@@ -87,6 +88,17 @@ export interface EditorState {
    * restores the track restores its posture.
    */
   untargetedTracks: string[]
+  /**
+   * Whether proxies are used for preview (View > Use Proxies). Session-only,
+   * never in the Doc, and it survives a project open like `activeTool`.
+   */
+  proxiesEnabled: boolean
+  /**
+   * Per-asset proxy build state (status + object URL). Session-only and outside
+   * document history and serialization; the object URLs are owned by the
+   * `media/proxies.ts` registry, which revokes them on drop.
+   */
+  proxyByAssetId: Record<string, ProxyEntry>
 
   autosaveStatus: AutosaveStatus
   autosavedAt: number | null
@@ -136,6 +148,12 @@ export interface EditorState {
   clearSourceMarks: () => void
   /** Toggle a lane's targeting: session UI state, never a history entry. */
   setTrackTargeted: (trackId: string, targeted: boolean) => void
+  /** Enable or disable proxies for preview (View > Use Proxies). */
+  setProxiesEnabled: (enabled: boolean) => void
+  /** Record one asset's proxy build state (status + optional object URL). */
+  setProxyEntry: (assetId: string, entry: ProxyEntry) => void
+  /** Forget one asset's proxy entry (the registry revokes its URL first). */
+  clearProxyEntry: (assetId: string) => void
   /**
    * Select every clip on a lane, expanding each clip's link group so an A/V
    * pair split across lanes selects both halves. The lane's first clip is the
@@ -251,6 +269,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   sourceOut: null,
   sourcePlayhead: 0,
   untargetedTracks: [],
+  proxiesEnabled: false,
+  proxyByAssetId: {},
   autosaveStatus: 'idle',
   autosavedAt: null,
   pendingRestore: null,
@@ -387,6 +407,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       sourceOut: null,
       sourcePlayhead: 0,
       untargetedTracks: [],
+      proxyByAssetId: {},
       playhead: 0,
       playing: false,
     })
@@ -411,6 +432,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         : [...untargetedTracks, trackId]
     set({ untargetedTracks: next })
   },
+
+  setProxiesEnabled: (enabled) => set({ proxiesEnabled: enabled }),
+
+  setProxyEntry: (assetId, entry) =>
+    set((s) => ({ proxyByAssetId: { ...s.proxyByAssetId, [assetId]: entry } })),
+
+  clearProxyEntry: (assetId) =>
+    set((s) => {
+      if (!(assetId in s.proxyByAssetId)) return {}
+      const next = { ...s.proxyByAssetId }
+      delete next[assetId]
+      return { proxyByAssetId: next }
+    }),
 
   selectTrackClips: (trackId) => {
     const { doc } = get()
