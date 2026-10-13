@@ -40,7 +40,12 @@ const DRAG_THRESHOLD_PX = 3
 export function SequenceMarkers({ pxPerSec }: { pxPerSec: number }) {
   const doc = useEditorStore((s) => s.doc)
   const selectedMarker = useEditorStore((s) => s.selectedMarker)
-  const markers = useMemo(() => sequenceMarkers(doc.project), [doc.project])
+  const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
+  // Sequence markers are root-scoped (0.8.1): a child sequence shows none.
+  const markers = useMemo(
+    () => (activeSequencePath.length > 0 ? [] : sequenceMarkers(doc.project)),
+    [doc.project, activeSequencePath],
+  )
   const positions = useMemo(
     () =>
       staggerMarkerPositions(
@@ -121,6 +126,7 @@ export function SequenceMarkers({ pxPerSec }: { pxPerSec: number }) {
         const points = computeSnapPoints(live.doc, {
           excludeMarkerId: marker.id,
           playhead: live.playhead,
+          activeSequencePath: live.activeSequencePath,
         })
         const snapped = applySnap(time, points, SNAP_THRESHOLD_PX / pxPerSec)
         time = snapped.time

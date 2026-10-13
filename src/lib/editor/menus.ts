@@ -45,6 +45,7 @@ export type MenuActionId =
   | 'sequence.addVideoTrack'
   | 'sequence.addAudioTrack'
   | 'sequence.addTextTrack'
+  | 'sequence.createCompound'
   | 'sequence.settings'
   | 'marker.add'
   | 'marker.edit'
@@ -88,6 +89,8 @@ export interface MenuContext {
   selectionLinked: boolean
   /** ≥2 selected clips in distinct groups — "Link" would do something. */
   canLink: boolean
+  /** At least one clip is selected — "Create Compound Clip" would do something. */
+  canCreateCompound: boolean
   snapEnabled: boolean
   /** Proxies are enabled for preview (View > Use Proxies). */
   proxiesEnabled: boolean
@@ -95,6 +98,12 @@ export interface MenuContext {
   hasMarkers: boolean
   /** A marker is selected (Edit/Delete Selected Marker are meaningful). */
   hasSelectedMarker: boolean
+  /**
+   * "Add Marker" is meaningful: a clip is selected (a clip marker), or the
+   * project root is open (a sequence marker). A child sequence has no
+   * sequence-level markers of its own.
+   */
+  canAddMarker: boolean
   /** True = the panel is currently closed (Window menu checkboxes). */
   panelHidden: Record<PanelId, boolean>
   /** True when the layout differs from the default (hidden, collapsed, or resized). */
@@ -333,6 +342,14 @@ export const MENU_SPECS: MenuSpec[] = [
       },
       { id: 'sequence.sep1', kind: 'separator' },
       {
+        id: 'sequence.createCompound',
+        kind: 'item',
+        label: 'Create Compound Clip',
+        action: 'sequence.createCompound',
+        enabled: (ctx) => ctx.canCreateCompound,
+      },
+      { id: 'sequence.sep2', kind: 'separator' },
+      {
         id: 'sequence.settings',
         kind: 'item',
         label: 'Sequence Settings…',
@@ -350,6 +367,7 @@ export const MENU_SPECS: MenuSpec[] = [
         label: 'Add Marker',
         action: 'marker.add',
         shortcut: 'M',
+        enabled: (ctx) => ctx.canAddMarker,
       },
       {
         id: 'marker.edit',

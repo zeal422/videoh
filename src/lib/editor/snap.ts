@@ -1,5 +1,5 @@
 import type { Doc } from './types'
-import { docDuration } from './factories'
+import { activeTracks, docDuration, findSequence, sequenceDuration } from './factories'
 import { clipMarkerTimelineTime } from './markers'
 
 /**
@@ -19,23 +19,32 @@ export interface SnapOptions {
   playhead?: number
   /** Also snap to the end of the timeline. */
   includeTimelineEnd?: boolean
+  /**
+   * The active compound sequence path (0.8.1): snap targets come from the open
+   * sequence's lanes, and project-level markers only at the root.
+   */
+  activeSequencePath?: readonly string[]
 }
 
 /** Collects all snap-target times (sorted ascending, deduplicated). */
 export function computeSnapPoints(doc: Doc, opts: SnapOptions = {}): number[] {
   const points = new Set<number>([0])
   const exclude = new Set(opts.excludeClipIds ?? [])
-  for (const track of doc.project.tracks) {
+  const path = opts.activeSequencePath ?? []
+  const tracks = activeTracks(doc, path)
+  for (const track of tracks) {
     for (const clip of track.clips) {
       if (exclude.has(clip.id)) continue
       points.add(round6(clip.start))
       points.add(round6(clip.start + clip.duration))
     }
   }
-  for (const marker of doc.project.markers ?? []) {
-    if (marker.id !== opts.excludeMarkerId) points.add(round6(marker.time))
+  if (path.length === 0) {
+    for (const marker of doc.project.markers ?? []) {
+      if (marker.id !== opts.excludeMarkerId) points.add(round6(marker.time))
+    }
   }
-  for (const track of doc.project.tracks) {
+  for (const track of tracks) {
     for (const clip of track.clips) {
       // A dragged clip's own markers keep a constant offset to its edges for
       // the whole move, so one snap would stick permanently: skip them along
@@ -52,7 +61,11 @@ export function computeSnapPoints(doc: Doc, opts: SnapOptions = {}): number[] {
     }
   }
   if (opts.playhead !== undefined) points.add(round6(opts.playhead))
-  if (opts.includeTimelineEnd) points.add(round6(docDuration(doc)))
+  if (opts.includeTimelineEnd) {
+    const id = path[path.length - 1]
+    const sequence = id ? findSequence(doc, id) : undefined
+    points.add(round6(sequence ? sequenceDuration(sequence) : docDuration(doc)))
+  }
   return [...points].sort((a, b) => a - b)
 }
 

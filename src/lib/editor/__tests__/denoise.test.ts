@@ -91,7 +91,7 @@ describe('denoiseFilters', () => {
     const mp4 = read('src/lib/editor/export/mp4.ts')
 
     expect(core).toMatch(/denoiseFilters\(this\.audio\)/)
-    expect(mp4).toMatch(/denoiseFilters\(offline\)/)
+    expect(mp4).toMatch(/denoiseFilters\(ctx\)/)
     // Both gate it on the clip's own flag: a clip without denoise keeps the
     // chain it had before 0.6.0.
     expect(core).toMatch(/if \(clip\.denoise\)/)

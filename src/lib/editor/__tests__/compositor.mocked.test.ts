@@ -405,4 +405,95 @@ describe('compositor frame blending (mocked 2D context)', () => {
 
     expect(drawOps(ctx, 'drawImage')[0].args[0]).toBe(first)
   })
+
+  it('composites a compound clip as a group (child into a scratch surface)', () => {
+    const { doc, asset } = makeDoc()
+    const child = createClip({ id: 'child', mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    doc.project.sequences = [
+      {
+        id: 'seq1',
+        name: 'Compound',
+        tracks: [createTrack('video', 1, { id: 'st', clips: [child] })],
+      },
+    ]
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'comp', sequenceId: 'seq1', start: 0, duration: 4 }),
+    )
+    const el = videoEl()
+    const seen: string[] = []
+    const resolve: MediaResolver = (clip) => {
+      seen.push(clip.id)
+      return { asset, el }
+    }
+    const ctx = createFake2DContext()
+    drawFrame({ ctx, doc, time: 1, resolve })
+
+    // The child clip was resolved and drawn into the scratch surface, and the
+    // MAIN frame received exactly one draw of that group surface (not the raw
+    // element), which is what makes overlapping children composite as a unit.
+    expect(seen).toEqual(['child'])
+    const draws = drawOps(ctx, 'drawImage')
+    expect(draws).toHaveLength(1)
+    expect(draws[0].args[0]).not.toBe(el)
+    // The scratch surface is CLEARED before reuse (no stale pixels between
+    // sibling compounds) and the child element is drawn into it.
+    const scratch = draws[0].args[0] as HTMLCanvasElement
+    const sctx = scratch.getContext('2d') as unknown as {
+      calls: { op: string; args: unknown[] }[]
+    }
+    expect(sctx.calls.some((c) => c.op === 'clearRect')).toBe(true)
+    expect(sctx.calls.some((c) => c.op === 'drawImage')).toBe(true)
+  })
+
+  it('renders a compound inside a compound, preserving each parent surface', () => {
+    const { doc, asset } = makeDoc()
+    const innermost = createClip({
+      id: 'innermost',
+      mediaId: asset.id,
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+    })
+    doc.project.sequences = [
+      {
+        id: 'S1',
+        name: 'Mid',
+        tracks: [
+          createTrack('video', 1, {
+            id: 'i1',
+            clips: [createClip({ id: 'mid', sequenceId: 'S2', start: 0, duration: 4 })],
+          }),
+        ],
+      },
+      {
+        id: 'S2',
+        name: 'Inner',
+        tracks: [createTrack('video', 1, { id: 'i2', clips: [innermost] })],
+      },
+    ]
+    doc.project.tracks = [
+      createTrack('video', 1, {
+        id: 'rt',
+        clips: [createClip({ id: 'outer', sequenceId: 'S1', start: 0, duration: 4 })],
+      }),
+    ]
+    const el = videoEl()
+    const resolve: MediaResolver = () => ({ asset, el })
+    const ctx = createFake2DContext()
+    drawFrame({ ctx, doc, time: 1, resolve })
+
+    const lastDrawSource = (c: unknown): unknown => {
+      const calls = (c as { calls: { op: string; args: unknown[] }[] }).calls
+      const draws = calls.filter((call) => call.op === 'drawImage')
+      return draws[draws.length - 1].args[0]
+    }
+    // Each level draws the NEXT surface (the parent surface survives recursion),
+    // and the innermost level draws the element.
+    const outer = drawOps(ctx, 'drawImage')
+    expect(outer).toHaveLength(1)
+    const outerSurface = outer[0].args[0] as HTMLCanvasElement
+    const midSurface = lastDrawSource(outerSurface.getContext('2d')) as HTMLCanvasElement
+    expect(midSurface).not.toBe(outerSurface)
+    expect(lastDrawSource(midSurface.getContext('2d'))).toBe(el)
+  })
 })

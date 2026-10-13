@@ -90,6 +90,10 @@ The video surfaces stay dark regardless of the token theme, the way an NLE's mon
   (`placement-mode-place|insert|overwrite`); the active one takes `variant="secondary"` and
   `aria-pressed="true"`, the others stay `ghost`. It is session-only state, so the control never
   implies persistence, and the one-shot `,` / `.` keys work regardless of the toggle.
+- **The proxy badge is a state, not a control.** The Media bin row shows `proxy` / `proxy…` /
+  `proxy failed` in the existing status line, and the build action is a ghost `IconMiniButton` (the
+  `Gauge` icon) shown only for a live heavy source. `View > Use Proxies` is a checkbox menu item, so the
+  on/off posture sits where every other session toggle lives.
 - **Scrollbars.** Editor scroll containers use the `.editor-scroll` class (thin dark thumb).
   `[data-timeline-scroll]` disables text selection while dragging clips.
 - **Blocked drop target.** `[data-drop-blocked='true']` outlines a lane in `--destructive` with a
@@ -106,6 +110,9 @@ The video surfaces stay dark regardless of the token theme, the way an NLE's mon
 - Class merging goes through `cn()` in `src/lib/utils.ts` (`clsx` + `tailwind-merge`).
 - Editor-specific components live in `src/components/editor/` and compose the primitives.
 - Icons come from `lucide-react` only.
+- A compound clip wears a `COMPOUND` badge on its timeline body and opens on double-click; the timeline
+  shows a breadcrumb above the lanes only while a child sequence is open, and each crumb is a plain
+  button in the standard muted/foreground token pair.
 
 ## Accessibility
 

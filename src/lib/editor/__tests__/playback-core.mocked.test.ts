@@ -1474,4 +1474,131 @@ describe('PlaybackCore sub-frame-rate blending (mocked browser)', () => {
     Object.defineProperty(partner, 'seeking', { configurable: true, value: false })
     core.dispose()
   })
+
+  it('routes a nested clip through the container gain exactly once', async () => {
+    const { doc, asset } = makeDoc()
+    const child = createClip({
+      id: 'child',
+      mediaId: asset.id,
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+      audioOnly: true,
+      gain: 0.5,
+    })
+    doc.project.sequences = [
+      {
+        id: 'seq1',
+        name: 'Compound',
+        tracks: [createTrack('audio', 1, { id: 'st', clips: [child] })],
+      },
+    ]
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'comp', sequenceId: 'seq1', start: 0, duration: 4, gain: 0.5 }),
+    )
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const gains = () =>
+      masterGainOf(h.lastAudioContext()).inputs.map(
+        (n) => (n as FakeGainNode).gain.last?.value ?? 1,
+      )
+    // The child's 0.5 multiplies the container's 0.5 once.
+    expect(gains().some((g) => Math.abs(g - 0.25) < 1e-5)).toBe(true)
+    core.dispose()
+  })
+
+  it('mutes a nested clip when its container is muted', async () => {
+    const { doc, asset } = makeDoc()
+    const child = createClip({
+      id: 'child',
+      mediaId: asset.id,
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+      audioOnly: true,
+    })
+    doc.project.sequences = [
+      {
+        id: 'seq1',
+        name: 'Compound',
+        tracks: [createTrack('audio', 1, { id: 'st', clips: [child] })],
+      },
+    ]
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'comp', sequenceId: 'seq1', start: 0, duration: 4, muted: true }),
+    )
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const gains = masterGainOf(h.lastAudioContext()).inputs.map(
+      (n) => (n as FakeGainNode).gain.last?.value ?? 1,
+    )
+    // The container's mute zeroes the nested clip's gain.
+    expect(gains.some((g) => Math.abs(g) < 1e-9)).toBe(true)
+    core.dispose()
+  })
+
+  it('applies a container volume curve to the nested gain', async () => {
+    const { doc, asset } = makeDoc()
+    const child = createClip({
+      id: 'child',
+      mediaId: asset.id,
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+      audioOnly: true,
+    })
+    doc.project.sequences = [
+      {
+        id: 'seq1',
+        name: 'Compound',
+        tracks: [createTrack('audio', 1, { id: 'st', clips: [child] })],
+      },
+    ]
+    doc.project.tracks[0].clips.push(
+      createClip({
+        id: 'comp',
+        sequenceId: 'seq1',
+        start: 0,
+        duration: 4,
+        keyframes: { volume: [{ time: 0, value: 0.3 }] },
+      }),
+    )
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const gains = masterGainOf(h.lastAudioContext()).inputs.map(
+      (n) => (n as FakeGainNode).gain.last?.value ?? 1,
+    )
+    // The container's volume curve (0.3) multiplies the child's own gain once.
+    expect(gains.some((g) => Math.abs(g - 0.3) < 1e-5)).toBe(true)
+    core.dispose()
+  })
+
+  it('materializes an element for a nested video clip', () => {
+    const { doc, asset } = makeDoc()
+    const child = createClip({ id: 'child', mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    doc.project.sequences = [
+      {
+        id: 'seq1',
+        name: 'Compound',
+        tracks: [createTrack('video', 1, { id: 'st', clips: [child] })],
+      },
+    ]
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'comp', sequenceId: 'seq1', start: 0, duration: 4 }),
+    )
+    const created: string[] = []
+    const orig = document.createElement.bind(document)
+    const spy = vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
+      if (tag === 'video') created.push(tag)
+      return orig(tag)
+    }) as typeof document.createElement)
+    const { core } = makeCore(doc)
+    core.seek(1)
+    expect(created.length).toBeGreaterThan(0)
+    core.dispose()
+    spy.mockRestore()
+  })
 })

@@ -104,37 +104,43 @@ describe('commandsToAddMarker / commandsToDeleteMarker', () => {
 
   it('targets the primary selected clip with a clamped source time', () => {
     const { doc } = docWithClip()
-    const inside = commandsToAddMarker(doc, 4, ['c1'])
+    const inside = commandsToAddMarker(doc, 4, ['c1'])!
     expect(inside[0].type).toBe('addClipMarker')
     if (inside[0].type === 'addClipMarker') expect(inside[0].marker.time).toBe(3)
 
-    const before = commandsToAddMarker(doc, 0, ['c1'])
+    const before = commandsToAddMarker(doc, 0, ['c1'])!
     expect(before[0].type).toBe('addClipMarker')
     if (before[0].type === 'addClipMarker') expect(before[0].marker.time).toBe(1)
 
-    const after = commandsToAddMarker(doc, 99, ['c1'])
+    const after = commandsToAddMarker(doc, 99, ['c1'])!
     expect(after[0].type).toBe('addClipMarker')
     if (after[0].type === 'addClipMarker') expect(after[0].marker.time).toBe(5)
   })
 
   it('falls back to a sequence marker (clamped at 0) without a live selection', () => {
     const { doc } = docWithClip()
-    const noSelection = commandsToAddMarker(doc, 3, [])
+    const noSelection = commandsToAddMarker(doc, 3, [])!
     expect(noSelection[0].type).toBe('addSequenceMarker')
     if (noSelection[0].type === 'addSequenceMarker') expect(noSelection[0].marker.time).toBe(3)
 
-    const negative = commandsToAddMarker(doc, -5, [])
+    const negative = commandsToAddMarker(doc, -5, [])!
     expect(negative[0].type).toBe('addSequenceMarker')
     if (negative[0].type === 'addSequenceMarker') expect(negative[0].marker.time).toBe(0)
 
     // Past the sequence end (clip 2..6): the playhead cannot seek there, so a
     // marker created there would be unreachable by Shift+M.
-    const pastEnd = commandsToAddMarker(doc, 99, [])
+    const pastEnd = commandsToAddMarker(doc, 99, [])!
     expect(pastEnd[0].type).toBe('addSequenceMarker')
     if (pastEnd[0].type === 'addSequenceMarker') expect(pastEnd[0].marker.time).toBe(6)
 
-    const stale = commandsToAddMarker(doc, 3, ['ghost'])
+    const stale = commandsToAddMarker(doc, 3, ['ghost'])!
     expect(stale[0].type).toBe('addSequenceMarker')
+  })
+
+  it('refuses a sequence marker inside a child sequence', () => {
+    const { doc } = docWithClip()
+    // A child sequence has no sequence-level markers of its own (0.8.1).
+    expect(commandsToAddMarker(doc, 3, [], ['seq1'])).toBeNull()
   })
 
   it('builds the matching delete, or null when the marker no longer exists', () => {

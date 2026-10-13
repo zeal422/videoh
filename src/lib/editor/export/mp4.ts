@@ -17,7 +17,7 @@ import {
   VideoSampleSource,
 } from 'mediabunny'
 import { EQ_DB_MAX, EQ_DB_MIN } from '../constants'
-import { clampSourceTime, docDuration, findMedia } from '../factories'
+import { clampSourceTime, docDuration, findMedia, findSequence } from '../factories'
 import { constantTimeScaleRate } from '../keyframes'
 import { clipRendersAudio, linkGroupChangesRate } from '../links'
 import { findLut } from '../lut'
@@ -30,6 +30,7 @@ import {
   clipGainSchedule,
   EXPORT_AUDIO_BITRATE,
   EXPORT_VIDEO_BITRATES,
+  flattenDraws,
   planVideoFrame,
   type ClipDraw,
 } from './offline'
@@ -112,7 +113,37 @@ async function createDecodeContext(doc: Doc): Promise<DecodeContext> {
   return { sinks }
 }
 
-/** Draws one composited frame from the draw plan onto the export canvas. */
+/**
+ * Transparent scratch surfaces for compound group composites, indexed by
+ * recursion depth. Lazily allocated and reused across frames; the stack depth
+ * is bounded by the nesting limit, and each level is cleared before reuse so no
+ * stale pixels leak between sibling compounds.
+ */
+const compoundScratch: HTMLCanvasElement[] = []
+
+function scratchContext(
+  depth: number,
+  width: number,
+  height: number,
+): CanvasRenderingContext2D | null {
+  if (typeof document === 'undefined') return null
+  const canvas = (compoundScratch[depth] ??= document.createElement('canvas'))
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+  return canvas.getContext('2d')
+}
+
+/**
+ * Draws one composited frame from the draw plan onto the export canvas.
+ *
+ * A compound clip's `nested` plan is composited into a transparent scratch
+ * surface at this recursion level, then that single surface is drawn with the
+ * container's alpha, filter and transform (a GROUP composite). `depth` is the
+ * scratch index for compounds drawn at THIS level; the root call (depth 0)
+ * fills the frame black, nested surfaces are cleared instead.
+ */
 function compositeFrame(
   ctx: CanvasRenderingContext2D,
   doc: Doc,
@@ -121,14 +152,37 @@ function compositeFrame(
   width: number,
   height: number,
   blends: Map<string, BlendSample>,
+  depth = 0,
 ): void {
   ctx.save()
   ctx.globalAlpha = 1
-  ctx.fillStyle = '#000000'
-  ctx.fillRect(0, 0, width, height)
+  if (depth === 0) {
+    ctx.fillStyle = '#000000'
+    ctx.fillRect(0, 0, width, height)
+  } else {
+    ctx.clearRect(0, 0, width, height)
+  }
   ctx.restore()
 
   for (const draw of drawPlan.draws) {
+    if (draw.nested) {
+      const sctx = scratchContext(depth, width, height)
+      if (!sctx) continue
+      compositeFrame(sctx, doc, draw.nested, frames, width, height, blends, depth + 1)
+      const lut = findLut(doc.project.luts, draw.clip.lutId)
+      const alpha = Math.min(1, Math.max(0, draw.alpha))
+      drawContain(
+        ctx,
+        compoundScratch[depth],
+        width,
+        height,
+        alpha,
+        draw.filter,
+        draw.transform,
+        lut,
+      )
+      continue
+    }
     // Text clips have no decoded frame: they are drawn by the same helper the
     // preview compositor uses, so exported titles match the program monitor.
     if (draw.clip.text !== undefined && draw.clip.style) {
@@ -188,36 +242,102 @@ export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioB
   // count. Negative results are cached too, so a broken file fails once.
   const audioBuffers = new Map<string, AudioBuffer | null>()
 
-  for (const track of doc.project.tracks) {
+  await scheduleTracks(offline, master, doc, doc.project.tracks, 0, audioBuffers)
+  return offline.startRendering()
+}
+
+/**
+ * Schedules one sequence's tracks into the offline graph, recursing through
+ * compound clips (0.8.1). A compound's child sequence mixes into a container
+ * gain node that carries the container's gain, mute and volume-keyframe curve
+ * ONCE (the group's automation); `offset` is the absolute timeline time of the
+ * sequence's local 0, so a nested clip's automation lands at the right instant.
+ */
+async function scheduleTracks(
+  ctx: OfflineAudioContext,
+  master: AudioNode,
+  doc: Doc,
+  tracks: readonly Track[],
+  offset: number,
+  audioBuffers: Map<string, AudioBuffer | null>,
+  /** Absolute timeline end of the innermost container (Infinity at the root). */
+  limitEnd: number = Number.POSITIVE_INFINITY,
+): Promise<void> {
+  for (const track of tracks) {
     for (const clip of track.clips) {
+      if (clip.sequenceId) {
+        const sequence = findSequence(doc, clip.sequenceId)
+        if (!sequence) continue
+        const containerGain = ctx.createGain()
+        const containerXfade = ctx.createGain()
+        // The container's own mute OR its owning track's mute silences the mix.
+        if (clip.muted || track.muted) {
+          containerGain.gain.value = 0
+        } else {
+          for (const ev of clipGainSchedule(clip)) {
+            const t = ev.time + offset
+            if (ev.kind === 'ramp') containerGain.gain.linearRampToValueAtTime(ev.value, t)
+            else containerGain.gain.setValueAtTime(ev.value, t)
+          }
+        }
+        // The container's own crossfade ramps its nested audio too, matching the
+        // preview mixer (which multiplies the ancestor crossfade factor).
+        for (const ev of clipCrossfadeSchedule(clip, track)) {
+          const t = ev.time + offset
+          if (ev.kind === 'ramp') containerXfade.gain.linearRampToValueAtTime(ev.value, t)
+          else containerXfade.gain.setValueAtTime(ev.value, t)
+        }
+        containerGain.connect(containerXfade)
+        containerXfade.connect(master)
+        const containerStart = offset + clip.start
+        await scheduleTracks(
+          ctx,
+          containerGain,
+          doc,
+          sequence.tracks,
+          containerStart,
+          audioBuffers,
+          Math.min(limitEnd, containerStart + clip.duration),
+        )
+        continue
+      }
+
       const scheduled = scheduledAudioSource(doc, track, clip)
       if (!scheduled) continue
+      // Clip the child to its enclosing container's visible interval (0.8.1):
+      // nested audio must not outlast the container that owns it.
+      const startAt = offset + clip.start
+      const timelineSpan = Math.min(clip.duration, limitEnd - startAt)
+      if (timelineSpan <= 0) continue
 
       let buffer = audioBuffers.get(scheduled.assetId)
       if (buffer === undefined) {
-        buffer = await decodeAudio(scheduled.file, offline)
+        buffer = await decodeAudio(scheduled.file, ctx)
         audioBuffers.set(scheduled.assetId, buffer)
       }
       if (!buffer) continue
 
-      const source = offline.createBufferSource()
+      const source = ctx.createBufferSource()
       source.buffer = buffer
 
-      const gain = offline.createGain()
+      const gain = ctx.createGain()
       // Crossfade ramps live on their own node: the preview mixer multiplies
       // them into the clip gain, and two gain nodes multiply the same way.
-      const xfade = offline.createGain()
-      const panner = offline.createStereoPanner()
+      const xfade = ctx.createGain()
+      const panner = ctx.createStereoPanner()
       panner.pan.value = clampPan(clip.pan ?? 0)
 
-      // Volume automation: one pure schedule (plan side) applied here.
+      // Volume automation: one pure schedule (plan side) applied here, shifted
+      // into the sequence's absolute timeline by `offset`.
       for (const ev of clipGainSchedule(clip)) {
-        if (ev.kind === 'ramp') gain.gain.linearRampToValueAtTime(ev.value, ev.time)
-        else gain.gain.setValueAtTime(ev.value, ev.time)
+        const t = ev.time + offset
+        if (ev.kind === 'ramp') gain.gain.linearRampToValueAtTime(ev.value, t)
+        else gain.gain.setValueAtTime(ev.value, t)
       }
       for (const ev of clipCrossfadeSchedule(clip, track)) {
-        if (ev.kind === 'ramp') xfade.gain.linearRampToValueAtTime(ev.value, ev.time)
-        else xfade.gain.setValueAtTime(ev.value, ev.time)
+        const t = ev.time + offset
+        if (ev.kind === 'ramp') xfade.gain.linearRampToValueAtTime(ev.value, t)
+        else xfade.gain.setValueAtTime(ev.value, t)
       }
 
       // EQ + compressor chain (same topology as the preview graph). The band
@@ -225,16 +345,16 @@ export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioB
       // malformed doc (a hand-edited file) cannot render two different mixes.
       let head: AudioNode = source
       if (clip.eq) {
-        const low = offline.createBiquadFilter()
+        const low = ctx.createBiquadFilter()
         low.type = 'lowshelf'
         low.frequency.value = 200
         low.gain.value = clamp(clip.eq.low, EQ_DB_MIN, EQ_DB_MAX)
-        const mid = offline.createBiquadFilter()
+        const mid = ctx.createBiquadFilter()
         mid.type = 'peaking'
         mid.frequency.value = 1000
         mid.Q.value = 1
         mid.gain.value = clamp(clip.eq.mid, EQ_DB_MIN, EQ_DB_MAX)
-        const high = offline.createBiquadFilter()
+        const high = ctx.createBiquadFilter()
         high.type = 'highshelf'
         high.frequency.value = 4000
         high.gain.value = clamp(clip.eq.high, EQ_DB_MIN, EQ_DB_MAX)
@@ -244,13 +364,13 @@ export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioB
         head = high
       }
       if (clip.denoise) {
-        for (const filter of denoiseFilters(offline)) {
+        for (const filter of denoiseFilters(ctx)) {
           head.connect(filter)
           head = filter
         }
       }
       if (clip.compressor) {
-        const comp = offline.createDynamicsCompressor()
+        const comp = ctx.createDynamicsCompressor()
         comp.threshold.value = -24
         comp.knee.value = 12
         comp.ratio.value = 4
@@ -271,13 +391,13 @@ export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioB
       // The start duration is in SOURCE seconds and is consumed at the rate
       // below, so both must read the SAME constant: a static-speed duration
       // makes a flat curve's audio span duration * static / curve timeline
-      // seconds and bleed over the next clip (the mirror case ends early).
-      source.start(clip.start, clip.inPoint, clip.duration * constantRate)
+      // seconds and bleed over the next clip (the mirror case ends early). The
+      // span is the timeline span clamped to the container's end, converted to
+      // source seconds at that same rate.
+      source.start(startAt, clip.inPoint, timelineSpan * constantRate)
       if (constantRate !== 1) source.playbackRate.value = constantRate
     }
   }
-
-  return offline.startRendering()
 }
 
 /**
@@ -310,9 +430,17 @@ function scheduledAudioSource(
  * audible, unlike the old asset-kind scan.
  */
 function docHasAudibleClips(doc: Doc): boolean {
-  return doc.project.tracks.some((track) =>
-    track.clips.some((clip) => scheduledAudioSource(doc, track, clip) !== null),
-  )
+  const scan = (tracks: readonly Track[]): boolean =>
+    tracks.some((track) =>
+      track.clips.some((clip) => {
+        if (clip.sequenceId) {
+          const sequence = findSequence(doc, clip.sequenceId)
+          return sequence ? scan(sequence.tracks) : false
+        }
+        return scheduledAudioSource(doc, track, clip) !== null
+      }),
+    )
+  return scan(doc.project.tracks)
 }
 
 function clampPan(p: number): number {
@@ -464,7 +592,7 @@ export async function exportTimeline(
       frames.clear()
       for (const blend of blends.values()) closeDecodedFrame(blend.frame)
       blends.clear()
-      for (const draw of plan.draws) {
+      for (const draw of flattenDraws(plan)) {
         const asset = draw.asset
         if (!asset) continue
         if (asset.kind === 'image') {

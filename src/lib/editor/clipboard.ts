@@ -1,5 +1,11 @@
 import type { EditorCommand } from './commands'
-import { findTrack, firstCompatibleTrack, firstTargetedTrack, uid } from './factories'
+import {
+  findClip,
+  firstCompatibleTrack,
+  firstTargetedTrack,
+  sequenceTracks,
+  uid,
+} from './factories'
 import { resolveSelectionGroups } from './links'
 import { reIdMarkers } from './markers'
 import type { Clip, Doc, TrackKind } from './types'
@@ -80,6 +86,7 @@ export function commandsToPasteClips(
   doc: Doc,
   atTime: number,
   untargetedTrackIds: readonly string[] = [],
+  sequenceId?: string,
 ): EditorCommand[] | null {
   if (!clipboard || clipboard.length === 0) return null
   // Original group id → fresh group id (one fresh group per original group).
@@ -87,7 +94,7 @@ export function commandsToPasteClips(
 
   const out: EditorCommand[] = []
   for (const entry of clipboard) {
-    const targetTrackId = resolvePasteTrackId(doc, entry, untargetedTrackIds)
+    const targetTrackId = resolvePasteTrackId(doc, entry, untargetedTrackIds, sequenceId)
     let linkId: string | undefined
     if (entry.clip.linkId) {
       let fresh = freshLinkByOriginal.get(entry.clip.linkId)
@@ -114,6 +121,7 @@ export function commandsToPasteClips(
         type: 'addTrack',
         kind: fallbackKind(entry),
         trackId: newTrackId,
+        ...(sequenceId ? { sequenceId } : {}),
       })
       out.push({ type: 'addClip', trackId: newTrackId, clip })
     } else {
@@ -127,8 +135,10 @@ function resolvePasteTrackId(
   doc: Doc,
   entry: ClipboardEntry,
   untargetedTrackIds: readonly string[],
+  sequenceId?: string,
 ): string | undefined {
-  const original = entry.trackId ? findTrack(doc, entry.trackId) : undefined
+  const lanes = sequenceTracks(doc, sequenceId)
+  const original = entry.trackId ? lanes.find((t) => t.id === entry.trackId) : undefined
   // Lane carried by the data: the original wins while it fits and is targeted.
   if (
     original &&
@@ -138,7 +148,12 @@ function resolvePasteTrackId(
     return original.id
   }
   // First TARGETED lane that fits the entry (text and media alike).
-  const targeted = firstTargetedTrack(doc, untargetedTrackIds, (t) => kindFitsEntry(t.kind, entry))
+  const targeted = firstTargetedTrack(
+    doc,
+    untargetedTrackIds,
+    (t) => kindFitsEntry(t.kind, entry),
+    sequenceId,
+  )
   if (targeted) return targeted.id
   // Legacy order, only when nothing of the entry's kind is targeted.
   if (original && kindFitsEntry(original.kind, entry)) return original.id
@@ -146,9 +161,9 @@ function resolvePasteTrackId(
   // fallbackKind is a TRACK kind (text entries belong on text tracks), while
   // firstCompatibleTrack works on MEDIA kinds — resolve text separately.
   if (kind === 'text') {
-    return doc.project.tracks.find((t) => t.kind === 'text')?.id
+    return lanes.find((t) => t.kind === 'text')?.id
   }
-  const compatible = firstCompatibleTrack(doc, kind)
+  const compatible = firstCompatibleTrack(doc, kind, sequenceId)
   if (compatible && kindFitsEntry(compatible.kind, entry)) return compatible.id
   return undefined
 }
@@ -168,10 +183,9 @@ function kindFitsEntry(trackKind: TrackKind, entry: ClipboardEntry): boolean {
 }
 
 function trackKindOf(doc: Doc, clipId: string): TrackKind {
-  const track = doc.project.tracks.find((t) => t.clips.some((c) => c.id === clipId))
-  return track?.kind ?? 'video'
+  return findClip(doc, clipId)?.track.kind ?? 'video'
 }
 
 function trackIdOf(doc: Doc, clipId: string): string | null {
-  return doc.project.tracks.find((t) => t.clips.some((c) => c.id === clipId))?.id ?? null
+  return findClip(doc, clipId)?.track.id ?? null
 }

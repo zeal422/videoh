@@ -62,3 +62,11 @@ What happened: the first `project.tracks` inventory searched editor modules and 
 Would-have-caught: rule 4 now requires structural sweeps from the full `src/` root, with test exclusions,
 separate line and file counts, and each source location opened.
 Action: promoted into rule 4.
+
+## 2026-10-12 - Feature C createCompoundClip depth guard (checked before the edge existed)
+What happened: the nesting-depth guard ran `maxSequenceDepth(doc)` after pushing the new sequence but
+BEFORE adding the container clip, so the new sequence was unreachable from the root and the walk never
+saw the extra edge; a depth-9 compound was accepted. The `compound.test.ts` boundary test caught it.
+Would-have-caught: rule 5 (write the lock first and watch it fail) applied to a guard that depends on a
+mutation ORDER: the prospective-graph check must run with every edge of the prospective graph present.
+Action: kept as a note; the command now adds the container, checks depth, then removes the originals.

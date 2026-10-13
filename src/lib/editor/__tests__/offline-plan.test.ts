@@ -5,6 +5,7 @@ import {
   clipGainSchedule,
   estimateExportBytes,
   exportFrameTimes,
+  flattenDraws,
   needsReverse,
   planAudioFrame,
   planVideoFrame,
@@ -1133,5 +1134,479 @@ describe('exportTimeline preflight (file sink)', () => {
     // In Node there is no WebCodecs, so the preflight throws before any encode.
     await expect(exportTimeline(doc([], []), { fileStream: sink })).rejects.toThrow()
     expect(calls).toEqual(['abort'])
+  })
+})
+
+describe('compound clip plans (0.8.1)', () => {
+  function compoundDoc(child: Clip): Doc {
+    const sequence = {
+      id: 'seq1',
+      name: 'Compound',
+      tracks: [createTrack('video', 1, { id: 'st1', clips: [child] })],
+    }
+    const root = createTrack('video', 1, {
+      id: 'rt1',
+      clips: [createClip({ id: 'comp', sequenceId: 'seq1', start: 0, duration: 4 })],
+    })
+    return {
+      project: {
+        id: 'p',
+        name: 'n',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [root],
+        sequences: [sequence],
+      },
+      media: [asset()],
+    }
+  }
+
+  it('plans a compound as a nested plan and flattens its draws', () => {
+    const d = compoundDoc(createClip({ id: 'child', mediaId: 'm1', start: 0, duration: 4 }))
+    const plan = planVideoFrame(d, 1)
+    expect(plan.draws).toHaveLength(1)
+    expect(plan.draws[0].nested?.draws[0].clip.id).toBe('child')
+    expect(flattenDraws(plan).map((draw) => draw.clip.id)).toEqual(['comp', 'child'])
+    expect([...videoAssetIds([plan])]).toContain('m1')
+  })
+
+  it('applies the container opacity, transform and grade to the group draw', () => {
+    const d = compoundDoc(
+      createClip({ id: 'child', mediaId: 'm1', start: 0, duration: 4, opacity: 0.25 }),
+    )
+    const comp = d.project.tracks[0].clips[0]
+    comp.opacity = 0.5
+    comp.animStatics = { positionX: 100, scale: 2, contrast: 1.5 }
+    const plan = planVideoFrame(d, 1)
+    const group = plan.draws[0]
+    // The container's properties ride the GROUP draw, applied once.
+    expect(group.alpha).toBeCloseTo(0.5, 5)
+    expect(group.transform).toEqual({ posX: 100, posY: 0, scale: 2 })
+    expect(group.filter).not.toBe('none')
+    // The child keeps its OWN opacity inside the group.
+    expect(group.nested?.draws[0].alpha).toBeCloseTo(0.25, 5)
+  })
+
+  it('nests a compound inside a compound', () => {
+    const innermost = createClip({ id: 'innermost', mediaId: 'm1', start: 0, duration: 4 })
+    const innerSeq = {
+      id: 'S2',
+      name: 'Inner',
+      tracks: [createTrack('video', 1, { id: 'i2', clips: [innermost] })],
+    }
+    const midSeq = {
+      id: 'S1',
+      name: 'Mid',
+      tracks: [
+        createTrack('video', 1, {
+          id: 'i1',
+          clips: [createClip({ id: 'mid', sequenceId: 'S2', start: 0, duration: 4 })],
+        }),
+      ],
+    }
+    const root = createTrack('video', 1, {
+      id: 'rt',
+      clips: [createClip({ id: 'outer', sequenceId: 'S1', start: 0, duration: 4 })],
+    })
+    const d: Doc = {
+      project: {
+        id: 'p',
+        name: 'n',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [root],
+        sequences: [midSeq, innerSeq],
+      },
+      media: [asset()],
+    }
+    const plan = planVideoFrame(d, 1)
+    expect(plan.draws[0].nested?.draws[0].nested?.draws[0].clip.id).toBe('innermost')
+  })
+
+  it('needsReverse sees a nested reversed clip', () => {
+    const d = compoundDoc(
+      createClip({ id: 'child', mediaId: 'm1', start: 0, duration: 4, reverse: true }),
+    )
+    expect(needsReverse(d)).toBe(true)
+  })
+
+  it('plans nested audio through the container gain', () => {
+    const child = createClip({ id: 'child', mediaId: 'ma', audioOnly: true, start: 0, duration: 4 })
+    const sequence = {
+      id: 'seq1',
+      name: 'C',
+      tracks: [createTrack('audio', 1, { id: 'sa', clips: [child] })],
+    }
+    const root = createTrack('video', 1, {
+      id: 'rt1',
+      clips: [createClip({ id: 'comp', sequenceId: 'seq1', start: 0, duration: 4, gain: 0.5 })],
+    })
+    const d: Doc = {
+      project: {
+        id: 'p',
+        name: 'n',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [root],
+        sequences: [sequence],
+      },
+      media: [asset({ id: 'ma', kind: 'audio' })],
+    }
+    const plan = planAudioFrame(d, 1)
+    const contribution = plan.audible.find((a) => a.clip.id === 'child')
+    expect(contribution).toBeDefined()
+    // The container's 0.5 gain multiplies the child's own 1.0 once.
+    expect(contribution!.gain).toBeCloseTo(0.5, 5)
+  })
+
+  it('applies container mute and volume automation to the nested mix', () => {
+    const build = (comp: Clip): Doc => ({
+      project: {
+        id: 'p',
+        name: 'n',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [createTrack('video', 1, { id: 'rt', clips: [comp] })],
+        sequences: [
+          {
+            id: 'seq1',
+            name: 'C',
+            tracks: [
+              createTrack('audio', 1, {
+                id: 'sa',
+                clips: [
+                  createClip({
+                    id: 'child',
+                    mediaId: 'ma',
+                    audioOnly: true,
+                    start: 0,
+                    duration: 4,
+                  }),
+                ],
+              }),
+            ],
+          },
+        ],
+      },
+      media: [asset({ id: 'ma', kind: 'audio' })],
+    })
+    const muted = build(
+      createClip({ id: 'cm', sequenceId: 'seq1', start: 0, duration: 4, muted: true }),
+    )
+    expect(planAudioFrame(muted, 1).audible).toHaveLength(0)
+    const curved = build(
+      createClip({
+        id: 'cc',
+        sequenceId: 'seq1',
+        start: 0,
+        duration: 4,
+        keyframes: { volume: [{ time: 0, value: 0.4 }] },
+      }),
+    )
+    expect(planAudioFrame(curved, 1).audible.find((a) => a.clip.id === 'child')!.gain).toBeCloseTo(
+      0.4,
+      5,
+    )
+  })
+
+  it('mixes a nested child into the offline mix at the container offset', async () => {
+    const file = new File([new Uint8Array([1])], 'm.mp3', { type: 'audio/mpeg' })
+    const music = { ...asset({ id: 'ma', kind: 'audio', duration: 60, url: 'blob:m' }), file }
+    const child = createClip({
+      id: 'child',
+      mediaId: 'ma',
+      audioOnly: true,
+      start: 0,
+      duration: 4,
+    })
+    const sequence = {
+      id: 'seq1',
+      name: 'C',
+      tracks: [createTrack('audio', 1, { id: 'st', clips: [child] })],
+    }
+    const root = createTrack('video', 1, {
+      id: 'rt',
+      clips: [createClip({ id: 'comp', sequenceId: 'seq1', start: 2, duration: 4, gain: 0.5 })],
+    })
+    const d: Doc = {
+      project: {
+        id: 'p',
+        name: 'n',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [root],
+        sequences: [sequence],
+      },
+      media: [music],
+    }
+    const starts: number[] = []
+    class FakeParam {
+      value = 1
+      setValueAtTime = () => undefined
+      linearRampToValueAtTime = () => undefined
+    }
+    class FakeOfflineContext {
+      destination = {}
+      sampleRate = 48000
+      currentTime = 0
+      createGain() {
+        return { gain: new FakeParam(), connect: () => undefined }
+      }
+      createStereoPanner() {
+        return { pan: new FakeParam(), connect: () => undefined }
+      }
+      createBufferSource() {
+        return {
+          buffer: null,
+          playbackRate: new FakeParam(),
+          connect: () => undefined,
+          start: (when: number) => {
+            starts.push(when)
+          },
+        }
+      }
+      decodeAudioData(): Promise<AudioBuffer> {
+        return Promise.resolve(fakeBuffer())
+      }
+      startRendering(): Promise<AudioBuffer> {
+        return Promise.resolve(fakeBuffer())
+      }
+    }
+    vi.stubGlobal('OfflineAudioContext', FakeOfflineContext)
+    try {
+      const buffer = await renderAudioMix(d, 20)
+      expect(buffer).not.toBeNull()
+      // The child (local 0) lands at the container's start (2s).
+      expect(starts).toEqual([2])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('clips a nested child to its container end and honours container track mute', async () => {
+    const file = new File([new Uint8Array([1])], 'm.mp3', { type: 'audio/mpeg' })
+    const music = { ...asset({ id: 'ma', kind: 'audio', duration: 60, url: 'blob:m' }), file }
+    // Child is 4s long but its container spans only 2s.
+    const child = createClip({
+      id: 'child',
+      mediaId: 'ma',
+      audioOnly: true,
+      start: 0,
+      duration: 4,
+    })
+    const sequence = {
+      id: 'seq1',
+      name: 'C',
+      tracks: [createTrack('audio', 1, { id: 'st', clips: [child] })],
+    }
+    const build = (muted: boolean): Doc => ({
+      project: {
+        id: 'p',
+        name: 'n',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [
+          createTrack('video', 1, {
+            id: 'rt',
+            muted,
+            clips: [createClip({ id: 'comp', sequenceId: 'seq1', start: 2, duration: 2 })],
+          }),
+        ],
+        sequences: [sequence],
+      },
+      media: [music],
+    })
+    class FakeParam {
+      value = 1
+      setValueAtTime = () => undefined
+      linearRampToValueAtTime = () => undefined
+    }
+    const run = async (muted: boolean) => {
+      const starts: { when: number; duration: number }[] = []
+      const gains: FakeParam[] = []
+      class FakeOfflineContext {
+        destination = {}
+        sampleRate = 48000
+        currentTime = 0
+        createGain() {
+          const g = { gain: new FakeParam(), connect: () => undefined }
+          gains.push(g.gain)
+          return g
+        }
+        createStereoPanner() {
+          return { pan: new FakeParam(), connect: () => undefined }
+        }
+        createBufferSource() {
+          return {
+            buffer: null,
+            playbackRate: new FakeParam(),
+            connect: () => undefined,
+            start: (when: number, _offset: number, duration: number) => {
+              starts.push({ when, duration })
+            },
+          }
+        }
+        decodeAudioData(): Promise<AudioBuffer> {
+          return Promise.resolve(fakeBuffer())
+        }
+        startRendering(): Promise<AudioBuffer> {
+          return Promise.resolve(fakeBuffer())
+        }
+      }
+      vi.stubGlobal('OfflineAudioContext', FakeOfflineContext)
+      try {
+        await renderAudioMix(build(muted), 20)
+      } finally {
+        vi.unstubAllGlobals()
+      }
+      return { starts, gains }
+    }
+    const clipped = await run(false)
+    // The 4s child is clipped to the container's 2s span.
+    expect(clipped.starts).toEqual([{ when: 2, duration: 2 }])
+    const muted = await run(true)
+    // The muted container track zeroes the container gain node.
+    expect(muted.gains.some((g) => g.value === 0)).toBe(true)
+  })
+
+  it('planAudioFrame drops a nested contribution under a muted container track', () => {
+    const child = createClip({
+      id: 'child',
+      mediaId: 'ma',
+      audioOnly: true,
+      start: 0,
+      duration: 4,
+    })
+    const sequence = {
+      id: 'seq1',
+      name: 'C',
+      tracks: [createTrack('audio', 1, { id: 'st', clips: [child] })],
+    }
+    const d: Doc = {
+      project: {
+        id: 'p',
+        name: 'n',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [
+          createTrack('video', 1, {
+            id: 'rt',
+            muted: true,
+            clips: [createClip({ id: 'comp', sequenceId: 'seq1', start: 0, duration: 4 })],
+          }),
+        ],
+        sequences: [sequence],
+      },
+      media: [asset({ id: 'ma', kind: 'audio' })],
+    }
+    expect(planAudioFrame(d, 1).audible).toHaveLength(0)
+  })
+
+  function crossfadedContainerDoc(): Doc {
+    const child = createClip({
+      id: 'child',
+      mediaId: 'ma',
+      audioOnly: true,
+      start: 0,
+      duration: 4,
+    })
+    const sequence = {
+      id: 'seq1',
+      name: 'C',
+      tracks: [createTrack('audio', 1, { id: 'st', clips: [child] })],
+    }
+    // Container A (0..4) crossfades into B (3..7): the span is [3, 4].
+    const root = createTrack('video', 1, {
+      id: 'rt',
+      clips: [
+        createClip({
+          id: 'A',
+          sequenceId: 'seq1',
+          start: 0,
+          duration: 4,
+          transitionOut: { type: 'crossfade', duration: 1 },
+        }),
+        createClip({ id: 'B', mediaId: 'm1', start: 3, duration: 4 }),
+      ],
+    })
+    return {
+      project: {
+        id: 'p',
+        name: 'n',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [root],
+        sequences: [sequence],
+      },
+      media: [
+        {
+          ...asset({ id: 'ma', kind: 'audio' }),
+          file: new File([new Uint8Array([1])], 'm.mp3', { type: 'audio/mpeg' }),
+        },
+        asset({ id: 'm1' }),
+      ],
+    }
+  }
+
+  it('ramps a nested mix through a container crossfade', () => {
+    const d = crossfadedContainerDoc()
+    const gainAt = (t: number) =>
+      planAudioFrame(d, t).audible.find((a) => a.clip.id === 'child')!.gain
+    // Outside the span the mix is unity; at the midpoint it is halved.
+    expect(gainAt(2)).toBeCloseTo(1, 5)
+    expect(gainAt(3.5)).toBeCloseTo(0.5, 5)
+  })
+
+  it('schedules the container crossfade in the offline mix', async () => {
+    const d = crossfadedContainerDoc()
+    let ramps = 0
+    class FakeParam {
+      value = 1
+      setValueAtTime = () => undefined
+      linearRampToValueAtTime = () => {
+        ramps++
+      }
+    }
+    class FakeOfflineContext {
+      destination = {}
+      sampleRate = 48000
+      currentTime = 0
+      createGain() {
+        return { gain: new FakeParam(), connect: () => undefined }
+      }
+      createStereoPanner() {
+        return { pan: new FakeParam(), connect: () => undefined }
+      }
+      createBufferSource() {
+        return {
+          buffer: null,
+          playbackRate: new FakeParam(),
+          connect: () => undefined,
+          start: () => undefined,
+        }
+      }
+      decodeAudioData(): Promise<AudioBuffer> {
+        return Promise.resolve(fakeBuffer())
+      }
+      startRendering(): Promise<AudioBuffer> {
+        return Promise.resolve(fakeBuffer())
+      }
+    }
+    vi.stubGlobal('OfflineAudioContext', FakeOfflineContext)
+    try {
+      await renderAudioMix(d, 20)
+      // The container crossfade schedules at least one gain ramp.
+      expect(ramps).toBeGreaterThan(0)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

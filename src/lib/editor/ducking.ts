@@ -1,4 +1,4 @@
-import { findMedia, mediaPlayable, sourceTimeAt } from './factories'
+import { activeTracks, findMedia, mediaPlayable, sourceTimeAt } from './factories'
 import { linkGroupChangesRate } from './links'
 import { clampPropertyValue } from './keyframes'
 import type { Clip, Doc, Keyframe } from './types'
@@ -161,10 +161,18 @@ function round3(n: number): number {
   return Math.round(n * 1000) / 1000
 }
 
-/** Finds audio-bearing clips that overlap the given timeline window. */
-export function overlappingAudioClips(doc: Doc, window: { start: number; end: number }): Clip[] {
+/**
+ * Finds audio-bearing clips that overlap the given timeline window, scoped to
+ * the ACTIVE sequence (0.8.1): the music and its dialogue live on the open
+ * sequence's clock, so a nested compound's local times are not comparable.
+ */
+export function overlappingAudioClips(
+  doc: Doc,
+  window: { start: number; end: number },
+  activeSequencePath: readonly string[] = [],
+): Clip[] {
   const out: Clip[] = []
-  for (const track of doc.project.tracks) {
+  for (const track of activeTracks(doc, activeSequencePath)) {
     if (track.kind === 'text') continue
     for (const clip of track.clips) {
       if (clip === undefined) continue

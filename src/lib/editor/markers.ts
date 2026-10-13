@@ -1,5 +1,13 @@
 import { TIME_EPSILON } from './constants'
-import { docDuration, sourceTimeAt, uid } from './factories'
+import {
+  activeTracks,
+  docDuration,
+  findClip,
+  findSequence,
+  sequenceDuration,
+  sourceTimeAt,
+  uid,
+} from './factories'
 import { clamp, formatTime } from './time'
 import type { Clip, Doc, Marker, MarkerColor, MarkerPatch, Project } from './types'
 
@@ -108,6 +116,12 @@ export function applyMarkerPatch(marker: Marker, patch: MarkerPatch): void {
  * exact boundary clamp inside it.
  */
 export function clipMarkerLocalTime(clip: Clip, sourceTime: number): number | null {
+  // A compound clip (0.8.1) has no source window: its markers are container-local
+  // seconds, so the time is used as-is and only the container span clamps it.
+  if (clip.sequenceId) {
+    if (sourceTime < -TIME_EPSILON || sourceTime > clip.duration + TIME_EPSILON) return null
+    return clamp(sourceTime, 0, clip.duration)
+  }
   const ramp = clip.keyframes?.timeScale
   if (!ramp || ramp.length === 0) {
     const speed = clip.speed ?? 1
@@ -184,13 +198,22 @@ export interface TimelineMarkerRef {
   clipId?: string
 }
 
-/** Every reachable marker (sequence + visible clip) sorted by timeline time. */
-export function allMarkersOnTimeline(doc: Doc): TimelineMarkerRef[] {
+/**
+ * Every reachable marker (sequence + visible clip) sorted by timeline time,
+ * scoped to the ACTIVE sequence (0.8.1): project-level markers appear only at
+ * the root, and only clips in the open sequence contribute.
+ */
+export function allMarkersOnTimeline(
+  doc: Doc,
+  activeSequencePath: readonly string[] = [],
+): TimelineMarkerRef[] {
   const out: TimelineMarkerRef[] = []
-  for (const marker of doc.project.markers ?? []) {
-    out.push({ scope: 'sequence', marker, timelineTime: marker.time })
+  if (activeSequencePath.length === 0) {
+    for (const marker of doc.project.markers ?? []) {
+      out.push({ scope: 'sequence', marker, timelineTime: marker.time })
+    }
   }
-  for (const track of doc.project.tracks) {
+  for (const track of activeTracks(doc, activeSequencePath)) {
     for (const clip of track.clips) {
       for (const { marker, timelineTime } of visibleClipMarkers(clip)) {
         out.push({ scope: 'clip', marker, timelineTime, clipId: clip.id })
@@ -198,6 +221,14 @@ export function allMarkersOnTimeline(doc: Doc): TimelineMarkerRef[] {
     }
   }
   return out.sort((a, b) => a.timelineTime - b.timelineTime || (a.marker.id < b.marker.id ? -1 : 1))
+}
+
+/** The active sequence's local length, or the root timeline at the root. */
+function activeDuration(doc: Doc, activeSequencePath: readonly string[]): number {
+  const id = activeSequencePath[activeSequencePath.length - 1]
+  if (!id) return docDuration(doc)
+  const sequence = findSequence(doc, id)
+  return sequence ? sequenceDuration(sequence) : docDuration(doc)
 }
 
 /**
@@ -209,14 +240,17 @@ export function allMarkersOnTimeline(doc: Doc): TimelineMarkerRef[] {
  * (the Marker menu) uses this same predicate, so it never advertises a jump that
  * cannot happen.
  */
-export function navigableMarkers(doc: Doc): TimelineMarkerRef[] {
-  const limit = docDuration(doc) + TIME_EPSILON
-  return allMarkersOnTimeline(doc).filter((ref) => ref.timelineTime <= limit)
+export function navigableMarkers(
+  doc: Doc,
+  activeSequencePath: readonly string[] = [],
+): TimelineMarkerRef[] {
+  const limit = activeDuration(doc, activeSequencePath) + TIME_EPSILON
+  return allMarkersOnTimeline(doc, activeSequencePath).filter((ref) => ref.timelineTime <= limit)
 }
 
 /** True while at least one marker is reachable by marker navigation. */
-export function hasNavigableMarkers(doc: Doc): boolean {
-  return navigableMarkers(doc).length > 0
+export function hasNavigableMarkers(doc: Doc, activeSequencePath: readonly string[] = []): boolean {
+  return navigableMarkers(doc, activeSequencePath).length > 0
 }
 
 /**
@@ -228,8 +262,9 @@ export function neighborMarker(
   doc: Doc,
   time: number,
   dir: 'next' | 'prev',
+  activeSequencePath: readonly string[] = [],
 ): TimelineMarkerRef | null {
-  const marked = navigableMarkers(doc)
+  const marked = navigableMarkers(doc, activeSequencePath)
   if (dir === 'next') {
     for (const ref of marked) {
       if (ref.timelineTime > time + TIME_EPSILON) return ref
@@ -248,6 +283,9 @@ export function neighborMarker(
  * marker is always on screen.
  */
 export function sourceTimeForClipMarker(clip: Clip, playhead: number): number {
+  // A compound clip's markers are container-local, so the playhead maps to the
+  // container's own clock instead of a source window.
+  if (clip.sequenceId) return clamp(playhead - clip.start, 0, clip.duration)
   return sourceTimeAt(clip, clamp(playhead - clip.start, 0, clip.duration))
 }
 
@@ -260,7 +298,7 @@ export function markerFromSelection(doc: Doc, selection: MarkerSelection): Marke
   if (selection.scope === 'sequence') {
     return (doc.project.markers ?? []).find((m) => m.id === selection.markerId)
   }
-  const clip = doc.project.tracks.flatMap((t) => t.clips).find((c) => c.id === selection.clipId)
+  const clip = findClip(doc, selection.clipId)?.clip
   return clip?.markers?.find((m) => m.id === selection.markerId)
 }
 

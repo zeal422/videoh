@@ -240,6 +240,15 @@ export interface Clip {
    * set id always resolves.
    */
   lutId?: string
+  /**
+   * Reference into `Project.sequences` (0.8.1): this clip is a COMPOUND that
+   * composites the referenced sequence at container-local time. Mutually
+   * exclusive with `mediaId`, `text` and `audioOnly`; it renders picture, so
+   * it lives on a video track. Its own visual/audio container properties
+   * (opacity, transform, grade, gain, mute, volume curve) apply to the
+   * composited nested result as a group.
+   */
+  sequenceId?: string
 }
 
 export interface Track {
@@ -249,6 +258,18 @@ export interface Track {
   /** Mutes the whole track (audio only; video frames still render). */
   muted?: boolean
   clips: Clip[]
+}
+
+/**
+ * A compound clip's referenced sequence (0.8.1). Lives on `Project.sequences`
+ * and is SHARED by every compound clip that references it, so editing the
+ * sequence propagates to all of its containers (the roadmap's "reusable unit").
+ * `tracks[0]` is the topmost layer, the same convention as `Project.tracks`.
+ */
+export interface Sequence {
+  id: string
+  name: string
+  tracks: Track[]
 }
 
 export interface Project {
@@ -270,6 +291,12 @@ export interface Project {
    * travels with the edit and hydrates beside `keyframeDefaults`.
    */
   luts?: ProjectLut[]
+  /**
+   * Compound clip sequences (0.8.1), referenced by `Clip.sequenceId`. Shared
+   * by every container that references one, and pruned when the last reference
+   * is removed. Absent for a project with no compound clips.
+   */
+  sequences?: Sequence[]
   /** Index 0 = topmost layer. Conventional order: text tracks, video tracks, audio tracks. */
   tracks: Track[]
 }

@@ -9,6 +9,7 @@ import {
   isTransientActive,
   useEditorStore,
 } from '../store'
+import { copyClips, hasClipboardContent } from '../clipboard'
 import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 import type { Doc } from '../types'
 
@@ -48,6 +49,43 @@ beforeEach(() => {
     sourceIn: null,
     sourceOut: null,
     sourcePlayhead: 0,
+    activeSequencePath: [],
+  })
+})
+
+describe('active sequence path normalization (0.8.1)', () => {
+  it('truncates a path whose parent-child edge was removed', () => {
+    const doc = createDoc()
+    const vTrack = doc.project.tracks.find((t) => t.kind === 'video')!
+    // root -> A, root -> B, and A -> B.
+    vTrack.clips.push({ id: 'rootA', sequenceId: 'A', start: 0, duration: 1, inPoint: 0 })
+    vTrack.clips.push({ id: 'rootB', sequenceId: 'B', start: 1, duration: 1, inPoint: 0 })
+    doc.project.sequences = [
+      {
+        id: 'A',
+        name: 'A',
+        tracks: [
+          {
+            id: 'ta',
+            kind: 'video',
+            name: 'V1',
+            clips: [{ id: 'aB', sequenceId: 'B', start: 0, duration: 1, inPoint: 0 }],
+          },
+        ],
+      },
+      { id: 'B', name: 'B', tracks: [{ id: 'tb', kind: 'video', name: 'V1', clips: [] }] },
+    ]
+    useEditorStore.setState({ doc, past: [], future: [] })
+    useEditorStore.getState().setActiveSequencePath(['A', 'B'])
+    expect(useEditorStore.getState().activeSequencePath).toEqual(['A', 'B'])
+
+    // Remove the A -> B edge; B still exists (referenced from the root).
+    const next = structuredClone(doc)
+    next.project.sequences![0].tracks[0].clips = []
+    useEditorStore.setState({ doc: next })
+    useEditorStore.getState().setActiveSequencePath(useEditorStore.getState().activeSequencePath)
+    // The stale A -> B step is dropped, leaving the surviving parent.
+    expect(useEditorStore.getState().activeSequencePath).toEqual(['A'])
   })
 })
 
@@ -770,5 +808,22 @@ describe('placement and source session fields (0.7.2)', () => {
     useEditorStore.getState().markSourceOut()
     expect(useEditorStore.getState().sourceIn).toBeNull()
     expect(useEditorStore.getState().sourceOut).toBeNull()
+  })
+})
+
+describe('replaceDoc clears the clipboard (0.8.1)', () => {
+  it('drops a clipboard entry copied from the previous project', () => {
+    const asset = createMediaAsset({ kind: 'video', name: 'a.mp4', duration: 10, url: 'blob:a' })
+    const doc = useEditorStore.getState().doc
+    doc.media.push(asset)
+    const track = doc.project.tracks.find((t) => t.kind === 'video')!
+    track.clips.push(createClip({ id: 'c1', mediaId: asset.id, start: 0, duration: 1 }))
+    useEditorStore.setState({ doc })
+
+    copyClips(doc, ['c1'])
+    expect(hasClipboardContent()).toBe(true)
+
+    useEditorStore.getState().replaceDoc(createDoc())
+    expect(hasClipboardContent()).toBe(false)
   })
 })

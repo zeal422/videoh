@@ -1,8 +1,14 @@
 import { clipFilter } from '../color'
-import { docDuration, findMedia, sourceTimeAt } from '../factories'
+import {
+  docDuration,
+  findMedia,
+  findSequence,
+  rootReachableSequences,
+  sourceTimeAt,
+} from '../factories'
 import { blendPartnerTime } from '../frame-blend'
 import { findLut } from '../lut'
-import { getTransitionSpan, transitionAlphas } from '../transition'
+import { crossfadeFactor, getTransitionSpan, transitionAlphas } from '../transition'
 import { animatedValue } from '../keyframes'
 import { segmentControls } from '../ease-segment'
 import { clipRendersAudio, linkGroupChangesRate } from '../links'
@@ -45,6 +51,13 @@ export interface ClipDraw {
   alpha: number
   filter: string
   transform: { posX: number; posY: number; scale: number } | null
+  /**
+   * For a compound clip (0.8.1): the nested plan of its referenced sequence at
+   * container-local time. The exporter renders this into a transparent scratch
+   * surface and composites that single surface with the container's alpha,
+   * filter and transform (a GROUP composite, not a per-child fan-out).
+   */
+  nested?: FramePlan
 }
 
 export interface FramePlan {
@@ -87,12 +100,23 @@ function isActive(clip: Clip, t: number): boolean {
   return t >= clip.start && t < clip.start + clip.duration
 }
 
-/** Video/image clips visible at `t`, one draw per active clip (transition-aware). */
-export function planVideoFrame(doc: Doc, t: number): FramePlan {
+/**
+ * Video/image clips visible at `t`, one draw per active clip (transition-aware).
+ * Recurses through compound clips (0.8.1): a compound draw carries the nested
+ * plan of its referenced sequence at container-local time, rendered as a group
+ * by the exporter. The export ALWAYS starts from the project root tracks; the
+ * `tracks` parameter is the recursion's own child-track list, never the active
+ * sequence path.
+ */
+export function planVideoFrame(
+  doc: Doc,
+  t: number,
+  tracks: readonly Track[] = doc.project.tracks,
+): FramePlan {
   const draws: ClipDraw[] = []
   // Tracks composite bottom→top: last track first.
-  for (let i = doc.project.tracks.length - 1; i >= 0; i--) {
-    const track: Track = doc.project.tracks[i]
+  for (let i = tracks.length - 1; i >= 0; i--) {
+    const track: Track = tracks[i]
     if (track.kind === 'audio') continue
     const clips = [...track.clips].sort((a, b) => a.start - b.start)
     const active = clips.filter((c) => isActive(c, t))
@@ -118,6 +142,22 @@ export function planVideoFrame(doc: Doc, t: number): FramePlan {
       const alpha = alphas.get(clip.id)
       if (alpha === undefined || alpha <= 0) continue
       const local = t - clip.start
+      const filter = clipFilter(clip, local, findLut(doc.project.luts, clip.lutId))
+      const transform = clipTransform(clip, local)
+      if (clip.sequenceId) {
+        const sequence = findSequence(doc, clip.sequenceId)
+        if (!sequence) continue
+        draws.push({
+          clip,
+          asset: undefined,
+          sourceTime: 0,
+          alpha: alpha * animatedValue(clip, 'opacity', local),
+          filter,
+          transform,
+          nested: planVideoFrame(doc, local, sequence.tracks),
+        })
+        continue
+      }
       const drawAsset = findMedia(doc, clip.mediaId)
       draws.push({
         clip,
@@ -128,21 +168,61 @@ export function planVideoFrame(doc: Doc, t: number): FramePlan {
         // The clip's LUT is resolved here so both render paths hand `clipFilter`
         // the same entry: a 1D shaper lands in this string, a 3D cube is applied
         // to the decoded frames by the renderer instead.
-        filter: clipFilter(clip, local, findLut(doc.project.luts, clip.lutId)),
-        transform: clipTransform(clip, local),
+        filter,
+        transform,
       })
     }
   }
   return { time: t, draws }
 }
 
-/** Audible audio contributions at `t`, gain/pan resolved. */
-export function planAudioFrame(doc: Doc, t: number): AudioFramePlan {
+/** Every draw in a plan tree, nested compound draws included (for decoding). */
+export function flattenDraws(plan: FramePlan, out: ClipDraw[] = []): ClipDraw[] {
+  for (const draw of plan.draws) {
+    out.push(draw)
+    if (draw.nested) flattenDraws(draw.nested, out)
+  }
+  return out
+}
+
+/**
+ * Audible audio contributions at `t`, gain/pan resolved. Recurses through
+ * compound clips (0.8.1): a compound's children contribute at their
+ * container-local time, and every enclosing container's gain multiplies in
+ * once (`ancestorGain`). The live mix uses `renderAudioMix`; this plan mirrors
+ * it for tests and the offline plan.
+ */
+export function planAudioFrame(
+  doc: Doc,
+  t: number,
+  tracks: readonly Track[] = doc.project.tracks,
+  offset = 0,
+  ancestorGain = 1,
+): AudioFramePlan {
   const audible: AudioContribution[] = []
-  for (const track of doc.project.tracks) {
+  const seqT = t - offset
+  for (const track of tracks) {
     if (track.kind === 'text') continue
     for (const clip of track.clips) {
-      if (!isActive(clip, t)) continue
+      if (clip.sequenceId) {
+        const sequence = findSequence(doc, clip.sequenceId)
+        if (!sequence) continue
+        // The container's own mute OR its owning track's mute silences the mix.
+        if (!isActive(clip, seqT) || clip.muted || track.muted) continue
+        const containerGain =
+          animatedValue(clip, 'volume', seqT - clip.start) * crossfadeFactor(track, clip, seqT)
+        audible.push(
+          ...planAudioFrame(
+            doc,
+            t,
+            sequence.tracks,
+            offset + clip.start,
+            ancestorGain * containerGain,
+          ).audible,
+        )
+        continue
+      }
+      if (!isActive(clip, seqT)) continue
       const asset = findMedia(doc, clip.mediaId)
       if (!asset) continue
       if (!clipRendersAudio(doc, clip)) continue
@@ -151,7 +231,7 @@ export function planAudioFrame(doc: Doc, t: number): AudioFramePlan {
       // keeps its own audio; the reverse skip it mirrors is a plain stored flag.
       if (clip.muted || track.muted || clip.reverse || linkGroupChangesRate(doc, clip)) continue
 
-      const local = t - clip.start
+      const local = seqT - clip.start
       let gain = animatedValue(clip, 'volume', local)
       // Crossfade ramp within the transition span on this track.
       const clips = [...track.clips].sort((a, b) => a.start - b.start)
@@ -160,8 +240,8 @@ export function planAudioFrame(doc: Doc, t: number): AudioFramePlan {
         const b = clips[i + 1]
         if (!a.transitionOut) continue
         const span = getTransitionSpan(a, b)
-        if (!span || t < span.start || t > span.end) continue
-        const p = (t - span.start) / Math.max(1e-9, span.duration)
+        if (!span || seqT < span.start || seqT > span.end) continue
+        const p = (seqT - span.start) / Math.max(1e-9, span.duration)
         if (clip.id === a.id) gain *= 1 - p
         else if (clip.id === b.id) gain *= p
       }
@@ -169,7 +249,7 @@ export function planAudioFrame(doc: Doc, t: number): AudioFramePlan {
         clip,
         asset,
         sourceTime: sourceTimeAt(clip, local),
-        gain: clamp(gain, 0, 2),
+        gain: clamp(gain * ancestorGain, 0, 2),
         pan: clamp(clip.pan ?? 0, -1, 1),
       })
     }
@@ -294,16 +374,17 @@ export function planExport(doc: Doc): { video: FramePlan[]; audio: AudioFramePla
 export function videoAssetIds(plan: FramePlan[]): Set<string> {
   const ids = new Set<string>()
   for (const frame of plan) {
-    for (const draw of frame.draws) {
+    for (const draw of flattenDraws(frame)) {
       if (draw.asset && draw.asset.kind === 'video') ids.add(draw.asset.id)
     }
   }
   return ids
 }
 
-/** True when any planned draw needs a reversed source read. */
+/** True when any planned draw needs a reversed source read (root or nested). */
 export function needsReverse(doc: Doc): boolean {
-  return doc.project.tracks.some((t) => t.clips.some((c) => c.reverse))
+  const tracks = [...doc.project.tracks, ...rootReachableSequences(doc).flatMap((s) => s.tracks)]
+  return tracks.some((t) => t.clips.some((c) => c.reverse))
 }
 
 /**

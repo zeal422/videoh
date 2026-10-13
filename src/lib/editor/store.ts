@@ -1,13 +1,14 @@
 import { create } from 'zustand'
 import { HISTORY_LIMIT, PPS_DEFAULT } from './constants'
+import { clearClipboard } from './clipboard'
 import { applyCommand, applyCommands, EditorCommand } from './commands'
-import { createDoc } from './factories'
+import { activeTracks, createDoc, findSequence, findTrack } from './factories'
 import { linkedClips } from './links'
 import { markerSelectionExists, type MarkerSelection } from './markers'
 import type { PlacementMode } from './sequence-ops'
-import { pruneEmptiedTracks } from './tracks'
+import { pruneEmptiedTracks, pruneOrphanSequences } from './tracks'
 import type { ProxyEntry } from './proxy'
-import type { Doc } from './types'
+import type { Doc, Track } from './types'
 
 /**
  * Editor store (zustand).
@@ -99,6 +100,14 @@ export interface EditorState {
    * `media/proxies.ts` registry, which revokes them on drop.
    */
   proxyByAssetId: Record<string, ProxyEntry>
+  /**
+   * The open compound sequence path (0.8.1): empty at the project root,
+   * otherwise the sequence ids from the root to the open child. The timeline
+   * and preview render the ACTIVE sequence's tracks. Session-only: never in the
+   * Doc, never serialized, never undoable. Normalized against the doc whenever
+   * the doc changes (a compound deletion or an undo past creation truncates it).
+   */
+  activeSequencePath: string[]
 
   autosaveStatus: AutosaveStatus
   autosavedAt: number | null
@@ -154,6 +163,10 @@ export interface EditorState {
   setProxyEntry: (assetId: string, entry: ProxyEntry) => void
   /** Forget one asset's proxy entry (the registry revokes its URL first). */
   clearProxyEntry: (assetId: string) => void
+  /** Open a compound sequence (pushes onto the active path). */
+  openSequence: (sequenceId: string) => void
+  /** Jump the breadcrumb: keep the path up to and including `index` (-1 = root). */
+  setActiveSequencePath: (path: string[]) => void
   /**
    * Select every clip on a lane, expanding each clip's link group so an A/V
    * pair split across lanes selects both halves. The lane's first clip is the
@@ -218,12 +231,15 @@ function endTransient() {
 function rollbackToBase(set: (partial: Partial<EditorState>) => void, get: () => EditorState) {
   const base = transientBase
   endTransient()
-  if (base)
+  if (base) {
+    const path = normalizeActivePath(base, get().activeSequencePath)
     set({
       doc: base,
-      ...normalizeSelections(base, get().selections),
+      activeSequencePath: path,
+      ...normalizeSelections(base, get().selections, path),
       selectedMarker: normalizeMarkerSelection(base, get().selectedMarker),
     })
+  }
 }
 
 /** Drops a marker selection whose marker no longer exists (undo/redo, deletes). */
@@ -235,19 +251,50 @@ function normalizeMarkerSelection(
   return markerSelectionExists(doc, selection) ? selection : null
 }
 
-/** Normalizes selections: dedupe, drop ids that no longer exist, primary first. */
+/**
+ * Normalizes selections: dedupe, drop ids that no longer exist, primary first.
+ * Scoped to the ACTIVE sequence: a selection can only reference clips in the
+ * open sequence, so a stale id from another sequence is dropped.
+ */
 function normalizeSelections(
   doc: Doc,
   ids: string[],
+  activeSequencePath: readonly string[],
 ): { selections: string[]; selection: string | null } {
   const seen = new Set<string>()
   const valid: string[] = []
+  const inScope = new Set<string>()
+  for (const track of activeTracks(doc, activeSequencePath)) {
+    for (const clip of track.clips) inScope.add(clip.id)
+  }
   for (const id of ids) {
     if (seen.has(id)) continue
     seen.add(id)
-    if (doc.project.tracks.some((t) => t.clips.some((c) => c.id === id))) valid.push(id)
+    if (inScope.has(id)) valid.push(id)
   }
   return { selections: valid, selection: valid[0] ?? null }
+}
+
+/**
+ * Truncates the active path at the first id the doc no longer resolves, so an
+ * undo past a compound creation (or a container deletion) falls back to its
+ * surviving parent rather than rendering a sequence that is gone.
+ */
+function normalizeActivePath(doc: Doc, path: readonly string[]): string[] {
+  const out: string[] = []
+  // Each step must be a real parent-child edge: the sequence is referenced by a
+  // compound on the preceding sequence's (or root's) tracks. An id that exists
+  // but is no longer a child of its predecessor truncates the path.
+  let parentTracks: readonly Track[] = doc.project.tracks
+  for (const id of path) {
+    const sequence = findSequence(doc, id)
+    if (!sequence) break
+    const isChild = parentTracks.some((t) => t.clips.some((c) => c.sequenceId === id))
+    if (!isChild) break
+    out.push(id)
+    parentTracks = sequence.tracks
+  }
+  return out
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
@@ -271,6 +318,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   untargetedTracks: [],
   proxiesEnabled: false,
   proxyByAssetId: {},
+  activeSequencePath: [],
   autosaveStatus: 'idle',
   autosavedAt: null,
   pendingRestore: null,
@@ -285,14 +333,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { doc, past } = get()
     const next = Array.isArray(command) ? applyCommands(doc, command) : applyCommand(doc, command)
     // An edit that takes a lane's last clip takes the lane with it (empty
-    // layers never linger); it rides in the same history entry as the edit.
-    const pruned = pruneEmptiedTracks(doc, next)
+    // layers never linger), and an edit that drops the last container of a
+    // compound takes its sequence with it. Both ride in the same history entry
+    // as the edit, so undo restores them.
+    const pruned = pruneOrphanSequences(pruneEmptiedTracks(doc, next))
+    const path = normalizeActivePath(pruned, get().activeSequencePath)
     set({
       doc: pruned,
+      activeSequencePath: path,
       past: [...past, doc].slice(-HISTORY_LIMIT),
       future: [],
       // Commands may delete selected clips — drop dangling selection ids.
-      ...normalizeSelections(pruned, get().selections),
+      ...normalizeSelections(pruned, get().selections, path),
       selectedMarker: normalizeMarkerSelection(pruned, get().selectedMarker),
       // A removed media asset takes the Source monitor's selection with it.
       ...normalizeSourceState(pruned, get()),
@@ -324,16 +376,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const base = transientBase
     // Prune only now, on commit: mid-gesture the source lane is legitimately
     // empty for a frame, and removing it would delete the lane being dragged out of.
-    const pruned = pruneEmptiedTracks(base, doc)
+    const pruned = pruneOrphanSequences(pruneEmptiedTracks(base, doc))
     const changed = JSON.stringify(base) !== JSON.stringify(pruned)
     // Clear the transient flag BEFORE set() — the autosave subscription runs
     // synchronously and must observe a non-transient state to schedule a save.
     endTransient()
     if (changed) {
+      const path = normalizeActivePath(pruned, get().activeSequencePath)
       set({
         doc: pruned,
+        activeSequencePath: path,
         past: [...past, base].slice(-HISTORY_LIMIT),
         future: [],
+        ...normalizeSelections(pruned, get().selections, path),
         // A transient gesture may have deleted the selected marker; drop a
         // selection whose target no longer exists in the committed doc.
         selectedMarker: normalizeMarkerSelection(pruned, get().selectedMarker),
@@ -362,12 +417,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { past, future, doc, selections, selectedMarker } = get()
     if (past.length === 0) return
     const previous = past[past.length - 1]
+    const path = normalizeActivePath(previous, get().activeSequencePath)
     set({
       doc: previous,
+      activeSequencePath: path,
       past: past.slice(0, -1),
       future: [doc, ...future].slice(0, HISTORY_LIMIT),
       // Drop selection members that no longer exist in the restored doc.
-      ...normalizeSelections(previous, selections),
+      ...normalizeSelections(previous, selections, path),
       selectedMarker: normalizeMarkerSelection(previous, selectedMarker),
     })
   },
@@ -377,11 +434,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { past, future, doc, selections, selectedMarker } = get()
     if (future.length === 0) return
     const next = future[0]
+    const path = normalizeActivePath(next, get().activeSequencePath)
     set({
       doc: next,
+      activeSequencePath: path,
       past: [...past, doc].slice(-HISTORY_LIMIT),
       future: future.slice(1),
-      ...normalizeSelections(next, selections),
+      ...normalizeSelections(next, selections, path),
       selectedMarker: normalizeMarkerSelection(next, selectedMarker),
     })
   },
@@ -393,6 +452,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // No rollback: the incoming doc replaces everything anyway; the token
     // bump alone retires any live drag.
     endTransient()
+    // A clipboard entry belongs to the project it was copied from: its clips
+    // (and any compound sequence they reference) may not exist here.
+    clearClipboard()
     set({
       doc,
       past: [...past, get().doc].slice(-HISTORY_LIMIT),
@@ -408,6 +470,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       sourcePlayhead: 0,
       untargetedTracks: [],
       proxyByAssetId: {},
+      activeSequencePath: [],
       playhead: 0,
       playing: false,
     })
@@ -416,12 +479,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   select: (clipId) =>
     set(
       clipId
-        ? { ...normalizeSelections(get().doc, [clipId]), selectedMarker: null }
+        ? {
+            ...normalizeSelections(get().doc, [clipId], get().activeSequencePath),
+            selectedMarker: null,
+          }
         : { selections: [], selection: null, selectedMarker: null },
     ),
 
   setSelections: (clipIds) =>
-    set({ ...normalizeSelections(get().doc, clipIds), selectedMarker: null }),
+    set({
+      ...normalizeSelections(get().doc, clipIds, get().activeSequencePath),
+      selectedMarker: null,
+    }),
 
   setTrackTargeted: (trackId, targeted) => {
     const { untargetedTracks } = get()
@@ -446,9 +515,29 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return { proxyByAssetId: next }
     }),
 
+  openSequence: (sequenceId) => {
+    const { doc, activeSequencePath } = get()
+    if (!findSequence(doc, sequenceId)) return
+    if (activeSequencePath.includes(sequenceId)) return
+    get().setActiveSequencePath([...activeSequencePath, sequenceId])
+  },
+
+  setActiveSequencePath: (path) => {
+    const next = normalizeActivePath(get().doc, path)
+    // Opening or leaving a sequence scopes every editing surface, so a stale
+    // selection, marker selection or lane posture from the old scope is cleared.
+    set({
+      activeSequencePath: next,
+      selections: [],
+      selection: null,
+      selectedMarker: null,
+      untargetedTracks: [],
+    })
+  },
+
   selectTrackClips: (trackId) => {
     const { doc } = get()
-    const track = doc.project.tracks.find((t) => t.id === trackId)
+    const track = findTrack(doc, trackId)
     if (!track) return
     const ids: string[] = []
     for (const clip of track.clips) {
@@ -458,7 +547,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         if (!ids.includes(member.id)) ids.push(member.id)
       }
     }
-    set({ ...normalizeSelections(doc, ids), selectedMarker: null })
+    set({
+      ...normalizeSelections(doc, ids, get().activeSequencePath),
+      selectedMarker: null,
+    })
   },
 
   selectMarker: (selection) =>
@@ -469,25 +561,29 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     ),
 
   addSelection: (clipId) => {
-    const { doc, selections } = get()
+    const { doc, selections, activeSequencePath } = get()
     const group = linkedClips(doc, clipId).map((c) => c.id)
-    set({ ...normalizeSelections(doc, [...selections, ...group]), selectedMarker: null })
+    set({
+      ...normalizeSelections(doc, [...selections, ...group], activeSequencePath),
+      selectedMarker: null,
+    })
   },
 
   toggleSelection: (clipId) => {
-    const { doc, selections } = get()
+    const { doc, selections, activeSequencePath } = get()
     const group = linkedClips(doc, clipId).map((c) => c.id)
     const allIn = group.every((id) => selections.includes(id))
     const next = allIn ? selections.filter((id) => !group.includes(id)) : [...selections, ...group]
-    set({ ...normalizeSelections(doc, next), selectedMarker: null })
+    set({ ...normalizeSelections(doc, next, activeSequencePath), selectedMarker: null })
   },
 
   selectAll: () => {
-    const { doc } = get()
+    const { doc, activeSequencePath } = get()
     set({
       ...normalizeSelections(
         doc,
-        doc.project.tracks.flatMap((t) => t.clips.map((c) => c.id)),
+        activeTracks(doc, activeSequencePath).flatMap((t) => t.clips.map((c) => c.id)),
+        activeSequencePath,
       ),
       selectedMarker: null,
     })

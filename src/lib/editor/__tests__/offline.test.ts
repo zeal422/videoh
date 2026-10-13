@@ -86,7 +86,7 @@ describe('offlineMediaAt', () => {
 describe('preview offline overlay wiring', () => {
   it('renders the overlay from the playhead frame', () => {
     const panel = read('src/components/editor/PreviewPanel.tsx')
-    expect(panel).toMatch(/offlineMediaAt\(doc, playhead\)/)
+    expect(panel).toMatch(/offlineMediaAt\(doc, playhead, activeSequencePath\)/)
     expect(panel).toMatch(/data-testid="media-offline-overlay"/)
     expect(panel).toMatch(/Media offline/)
     expect(panel).toMatch(/Relink in the Media bin/)
@@ -116,6 +116,56 @@ describe('hasOfflineMedia (the export gate predicate)', () => {
   it('passes a fully online doc', () => {
     const asset = video('online.mp4', { url: 'blob:x' })
     const doc = buildDoc([asset], [createClip({ mediaId: asset.id, start: 0, duration: 4 })])
+    expect(hasOfflineMedia(doc)).toBe(false)
+  })
+})
+
+describe('offline media across compound clips (0.8.1)', () => {
+  function compoundDoc(media: MediaAsset[]): Doc {
+    const doc = buildDoc(media, [
+      createClip({ id: 'comp', sequenceId: 'seq1', start: 0, duration: 4 }),
+    ])
+    doc.project.sequences = [
+      {
+        id: 'seq1',
+        name: 'C',
+        tracks: [
+          createTrack('video', 1, {
+            clips: [createClip({ id: 'child', mediaId: media[0].id, start: 0, duration: 4 })],
+          }),
+        ],
+      },
+    ]
+    return doc
+  }
+
+  it('names a nested offline clip only while its container is active', () => {
+    const asset = video('nested.mp4', { url: '', missing: true })
+    const doc = compoundDoc([asset])
+    expect(offlineMediaAt(doc, 1)).toEqual(['nested.mp4'])
+    expect(offlineMediaAt(doc, 5)).toEqual([])
+  })
+
+  it('hasOfflineMedia sees a nested offline clip', () => {
+    const asset = video('nested.mp4', { url: '', missing: true })
+    expect(hasOfflineMedia(compoundDoc([asset]))).toBe(true)
+  })
+
+  it('ignores an offline clip in an unreachable (orphan) sequence', () => {
+    const asset = video('orphan.mp4', { url: '', missing: true })
+    const doc = buildDoc([asset], [])
+    // A sequence no root container references: export never renders it.
+    doc.project.sequences = [
+      {
+        id: 'orphan',
+        name: 'Orphan',
+        tracks: [
+          createTrack('video', 1, {
+            clips: [createClip({ mediaId: asset.id, start: 0, duration: 4 })],
+          }),
+        ],
+      },
+    ]
     expect(hasOfflineMedia(doc)).toBe(false)
   })
 })

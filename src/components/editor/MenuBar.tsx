@@ -27,6 +27,7 @@ import {
 import {
   commandsToAddMarker,
   commandsToAddText,
+  commandsToCreateCompoundClip,
   commandsToDeleteClips,
   commandsToDeleteMarker,
   commandsToDuplicateClips,
@@ -50,7 +51,13 @@ import {
   linkedAudioTwin,
 } from '@/lib/editor/links'
 import { EditorCommandError } from '@/lib/editor/commands'
-import { createDoc, docDuration, uid } from '@/lib/editor/factories'
+import {
+  activeSequenceDuration,
+  activeTracks,
+  createDoc,
+  findClip,
+  uid,
+} from '@/lib/editor/factories'
 import { cn } from '@/lib/utils'
 import { GAIN_MAX, GAIN_MIN, PPS_MAX, PPS_MIN, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
 import { buildMenus, type MenuActionId, type MenuContext } from '@/lib/editor/menus'
@@ -77,6 +84,12 @@ import { useEditorStore } from '@/lib/editor/store'
  * maps action ids to real editor operations. Items whose precondition is not
  * met render disabled — there are no dead menu entries.
  */
+/** The `sequenceId` field an addTrack command needs for the active sequence. */
+function activeSequenceField(path: readonly string[]): { sequenceId?: string } {
+  const id = path[path.length - 1]
+  return id ? { sequenceId: id } : {}
+}
+
 export function MenuBar({
   onOpenExport,
   onResetLayout,
@@ -99,6 +112,7 @@ export function MenuBar({
   const proxiesEnabled = useEditorStore((s) => s.proxiesEnabled)
   const pxPerSec = useEditorStore((s) => s.pxPerSec)
   const doc = useEditorStore((s) => s.doc)
+  const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
 
   const panelHidden = useWorkspaceStore((s) => s.hidden)
   const collapsed = useWorkspaceStore((s) => s.collapsed)
@@ -112,16 +126,13 @@ export function MenuBar({
   const [gainValue, setGainValue] = useState(1)
 
   const selectedClip = useMemo(
-    () =>
-      selections[0]
-        ? doc.project.tracks.flatMap((t) => t.clips).find((c) => c.id === selections[0])
-        : undefined,
+    () => (selections[0] ? findClip(doc, selections[0])?.clip : undefined),
     [doc, selections],
   )
 
   const allClipIds = useMemo(
-    () => doc.project.tracks.flatMap((t) => t.clips.map((c) => c.id)),
-    [doc],
+    () => activeTracks(doc, activeSequencePath).flatMap((t) => t.clips.map((c) => c.id)),
+    [doc, activeSequencePath],
   )
 
   // The doc identity is stable during playback (only `playhead` changes), and
@@ -130,7 +141,10 @@ export function MenuBar({
   // animation frame while playing. "Navigable" is the same predicate marker
   // navigation uses, so a marker past the sequence end does not light up a
   // jump that cannot happen.
-  const hasMarkers = useMemo(() => hasNavigableMarkers(doc), [doc])
+  const hasMarkers = useMemo(
+    () => hasNavigableMarkers(doc, activeSequencePath),
+    [doc, activeSequencePath],
+  )
 
   const ctx: MenuContext = {
     canUndo: past.length > 0,
@@ -147,8 +161,10 @@ export function MenuBar({
     canPaste: hasClipboardContent(),
     selectionLinked: selections.length > 0 && anySelectionLinked(doc, selections),
     canLink: canLinkClips(doc, selections),
+    canCreateCompound: selections.length > 0,
     hasMarkers,
     hasSelectedMarker: !!selectedMarker && markerSelectionExists(doc, selectedMarker),
+    canAddMarker: selections.length > 0 || activeSequencePath.length === 0,
     snapEnabled,
     proxiesEnabled,
     panelHidden,
@@ -172,14 +188,10 @@ export function MenuBar({
   const openGainDialog = useCallback(() => {
     const state = useEditorStore.getState()
     const sel = state.selections[0] ?? state.selection
-    const clip = sel
-      ? state.doc.project.tracks.flatMap((t) => t.clips).find((c) => c.id === sel)
-      : undefined
+    const clip = sel ? findClip(state.doc, sel)?.clip : undefined
     // Gain lives on the audio side of a linked pair — edit that one.
     const audibleId = sel ? audibleClipId(state.doc, sel) : null
-    const audible = audibleId
-      ? state.doc.project.tracks.flatMap((t) => t.clips).find((c) => c.id === audibleId)
-      : undefined
+    const audible = audibleId ? findClip(state.doc, audibleId)?.clip : undefined
     setGainValue(audible?.gain ?? clip?.gain ?? 1)
     setGainOpen(true)
   }, [])
@@ -196,9 +208,7 @@ export function MenuBar({
       const store = useEditorStore.getState()
       const selectedIds =
         store.selections.length > 0 ? store.selections : store.selection ? [store.selection] : []
-      const selectedClip = selectedIds[0]
-        ? store.doc.project.tracks.flatMap((t) => t.clips).find((c) => c.id === selectedIds[0])
-        : undefined
+      const selectedClip = selectedIds[0] ? findClip(store.doc, selectedIds[0])?.clip : undefined
 
       try {
         switch (action) {
@@ -254,7 +264,7 @@ export function MenuBar({
             // playhead crosses; otherwise split the whole selection.
             const splitCommands = selectedIds.length
               ? commandsToSplitClipsAt(store.doc, selectedIds, store.playhead)
-              : commandsToSplitAllAt(store.doc, store.playhead)
+              : commandsToSplitAllAt(store.doc, store.playhead, store.activeSequencePath)
             if (!splitCommands) return
             store.apply(splitCommands)
             break
@@ -275,7 +285,11 @@ export function MenuBar({
           }
           case 'clip.rippleDelete': {
             if (selectedIds.length === 0) return
-            const rippleCommands = commandsToRippleDeleteClips(store.doc, selectedIds)
+            const rippleCommands = commandsToRippleDeleteClips(
+              store.doc,
+              selectedIds,
+              store.activeSequencePath,
+            )
             if (!rippleCommands) return
             store.apply(rippleCommands)
             store.deselectAll()
@@ -300,6 +314,7 @@ export function MenuBar({
               store.doc,
               store.playhead,
               store.untargetedTracks,
+              store.activeSequencePath[store.activeSequencePath.length - 1],
             )
             if (!pasteCommands) return
             store.apply(pasteCommands)
@@ -326,9 +341,7 @@ export function MenuBar({
             // Mute is an AUDIO property: always target the linked pair's
             // audio twin, whichever half is selected.
             const audibleId = audibleClipId(store.doc, selectedClip.id)
-            const audible = store.doc.project.tracks
-              .flatMap((t) => t.clips)
-              .find((c) => c.id === audibleId)
+            const audible = findClip(store.doc, audibleId)?.clip
             store.apply({
               type: 'setClipMuted',
               clipId: audibleId,
@@ -341,14 +354,42 @@ export function MenuBar({
             break
 
           case 'sequence.addVideoTrack':
-            store.apply({ type: 'addTrack', kind: 'video', trackId: uid('track') })
+            store.apply({
+              type: 'addTrack',
+              kind: 'video',
+              trackId: uid('track'),
+              ...activeSequenceField(store.activeSequencePath),
+            })
             break
           case 'sequence.addAudioTrack':
-            store.apply({ type: 'addTrack', kind: 'audio', trackId: uid('track') })
+            store.apply({
+              type: 'addTrack',
+              kind: 'audio',
+              trackId: uid('track'),
+              ...activeSequenceField(store.activeSequencePath),
+            })
             break
           case 'sequence.addTextTrack':
-            store.apply({ type: 'addTrack', kind: 'text', trackId: uid('track') })
+            store.apply({
+              type: 'addTrack',
+              kind: 'text',
+              trackId: uid('track'),
+              ...activeSequenceField(store.activeSequencePath),
+            })
             break
+          case 'sequence.createCompound': {
+            const commands = commandsToCreateCompoundClip(store.doc, selectedIds)
+            if (!commands) {
+              toast({
+                title: 'Cannot create a compound clip',
+                description: 'Select at least one clip on a video lane.',
+                variant: 'destructive',
+              })
+              break
+            }
+            store.apply(commands)
+            break
+          }
           case 'sequence.settings': {
             // Premiere opens a modal; the MVP keeps settings in the Inspector,
             // so surface the Inspector and deselect to reveal project settings.
@@ -358,7 +399,13 @@ export function MenuBar({
           }
 
           case 'marker.add': {
-            store.apply(commandsToAddMarker(store.doc, store.playhead, selectedIds))
+            const markerCommands = commandsToAddMarker(
+              store.doc,
+              store.playhead,
+              selectedIds,
+              store.activeSequencePath,
+            )
+            if (markerCommands) store.apply(markerCommands)
             break
           }
           case 'marker.edit':
@@ -373,18 +420,35 @@ export function MenuBar({
             break
           }
           case 'marker.next': {
-            const point = neighborMarker(store.doc, store.playhead, 'next')
+            const point = neighborMarker(
+              store.doc,
+              store.playhead,
+              'next',
+              store.activeSequencePath,
+            )
             if (point) playbackRef.current?.seek(point.timelineTime)
             break
           }
           case 'marker.previous': {
-            const point = neighborMarker(store.doc, store.playhead, 'prev')
+            const point = neighborMarker(
+              store.doc,
+              store.playhead,
+              'prev',
+              store.activeSequencePath,
+            )
             if (point) playbackRef.current?.seek(point.timelineTime)
             break
           }
 
           case 'graphics.newText':
-            store.apply(commandsToAddText(store.doc, store.playhead, store.untargetedTracks))
+            store.apply(
+              commandsToAddText(
+                store.doc,
+                store.playhead,
+                store.untargetedTracks,
+                store.activeSequencePath[store.activeSequencePath.length - 1],
+              ),
+            )
             break
 
           case 'view.zoomIn':
@@ -590,7 +654,7 @@ function AudioGainDialog({
 function zoomToFitSequence(store: ReturnType<typeof useEditorStore.getState>): void {
   const el = document.querySelector('[data-timeline-scroll]')
   const viewport = el ? el.clientWidth - TRACK_HEADER_WIDTH - 12 : 0
-  const duration = docDuration(store.doc)
+  const duration = activeSequenceDuration(store.doc, store.activeSequencePath)
   if (viewport > 40 && duration > 0.25) {
     store.setPxPerSec(Math.min(PPS_MAX, Math.max(PPS_MIN, Math.round(viewport / duration))))
   }
@@ -672,8 +736,12 @@ function AboutDialog({
             crossfades and text, mix audio, and export to WebM — entirely in your browser.
           </p>
           <p className="text-muted-foreground">
-            Timeline duration: {docDuration(useEditorStore.getState().doc).toFixed(1)}s ·{' '}
-            {PANEL_IDS.length} workspace panels
+            Timeline duration:{' '}
+            {activeSequenceDuration(
+              useEditorStore.getState().doc,
+              useEditorStore.getState().activeSequencePath,
+            ).toFixed(1)}
+            s · {PANEL_IDS.length} workspace panels
           </p>
         </div>
       </DialogContent>

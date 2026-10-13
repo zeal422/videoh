@@ -15,6 +15,7 @@
  *   otherwise its missing members are added. Groups are never split: an A/V
  *   pair selects, toggles and deselects as one unit (`links.ts`).
  */
+import { findTrack } from './factories'
 import { linkedClips } from './links'
 import type { Clip, Doc } from './types'
 
@@ -60,11 +61,12 @@ export function marqueeHitClipIds(
   pxPerSec: number,
 ): string[] {
   if (rect.right <= rect.left && rect.bottom <= rect.top) return []
-  const byTrack = new Map(lanes.map((lane) => [lane.trackId, lane]))
   const hits: string[] = []
-  for (const track of doc.project.tracks) {
-    const lane = byTrack.get(track.id)
-    if (!lane) continue
+  // The lanes are the ACTIVE sequence's rows (0.8.1); the track lookup is
+  // recursive so a nested lane resolves.
+  for (const lane of lanes) {
+    const track = findTrack(doc, lane.trackId)
+    if (!track) continue
     // Row span. A rect with area needs STRICT overlap (touching an edge does
     // not select). A one-dimensional drag is a horizontal LINE at
     // y = rect.top (=== rect.bottom): it belongs to the row holding it under

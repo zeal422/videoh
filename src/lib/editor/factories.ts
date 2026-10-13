@@ -6,6 +6,7 @@ import type {
   MediaAsset,
   MediaKind,
   Project,
+  Sequence,
   TextStyle,
   Track,
   TrackKind,
@@ -100,7 +101,11 @@ export function createMediaAsset(partial: Partial<MediaAsset> & { kind: MediaKin
   }
 }
 
-/** End of the timeline: latest clip out-point across all tracks (0 when empty). */
+/**
+ * End of the ROOT timeline: latest clip out-point across the project's root
+ * tracks (0 when empty). A compound clip contributes its OWN container span,
+ * never a child's end time, so nested content never inflates the root number.
+ */
 export function docDuration(doc: Doc): number {
   let end = 0
   for (const track of doc.project.tracks) {
@@ -109,6 +114,145 @@ export function docDuration(doc: Doc): number {
     }
   }
   return end
+}
+
+/** End of a compound sequence's LOCAL timeline (0 when empty). */
+export function sequenceDuration(sequence: Sequence): number {
+  let end = 0
+  for (const track of sequence.tracks) {
+    for (const clip of track.clips) {
+      end = Math.max(end, clip.start + clip.duration)
+    }
+  }
+  return end
+}
+
+/** Resolves a project-level compound sequence by id. */
+export function findSequence(doc: Doc, sequenceId: string | undefined): Sequence | undefined {
+  if (!sequenceId) return undefined
+  return (doc.project.sequences ?? []).find((s) => s.id === sequenceId)
+}
+
+/**
+ * The track list an owner sequence contributes: the root tracks when
+ * `sequenceId` is undefined, otherwise the referenced sequence's tracks (empty
+ * when the id names no sequence). The ONE primitive active-sequence editing,
+ * preview and owner-scoped walks resolve through, so they cannot disagree
+ * about which lanes exist.
+ */
+export function sequenceTracks(doc: Doc, sequenceId: string | undefined): Track[] {
+  if (!sequenceId) return doc.project.tracks
+  return findSequence(doc, sequenceId)?.tracks ?? []
+}
+
+/**
+ * Resolves the track list the ACTIVE sequence path points at: empty path =
+ * the project root, otherwise the last id in the path. UI and preview pass
+ * this so gestures, layout and render see only the open sequence's lanes.
+ */
+export function activeTracks(doc: Doc, activeSequencePath: readonly string[]): Track[] {
+  const id = activeSequencePath[activeSequencePath.length - 1]
+  return sequenceTracks(doc, id)
+}
+
+/** The sequence id the ACTIVE path points at (undefined = root). */
+export function activeSequenceId(activeSequencePath: readonly string[]): string | undefined {
+  return activeSequencePath[activeSequencePath.length - 1]
+}
+
+/**
+ * The active sequence's local length (its own ruler), or the root timeline at
+ * the root. The single duration helper active-sequence UI reads.
+ */
+export function activeSequenceDuration(doc: Doc, activeSequencePath: readonly string[]): number {
+  const sequence = findSequence(doc, activeSequenceId(activeSequencePath))
+  return sequence ? sequenceDuration(sequence) : docDuration(doc)
+}
+
+/** Sequence ids referenced by compound clips inside a track list. */
+function referencesIn(tracks: readonly Track[]): string[] {
+  const ids: string[] = []
+  for (const track of tracks) {
+    for (const clip of track.clips) {
+      if (clip.sequenceId) ids.push(clip.sequenceId)
+    }
+  }
+  return ids
+}
+
+/** Sequence ids referenced by compound clips inside one sequence. */
+export function sequenceReferences(sequence: Sequence): string[] {
+  return referencesIn(sequence.tracks)
+}
+
+/** Sequence ids referenced by compound clips on the project's root tracks. */
+export function rootReferences(doc: Doc): string[] {
+  return referencesIn(doc.project.tracks)
+}
+
+/**
+ * The compound sequences reachable from the project root through compound
+ * references. An orphan sequence (no root-reachable container) is excluded, so
+ * root-scoped checks (export, reverse detection) never act on media the export
+ * will not render.
+ */
+export function rootReachableSequences(doc: Doc): Sequence[] {
+  const reachable = new Set<string>()
+  const stack = [...rootReferences(doc)]
+  while (stack.length > 0) {
+    const id = stack.pop() as string
+    if (reachable.has(id)) continue
+    reachable.add(id)
+    const sequence = findSequence(doc, id)
+    if (sequence) stack.push(...sequenceReferences(sequence))
+  }
+  return (doc.project.sequences ?? []).filter((s) => reachable.has(s.id))
+}
+
+/**
+ * Whether `to` is reachable from `from` following compound references,
+ * including the trivial case `from === to`. Used by the cycle guard.
+ */
+export function sequenceReachable(doc: Doc, from: string, to: string): boolean {
+  const seen = new Set<string>()
+  const stack = [from]
+  while (stack.length > 0) {
+    const id = stack.pop() as string
+    if (id === to) return true
+    if (seen.has(id)) continue
+    seen.add(id)
+    const sequence = findSequence(doc, id)
+    if (sequence) stack.push(...sequenceReferences(sequence))
+  }
+  return false
+}
+
+/**
+ * The longest chain of compound references from the project root (the number
+ * of child edges; a sequence referenced from the root is depth 1, the root
+ * itself depth 0). Returns `Number.POSITIVE_INFINITY` when the graph has a
+ * cycle, so callers can treat a cycle as "over any limit". Used by the
+ * creation guard and v4 hydration.
+ */
+export function maxSequenceDepth(doc: Doc): number {
+  const memo = new Map<string, number>()
+  const depthOf = (id: string, stack: Set<string>): number => {
+    if (stack.has(id)) return Number.POSITIVE_INFINITY
+    const cached = memo.get(id)
+    if (cached !== undefined) return cached
+    const sequence = findSequence(doc, id)
+    if (!sequence) return 0
+    stack.add(id)
+    let best = 0
+    for (const ref of sequenceReferences(sequence)) best = Math.max(best, depthOf(ref, stack))
+    stack.delete(id)
+    const result = best === Number.POSITIVE_INFINITY ? best : 1 + best
+    memo.set(id, result)
+    return result
+  }
+  let max = 0
+  for (const ref of rootReferences(doc)) max = Math.max(max, depthOf(ref, new Set()))
+  return max
 }
 
 /**
@@ -148,16 +292,49 @@ export function clampSourceTime(sourceTime: number, asset: MediaAsset | undefine
   return clamp(sourceTime, 0, Math.max(0, asset.duration - SOURCE_END_MARGIN))
 }
 
-export function findClip(doc: Doc, clipId: string): { clip: Clip; track: Track } | undefined {
+/**
+ * Clip lookup by id across the whole project: root tracks first, then every
+ * compound sequence. Ids are globally unique (serialization v4 enforces it),
+ * so the first match is the owner. `sequenceId` is the owning sequence
+ * (undefined = root), which owner-scoped callers use to stay in one sequence.
+ */
+export function findClip(
+  doc: Doc,
+  clipId: string,
+): { clip: Clip; track: Track; sequenceId?: string } | undefined {
   for (const track of doc.project.tracks) {
     const clip = track.clips.find((c) => c.id === clipId)
     if (clip) return { clip, track }
+  }
+  for (const sequence of doc.project.sequences ?? []) {
+    for (const track of sequence.tracks) {
+      const clip = track.clips.find((c) => c.id === clipId)
+      if (clip) return { clip, track, sequenceId: sequence.id }
+    }
+  }
+  return undefined
+}
+
+/**
+ * Track lookup by id across the whole project, with its owning sequence
+ * (`undefined` = root). Owner-aware mutations use this to act on the right
+ * sequence's lane list.
+ */
+export function findTrackIn(
+  doc: Doc,
+  trackId: string,
+): { track: Track; sequenceId?: string } | undefined {
+  const root = doc.project.tracks.find((t) => t.id === trackId)
+  if (root) return { track: root }
+  for (const sequence of doc.project.sequences ?? []) {
+    const track = sequence.tracks.find((t) => t.id === trackId)
+    if (track) return { track, sequenceId: sequence.id }
   }
   return undefined
 }
 
 export function findTrack(doc: Doc, trackId: string): Track | undefined {
-  return doc.project.tracks.find((t) => t.id === trackId)
+  return findTrackIn(doc, trackId)?.track
 }
 
 /**
@@ -190,6 +367,9 @@ export function getClip(doc: Doc, clipId: string): Clip | undefined {
  *   `audio` tracks — they carry sound but never picture (links.ts).
  */
 export function clipFitsTrack(doc: Doc, clip: Clip, track: Track): boolean {
+  // A compound clip renders picture and nowhere else. Checked FIRST: it has no
+  // `mediaId`, so the `!asset` gate below would otherwise refuse it everywhere.
+  if (clip.sequenceId) return track.kind === 'video'
   if (track.kind === 'text') return !!clip.text
   const asset = findMedia(doc, clip.mediaId)
   if (!asset) return false
@@ -200,9 +380,16 @@ export function clipFitsTrack(doc: Doc, clip: Clip, track: Track): boolean {
   return false
 }
 
-/** First track (topmost) that can host the given media kind, if any. */
-export function firstCompatibleTrack(doc: Doc, kind: MediaKind): Track | undefined {
-  return doc.project.tracks.find((t) => {
+/**
+ * First track (topmost) that can host the given media kind, if any. Scoped to
+ * the owner sequence (`sequenceId` undefined = root).
+ */
+export function firstCompatibleTrack(
+  doc: Doc,
+  kind: MediaKind,
+  sequenceId?: string,
+): Track | undefined {
+  return sequenceTracks(doc, sequenceId).find((t) => {
     if (t.kind === 'text') return false
     if (t.kind === 'video') return kind === 'video' || kind === 'image'
     return kind === 'audio'
@@ -214,13 +401,15 @@ export function firstCompatibleTrack(doc: Doc, kind: MediaKind): Track | undefin
  * The one implementation of the targeting rule: paste entries, media
  * placement, the A/V twin lane and text placement all resolve through it, each
  * with its own `fits` predicate (kindFitsEntry, trackFitsAsset, kind checks).
+ * Scoped to the owner sequence (`sequenceId` undefined = root).
  */
 export function firstTargetedTrack(
   doc: Doc,
   untargetedTrackIds: readonly string[],
   fits: (track: Track) => boolean,
+  sequenceId?: string,
 ): Track | undefined {
-  return doc.project.tracks.find((t) => !untargetedTrackIds.includes(t.id) && fits(t))
+  return sequenceTracks(doc, sequenceId).find((t) => !untargetedTrackIds.includes(t.id) && fits(t))
 }
 
 /**

@@ -42,7 +42,13 @@ import {
   type MarqueeRect,
 } from '@/lib/editor/marquee'
 import { autoScrollStep, autoScrollStepX } from '@/lib/editor/timeline-scroll'
-import { docDuration, uid } from '@/lib/editor/factories'
+import {
+  activeTracks,
+  docDuration,
+  findSequence,
+  sequenceDuration,
+  uid,
+} from '@/lib/editor/factories'
 import { markersEnd } from '@/lib/editor/markers'
 import { applySnap, computeSnapPoints } from '@/lib/editor/snap'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
@@ -152,18 +158,25 @@ export function TimelinePanel() {
     onCancel: (ev: PointerEvent) => void
   }>(null)
 
-  const duration = docDuration(doc)
+  // The open compound sequence's lanes (root when the path is empty). The whole
+  // timeline renders and gestures over THIS list, so editing a nested sequence
+  // never touches a root lane.
+  const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
+  const tracks = useMemo(() => activeTracks(doc, activeSequencePath), [doc, activeSequencePath])
+  const activeSequence =
+    activeSequencePath.length > 0
+      ? findSequence(doc, activeSequencePath[activeSequencePath.length - 1])
+      : undefined
+
+  const duration = activeSequence ? sequenceDuration(activeSequence) : docDuration(doc)
   // Sequence markers can sit past the last clip; the scrollable width must
   // reach them or a marker would be parked off-screen with no way to scroll
-  // to it.
+  // to it. Markers are root-scoped, so a child sequence shows none.
   const markerEnd = useMemo(() => markersEnd(doc.project), [doc.project])
   const contentWidth = Math.max(600, (Math.max(duration, markerEnd) + TAIL_PADDING_SEC) * pxPerSec)
   // Total pixel height of the track rows — bounds the playhead line and snap
   // guide so they never render in the empty strip below the last row.
-  const tracksHeight = useMemo(
-    () => doc.project.tracks.reduce((h, t) => h + TRACK_HEIGHT[t.kind], 0),
-    [doc.project.tracks],
-  )
+  const tracksHeight = useMemo(() => tracks.reduce((h, t) => h + TRACK_HEIGHT[t.kind], 0), [tracks])
 
   // ————— seeking —————
   const seekToClientX = useCallback(
@@ -350,7 +363,7 @@ export function TimelinePanel() {
     }
     const hits = marqueeHitClipIds(
       store.doc,
-      laneBoxes(store.doc.project.tracks),
+      laneBoxes(activeTracks(store.doc, store.activeSequencePath)),
       g.rect,
       store.pxPerSec,
     )
@@ -445,7 +458,7 @@ export function TimelinePanel() {
       // targets — this also rejects the ruler's home position when unscrolled.
       if (e.clientY < scrollRect.top + RULER_HEIGHT) return null
       if (e.clientX < scrollRect.left + TRACK_HEADER_WIDTH) return null
-      const heights = doc.project.tracks.map((t) => TRACK_HEIGHT[t.kind])
+      const heights = tracks.map((t) => TRACK_HEIGHT[t.kind])
       const target = computeTrackDropTarget(e.clientY - contentRect.top - RULER_HEIGHT, heights)
       if (!target) return null
       if (target.mode === 'lane') return { mode: 'lane', index: target.index }
@@ -456,10 +469,10 @@ export function TimelinePanel() {
         index: target.index,
         top: target.y,
         kind,
-        name: previewTrackName(doc, kind),
+        name: previewTrackName(doc, kind, activeSequencePath[activeSequencePath.length - 1]),
       }
     },
-    [doc],
+    [doc, tracks, activeSequencePath],
   )
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -498,12 +511,15 @@ export function TimelinePanel() {
       (e.clientX - contentEl.getBoundingClientRect().left - TRACK_HEADER_WIDTH) / store.pxPerSec,
     )
     if (store.snapEnabled) {
-      const points = computeSnapPoints(store.doc, { includeTimelineEnd: false })
+      const points = computeSnapPoints(store.doc, {
+        includeTimelineEnd: false,
+        activeSequencePath: store.activeSequencePath,
+      })
       t = applySnap(t, points, SNAP_THRESHOLD_PX / store.pxPerSec).time
     }
 
     if (target.mode === 'lane') {
-      const track = doc.project.tracks[target.index]
+      const track = tracks[target.index]
       const incompatible = !trackFitsAsset(track, asset.kind)
       // Refusal precedence: an incompatible lane beats the mode, and an atomic
       // placement refusal beats the commit. In the two new modes a wrong-kind
@@ -524,6 +540,7 @@ export function TimelinePanel() {
           store.dropMode,
           track.id,
           store.untargetedTracks,
+          store.activeSequencePath[store.activeSequencePath.length - 1],
         )
         if (!outcome.commands) {
           toast({
@@ -537,7 +554,14 @@ export function TimelinePanel() {
         return
       }
       // `place` keeps today's plain drop, including its silent lane relocation.
-      const commands = commandsToAddMedia(store.doc, asset, t, track.id, store.untargetedTracks)
+      const commands = commandsToAddMedia(
+        store.doc,
+        asset,
+        t,
+        track.id,
+        store.untargetedTracks,
+        store.activeSequencePath[store.activeSequencePath.length - 1],
+      )
       if (!commands) {
         toast({
           title: 'Incompatible track',
@@ -552,7 +576,14 @@ export function TimelinePanel() {
     // Edge strip / empty area below the rows: create a layer at the exact
     // boundary the user pointed at (Premiere-style drop-between-tracks).
     store.apply(
-      commandsToAddMediaInNewTrack(store.doc, asset, t, target.index, store.untargetedTracks),
+      commandsToAddMediaInNewTrack(
+        store.doc,
+        asset,
+        t,
+        target.index,
+        store.untargetedTracks,
+        store.activeSequencePath[store.activeSequencePath.length - 1],
+      ),
     )
   }
 
@@ -572,7 +603,14 @@ export function TimelinePanel() {
   }, [dropIndicator])
 
   const addTrack = useCallback((kind: TrackKind) => {
-    useEditorStore.getState().apply({ type: 'addTrack', kind, trackId: uid('track') })
+    const sequenceId = useEditorStore.getState().activeSequencePath
+    const id = sequenceId[sequenceId.length - 1]
+    useEditorStore.getState().apply({
+      type: 'addTrack',
+      kind,
+      trackId: uid('track'),
+      ...(id ? { sequenceId: id } : {}),
+    })
   }, [])
 
   // ————— keep the view on the lanes you were looking at when a track is added —————
@@ -586,7 +624,7 @@ export function TimelinePanel() {
   // reaches a lane that is off-screen.
   const trackIdsRef = useRef<string[]>([])
   useEffect(() => {
-    const ids = doc.project.tracks.map((t) => t.id)
+    const ids = tracks.map((t) => t.id)
     const prev = trackIdsRef.current
     trackIdsRef.current = ids
     // Only a genuine ADD scrolls — project load, undo/redo and deletes must not
@@ -603,7 +641,7 @@ export function TimelinePanel() {
       : null
     if (!scrollEl || !rowEl) return
     scrollEl.scrollTop += rowEl.getBoundingClientRect().height
-  }, [doc.project.tracks])
+  }, [tracks])
 
   return (
     <section aria-label="Timeline" className="flex min-h-0 flex-1 flex-col bg-background">
@@ -700,17 +738,56 @@ export function TimelinePanel() {
             </div>
           </div>
 
+          {/* Compound breadcrumb (0.8.1): visible only inside a child sequence.
+              Each crumb jumps to that level; "Project" returns to the root. */}
+          {activeSequencePath.length > 0 && (
+            <div
+              data-testid="sequence-breadcrumb"
+              className="flex items-center gap-1 border-b border-border/60 bg-background/80 px-2 py-1 text-[11px]"
+            >
+              <button
+                type="button"
+                className="rounded px-1 text-muted-foreground hover:text-foreground"
+                onClick={() => useEditorStore.getState().setActiveSequencePath([])}
+              >
+                Project
+              </button>
+              {activeSequencePath.map((id, i) => {
+                const isLast = i === activeSequencePath.length - 1
+                return (
+                  <span key={id} className="flex items-center gap-1">
+                    <span className="text-muted-foreground">/</span>
+                    <button
+                      type="button"
+                      className={cn(
+                        'rounded px-1',
+                        isLast ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+                      )}
+                      onClick={() =>
+                        useEditorStore
+                          .getState()
+                          .setActiveSequencePath(activeSequencePath.slice(0, i + 1))
+                      }
+                    >
+                      {findSequence(doc, id)?.name ?? 'Sequence'}
+                    </button>
+                  </span>
+                )
+              })}
+            </div>
+          )}
+
           {/* track rows — the row INDEX doubles as the z-position: index 0 is
               the topmost compositing layer (compositor draws last→first), so
               a drop between rows maps 1:1 to an addTrack atIndex insertion */}
-          {doc.project.tracks.map((track, rowIndex) => (
+          {tracks.map((track, rowIndex) => (
             <div
               key={track.id}
               data-track-row={track.id}
               className="flex"
               style={{ height: TRACK_HEIGHT[track.kind] }}
             >
-              <TrackHeader track={track} canDelete={doc.project.tracks.length > 1} />
+              <TrackHeader track={track} canDelete={tracks.length > 1} />
               <div
                 data-lane-id={track.id}
                 data-lane-kind={track.kind}

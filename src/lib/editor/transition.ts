@@ -1,4 +1,4 @@
-import type { Clip } from './types'
+import type { Clip, Track } from './types'
 
 /**
  * Cross-dissolve math (pure functions, shared by the compositor and the audio mixer).
@@ -55,4 +55,27 @@ export function transitionAlphas(span: TransitionSpan, t: number): TransitionAlp
 /** Highest transition duration that both clips can physically host. */
 export function maxTransitionDuration(a: Clip, b: Clip, aEnd: number): number {
   return Math.max(0, Math.min(a.duration, b.duration, aEnd))
+}
+
+/**
+ * The crossfade gain factor a clip carries on its own track at sequence-local
+ * time `seqT`: the outgoing clip ramps 1→0 across its `transitionOut` span, the
+ * incoming one 0→1. Shared by the preview mixer and the export plan/mix, so a
+ * clip's own crossfade AND an enclosing compound container's crossfade ramp the
+ * audio identically in both render paths.
+ */
+export function crossfadeFactor(track: Track, clip: Clip, seqT: number): number {
+  let factor = 1
+  const clips = [...track.clips].sort((a, b) => a.start - b.start)
+  for (let i = 0; i < clips.length - 1; i++) {
+    const a = clips[i]
+    const b = clips[i + 1]
+    if (!a.transitionOut) continue
+    const span = getTransitionSpan(a, b)
+    if (!span || seqT < span.start || seqT > span.end) continue
+    const p = (seqT - span.start) / Math.max(1e-9, span.duration)
+    if (clip.id === a.id) factor *= 1 - p
+    else if (clip.id === b.id) factor *= p
+  }
+  return factor
 }

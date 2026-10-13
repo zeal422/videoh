@@ -1,6 +1,6 @@
 import { MIN_SPLIT_HEADROOM } from './constants'
 import { constantTimeScaleRate, hasTimeScaleRamp } from './keyframes'
-import { findMedia, mediaPlayable } from './factories'
+import { findClip, findMedia, mediaPlayable, sequenceTracks } from './factories'
 import type { Clip, Doc, MediaAsset } from './types'
 
 /**
@@ -30,12 +30,14 @@ export function assetHasAudio(asset: MediaAsset): boolean {
 
 /** All clips sharing `clipId`'s link group, ordered by (track order, start). */
 export function linkedClips(doc: Doc, clipId: string): Clip[] {
-  const found = findClipLocally(doc, clipId)
+  const found = findClip(doc, clipId)
   if (!found) return []
-  const { clip } = found
+  const { clip, sequenceId } = found
   if (!clip.linkId) return [clip]
+  // Sequence-local (0.8.1): a link group lives in ONE sequence, so the walk is
+  // scoped to the clip's owner.
   const group: Clip[] = []
-  for (const track of doc.project.tracks) {
+  for (const track of sequenceTracks(doc, sequenceId)) {
     for (const c of track.clips) {
       if (c.linkId === clip.linkId) group.push(c)
     }
@@ -51,7 +53,8 @@ export function linkedClips(doc: Doc, clipId: string): Clip[] {
  */
 export function linkedAudioTwin(doc: Doc, clip: Clip): Clip | undefined {
   if (!clip.linkId) return undefined
-  for (const track of doc.project.tracks) {
+  const sequenceId = findClip(doc, clip.id)?.sequenceId
+  for (const track of sequenceTracks(doc, sequenceId)) {
     for (const c of track.clips) {
       if (c.linkId === clip.linkId && c.audioOnly) return c
     }
@@ -254,9 +257,6 @@ export function resolveSelectionGroups(doc: Doc, clipIds: string[]): Clip[] {
 }
 
 function findClipLocally(doc: Doc, clipId: string): { clip: Clip } | undefined {
-  for (const track of doc.project.tracks) {
-    const clip = track.clips.find((c) => c.id === clipId)
-    if (clip) return { clip }
-  }
-  return undefined
+  const found = findClip(doc, clipId)
+  return found ? { clip: found.clip } : undefined
 }

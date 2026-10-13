@@ -33,7 +33,13 @@ export function ColorFilterDefs() {
   // Select the doc (a stable reference) and derive per render: a selector that
   // returned a fresh array would re-render forever under zustand v5.
   const doc = useEditorStore((s) => s.doc)
-  const clips = doc.project.tracks.flatMap((t) => t.clips)
+  // Include every clip in the doc's reachable compound graph (0.8.1): a nested
+  // clip's grade/LUT needs its SVG def mounted even while the root shows the
+  // container. A superset is harmless, so root plus every sequence is enough.
+  const clips = [
+    ...doc.project.tracks.flatMap((t) => t.clips),
+    ...(doc.project.sequences ?? []).flatMap((s) => s.tracks.flatMap((t) => t.clips)),
+  ]
   const graded = clips.filter(hasColorMatrix)
   // One node per unique 1D entry a clip actually references, so a LUT sitting
   // in the library unused mounts nothing.

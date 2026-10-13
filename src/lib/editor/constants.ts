@@ -39,6 +39,14 @@ export const SNAP_THRESHOLD_PX = 8
 /** Upper bound of the undo stack (whole-Doc snapshots — cheap at JSON scale). */
 export const HISTORY_LIMIT = 100
 
+/**
+ * Maximum compound-clip nesting depth (child edges), with the project root at
+ * depth 0 (0.8.1). Creation refuses a compound that would exceed it and v4
+ * hydration rejects a file that does; the same limit bounds the render
+ * recursion and the group-composite scratch stack.
+ */
+export const MAX_SEQUENCE_DEPTH = 8
+
 /** Project setting limits. */
 export const PROJECT_MIN_W = 64
 export const PROJECT_MAX_W = 3840

@@ -54,7 +54,7 @@ import {
   overlappingAudioClips,
   sanitizeDuckingOptions,
 } from '@/lib/editor/ducking'
-import { findMedia } from '@/lib/editor/factories'
+import { findClip, findMedia } from '@/lib/editor/factories'
 import { linkedAudioTwin } from '@/lib/editor/links'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
 import { frameToTime } from '@/lib/editor/time'
@@ -183,7 +183,9 @@ export function EffectControlsPanel({ clip, trackKind }: { clip: Clip; trackKind
           <Separator />
         </>
       )}
-      {!isText && <SpeedSection clip={clip} />}
+      {/* A compound clip cannot be retimed (0.8.1): the speed/reverse commands
+          refuse it, so the controls are not offered. */}
+      {!isText && !clip.sequenceId && <SpeedSection clip={clip} />}
     </div>
   )
 }
@@ -593,7 +595,7 @@ function KeyframeGraph({
       if (!rect || rect.width <= 0) return
       const t = ((e.clientX - rect.left) / rect.width) * clip.duration
       const live = useEditorStore.getState().doc
-      const clipNow = live.project.tracks.flatMap((tr) => tr.clips).find((c) => c.id === clip.id)
+      const clipNow = findClip(live, clip.id)?.clip
       const kfs = clipNow?.keyframes?.[property]
       if (!kfs || kfs.length === 0) return
       // Find the grabbed keyframe again: after it passes a neighbour the stored
@@ -736,7 +738,7 @@ function KeyframeGraph({
       const rect = wrapRef.current?.getBoundingClientRect()
       if (!rect || rect.width <= 0 || rect.height <= 0) return
       const live = useEditorStore.getState().doc
-      const clipNow = live.project.tracks.flatMap((tr) => tr.clips).find((c) => c.id === clip.id)
+      const clipNow = findClip(live, clip.id)?.clip
       const kfs = clipNow?.keyframes?.[property]
       const start = kfs?.[handleDrag.startIndex]
       const end = kfs?.[handleDrag.startIndex + 1]
@@ -1081,11 +1083,16 @@ function AutoDuck({
   doc: ReturnType<typeof useEditorStore.getState>['doc']
 }) {
   const apply = useEditorStore((s) => s.apply)
+  const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
   const [sourceId, setSourceId] = useState<string>('auto')
-  const candidates = overlappingAudioClips(doc, {
-    start: clip.start,
-    end: clip.start + clip.duration,
-  }).filter((c) => c.id !== clip.id)
+  const candidates = overlappingAudioClips(
+    doc,
+    {
+      start: clip.start,
+      end: clip.start + clip.duration,
+    },
+    activeSequencePath,
+  ).filter((c) => c.id !== clip.id)
 
   const duck = () => {
     const dialogue =
@@ -1151,9 +1158,7 @@ function rowAxis(clip: Clip, property: KeyframeProperty): (t: number) => number 
 function SpeedSection({ clip }: { clip: Clip }) {
   const apply = useEditorStore((s) => s.apply)
   const playhead = useEditorStore((s) => s.playhead)
-  const track = useEditorStore((s) =>
-    s.doc.project.tracks.find((t) => t.clips.some((c) => c.id === clip.id)),
-  )
+  const track = useEditorStore((s) => findClip(s.doc, clip.id)?.track)
   const kind = track?.kind
   const local = Math.min(Math.max(0, playhead - clip.start), clip.duration)
   // The curve, not the static rate, sets a ramped clip's speed, so the static

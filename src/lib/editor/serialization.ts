@@ -4,6 +4,7 @@ import {
   FPS_MAX,
   FPS_MIN,
   KEYFRAME_PROPERTY_BOUNDS,
+  MAX_SEQUENCE_DEPTH,
   PROJECT_MAX_H,
   PROJECT_MAX_W,
   PROJECT_MIN_H,
@@ -43,6 +44,9 @@ import type {
   MediaAsset,
   Project,
   ProjectLut,
+  Sequence,
+  Track,
+  TrackKind,
 } from './types'
 
 /**
@@ -54,12 +58,12 @@ import type {
  */
 
 /**
- * v2 added markers (0.5.5); v3 added the LUT library (0.7.0). The loader
- * accepts every version from 1 up to the current one, so v1 files and autosaves
- * load with no markers attached and v1/v2 files with no LUT library; only files
- * from a NEWER app version are refused.
+ * v2 added markers (0.5.5); v3 added the LUT library (0.7.0); v4 added
+ * compound-clip sequences (0.8.1). The loader accepts every version from 1 up
+ * to the current one, so older files load with the newer features absent; only
+ * files from a NEWER app version are refused.
  */
-export const SERIALIZATION_VERSION = 3
+export const SERIALIZATION_VERSION = 4
 export const PROJECT_FILE_EXTENSION = '.veproj.json'
 
 export interface SerializedMedia {
@@ -152,6 +156,7 @@ export function deserializeDoc(data: unknown): {
   const projectMarkers = hydrateMarkers(projectRaw.markers)
   const projectDefaults = hydrateKeyframeDefaults(projectRaw.keyframeDefaults)
   const projectLuts = hydrateLuts(projectRaw.luts)
+  const projectSequences = hydrateSequences(projectRaw.sequences, media)
   const project: Project = {
     id: typeof projectRaw.id === 'string' ? projectRaw.id : 'proj_loaded',
     name: typeof projectRaw.name === 'string' ? projectRaw.name : 'Imported Project',
@@ -165,33 +170,194 @@ export function deserializeDoc(data: unknown): {
     ...(projectMarkers ? { markers: projectMarkers } : {}),
     ...(projectDefaults ? { keyframeDefaults: projectDefaults } : {}),
     ...(projectLuts ? { luts: projectLuts } : {}),
-    tracks: (projectRaw.tracks as Record<string, unknown>[]).map((t) => ({
-      id: typeof t.id === 'string' ? t.id : `track_${Math.random().toString(36).slice(2)}`,
-      kind: (t.kind === 'audio' || t.kind === 'text'
-        ? t.kind
-        : 'video') as Project['tracks'][0]['kind'],
-      name: typeof t.name === 'string' ? t.name : 'Track',
-      muted: !!t.muted,
-      clips: (Array.isArray(t.clips) ? (t.clips as Record<string, unknown>[]) : []).map((c) =>
-        hydrateClip(c, media),
-      ),
-    })),
+    ...(projectSequences ? { sequences: projectSequences } : {}),
+    tracks: hydrateTracks(projectRaw.tracks, media),
   }
+
+  // Identity is the invariant the recursive lookups rest on: a repeated track,
+  // clip or sequence id would resolve the wrong object, so the file is refused
+  // (no regeneration, which would silently repoint references).
+  assertUniqueIds(project)
+  // A compound clip's shape is mutually exclusive with media, text and
+  // retiming: a file that carries both is malformed and refused.
+  assertCompoundShapes(project)
+  // Link groups are sequence-local: a link id shared across sequences has no
+  // safe move semantics and is refused.
+  assertLinkScopes(project)
+  // The graph the render, duration and id walks traverse must be acyclic and
+  // within the nesting limit; both are refused rather than trusted.
+  assertSequenceGraph(project)
 
   const mediaIds = new Set(media.map((m) => m.id))
   const lutIds = new Set((project.luts ?? []).map((l) => l.id))
+  const sequenceIds = new Set((project.sequences ?? []).map((s) => s.id))
   const missingMediaIds = media.filter((m) => m.missing).map((m) => m.id)
   // Clips whose media did not survive the round-trip also count as missing refs
   // (and the same for a lutId naming no library entry: a dangling reference
-  // must hydrate to nothing, never to a url() that names no mounted node).
-  for (const track of project.tracks) {
-    for (const clip of track.clips) {
-      if (clip.mediaId && !mediaIds.has(clip.mediaId)) clip.mediaId = undefined
-      if (clip.lutId !== undefined && !lutIds.has(clip.lutId)) clip.lutId = undefined
+  // must hydrate to nothing, never to a url() that names no mounted node). A
+  // compound clip naming no sequence is dropped with one warning, matching the
+  // LUT-hydration policy.
+  let droppedCompound = false
+  const sweep = (tracks: Track[]) => {
+    for (const track of tracks) {
+      track.clips = track.clips.filter((clip) => {
+        if (clip.mediaId && !mediaIds.has(clip.mediaId)) clip.mediaId = undefined
+        if (clip.lutId !== undefined && !lutIds.has(clip.lutId)) clip.lutId = undefined
+        if (clip.sequenceId && !sequenceIds.has(clip.sequenceId)) {
+          droppedCompound = true
+          return false
+        }
+        return true
+      })
     }
+  }
+  sweep(project.tracks)
+  for (const sequence of project.sequences ?? []) sweep(sequence.tracks)
+  if (droppedCompound) {
+    console.warn('[serialization] dropped a compound clip whose referenced sequence is missing')
   }
 
   return { doc: { project, media }, missingMediaIds }
+}
+
+/** Hydrates a track list (root or a compound sequence). */
+function hydrateTracks(rawTracks: unknown, media: MediaAsset[]): Track[] {
+  return (Array.isArray(rawTracks) ? (rawTracks as Record<string, unknown>[]) : []).map((t) => ({
+    id: typeof t.id === 'string' ? t.id : `track_${Math.random().toString(36).slice(2)}`,
+    kind: (t.kind === 'audio' || t.kind === 'text' ? t.kind : 'video') as TrackKind,
+    name: typeof t.name === 'string' ? t.name : 'Track',
+    muted: !!t.muted,
+    clips: (Array.isArray(t.clips) ? (t.clips as Record<string, unknown>[]) : []).map((c) =>
+      hydrateClip(c, media),
+    ),
+  }))
+}
+
+/** Hydrates the project's compound sequences, dropping non-object entries. */
+function hydrateSequences(raw: unknown, media: MediaAsset[]): Sequence[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const sequences: Sequence[] = []
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const s = entry as Record<string, unknown>
+    sequences.push({
+      id: typeof s.id === 'string' && s.id ? s.id : `seq_${Math.random().toString(36).slice(2)}`,
+      name: typeof s.name === 'string' && s.name ? s.name : 'Compound Clip',
+      tracks: hydrateTracks(s.tracks, media),
+    })
+  }
+  return sequences.length > 0 ? sequences : undefined
+}
+
+/** Rejects a project where a track, clip or sequence id repeats anywhere. */
+function assertUniqueIds(project: Project): void {
+  const seen = new Set<string>()
+  const add = (id: string, what: string) => {
+    if (seen.has(id)) throw new SerializationError(`Duplicate ${what} id: ${id}`)
+    seen.add(id)
+  }
+  const visit = (tracks: Track[]) => {
+    for (const track of tracks) {
+      add(track.id, 'track')
+      for (const clip of track.clips) add(clip.id, 'clip')
+    }
+  }
+  visit(project.tracks)
+  for (const sequence of project.sequences ?? []) {
+    add(sequence.id, 'sequence')
+    visit(sequence.tracks)
+  }
+}
+
+/**
+ * Rejects a file where one link id is shared across sequences (0.8.1): link
+ * groups are sequence-local, so a cross-sequence id could never be moved as a
+ * unit and the command layer refuses to create one.
+ */
+function assertLinkScopes(project: Project): void {
+  const owner = new Map<string, string>()
+  const visit = (tracks: Track[], sequenceId?: string): void => {
+    const key = sequenceId ?? '__root__'
+    for (const track of tracks) {
+      for (const clip of track.clips) {
+        if (!clip.linkId) continue
+        const previous = owner.get(clip.linkId)
+        if (previous !== undefined && previous !== key) {
+          throw new SerializationError('A link id is shared across sequences')
+        }
+        owner.set(clip.linkId, key)
+      }
+    }
+  }
+  visit(project.tracks)
+  for (const sequence of project.sequences ?? []) visit(sequence.tracks, sequence.id)
+}
+
+/** Rejects a compound clip that also carries media, text or retiming fields. */
+function assertCompoundShapes(project: Project): void {
+  const check = (tracks: Track[]) => {
+    for (const track of tracks) {
+      for (const clip of track.clips) {
+        if (!clip.sequenceId) continue
+        if (
+          clip.mediaId !== undefined ||
+          clip.text !== undefined ||
+          clip.audioOnly === true ||
+          clip.speed !== undefined ||
+          clip.reverse ||
+          clip.keyframes?.timeScale !== undefined
+        ) {
+          throw new SerializationError(
+            'Compound clip carries incompatible media, text or retiming fields',
+          )
+        }
+      }
+    }
+  }
+  check(project.tracks)
+  for (const sequence of project.sequences ?? []) check(sequence.tracks)
+}
+
+/**
+ * Rejects a cyclic sequence graph and one deeper than {@link MAX_SEQUENCE_DEPTH}.
+ * A cycle bypasses the command-time guard and would recurse forever in the
+ * render, duration and id walks, so it is refused at the trust boundary.
+ */
+function assertSequenceGraph(project: Project): void {
+  const sequences = project.sequences
+  if (!sequences || sequences.length === 0) return
+  const byId = new Map(sequences.map((s) => [s.id, s]))
+  const state = new Map<string, 1 | 2>()
+  const height = new Map<string, number>()
+  const visit = (id: string): number => {
+    const st = state.get(id)
+    if (st === 1) throw new SerializationError('Compound sequence graph contains a cycle')
+    if (st === 2) return height.get(id) ?? 0
+    const sequence = byId.get(id)
+    if (!sequence) return 0
+    state.set(id, 1)
+    let best = 0
+    for (const track of sequence.tracks) {
+      for (const clip of track.clips) {
+        if (clip.sequenceId) best = Math.max(best, visit(clip.sequenceId))
+      }
+    }
+    state.set(id, 2)
+    height.set(id, best + 1)
+    return best + 1
+  }
+  let maxDepth = 0
+  for (const track of project.tracks) {
+    for (const clip of track.clips) {
+      if (clip.sequenceId) maxDepth = Math.max(maxDepth, visit(clip.sequenceId))
+    }
+  }
+  // Any sequence the cycle walk has not finished is a cycle in an unreachable
+  // component; `visit` throws on re-entry, so a stray cycle is still caught.
+  for (const sequence of sequences) visit(sequence.id)
+  if (maxDepth > MAX_SEQUENCE_DEPTH) {
+    throw new SerializationError('Compound sequence nesting is too deep')
+  }
 }
 
 function hydrateMedia(raw: Record<string, unknown>): MediaAsset {
@@ -222,6 +388,9 @@ function hydrateClip(raw: Record<string, unknown>, media: MediaAsset[]): Clip {
   if (typeof raw.mediaId === 'string') clip.mediaId = raw.mediaId
   if (typeof raw.linkId === 'string') clip.linkId = raw.linkId
   if (raw.audioOnly === true) clip.audioOnly = true
+  // Compound clip reference (0.8.1). Kept only when it names a hydrated
+  // sequence; the caller drops a dangling one after the whole project is built.
+  if (typeof raw.sequenceId === 'string' && raw.sequenceId) clip.sequenceId = raw.sequenceId
   if (typeof raw.gain === 'number') clip.gain = raw.gain
   if (typeof raw.muted === 'boolean') clip.muted = raw.muted
   if (typeof raw.opacity === 'number' && Number.isFinite(raw.opacity)) {

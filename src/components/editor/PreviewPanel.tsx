@@ -13,7 +13,7 @@ import {
 
 import { NamedSlider } from '@/components/editor/NamedSlider'
 import { Button } from '@/components/ui/button'
-import { docDuration, findClip } from '@/lib/editor/factories'
+import { activeSequenceDuration, findClip } from '@/lib/editor/factories'
 import { offlineMediaAt } from '@/lib/editor/offline'
 import { formatTime } from '@/lib/editor/time'
 import { attachPreviewEngine, detachPreviewEngine } from '@/lib/editor/playback/preview'
@@ -36,6 +36,7 @@ import { ScopesPanel } from './ScopesPanel'
 export function PreviewPanel() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const doc = useEditorStore((s) => s.doc)
+  const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
   const playhead = useEditorStore((s) => s.playhead)
   const playing = useEditorStore((s) => s.playing)
   const selection = useEditorStore((s) => s.selection)
@@ -75,11 +76,28 @@ export function PreviewPanel() {
     }
   }, [doc.project.width, doc.project.height])
 
-  const duration = docDuration(doc)
+  // Opening or leaving a sequence changes the timeline's coordinate space: park
+  // the playhead at the new sequence's start and redraw, so the monitor never
+  // keeps showing the previous sequence's frame until the next tick. The ref
+  // starts at the current key so the INITIAL render (panel mount) leaves the
+  // playhead untouched; only a later change acts.
+  const activePathKey = activeSequencePath.join('/')
+  const prevPathKeyRef = useRef(activePathKey)
+  useEffect(() => {
+    if (prevPathKeyRef.current === activePathKey) return
+    prevPathKeyRef.current = activePathKey
+    useEditorStore.getState().setPlayhead(0)
+    playbackRef.current?.seek(0)
+  }, [activePathKey])
+
+  const duration = activeSequenceDuration(doc, activeSequencePath)
   const isEmpty = duration <= 0
   // A frame that needs offline media renders black and silent; naming the file
   // is the difference between "broken" and "waiting for a relink".
-  const offlineMedia = useMemo(() => offlineMediaAt(doc, playhead), [doc, playhead])
+  const offlineMedia = useMemo(
+    () => offlineMediaAt(doc, playhead, activeSequencePath),
+    [doc, playhead, activeSequencePath],
+  )
 
   // ————— drag-to-position (text) —————
   const selected = selection ? findClip(doc, selection) : undefined

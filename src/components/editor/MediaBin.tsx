@@ -23,7 +23,7 @@ import { relinkPatchFrom } from '@/lib/editor/media/relink'
 import { buildProxy, dropProxy } from '@/lib/editor/media/proxies'
 import { shouldProxy } from '@/lib/editor/proxy'
 import { commandsToAddMedia } from '@/lib/editor/actions'
-import { docDuration } from '@/lib/editor/factories'
+import { activeSequenceDuration } from '@/lib/editor/factories'
 import { importMediaFiles, loadSampleMedia } from '@/lib/editor/project-io'
 import { useEditorStore } from '@/lib/editor/store'
 import type { MediaAsset } from '@/lib/editor/types'
@@ -75,9 +75,10 @@ export function MediaBin({ className, heading = true }: { className?: string; he
     const commands = commandsToAddMedia(
       store.doc,
       asset,
-      docDuration(store.doc),
+      activeSequenceDuration(store.doc, store.activeSequencePath),
       undefined,
       store.untargetedTracks,
+      store.activeSequencePath[store.activeSequencePath.length - 1],
     )
     if (!commands) return
     store.apply(commands)

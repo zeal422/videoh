@@ -5,7 +5,7 @@ questions, two sections: what has shipped (so a closed gap is not listed twice)
 and what remains, grouped by how often a working editor would feel it.
 
 Research date: September 2026 (Premiere 26.x); every status re-verified against
-the code on 2026-10-10, at 0.7.3. A gap moves to "Shipped" only once the release
+the code on 2026-10-12, at 0.8.1. A gap moves to "Shipped" only once the release
 that closed it is recorded in [CHANGELOG.md](CHANGELOG.md).
 
 The editing core is not tracked as a gap: the multi-track timeline, trim / split
@@ -18,6 +18,8 @@ Newest first. Releases before 0.5.0 are in [CHANGELOG.md](CHANGELOG.md).
 
 | Version   | What landed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **0.8.1** | Compound clips, the last Tier 2 item: select clips and create one reusable unit that replaces them in place, double-click to open its sequence, and a breadcrumb to return. The referenced sequence composites as a group (opacity, transform and grade apply once), nested audio mixes through each container gain/mute/volume curve, navigation scopes the timeline and selection to the open sequence, and serialization v4 stores the sequence graph (refusing cycles, duplicate ids, incompatible compound fields and over-deep nesting).                                                                                                                                                                                                                                                                                              |
+| **0.8.0** | Two Tier 2 items: bounded export memory (an `Export to file` action that streams the MP4 straight to disk through the File System Access API, leaving the in-memory `Download` unchanged, with a size estimate and the streamed sink committed only after finalize and aborted on any failure) and proxies (a session lower-resolution A/V stand-in for a source over 1920 px, built on demand from the Media bin or the import prompt and toggled with `View > Use Proxies`; the source's demuxed audio track decides whether audio is carried, and the export still reads the original).                                                                                                                                                                                                                                                  |
 | **0.7.3** | Panel collapse fix. The upper row becomes `source                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | preview | inspector`, because a collapsible panel in the middle of a group has its freed space land on a neighbour pinned at its own maximum, and the collapse is refused: the Source Monitor kept its full width with a strip drawn inside it, and collapsing the Inspector reopened it at 44%. The workspace store now reconciles against the layout engine's real state, so a refused collapse reverts instead of leaving a ghost strip, and both upper-row panels collapse together at `[2.5, 95, 2.5]`. |
 | **0.7.2** | Two Tier 2 items: insert / overwrite placement (a sticky Place / Insert / Overwrite toolbar control; Insert shifts the clips at and after the drop point, splitting straddlers, Overwrite replaces the covered material with an all-or-nothing refusal, both link-group aware, both one undo step) and three-point editing (a Source Monitor panel fed by the bin selection, `I`/`O` marks, and `,`/`.` placing the marked span at the playhead). In the two new modes a drop onto a wrong-kind lane refuses instead of relocating.                                                                                                                                                                                                                                                                                                         |
 | **0.7.1** | Track targeting and select-by-lane: `Target Track` in the track header menu toggles a lane (an untargeted lane dims its kind icon) and steers the lane-less placements (paste, bin quick-add, Add Text, and a video's audio twin) onto it, with a compatible original lane kept while it is still targeted; `Select Track Clips` takes a whole lane and expands A/V link groups. Session state, not project data.                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -41,8 +43,10 @@ Newest first. Releases before 0.5.0 are in [CHANGELOG.md](CHANGELOG.md).
 `.cube` LUT import, the waveform and vectorscope scopes, and frame blending in
 both render paths), and the table below records how each of the five original
 gaps closed: four shipped, two cells closed as recorded non-goals. Open cells:
-none. Tier 2 has started: 0.7.2 closed its first two items (insert / overwrite
-placement and three-point editing). Nothing in Tier 3 has started.
+none. **Tier 2 is complete:** 0.8.0 shipped bounded export memory (the streamed
+`Export to file` path) and proxies (a session lower-resolution preview stand-in),
+and 0.8.1 shipped nested sequences / compound clips. Nothing in Tier 3 has
+started.
 
 ### Tier 1: felt every day (complete at 0.7.0)
 
@@ -54,13 +58,10 @@ placement and three-point editing). Nothing in Tier 3 has started.
 | Audio shaping               | Essential Sound: auto-duck, EQ, compression, pan                              | Shipped: 0.5.0 pan / EQ / compressor / auto-duck, 0.6.0 the fixed broadband denoise chain; spectral or learned noise reduction closed at 0.7.0 as a recorded non-goal               |
 | Offline export              | Offline render, any codec (H.264, HEVC, ProRes)                               | Shipped: 0.5.0 WebCodecs H.264 + AAC (Opus where AAC is unavailable); HEVC and ProRes closed at 0.7.0 as recorded non-goals, with the reasons kept under "Deliberately not planned" |
 
-### Tier 2: workflow accelerators (longer edits)
+### Tier 2: workflow accelerators (longer edits, complete at 0.8.1)
 
-- **Nested sequences / compound clips.** Group clips into one reusable unit.
-- **Proxies.** A lower-resolution preview path for smooth playback of 4K+ imports.
-- **Bounded export memory.** The exporter assembles the whole MP4 in memory, so
-  project length competes with the tab heap. A streaming write path would bound
-  memory instead.
+All three Tier 2 items are shipped: insert / overwrite placement and three-point editing (0.7.2),
+bounded export memory and proxies (0.8.0), and nested sequences / compound clips (0.8.1).
 
 ### Tier 3: content and polish
 
@@ -74,9 +75,6 @@ placement and three-point editing). Nothing in Tier 3 has started.
   web competitors (CapCut web, VEED) lead here and it matters for social cuts.
 - **Title presets:** save and reuse styled text (Essential Graphics style).
   `TextStyle` already serializes, so this is mostly UI work.
-- **AI assist** (text-based editing, auto captions, generative extend): needs a
-  backend or a hosted model, which is out of scope while the no-server constraint
-  stands. That constraint is itself a product feature.
 
 ## Deliberately not planned
 

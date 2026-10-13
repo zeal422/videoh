@@ -10,7 +10,7 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { SNAP_THRESHOLD_PX } from '@/lib/editor/constants'
-import { sourceTimeAt } from '@/lib/editor/factories'
+import { findClip, sourceTimeAt } from '@/lib/editor/factories'
 import {
   clipMarkerLocalTime,
   markerColorValue,
@@ -80,11 +80,9 @@ export function ClipMarkers({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }
       // stale clone; read the live one or the replacement drag would start a
       // jump of the abandoned delta away from the cursor.
       marker =
-        useEditorStore
-          .getState()
-          .doc.project.tracks.flatMap((t) => t.clips)
-          .find((c) => c.id === clip.id)
-          ?.markers?.find((m) => m.id === marker.id) ?? marker
+        findClip(useEditorStore.getState().doc, clip.id)?.clip?.markers?.find(
+          (m) => m.id === marker.id,
+        ) ?? marker
     }
     const startX = e.clientX
     const startLocal = clipMarkerLocalTime(clip, marker.time) ?? 0
@@ -118,6 +116,7 @@ export function ClipMarkers({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }
           excludeClipIds: [clip.id],
           excludeMarkerId: marker.id,
           playhead: live.playhead,
+          activeSequencePath: live.activeSequencePath,
         })
         const snapped = applySnap(clip.start + local, points, SNAP_THRESHOLD_PX / pxPerSec)
         local = clamp(snapped.time - clip.start, 0, clip.duration)

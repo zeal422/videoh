@@ -17,7 +17,7 @@ import {
 import { commandsToCutClips, commandsToPasteClips, copyClips } from '@/lib/editor/clipboard'
 import { audibleClipId, anySelectionLinked, canLinkClips } from '@/lib/editor/links'
 import { markerSelectionExists, neighborMarker } from '@/lib/editor/markers'
-import { docDuration } from '@/lib/editor/factories'
+import { activeSequenceDuration, activeTracks, findClip } from '@/lib/editor/factories'
 import {
   placementRefusalMessage,
   sourceRangeFor,
@@ -140,8 +140,26 @@ export function useEditorKeyboard(onSave: () => void): void {
       }
       if (mod && key === 'v') {
         e.preventDefault()
-        const commands = commandsToPasteClips(doc, playhead, store.untargetedTracks)
-        if (commands) store.apply(commands)
+        const commands = commandsToPasteClips(
+          doc,
+          playhead,
+          store.untargetedTracks,
+          store.activeSequencePath[store.activeSequencePath.length - 1],
+        )
+        if (commands) {
+          try {
+            store.apply(commands)
+          } catch (error) {
+            // A stale clipboard entry (its compound sequence pruned, or media
+            // from another project) cannot be placed. Surface it the same way
+            // the context-menu paste does (runMenuAction), never silently.
+            toast({
+              title: 'Action failed',
+              description: error instanceof Error ? error.message : String(error),
+              variant: 'destructive',
+            })
+          }
+        }
         return
       }
       if (mod && key === 'k') {
@@ -150,7 +168,7 @@ export function useEditorKeyboard(onSave: () => void): void {
         e.preventDefault()
         const commands = selectedIds.length
           ? commandsToSplitClipsAt(doc, selectedIds, playhead)
-          : commandsToSplitAllAt(doc, playhead)
+          : commandsToSplitAllAt(doc, playhead, store.activeSequencePath)
         if (commands) {
           try {
             store.apply(commands)
@@ -174,14 +192,14 @@ export function useEditorKeyboard(onSave: () => void): void {
       if (mod && e.shiftKey && key === 'm') {
         // Premiere Ctrl+Shift+M: go to the previous marker.
         e.preventDefault()
-        const point = neighborMarker(doc, playhead, 'prev')
+        const point = neighborMarker(doc, playhead, 'prev', store.activeSequencePath)
         if (point) playbackRef.current?.seek(point.timelineTime)
         return
       }
       if (!mod && e.shiftKey && key === 'm') {
         // Premiere Shift+M: go to the next marker.
         e.preventDefault()
-        const point = neighborMarker(doc, playhead, 'next')
+        const point = neighborMarker(doc, playhead, 'next', store.activeSequencePath)
         if (point) playbackRef.current?.seek(point.timelineTime)
         return
       }
@@ -255,7 +273,11 @@ export function useEditorKeyboard(onSave: () => void): void {
             e.preventDefault()
             if (e.shiftKey) {
               // Premiere Ripple Delete: remove AND close the gap.
-              const commands = commandsToRippleDeleteClips(doc, selectedIds)
+              const commands = commandsToRippleDeleteClips(
+                doc,
+                selectedIds,
+                store.activeSequencePath,
+              )
               if (commands) store.apply(commands)
             } else {
               // Linked A/V pairs die together — until explicitly unlinked.
@@ -286,7 +308,13 @@ export function useEditorKeyboard(onSave: () => void): void {
           // clip when there is one (clamped into its visible span), otherwise
           // a sequence marker at the playhead. Shift+M navigates (above).
           e.preventDefault()
-          store.apply(commandsToAddMarker(doc, playhead, selectedIds))
+          const markerCommands = commandsToAddMarker(
+            doc,
+            playhead,
+            selectedIds,
+            store.activeSequencePath,
+          )
+          if (markerCommands) store.apply(markerCommands)
           break
         }
         case 'e':
@@ -300,9 +328,7 @@ export function useEditorKeyboard(onSave: () => void): void {
             // the audio twin, whichever half is selected (muting the video
             // half would unmask its embedded audio and double-play).
             const audibleId = audibleClipId(doc, primaryId)
-            const audible = doc.project.tracks
-              .flatMap((t) => t.clips)
-              .find((c) => c.id === audibleId)
+            const audible = findClip(doc, audibleId)?.clip
             store.apply({
               type: 'setClipMuted',
               clipId: audibleId,
@@ -321,7 +347,14 @@ export function useEditorKeyboard(onSave: () => void): void {
         case 't':
         case 'T': {
           e.preventDefault()
-          store.apply(commandsToAddText(doc, playhead, store.untargetedTracks))
+          store.apply(
+            commandsToAddText(
+              doc,
+              playhead,
+              store.untargetedTracks,
+              store.activeSequencePath[store.activeSequencePath.length - 1],
+            ),
+          )
           break
         }
         case 'i':
@@ -366,6 +399,7 @@ export function useEditorKeyboard(onSave: () => void): void {
             e.key === ',' ? 'insert' : 'overwrite',
             range,
             store.untargetedTracks,
+            store.activeSequencePath[store.activeSequencePath.length - 1],
           )
           if (!outcome.commands) {
             toast({
@@ -390,13 +424,13 @@ export function useEditorKeyboard(onSave: () => void): void {
         }
         case 'ArrowUp': {
           e.preventDefault()
-          const point = nearestEditPoint(doc, playhead, 'prev')
+          const point = nearestEditPoint(doc, playhead, 'prev', store.activeSequencePath)
           if (point !== null) playbackRef.current?.seek(point)
           break
         }
         case 'ArrowDown': {
           e.preventDefault()
-          const point = nearestEditPoint(doc, playhead, 'next')
+          const point = nearestEditPoint(doc, playhead, 'next', store.activeSequencePath)
           if (point !== null) playbackRef.current?.seek(point)
           break
         }
@@ -407,7 +441,7 @@ export function useEditorKeyboard(onSave: () => void): void {
         }
         case 'End': {
           e.preventDefault()
-          playbackRef.current?.seek(docDuration(doc))
+          playbackRef.current?.seek(activeSequenceDuration(doc, store.activeSequencePath))
           break
         }
         case '+':
@@ -424,7 +458,7 @@ export function useEditorKeyboard(onSave: () => void): void {
           // Premiere backslash: zoom the timeline so the whole sequence fits.
           const el = document.querySelector('[data-timeline-scroll]')
           const viewport = el ? el.clientWidth - TRACK_HEADER_WIDTH - 12 : 0
-          const duration = docDuration(doc)
+          const duration = activeSequenceDuration(doc, store.activeSequencePath)
           if (viewport > 40 && duration > 0.25) {
             store.setPxPerSec(Math.min(PPS_MAX, Math.max(PPS_MIN, Math.round(viewport / duration))))
           }
@@ -446,10 +480,11 @@ function nearestEditPoint(
   doc: ReturnType<typeof useEditorStore.getState>['doc'],
   playhead: number,
   dir: 'prev' | 'next',
+  activeSequencePath: readonly string[] = [],
 ): number | null {
   const EPS = 1e-3
   let best: number | null = null
-  for (const track of doc.project.tracks) {
+  for (const track of activeTracks(doc, activeSequencePath)) {
     for (const c of track.clips) {
       for (const boundary of [c.start, c.start + c.duration]) {
         if (dir === 'next' ? boundary > playhead + EPS : boundary < playhead - EPS) {

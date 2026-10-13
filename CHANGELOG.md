@@ -5,6 +5,65 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-10-12
+
+### Added
+
+- **Compound clips.** Select clips and `Create Compound Clip` (the Sequence menu or the clip context
+  menu) folds them into one reusable unit that replaces them in place on their video lane. A compound
+  references a project-level sequence, so duplicating the container reuses the same edit. Double-click a
+  compound to open its sequence; a breadcrumb shows the open path and jumps back to the parent. A compound
+  can contain another compound, up to eight levels, and a cycle is refused.
+- **Group compositing.** The referenced sequence composites into a transparent scratch surface that is
+  drawn into the parent with the container's opacity, transform, transition and grade, so a group of
+  overlapping children composites as one unit (the same in the preview and the export). The recursion
+  uses a depth-indexed scratch stack bounded by the nesting limit.
+- **Nested audio.** A compound's child clips mix into a container gain node that applies the container's
+  gain, mute and volume-keyframe curve once, in the live graph and the offline export alike. Inner clips
+  keep their own gain, pan, EQ and denoise.
+- **Sequence navigation.** A session-only `activeSequencePath` scopes the timeline, selection, lane
+  targeting and the transport to the open sequence; stale selection and lane posture clear when the path
+  changes. Project-level markers stay at the root; a compound's clip markers use container-local seconds.
+- **Serialization v4.** `Project.sequences` and `Clip.sequenceId` serialize, v1/v2/v3 files still load,
+  and a dangling compound clip is dropped with one warning. The loader refuses a cyclic sequence graph, a
+  duplicate track/clip/sequence id anywhere, a compound with incompatible media/text/retiming fields, and
+  a file nested beyond the limit.
+
+### Deliberately not planned
+
+- Named-sequences panel, per-sequence settings, per-sequence undo histories, compound retiming,
+  container pan/EQ/compressor/denoise, sub-sequence sequence-level markers.
+
+## [0.8.0] - 2026-10-12
+
+### Added
+
+- **Bounded export memory.** The export dialog gains a second action beside `Download`: `Export to file`
+  writes the MP4 straight to disk through the File System Access API, so a long export no longer has to
+  fit in the tab heap. `exportTimeline` accepts an optional file sink and muxes through a
+  `chunked: true` `StreamTarget`, whose in-RAM buffer is a flush threshold rather than a hard cap, and its
+  return becomes a discriminated `blob` / `file` result. The streamed destination is committed only after
+  the muxer finalizes and aborted on cancel or any failure, including a preflight or setup failure; the
+  in-memory `Download` and its in-dialog preview are unchanged. The dialog shows an estimated size (the
+  new pure `estimateExportBytes`) and nudges to `Export to file` past ~100 MB. `showSaveFilePicker` is
+  Chromium/Edge only, so the action is hidden where it is unavailable.
+- **Proxies.** A heavy source (video over 1920 px on its long edge) can be transcoded to a session
+  lower-resolution A/V stand-in for smooth preview. The pure `proxy.ts` decides qualification,
+  aspect-preserving even dimensions capped at 1280, the AVC bitrate, and whether audio is carried; the
+  browser-bound `media/proxies.ts` builds it with the installed mediabunny stack, preserving each source
+  frame's timestamp and duration. It takes the source's own demuxed audio track as the authority on
+  whether audio must be carried, so a failed import-time waveform probe can no longer certify silence,
+  and a build that cannot decode the audio fails instead of shipping a silent proxy. A stale build never
+  installs over a relinked or removed source, and the object URLs are revoked on relink, removal, File >
+  New and project open. The proxy state is session-only (a store slice, never in the project file). The
+  Media bin shows a proxy badge and a build action, the import prompt offers it for a heavy source, and
+  `View > Use Proxies` toggles it. The media pool, the preview engine and the Source monitor all resolve
+  the effective URL, so toggling proxies or finishing a build reroutes already-mounted elements without
+  losing the source playhead, and the export always reads the original.
+- Recorded as non-goals: proxies persist only for the session (source media is session-bound) and the
+  transcode runs on the main thread, reusing the export stack; the streamed export is opt-in, writes
+  metadata at the end (no fast-start) and has no inline preview.
+
 ## [0.7.3] - 2026-10-10
 
 ### Fixed

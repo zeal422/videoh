@@ -48,12 +48,8 @@ export function InspectorPanel({ className }: { className?: string }) {
   const doc = useEditorStore((s) => s.doc)
   const selection = useEditorStore((s) => s.selection)
 
-  const selected = selection
-    ? doc.project.tracks.flatMap((t) => t.clips).find((c) => c.id === selection)
-    : undefined
-  const selectedTrack = selected
-    ? doc.project.tracks.find((t) => t.clips.some((c) => c.id === selected.id))
-    : undefined
+  const selected = selection ? findClip(doc, selection)?.clip : undefined
+  const selectedTrack = selected ? findClip(doc, selected.id)?.track : undefined
   return (
     <aside aria-label="Inspector" className={cn('flex min-w-0 flex-col bg-card', className)}>
       {selected && selectedTrack ? (
@@ -144,7 +140,7 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
   const audibleTwin = linkedAudioTwin(doc, clip)
   const audioClip = audibleTwin ?? clip
 
-  const track = doc.project.tracks.find((t) => t.clips.some((c) => c.id === clip.id))
+  const track = findClip(doc, clip.id)?.track
   const nextClip = track ? nextClipOnTrack(track, clip) : undefined
   const luts = doc.project.luts ?? []
   const lutFileRef = useRef<HTMLInputElement>(null)

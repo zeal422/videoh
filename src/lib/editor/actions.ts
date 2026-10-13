@@ -1,5 +1,6 @@
 import type { EditorCommand } from './commands'
 import {
+  activeTracks,
   clipFitsTrack,
   createClip,
   createTextClip,
@@ -7,6 +8,7 @@ import {
   findClip,
   firstCompatibleTrack,
   firstTargetedTrack,
+  sequenceTracks,
   uid,
 } from './factories'
 import { DEFAULT_IMAGE_DURATION, DEFAULT_TEXT_DURATION, MIN_SPLIT_HEADROOM } from './constants'
@@ -84,6 +86,7 @@ function avPairCommands(
   untargetedTrackIds: readonly string[] = [],
   /** Ranged source placement: the SAME window on both halves (equal spans). */
   sourceWindow?: SourceWindow | null,
+  sequenceId?: string,
 ): EditorCommand[] {
   const linkId = uid('link')
   const videoClip: Clip = { ...clipFromAsset(asset, start, sourceWindow), linkId }
@@ -94,7 +97,7 @@ function avPairCommands(
   }
   const commands: EditorCommand[] = []
 
-  const audioTrack = resolveAudioTwinTrack(doc, untargetedTrackIds)
+  const audioTrack = resolveAudioTwinTrack(doc, untargetedTrackIds, sequenceId)
   let audioTrackId: string
   if (audioTrack) {
     audioTrackId = audioTrack.id
@@ -107,7 +110,8 @@ function avPairCommands(
       type: 'addTrack',
       kind: 'audio',
       trackId: audioTrackId,
-      atIndex: audioTrackAtIndex ?? doc.project.tracks.length,
+      atIndex: audioTrackAtIndex ?? sequenceTracks(doc, sequenceId).length,
+      ...(sequenceId ? { sequenceId } : {}),
     })
   }
   commands.push({ type: 'addClip', trackId: videoTrackId, clip: videoClip })
@@ -137,16 +141,24 @@ function resolveMediaTarget(
   asset: MediaAsset,
   trackId: string | undefined,
   untargetedTrackIds: readonly string[],
+  sequenceId?: string,
 ): { target: Track; newTrackId: string | null } {
-  const requested = trackId ? doc.project.tracks.find((t) => t.id === trackId) : undefined
+  const requested = trackId
+    ? sequenceTracks(doc, sequenceId).find((t) => t.id === trackId)
+    : undefined
   let target: Track | undefined =
     requested && trackFitsAsset(requested, asset.kind) ? requested : undefined
   if (!target) {
-    target = firstTargetedTrack(doc, untargetedTrackIds, (t) => trackFitsAsset(t, asset.kind))
+    target = firstTargetedTrack(
+      doc,
+      untargetedTrackIds,
+      (t) => trackFitsAsset(t, asset.kind),
+      sequenceId,
+    )
   }
   if (!target) {
     // Nothing targeted of that kind: the legacy order still applies.
-    target = firstCompatibleTrack(doc, asset.kind)
+    target = firstCompatibleTrack(doc, asset.kind, sequenceId)
   }
   if (!target) {
     const kind = trackKindForMedia(asset.kind)
@@ -161,10 +173,14 @@ function resolveMediaTarget(
  * else the legacy first audio lane. Shared by the pair builder and the
  * placement planner, so both resolve the same twin lane.
  */
-function resolveAudioTwinTrack(doc: Doc, untargetedTrackIds: readonly string[]): Track | undefined {
+function resolveAudioTwinTrack(
+  doc: Doc,
+  untargetedTrackIds: readonly string[],
+  sequenceId?: string,
+): Track | undefined {
   return (
-    firstTargetedTrack(doc, untargetedTrackIds, (t) => t.kind === 'audio') ??
-    doc.project.tracks.find((t) => t.kind === 'audio')
+    firstTargetedTrack(doc, untargetedTrackIds, (t) => t.kind === 'audio', sequenceId) ??
+    sequenceTracks(doc, sequenceId).find((t) => t.kind === 'audio')
   )
 }
 
@@ -174,14 +190,39 @@ export function commandsToAddMedia(
   start: number,
   trackId?: string,
   untargetedTrackIds: readonly string[] = [],
+  sequenceId?: string,
 ): EditorCommand[] | null {
-  const { target, newTrackId } = resolveMediaTarget(doc, asset, trackId, untargetedTrackIds)
+  const { target, newTrackId } = resolveMediaTarget(
+    doc,
+    asset,
+    trackId,
+    untargetedTrackIds,
+    sequenceId,
+  )
   if (!target) return null
   const commands: EditorCommand[] = []
-  if (newTrackId) commands.push({ type: 'addTrack', kind: target.kind, trackId: newTrackId })
+  if (newTrackId) {
+    commands.push({
+      type: 'addTrack',
+      kind: target.kind,
+      trackId: newTrackId,
+      ...(sequenceId ? { sequenceId } : {}),
+    })
+  }
 
   if (asset.kind === 'video' && assetHasAudio(asset)) {
-    commands.push(...avPairCommands(doc, asset, start, target.id, undefined, untargetedTrackIds))
+    commands.push(
+      ...avPairCommands(
+        doc,
+        asset,
+        start,
+        target.id,
+        undefined,
+        untargetedTrackIds,
+        null,
+        sequenceId,
+      ),
+    )
   } else {
     commands.push({ type: 'addClip', trackId: target.id, clip: clipFromAsset(asset, start) })
   }
@@ -206,13 +247,27 @@ export function commandsToAddMediaInNewTrack(
   start: number,
   atIndex: number,
   untargetedTrackIds: readonly string[] = [],
+  sequenceId?: string,
 ): EditorCommand[] {
   const kind = trackKindForMedia(asset.kind)
   const newId = pendingTrackId()
-  const commands: EditorCommand[] = [{ type: 'addTrack', kind, trackId: newId, atIndex }]
+  const commands: EditorCommand[] = [
+    { type: 'addTrack', kind, trackId: newId, atIndex, ...(sequenceId ? { sequenceId } : {}) },
+  ]
 
   if (asset.kind === 'video' && assetHasAudio(asset)) {
-    commands.push(...avPairCommands(doc, asset, start, newId, atIndex + 1, untargetedTrackIds))
+    commands.push(
+      ...avPairCommands(
+        doc,
+        asset,
+        start,
+        newId,
+        atIndex + 1,
+        untargetedTrackIds,
+        null,
+        sequenceId,
+      ),
+    )
   } else {
     commands.push({ type: 'addClip', trackId: newId, clip: clipFromAsset(asset, start) })
   }
@@ -224,14 +279,20 @@ export function commandsToAddText(
   doc: Doc,
   start: number,
   untargetedTrackIds: readonly string[] = [],
+  sequenceId?: string,
 ): EditorCommand[] {
   const commands: EditorCommand[] = []
   let textTrack =
-    firstTargetedTrack(doc, untargetedTrackIds, (t) => t.kind === 'text') ??
-    doc.project.tracks.find((t) => t.kind === 'text')
+    firstTargetedTrack(doc, untargetedTrackIds, (t) => t.kind === 'text', sequenceId) ??
+    sequenceTracks(doc, sequenceId).find((t) => t.kind === 'text')
   if (!textTrack) {
     const newId = pendingTrackId()
-    commands.push({ type: 'addTrack', kind: 'text', trackId: newId })
+    commands.push({
+      type: 'addTrack',
+      kind: 'text',
+      trackId: newId,
+      ...(sequenceId ? { sequenceId } : {}),
+    })
     textTrack = { id: newId, kind: 'text', name: '', clips: [] }
   }
   const clip = createTextClip({
@@ -263,7 +324,8 @@ export function commandsToAddMarker(
   doc: Doc,
   playhead: number,
   selectedIds: string[],
-): EditorCommand[] {
+  activeSequencePath: readonly string[] = [],
+): EditorCommand[] | null {
   const primaryId = selectedIds[0]
   const found = primaryId ? findClip(doc, primaryId) : undefined
   if (found) {
@@ -275,6 +337,9 @@ export function commandsToAddMarker(
       },
     ]
   }
+  // A child sequence has no sequence-level markers of its own (0.8.1): adding
+  // one there would land at the root, hidden while the child is open.
+  if (activeSequencePath.length > 0) return null
   // A sequence marker cannot live past the sequence end (the playhead cannot
   // seek there, so navigation could never reach it).
   return [{ type: 'addSequenceMarker', marker: createMarker(clamp(playhead, 0, docDuration(doc))) }]
@@ -309,7 +374,11 @@ export function commandsToDeleteClips(doc: Doc, clipIds: string[]): EditorComman
  * after the removed material slide left by the removed span (overlap-safe —
  * removed intervals are merged first, as crossfades make clips overlap).
  */
-export function commandsToRippleDeleteClips(doc: Doc, clipIds: string[]): EditorCommand[] | null {
+export function commandsToRippleDeleteClips(
+  doc: Doc,
+  clipIds: string[],
+  activeSequencePath: readonly string[] = [],
+): EditorCommand[] | null {
   const members = resolveSelectionGroups(doc, clipIds)
   if (members.length === 0) return null
   const memberIds = new Set(members.map((c) => c.id))
@@ -320,7 +389,7 @@ export function commandsToRippleDeleteClips(doc: Doc, clipIds: string[]): Editor
   }))
 
   const EPS = 1e-6
-  for (const track of doc.project.tracks) {
+  for (const track of activeTracks(doc, activeSequencePath)) {
     const removed = track.clips.filter((c) => memberIds.has(c.id))
     if (removed.length === 0) continue
     // Merge removed intervals (transitions make same-track clips overlap).
@@ -369,8 +438,12 @@ export function commandsToSplitClipsAt(
  * Premiere "Add Edit" (Ctrl+K) with NO selection: splits every clip on every
  * track that the playhead crosses (link groups treated as units).
  */
-export function commandsToSplitAllAt(doc: Doc, atTime: number): EditorCommand[] | null {
-  const all = doc.project.tracks.flatMap((t) => t.clips)
+export function commandsToSplitAllAt(
+  doc: Doc,
+  atTime: number,
+  activeSequencePath: readonly string[] = [],
+): EditorCommand[] | null {
+  const all = activeTracks(doc, activeSequencePath).flatMap((t) => t.clips)
   return splitGroupMembers(
     doc,
     resolveSelectionGroups(
@@ -472,10 +545,9 @@ export function commandsToLinkClips(doc: Doc, clipIds: string[]): EditorCommand[
 }
 
 function requireTrackIdOf(doc: Doc, clipId: string): string {
-  for (const track of doc.project.tracks) {
-    if (track.clips.some((c) => c.id === clipId)) return track.id
-  }
-  throw new Error(`Clip ${clipId} not found`)
+  const found = findClip(doc, clipId)
+  if (!found) throw new Error(`Clip ${clipId} not found`)
+  return found.track.id
 }
 
 /**
@@ -518,9 +590,10 @@ export function commandsToPlaceMedia(
   mode: PlacementMode,
   trackId?: string,
   untargetedTrackIds: readonly string[] = [],
+  sequenceId?: string,
 ): PlacementOutcome {
   if (mode === 'place') {
-    const commands = commandsToAddMedia(doc, asset, start, trackId, untargetedTrackIds)
+    const commands = commandsToAddMedia(doc, asset, start, trackId, untargetedTrackIds, sequenceId)
     return commands ? { commands, refusal: null } : refused('span')
   }
   // The span pre-check runs before anything is built, so a refused placement
@@ -528,26 +601,48 @@ export function commandsToPlaceMedia(
   const span = normalizePlacementSpan(clipDurationFor(asset))
   if (span === null) return refused('span')
 
-  const { target, newTrackId } = resolveMediaTarget(doc, asset, trackId, untargetedTrackIds)
+  const { target, newTrackId } = resolveMediaTarget(
+    doc,
+    asset,
+    trackId,
+    untargetedTrackIds,
+    sequenceId,
+  )
   const paired = asset.kind === 'video' && assetHasAudio(asset)
   const laneIds = [target.id]
   if (paired) {
-    const twin = resolveAudioTwinTrack(doc, untargetedTrackIds)
+    const twin = resolveAudioTwinTrack(doc, untargetedTrackIds, sequenceId)
     if (twin) laneIds.push(twin.id)
   }
   const plan =
     mode === 'insert'
-      ? planInsert(doc, laneIds, start, span)
-      : planOverwrite(doc, laneIds, start, span)
+      ? planInsert(doc, laneIds, start, span, sequenceId)
+      : planOverwrite(doc, laneIds, start, span, sequenceId)
   if (!plan.commands) return refused(plan.refusal)
 
   const commands: EditorCommand[] = []
   if (newTrackId) {
-    commands.push({ type: 'addTrack', kind: trackKindForMedia(asset.kind), trackId: newTrackId })
+    commands.push({
+      type: 'addTrack',
+      kind: trackKindForMedia(asset.kind),
+      trackId: newTrackId,
+      ...(sequenceId ? { sequenceId } : {}),
+    })
   }
   commands.push(...plan.commands)
   if (paired) {
-    commands.push(...avPairCommands(doc, asset, start, target.id, undefined, untargetedTrackIds))
+    commands.push(
+      ...avPairCommands(
+        doc,
+        asset,
+        start,
+        target.id,
+        undefined,
+        untargetedTrackIds,
+        null,
+        sequenceId,
+      ),
+    )
   } else {
     commands.push({ type: 'addClip', trackId: target.id, clip: clipFromAsset(asset, start) })
   }
@@ -568,6 +663,7 @@ export function commandsToPlaceSource(
   mode: PlacementMode,
   range: SourceRange | null,
   untargetedTrackIds: readonly string[] = [],
+  sequenceId?: string,
 ): PlacementOutcome {
   const effective = asset.kind === 'image' || asset.duration <= 0 ? null : range
   const base = effective ? effective.outPoint - effective.inPoint : clipDurationFor(asset)
@@ -577,27 +673,47 @@ export function commandsToPlaceSource(
     ? { inPoint: Math.max(0, effective.inPoint), duration: span }
     : null
 
-  const { target, newTrackId } = resolveMediaTarget(doc, asset, undefined, untargetedTrackIds)
+  const { target, newTrackId } = resolveMediaTarget(
+    doc,
+    asset,
+    undefined,
+    untargetedTrackIds,
+    sequenceId,
+  )
   const paired = asset.kind === 'video' && assetHasAudio(asset)
   const laneIds = [target.id]
   if (paired) {
-    const twin = resolveAudioTwinTrack(doc, untargetedTrackIds)
+    const twin = resolveAudioTwinTrack(doc, untargetedTrackIds, sequenceId)
     if (twin) laneIds.push(twin.id)
   }
   const plan =
     mode === 'insert'
-      ? planInsert(doc, laneIds, start, span)
-      : planOverwrite(doc, laneIds, start, span)
+      ? planInsert(doc, laneIds, start, span, sequenceId)
+      : planOverwrite(doc, laneIds, start, span, sequenceId)
   if (!plan.commands) return refused(plan.refusal)
 
   const commands: EditorCommand[] = []
   if (newTrackId) {
-    commands.push({ type: 'addTrack', kind: trackKindForMedia(asset.kind), trackId: newTrackId })
+    commands.push({
+      type: 'addTrack',
+      kind: trackKindForMedia(asset.kind),
+      trackId: newTrackId,
+      ...(sequenceId ? { sequenceId } : {}),
+    })
   }
   commands.push(...plan.commands)
   if (paired) {
     commands.push(
-      ...avPairCommands(doc, asset, start, target.id, undefined, untargetedTrackIds, sourceWindow),
+      ...avPairCommands(
+        doc,
+        asset,
+        start,
+        target.id,
+        undefined,
+        untargetedTrackIds,
+        sourceWindow,
+        sequenceId,
+      ),
     )
   } else {
     commands.push({
@@ -612,4 +728,43 @@ export function commandsToPlaceSource(
 /** True when the given clip could be dropped onto the track (UI affordance). */
 export function canDropClip(doc: Doc, clip: Clip, track: Track): boolean {
   return clipFitsTrack(doc, clip, track)
+}
+
+// ————— compound clips (0.8.1) —————
+
+/**
+ * Commands that fold the selected clips into a compound clip (one undoable
+ * batch). The container replaces the selection in place on the selected
+ * clips' video lane; when the selection was audio or text only it lands on the
+ * first video lane. Returns null when the selection is empty, spans more than
+ * one sequence, or the owning sequence has no video lane to host the container.
+ * The cycle, depth and single-owner guards live in the command itself, so every
+ * caller pays them.
+ */
+export function commandsToCreateCompoundClip(
+  doc: Doc,
+  clipIds: string[],
+  name?: string,
+): EditorCommand[] | null {
+  const found = clipIds
+    .map((id) => findClip(doc, id))
+    .filter((f): f is NonNullable<typeof f> => f !== undefined)
+  if (found.length === 0) return null
+  const owner = found[0].sequenceId
+  if (found.some((f) => f.sequenceId !== owner)) return null
+
+  const videoLanes = sequenceTracks(doc, owner).filter((t) => t.kind === 'video')
+  if (videoLanes.length === 0) return null
+  const selectedIds = new Set(found.map((f) => f.clip.id))
+  const sourceVideo = videoLanes.find((t) => t.clips.some((c) => selectedIds.has(c.id)))
+  const trackId = (sourceVideo ?? videoLanes[0]).id
+
+  return [
+    {
+      type: 'createCompoundClip',
+      clipIds: found.map((f) => f.clip.id),
+      trackId,
+      ...(name ? { name } : {}),
+    },
+  ]
 }

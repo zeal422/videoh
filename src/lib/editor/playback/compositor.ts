@@ -1,4 +1,5 @@
 import { clipFilter } from '../color'
+import { findSequence } from '../factories'
 import { applyLut3dToRgba, decodeLutGrid, findLut } from '../lut'
 import { getTransitionSpan, transitionAlphas } from '../transition'
 import { animatedValue } from '../keyframes'
@@ -32,7 +33,10 @@ export interface FrameBlendSource {
   weight: number
 }
 
-export type MediaResolver = (clip: Clip) =>
+export type MediaResolver = (
+  clip: Clip,
+  localTime: number,
+) =>
   | {
       asset: MediaAsset
       el?: HTMLVideoElement | HTMLImageElement
@@ -52,18 +56,46 @@ export interface DrawFrameInput {
   doc: Doc
   time: number
   resolve: MediaResolver
+  /**
+   * The ACTIVE sequence's tracks (0.8.1). Defaults to the project root tracks.
+   * The preview passes the open sequence's lanes; nested compound clips recurse
+   * from here regardless of the active path.
+   */
+  tracks?: readonly Track[]
 }
 
-export function drawFrame({ ctx, doc, time, resolve }: DrawFrameInput): void {
+/**
+ * Transparent scratch surfaces for compound group composites, indexed by
+ * recursion depth. Lazily allocated and reused across frames and clips; the
+ * depth is bounded by the nesting limit and every surface is cleared before
+ * reuse, so sibling compounds never show stale pixels.
+ */
+const sequenceSurfaces: HTMLCanvasElement[] = []
+
+function sequenceSurface(
+  depth: number,
+  width: number,
+  height: number,
+): CanvasRenderingContext2D | null {
+  if (typeof document === 'undefined') return null
+  const canvas = (sequenceSurfaces[depth] ??= document.createElement('canvas'))
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+  return canvas.getContext('2d')
+}
+
+export function drawFrame({ ctx, doc, time, resolve, tracks }: DrawFrameInput): void {
   const { width, height } = doc.project
   ctx.save()
   ctx.globalAlpha = 1
   ctx.fillStyle = '#000000'
   ctx.fillRect(0, 0, width, height)
 
-  const tracks = doc.project.tracks
-  for (let i = tracks.length - 1; i >= 0; i--) {
-    drawTrack(ctx, tracks[i], time, resolve, width, height, doc)
+  const list = tracks ?? doc.project.tracks
+  for (let i = list.length - 1; i >= 0; i--) {
+    drawTrack(ctx, list[i], time, resolve, width, height, doc, 0)
   }
   ctx.restore()
 }
@@ -76,6 +108,7 @@ function drawTrack(
   width: number,
   height: number,
   doc: Doc,
+  depth: number,
 ): void {
   if (track.kind === 'audio') return // audio tracks have no visual
   const clips = [...track.clips].sort((a, b) => a.start - b.start)
@@ -83,7 +116,7 @@ function drawTrack(
   if (active.length === 0) return
 
   if (active.length === 1) {
-    drawClip(ctx, active[0], t, resolve, 1, width, height, doc)
+    drawClip(ctx, active[0], t, resolve, 1, width, height, doc, depth)
     return
   }
 
@@ -93,12 +126,12 @@ function drawTrack(
   const span = a.transitionOut ? getTransitionSpan(a, b) : null
   if (span && t >= span.start) {
     const { aAlpha, bAlpha } = transitionAlphas(span, t)
-    drawClip(ctx, a, t, resolve, aAlpha, width, height, doc)
-    drawClip(ctx, b, t, resolve, bAlpha, width, height, doc)
+    drawClip(ctx, a, t, resolve, aAlpha, width, height, doc, depth)
+    drawClip(ctx, b, t, resolve, bAlpha, width, height, doc, depth)
     return
   }
   // Plain overlap: the later clip wins.
-  for (const clip of active) drawClip(ctx, clip, t, resolve, 1, width, height, doc)
+  for (const clip of active) drawClip(ctx, clip, t, resolve, 1, width, height, doc, depth)
 }
 
 function drawClip(
@@ -110,6 +143,7 @@ function drawClip(
   width: number,
   height: number,
   doc: Doc,
+  depth: number,
 ): void {
   // Clip-local time for keyframe evaluation (0 = clip start).
   const local = t - clip.start
@@ -130,6 +164,35 @@ function drawClip(
   const scale = animatedValue(clip, 'scale', local)
   const transformed = posX !== 0 || posY !== 0 || scale !== 1
 
+  // Compound clip (0.8.1): composite the referenced sequence into a transparent
+  // scratch surface, then draw that single surface with the container's alpha,
+  // filter and transform (a GROUP composite, matching the exporter).
+  if (clip.sequenceId) {
+    const sequence = findSequence(doc, clip.sequenceId)
+    if (!sequence) return
+    const sctx = sequenceSurface(depth, width, height)
+    if (!sctx) return
+    sctx.save()
+    sctx.globalAlpha = 1
+    sctx.clearRect(0, 0, width, height)
+    const childTracks = sequence.tracks
+    for (let i = childTracks.length - 1; i >= 0; i--) {
+      drawTrack(sctx, childTracks[i], local, resolve, width, height, doc, depth + 1)
+    }
+    sctx.restore()
+    drawContain(
+      ctx,
+      sequenceSurfaces[depth],
+      width,
+      height,
+      effective,
+      filter,
+      transformed ? { posX, posY, scale } : null,
+      lut,
+    )
+    return
+  }
+
   if (clip.text !== undefined && clip.style) {
     drawTextClip(
       ctx,
@@ -143,7 +206,7 @@ function drawClip(
     return
   }
 
-  const resolved = resolve(clip)
+  const resolved = resolve(clip, local)
   if (!resolved) return // missing media → black
   const { asset, el } = resolved
   if (!el) return

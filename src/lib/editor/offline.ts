@@ -1,5 +1,5 @@
-import { findMedia } from './factories'
-import type { Doc } from './types'
+import { activeTracks, findMedia, findSequence, rootReachableSequences } from './factories'
+import type { Doc, Track } from './types'
 
 /**
  * Offline-media detection for the monitor.
@@ -24,7 +24,11 @@ import type { Doc } from './types'
  * `offlineMediaAt` describe the same condition.
  */
 export function hasOfflineMedia(doc: Doc): boolean {
-  return doc.project.tracks.some((t) =>
+  // Root plus every ROOT-REACHABLE compound sequence (0.8.1): a nested clip
+  // that cannot render blocks the export, but an orphan sequence the export
+  // never renders must not.
+  const tracks = [...doc.project.tracks, ...rootReachableSequences(doc).flatMap((s) => s.tracks)]
+  return tracks.some((t) =>
     t.clips.some((c) => {
       if (!c.mediaId) return false
       const asset = findMedia(doc, c.mediaId)
@@ -33,18 +37,35 @@ export function hasOfflineMedia(doc: Doc): boolean {
   )
 }
 
-export function offlineMediaAt(doc: Doc, time: number): string[] {
+export function offlineMediaAt(
+  doc: Doc,
+  time: number,
+  activeSequencePath: readonly string[] = [],
+): string[] {
   const names: string[] = []
   const seen = new Set<string>()
-  for (const track of doc.project.tracks) {
-    for (const clip of track.clips) {
-      if (time < clip.start || time >= clip.start + clip.duration) continue
-      const asset = findMedia(doc, clip.mediaId)
-      if (!asset || !(asset.missing || !asset.url)) continue
-      if (seen.has(asset.name)) continue
-      seen.add(asset.name)
-      names.push(asset.name)
+  // Starts at the ACTIVE sequence (its own local clock) and follows only the
+  // compounds active at the current local time (0.8.1).
+  const visit = (tracks: readonly Track[], offset: number): void => {
+    for (const track of tracks) {
+      for (const clip of track.clips) {
+        const start = offset + clip.start
+        if (clip.sequenceId) {
+          if (time >= start && time < start + clip.duration) {
+            const sequence = findSequence(doc, clip.sequenceId)
+            if (sequence) visit(sequence.tracks, start)
+          }
+          continue
+        }
+        if (time < start || time >= start + clip.duration) continue
+        const asset = findMedia(doc, clip.mediaId)
+        if (!asset || !(asset.missing || !asset.url)) continue
+        if (seen.has(asset.name)) continue
+        seen.add(asset.name)
+        names.push(asset.name)
+      }
     }
   }
+  visit(activeTracks(doc, activeSequencePath), 0)
   return names
 }

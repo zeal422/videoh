@@ -1,8 +1,17 @@
-import { clampSourceTime, docDuration, findMedia, mediaPlayable, sourceTimeAt } from '../factories'
+import {
+  activeTracks,
+  clampSourceTime,
+  docDuration,
+  findMedia,
+  findSequence,
+  mediaPlayable,
+  sequenceDuration,
+  sourceTimeAt,
+} from '../factories'
 import { blendPartnerTime, blendWeight } from '../frame-blend'
 import { denoiseFilters } from './denoise'
 import { EQ_DB_MAX, EQ_DB_MIN, SPEED_MAX, SPEED_MIN } from '../constants'
-import { getTransitionSpan } from '../transition'
+import { crossfadeFactor } from '../transition'
 import { hasLinkedAudioTwin, linkGroupChangesRate } from '../links'
 import { animatedValue, constantTimeScaleRate, hasTimeScaleRamp } from '../keyframes'
 import { ClipMediaPool } from '../media/elements'
@@ -37,9 +46,72 @@ export interface PlaybackCoreOptions {
    * which always read the original.
    */
   resolveMediaUrl?: (asset: MediaAsset) => string
+  /**
+   * The active compound sequence path (0.8.1). The preview renders and syncs
+   * the open sequence's tracks; omitted by the export engine and tests, which
+   * start from the project root.
+   */
+  getActiveSequencePath?: () => readonly string[]
   onFrame?: (t: number) => void
   onEnd?: () => void
   onPlayingChange?: (playing: boolean) => void
+}
+
+/**
+ * One clip reachable from the active sequence, with the absolute timeline time
+ * its sequence's local 0 sits at and the enclosing compound containers. Used to
+ * sync every nested clip's element and to multiply each container's gain once.
+ */
+interface NestedClip {
+  clip: Clip
+  track: Track
+  /** Absolute time of this clip's sequence local 0. */
+  offset: number
+  /** Enclosing containers from outermost to innermost, with their track and sequence offset. */
+  ancestors: { clip: Clip; track: Track; offset: number }[]
+}
+
+/** Depth-first walk of a track list, descending into every compound clip. */
+function walkClips(
+  doc: Doc,
+  tracks: readonly Track[],
+  offset: number,
+  ancestors: { clip: Clip; track: Track; offset: number }[],
+  out: NestedClip[],
+): void {
+  for (const track of tracks) {
+    for (const clip of track.clips) {
+      out.push({ clip, track, offset, ancestors })
+      if (clip.sequenceId) {
+        const sequence = findSequence(doc, clip.sequenceId)
+        if (sequence) {
+          walkClips(
+            doc,
+            sequence.tracks,
+            offset + clip.start,
+            [...ancestors, { clip, track, offset }],
+            out,
+          )
+        }
+      }
+    }
+  }
+}
+
+/** True when `t` is inside the clip's window AND every ancestor container's. */
+function withinAncestorWindows(
+  t: number,
+  start: number,
+  end: number,
+  ancestors: { clip: Clip; offset: number }[],
+): boolean {
+  if (t < start || t >= end) return false
+  for (const ancestor of ancestors) {
+    const aStart = ancestor.offset + ancestor.clip.start
+    const aEnd = aStart + ancestor.clip.duration
+    if (t < aStart || t >= aEnd) return false
+  }
+  return true
 }
 
 /**
@@ -228,7 +300,7 @@ export class PlaybackCore {
 
   async play(from?: number): Promise<void> {
     const doc = this.opts.getDoc()
-    const duration = docDuration(doc)
+    const duration = this.durationOf(doc)
     if (duration <= 0) return
 
     if (from !== undefined) this.time = from
@@ -258,7 +330,7 @@ export class PlaybackCore {
   }
 
   seek(t: number): void {
-    const duration = docDuration(this.opts.getDoc())
+    const duration = this.durationOf(this.opts.getDoc())
     this.time = clamp(t, 0, duration)
     if (this.playingState) {
       this.anchorDoc = this.time
@@ -292,9 +364,36 @@ export class PlaybackCore {
     if (this.opts.canvas.height !== height) this.opts.canvas.height = height
   }
 
-  /** The source time a clip should show at timeline time `t` (speed-aware). */
-  private sourceTime(clip: Clip, t: number): number {
-    return sourceTimeAt(clip, t - clip.start)
+  /**
+   * The source time a clip should show at timeline time `t` (speed-aware).
+   * `offset` is the absolute time the clip's sequence local 0 sits at, so a
+   * nested clip reads its own local clock.
+   */
+  private sourceTime(clip: Clip, t: number, offset = 0): number {
+    return sourceTimeAt(clip, t - offset - clip.start)
+  }
+
+  /** The active sequence's track list (root when no path is supplied). */
+  private activeTracks(doc: Doc): readonly Track[] {
+    return activeTracks(doc, this.opts.getActiveSequencePath?.() ?? [])
+  }
+
+  /**
+   * The transport length: the root timeline at the project root, otherwise the
+   * open compound sequence's local length (its own ruler).
+   */
+  private durationOf(doc: Doc): number {
+    const path = this.opts.getActiveSequencePath?.() ?? []
+    if (path.length === 0) return docDuration(doc)
+    const sequence = findSequence(doc, path[path.length - 1])
+    return sequence ? sequenceDuration(sequence) : docDuration(doc)
+  }
+
+  /** Every clip reachable from the active sequence, nested compounds included. */
+  private activeClipList(doc: Doc): NestedClip[] {
+    const out: NestedClip[] = []
+    walkClips(doc, this.activeTracks(doc), 0, [], out)
+    return out
   }
 
   dispose(): void {
@@ -335,7 +434,7 @@ export class PlaybackCore {
   private tick = (): void => {
     if (!this.playingState) return
     const doc = this.opts.getDoc()
-    const duration = docDuration(doc)
+    const duration = this.durationOf(doc)
 
     const elapsed = this.audio
       ? this.audio.currentTime - this.anchorAudio
@@ -368,17 +467,15 @@ export class PlaybackCore {
   private releaseMissingClips(): void {
     const doc = this.opts.getDoc()
     const live = new Set<string>()
-    for (const track of doc.project.tracks) {
-      for (const clip of track.clips) {
-        // A clip whose media no longer resolves (its asset was removed from
-        // the bin while the clip survives for undo/relink) is NOT live: the
-        // doc keeps the clip, but keeping its element would let it play on
-        // against a source nothing can resolve (the ghost-playback hole).
-        // The SAME predicate gates syncMedia below (mediaPlayable), so the
-        // two can never disagree.
-        if (!mediaPlayable(findMedia(doc, clip.mediaId))) continue
-        live.add(clip.id)
-      }
+    for (const { clip } of this.activeClipList(doc)) {
+      // A clip whose media no longer resolves (its asset was removed from
+      // the bin while the clip survives for undo/relink) is NOT live: the
+      // doc keeps the clip, but keeping its element would let it play on
+      // against a source nothing can resolve (the ghost-playback hole).
+      // The SAME predicate gates syncMedia below (mediaPlayable), so the
+      // two can never disagree.
+      if (!mediaPlayable(findMedia(doc, clip.mediaId))) continue
+      live.add(clip.id)
     }
     // Parked blend partners follow the same rule: a clip that is gone must not
     // keep a second decode alive.
@@ -421,66 +518,66 @@ export class PlaybackCore {
   private syncMedia(t: number, forceSeek = false): void {
     const doc = this.opts.getDoc()
     this.releaseMissingClips()
-    for (const track of doc.project.tracks) {
+    for (const { clip, track, offset, ancestors } of this.activeClipList(doc)) {
       if (track.kind === 'text') continue
-      for (const clip of track.clips) {
-        const asset = findMedia(doc, clip.mediaId)
-        // Restored sessions keep assets without a URL ("missing" until
-        // relinked). Elements for them are pure noise: error events, autoplay
-        // attempts on an empty source, "playing" elements that can never show
-        // or sound anything. Skip them entirely, via the same test
-        // releaseMissingClips uses above, so a clip this loop refuses to
-        // touch has always just had its element released.
-        if (!mediaPlayable(asset)) continue
-        const active = t >= clip.start && t < clip.start + clip.duration
-        const el = this.pool.get(clip, asset, this.mediaUrl(asset))
-        // Clamped into the asset: a ramp may over-consume its source, and the
-        // excess freezes on the last readable frame (mp4.ts clamps identically).
-        const expected = clampSourceTime(this.sourceTime(clip, t), asset)
+      const asset = findMedia(doc, clip.mediaId)
+      // Restored sessions keep assets without a URL ("missing" until
+      // relinked). Elements for them are pure noise: error events, autoplay
+      // attempts on an empty source, "playing" elements that can never show
+      // or sound anything. Skip them entirely, via the same test
+      // releaseMissingClips uses above, so a clip this loop refuses to
+      // touch has always just had its element released. A compound container
+      // (no media) falls through here too.
+      if (!mediaPlayable(asset)) continue
+      const start = offset + clip.start
+      const active = withinAncestorWindows(t, start, start + clip.duration, ancestors)
+      const el = this.pool.get(clip, asset, this.mediaUrl(asset))
+      // Clamped into the asset: a ramp may over-consume its source, and the
+      // excess freezes on the last readable frame (mp4.ts clamps identically).
+      const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
 
-        if (active) {
-          // A pending seek must finish before the element is touched again. An
-          // interrupted seek restarts its decode, so a loop of interrupted
-          // seeks never yields a frame (black picture, no audio) even though
-          // the playhead keeps advancing. `seeking` covers real browsers; the
-          // map also carries fakes that never clear the flag. Inactive clips
-          // still fall through to the pause below.
-          if (this.trackingSeek(el)) continue
+      if (active) {
+        // A pending seek must finish before the element is touched again. An
+        // interrupted seek restarts its decode, so a loop of interrupted
+        // seeks never yields a frame (black picture, no audio) even though
+        // the playhead keeps advancing. `seeking` covers real browsers; the
+        // map also carries fakes that never clear the flag. Inactive clips
+        // still fall through to the pause below.
+        if (this.trackingSeek(el)) continue
 
-          if (clip.reverse || hasTimeScaleRamp(clip)) {
-            // Two cases park the element and seek to the exact source position
-            // every tick (stepped preview): a reversed clip cannot play
-            // backwards in realtime, and a ramped clip's source position is a
-            // curve integral that a constant playbackRate cannot follow (the
-            // element would drift up to DRIFT_THRESHOLD behind the ramp, which
-            // reads as the wrong speed for seconds). A flat curve is NOT
-            // parked: its constant rate is applied below like a plain speed.
-            // Neither case writes the curve into playbackRate; reverse's seek
-            // walks backwards as the playhead advances.
-            if (!el.paused) el.pause()
-            if (forceSeek || Math.abs(el.currentTime - expected) > 1 / 60) {
-              this.seekElement(el, expected)
-            }
-          } else if (el.paused) {
+        if (clip.reverse || hasTimeScaleRamp(clip)) {
+          // Two cases park the element and seek to the exact source position
+          // every tick (stepped preview): a reversed clip cannot play
+          // backwards in realtime, and a ramped clip's source position is a
+          // curve integral that a constant playbackRate cannot follow (the
+          // element would drift up to DRIFT_THRESHOLD behind the ramp, which
+          // reads as the wrong speed for seconds). A flat curve is NOT
+          // parked: its constant rate is applied below like a plain speed.
+          // Neither case writes the curve into playbackRate; reverse's seek
+          // walks backwards as the playhead advances.
+          if (!el.paused) el.pause()
+          if (forceSeek || Math.abs(el.currentTime - expected) > 1 / 60) {
             this.seekElement(el, expected)
-            el.playbackRate = constantRateOf(clip)
-            void el.play().catch(() => undefined)
-          } else if (forceSeek || Math.abs(el.currentTime - expected) > DRIFT_THRESHOLD) {
-            this.seekElement(el, expected)
-            // A speed edit while the clip already plays must reach the element
-            // without a pause first (reversed clips stay stepped).
-            applyPlaybackRate(el, clip)
-          } else {
-            applyPlaybackRate(el, clip)
           }
-          const gain = this.computeGain(doc, track, clip, t)
-          this.applyGain(clip.id, el, gain, clip)
-        } else if (!el.paused) {
-          el.pause()
-          this.endSeek(el)
+        } else if (el.paused) {
+          this.seekElement(el, expected)
+          el.playbackRate = constantRateOf(clip)
+          void el.play().catch(() => undefined)
+        } else if (forceSeek || Math.abs(el.currentTime - expected) > DRIFT_THRESHOLD) {
+          this.seekElement(el, expected)
+          // A speed edit while the clip already plays must reach the element
+          // without a pause first (reversed clips stay stepped).
+          applyPlaybackRate(el, clip)
+        } else {
+          applyPlaybackRate(el, clip)
         }
-        this.syncBlendElement(clip, asset, t, active, forceSeek)
+        const gain = this.computeGain(doc, track, clip, t, offset, ancestors)
+        this.applyGain(clip.id, el, gain, clip)
+      } else if (!el.paused) {
+        el.pause()
+        this.endSeek(el)
       }
+      this.syncBlendElement(clip, asset, t, active, forceSeek, offset)
     }
   }
 
@@ -501,8 +598,14 @@ export class PlaybackCore {
     t: number,
     active: boolean,
     forceSeek: boolean,
+    offset = 0,
   ): void {
-    const partner = blendPartnerTime(clip, t - clip.start, asset, this.opts.getDoc().project.fps)
+    const partner = blendPartnerTime(
+      clip,
+      t - offset - clip.start,
+      asset,
+      this.opts.getDoc().project.fps,
+    )
     if (partner === undefined) {
       this.pool.releaseNext(clip.id)
       return
@@ -574,10 +677,9 @@ export class PlaybackCore {
     clip: Clip,
     primary: HTMLMediaElement,
     asset: MediaAsset,
-    t: number,
+    local: number,
   ): FrameBlendSource | undefined {
     const { fps } = this.opts.getDoc().project
-    const local = t - clip.start
     const partnerTime = blendPartnerTime(clip, local, asset, fps)
     if (partnerTime === undefined) return undefined
     const partner = this.pool.peekNext(clip.id)
@@ -588,7 +690,7 @@ export class PlaybackCore {
     const a = this.presentedTime(primary, primary.currentTime)
     const b = this.presentedTime(partner, clampSourceTime(partnerTime, asset))
     if (a === undefined || b === undefined) return undefined
-    const weight = blendWeight(this.sourceTime(clip, t), a, b)
+    const weight = blendWeight(sourceTimeAt(clip, local), a, b)
     // Strictly inside (0, 1): the ends reduce to a single frame, and the export
     // skips the pair there too.
     if (!(weight > 0 && weight < 1)) return undefined
@@ -605,9 +707,11 @@ export class PlaybackCore {
    * element on the frame the read falls in (a step of one output frame always
    * crosses it) while a sub-frame scrub jitter still does not restart a decode.
    */
-  private stillSeekEps(clip: Clip, t: number, fps: number): number {
+  private stillSeekEps(clip: Clip, t: number, fps: number, offset = 0): number {
     const step = 1 / Math.max(1, fps)
-    const perFrame = Math.abs(this.sourceTime(clip, t + step) - this.sourceTime(clip, t))
+    const perFrame = Math.abs(
+      this.sourceTime(clip, t + step, offset) - this.sourceTime(clip, t, offset),
+    )
     return Math.min(0.02, perFrame / 2)
   }
 
@@ -671,8 +775,15 @@ export class PlaybackCore {
   }
 
   /** volume curve (animated or static gain) × clip mute × track mute × crossfade alpha; reversed clips are silent. */
-  private computeGain(doc: Doc, track: Track, clip: Clip, t: number): number {
-    const local = t - clip.start
+  private computeGain(
+    doc: Doc,
+    track: Track,
+    clip: Clip,
+    t: number,
+    offset = 0,
+    ancestors: { clip: Clip; track: Track; offset: number }[] = [],
+  ): number {
+    const local = t - offset - clip.start
     let gain = animatedValue(clip, 'volume', local)
     // A/V pairs: the audio twin is the group's sole sound carrier. The video
     // part keeps PLAYING (its element feeds the compositor frames) but its
@@ -695,17 +806,14 @@ export class PlaybackCore {
       return 0
     }
 
-    // Crossfade audio ramp when inside a transition span on this track.
-    const clips = [...track.clips].sort((a, b) => a.start - b.start)
-    for (let i = 0; i < clips.length - 1; i++) {
-      const a = clips[i]
-      const b = clips[i + 1]
-      if (!a.transitionOut) continue
-      const span = getTransitionSpan(a, b)
-      if (!span || t < span.start || t > span.end) continue
-      const p = (t - span.start) / Math.max(1e-9, span.duration)
-      if (clip.id === a.id) gain *= 1 - p
-      else if (clip.id === b.id) gain *= p
+    // Crossfade audio ramp on this clip's own track (sequence-local span).
+    gain *= crossfadeFactor(track, clip, t - offset)
+    // Every enclosing compound container applies its gain, mute, volume curve
+    // and crossfade ONCE to the nested mix (its own track and local clock).
+    for (const ancestor of ancestors) {
+      if (ancestor.clip.muted || ancestor.track.muted) return 0
+      gain *= animatedValue(ancestor.clip, 'volume', t - ancestor.offset - ancestor.clip.start)
+      gain *= crossfadeFactor(ancestor.track, ancestor.clip, t - ancestor.offset)
     }
     return clamp(gain, 0, 2)
   }
@@ -810,17 +918,20 @@ export class PlaybackCore {
 
   private render(t: number): void {
     if (!this.ctx2d) return
+    const doc = this.opts.getDoc()
     drawFrame({
       ctx: this.ctx2d,
-      doc: this.opts.getDoc(),
+      doc,
       time: t,
       // The frame time is threaded through, never read back off the engine, so
       // one draw is internally consistent: the compositor, the still-frame
       // resolver and the blend pair all use the time this render was asked for.
       // A landing seek asks for the CURRENT playhead (see drawStill), never the
       // time its own seek was issued for, so a superseded seek cannot repaint a
-      // stale frame over a newer one.
-      resolve: (clip) => this.resolveClip(clip, t),
+      // stale frame over a newer one. The compositor hands the resolver each
+      // clip's own LOCAL time, so a nested clip reads its sequence clock.
+      resolve: (clip, local) => this.resolveClip(clip, local),
+      tracks: this.activeTracks(doc),
     })
   }
 
@@ -834,65 +945,66 @@ export class PlaybackCore {
     // pass runs here too: a clip deleted while paused must not leave its
     // parked blend element holding a decode for the rest of the session.
     this.releaseMissingClips()
-    for (const track of doc.project.tracks) {
+    for (const { clip, track, offset, ancestors } of this.activeClipList(doc)) {
       if (track.kind === 'text') continue
-      for (const clip of track.clips) {
-        const asset = findMedia(doc, clip.mediaId)
-        if (!asset || asset.kind !== 'video') continue
-        // Missing assets have no URL: pool.get would materialize a phantom
-        // <video src=""> (decode error noise) for a still frame that can
-        // never render. Same skip rule as syncMedia.
-        if (asset.missing || !asset.url) continue
-        const active = t >= clip.start && t < clip.start + clip.duration
-        if (!active) continue
-        const el = this.pool.get(clip, asset, this.mediaUrl(asset))
-        // Clamped into the asset: a ramp may over-consume its source, and the
-        // excess freezes on the last readable frame (mp4.ts clamps identically).
-        const expected = clampSourceTime(this.sourceTime(clip, t), asset)
-        if (Math.abs(el.currentTime - expected) > this.stillSeekEps(clip, t, doc.project.fps)) {
-          try {
-            el.currentTime = parkedTarget(expected)
-          } catch {
-            // ignore
-          }
-          el.addEventListener(
-            'seeked',
-            () => {
-              // this.time, not t: a seek superseded by a later one still fires
-              // its listener, and repainting the captured t would put a stale
-              // frame back on screen after the newer seek already drew.
-              if (!this.playingState) this.render(this.time)
-            },
-            { once: true },
-          )
+      const asset = findMedia(doc, clip.mediaId)
+      if (!asset || asset.kind !== 'video') continue
+      // Missing assets have no URL: pool.get would materialize a phantom
+      // <video src=""> (decode error noise) for a still frame that can
+      // never render. Same skip rule as syncMedia.
+      if (asset.missing || !asset.url) continue
+      const start = offset + clip.start
+      const active = withinAncestorWindows(t, start, start + clip.duration, ancestors)
+      if (!active) continue
+      const el = this.pool.get(clip, asset, this.mediaUrl(asset))
+      // Clamped into the asset: a ramp may over-consume its source, and the
+      // excess freezes on the last readable frame (mp4.ts clamps identically).
+      const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
+      if (
+        Math.abs(el.currentTime - expected) > this.stillSeekEps(clip, t, doc.project.fps, offset)
+      ) {
+        try {
+          el.currentTime = parkedTarget(expected)
+        } catch {
+          // ignore
         }
-        // The blend partner is parked on its own frame here too, so a still
-        // frame blends exactly like a playing one. Its seek landing has to
-        // redraw: until it does, the pair falls back to the single frame.
-        const partner = blendPartnerTime(clip, t - clip.start, asset, doc.project.fps)
-        if (partner === undefined) {
-          this.pool.releaseNext(clip.id)
-          continue
+        el.addEventListener(
+          'seeked',
+          () => {
+            // this.time, not t: a seek superseded by a later one still fires
+            // its listener, and repainting the captured t would put a stale
+            // frame back on screen after the newer seek already drew.
+            if (!this.playingState) this.render(this.time)
+          },
+          { once: true },
+        )
+      }
+      // The blend partner is parked on its own frame here too, so a still
+      // frame blends exactly like a playing one. Its seek landing has to
+      // redraw: until it does, the pair falls back to the single frame.
+      const partner = blendPartnerTime(clip, t - offset - clip.start, asset, doc.project.fps)
+      if (partner === undefined) {
+        this.pool.releaseNext(clip.id)
+        continue
+      }
+      const next = this.pool.getNext(clip, asset, this.mediaUrl(asset))
+      if (!next) continue
+      this.watchPresentedFrames(next)
+      const target = clampSourceTime(partner, asset)
+      if (Math.abs(next.currentTime - target) > PARTNER_SEEK_EPS) {
+        try {
+          next.currentTime = parkedTarget(target)
+        } catch {
+          // ignore
         }
-        const next = this.pool.getNext(clip, asset, this.mediaUrl(asset))
-        if (!next) continue
-        this.watchPresentedFrames(next)
-        const target = clampSourceTime(partner, asset)
-        if (Math.abs(next.currentTime - target) > PARTNER_SEEK_EPS) {
-          try {
-            next.currentTime = parkedTarget(target)
-          } catch {
-            // ignore
-          }
-          next.addEventListener(
-            'seeked',
-            () => {
-              // Same rule as the primary element above.
-              if (!this.playingState) this.render(this.time)
-            },
-            { once: true },
-          )
-        }
+        next.addEventListener(
+          'seeked',
+          () => {
+            // Same rule as the primary element above.
+            if (!this.playingState) this.render(this.time)
+          },
+          { once: true },
+        )
       }
     }
     this.render(t)
@@ -900,7 +1012,7 @@ export class PlaybackCore {
 
   private resolveClip(
     clip: Clip,
-    t: number,
+    local: number,
   ):
     | { asset: MediaAsset; el?: HTMLVideoElement | HTMLImageElement; blend?: FrameBlendSource }
     | undefined {
@@ -930,7 +1042,7 @@ export class PlaybackCore {
       // Sub-frame-rate reads hand the compositor the parked partner as well, so
       // the monitor blends the pair the exporter blends instead of holding a
       // source frame for two output frames.
-      return { asset, el, blend: this.blendFor(clip, el, asset, t) }
+      return { asset, el, blend: this.blendFor(clip, el, asset, local) }
     }
     return { asset } // audio-only
   }

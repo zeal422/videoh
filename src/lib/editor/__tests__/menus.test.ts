@@ -65,8 +65,11 @@ function baseCtx(overrides: Partial<MenuContext> = {}): MenuContext {
     canPaste: false,
     selectionLinked: false,
     canLink: false,
+    canCreateCompound: false,
     hasMarkers: false,
     hasSelectedMarker: false,
+    // The base context is the project root, where Add Marker is always possible.
+    canAddMarker: true,
     snapEnabled: true,
     proxiesEnabled: false,
     panelHidden: { media: false, preview: false, source: false, inspector: false, timeline: false },

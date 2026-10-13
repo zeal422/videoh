@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { EditorShell } from '@/components/editor/EditorShell'
@@ -115,5 +115,30 @@ describe('EditorShell dangling-gesture safety net', () => {
     fireEvent(window, new Event('blur'))
     expect(isTransientActive()).toBe(true)
     useEditorStore.getState().cancelTransient()
+  })
+})
+
+describe('preview active-sequence reset (0.8.1)', () => {
+  it('leaves the playhead alone on mount and resets it on a path change', () => {
+    const doc = useEditorStore.getState().doc
+    const vTrack = doc.project.tracks.find((t) => t.kind === 'video')!
+    vTrack.clips.push({ id: 'rootA', sequenceId: 'A', start: 0, duration: 10, inPoint: 0 })
+    doc.project.sequences = [
+      { id: 'A', name: 'A', tracks: [{ id: 'ta', kind: 'video', name: 'V1', clips: [] }] },
+    ]
+    useEditorStore.setState({ doc })
+    // Set the playhead BEFORE mounting, so the assertion below actually detects
+    // any mount-time reset instead of restating a value set after mount.
+    useEditorStore.getState().setPlayhead(5)
+    expect(useEditorStore.getState().playhead).toBe(5)
+
+    render(<EditorShell />)
+    // Mounting the preview must not clobber a live playhead.
+    expect(useEditorStore.getState().playhead).toBe(5)
+
+    // Opening the child sequence resets the playhead to the new clock's start.
+    act(() => useEditorStore.getState().setActiveSequencePath(['A']))
+    expect(useEditorStore.getState().activeSequencePath).toEqual(['A'])
+    expect(useEditorStore.getState().playhead).toBe(0)
   })
 })

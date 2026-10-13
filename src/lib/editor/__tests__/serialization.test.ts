@@ -73,9 +73,9 @@ describe('serializeDoc', () => {
     expect(json.media[0].waveformPeaks).toEqual([0.1, 0.5, 0.9])
     expect(json.media[0].thumbnail).toBeTruthy()
     // Pin the WIRE value, not the constant serializeDoc itself stamps: the
-    // round-trip contract is "this text is version 2", and a literal here
+    // round-trip contract is "this text is version 4", and a literal here
     // notices a silent constant change instead of restating it.
-    expect(json.version).toBe(3)
+    expect(json.version).toBe(4)
     expect(json.project.tracks[0].clips[0].transitionOut).toEqual({
       type: 'crossfade',
       duration: 0.5,
@@ -397,7 +397,7 @@ describe('marker serialization (0.5.5)', () => {
     doc.project.luts = [lut]
     doc.project.tracks[0].clips[0].lutId = 'lut_fixed'
     const json = serializeDoc(doc)
-    expect(json.version).toBe(3)
+    expect(json.version).toBe(4)
     expect(json.project.luts).toEqual([lut])
     const back = deserializeDoc(json)
     expect(back.doc.project.luts).toEqual([lut])

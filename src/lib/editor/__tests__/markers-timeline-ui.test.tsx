@@ -418,10 +418,10 @@ describe('static-source locks (stacking, mount points)', () => {
   // markers-keyboard.test.tsx through the real window listener; a static
   // string check here would pass against a wrong mapping, so there is none.
 
-  it('the schema is v3 and hydrates marker arrays', () => {
-    // v3 added the LUT library (0.7.0); the literal is pinned on purpose, so a
-    // silent version change is noticed instead of restated.
-    expect(serialization).toContain('SERIALIZATION_VERSION = 3')
+  it('the schema is v4 and hydrates marker arrays', () => {
+    // v4 added compound-clip sequences (0.8.1); the literal is pinned on
+    // purpose, so a silent version change is noticed instead of restated.
+    expect(serialization).toContain('SERIALIZATION_VERSION = 4')
     expect(serialization).toContain('function hydrateMarkers')
   })
 

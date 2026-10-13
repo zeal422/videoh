@@ -1,6 +1,6 @@
 import { MIN_CLIP_DURATION, MIN_SPLIT_HEADROOM } from './constants'
 import type { EditorCommand } from './commands'
-import { findMedia, uid } from './factories'
+import { findClip, findMedia, sequenceTracks, uid } from './factories'
 import { linkedClips } from './links'
 import { clamp } from './time'
 import { sourceConsumption } from './trim'
@@ -134,9 +134,11 @@ export function planInsert(
   laneIds: readonly string[],
   at: number,
   span: number,
+  sequenceId?: string,
 ): PlacementPlan {
   const width = normalizePlacementSpan(span)
   if (width === null) return { commands: null, refusal: 'span' }
+  const tracks = sequenceTracks(doc, sequenceId)
 
   // Fixed point: lanes grow through link groups of operated clips, while
   // headroom fallbacks exclude their whole group from operating. Both sets
@@ -147,7 +149,7 @@ export function planInsert(
   while (changed) {
     changed = false
     for (const laneId of affected) {
-      const track = doc.project.tracks.find((t) => t.id === laneId)
+      const track = tracks.find((t) => t.id === laneId)
       if (!track) continue
       for (const clip of track.clips) {
         if (excluded.has(groupKey(clip))) continue
@@ -171,7 +173,7 @@ export function planInsert(
 
   const commands: EditorCommand[] = []
   const rightLinkByGroup = new Map<string, string>()
-  for (const track of doc.project.tracks) {
+  for (const track of tracks) {
     if (!affected.has(track.id)) continue
     for (const clip of track.clips) {
       if (excluded.has(groupKey(clip))) continue
@@ -225,10 +227,12 @@ export function planOverwrite(
   laneIds: readonly string[],
   at: number,
   span: number,
+  sequenceId?: string,
 ): PlacementPlan {
   const width = normalizePlacementSpan(span)
   if (width === null) return { commands: null, refusal: 'span' }
   const end = at + width
+  const tracks = sequenceTracks(doc, sequenceId)
 
   // Affected lanes: the placement lanes plus every lane holding a member of a
   // group whose window overlaps the edit (a trimmed/deleted/split half drags
@@ -238,7 +242,7 @@ export function planOverwrite(
   while (changed) {
     changed = false
     for (const laneId of affected) {
-      const track = doc.project.tracks.find((t) => t.id === laneId)
+      const track = tracks.find((t) => t.id === laneId)
       if (!track) continue
       for (const clip of track.clips) {
         if (!overlaps(clip, at, end)) continue
@@ -255,7 +259,7 @@ export function planOverwrite(
 
   const commands: EditorCommand[] = []
   const rightLinkByGroup = new Map<string, string>()
-  for (const track of doc.project.tracks) {
+  for (const track of tracks) {
     if (!affected.has(track.id)) continue
     for (const clip of track.clips) {
       if (!overlaps(clip, at, end)) continue
@@ -403,8 +407,5 @@ function groupKey(clip: Clip): string {
 
 /** The id of the lane a clip currently lives on, if any. */
 function laneIdOf(doc: Doc, clipId: string): string | undefined {
-  for (const track of doc.project.tracks) {
-    if (track.clips.some((c) => c.id === clipId)) return track.id
-  }
-  return undefined
+  return findClip(doc, clipId)?.track.id
 }

@@ -323,10 +323,26 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
   Linux and Firefox), so the file is an MP4 with a correct duration.
 - The dialog shows progress, supports cancel, previews the result (`export-result-video`), and
   downloads `<project name>.mp4`. On browsers without WebCodecs it disables itself and says why.
+- `Export to file` (Chromium/Edge only, behind a `showSaveFilePicker` probe) streams the same MP4
+  straight to a file the user picks, through a `chunked: true` `StreamTarget`; the destination is
+  committed only after the muxer finalizes and aborted on cancel or any failure, and the result view
+  shows the saved name and bytes. The dialog also shows a size estimate and nudges to it past ~100 MB.
 - Export runs offline (no realtime capture) and does not need tab focus; wall time tracks source
   decode speed. HEVC and ProRes are deliberately not offered: ProRes has no shipping browser
   `VideoEncoder`, and HEVC is left out on value grounds (an encoder exists, and a probe could gate it
   safely); see [README](../README.md).
+
+## Proxies
+
+- A video over 1920 px on its long edge can be transcoded to a session lower-resolution A/V stand-in
+  (`View > Use Proxies`, the Media bin's build action, or the import prompt). The pure `proxy.ts`
+  picks the dimensions (even, long edge capped at 1280) and the AVC bitrate; `media/proxies.ts` builds
+  the MP4 with the mediabunny stack, preserving each source frame's timestamp and duration.
+- The proxy carries the source's audio: the demuxed track decides, and a build that cannot decode it
+  fails rather than shipping a silent proxy. The export always reads the original.
+- While proxies are on, the media pool, the preview engine and the Source monitor resolve the effective
+  URL, so a toggle or a finished build reroutes already-mounted elements without losing the source
+  playhead. The URLs are session-only and revoked on relink, removal, File > New and project open.
 
 ## Frame blending at sub-frame rates (both render paths)
 
@@ -352,9 +368,29 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
   shared filter string from `color.ts`, the shared 3D pass), and this closes the last one: a slowed
   clip looks the same in the program monitor and in the file.
 
+## Compound clips
+
+1. Select one or more clips on a video lane, then `Sequence > Create Compound Clip` (or the clip
+   context menu). `commandsToCreateCompoundClip` builds one `createCompoundClip` command; the command
+   verifies the selection is in one sequence, guards the cycle and depth limits, creates a new
+   `Project.sequences` entry from the selected clips (rebased to local 0), removes the originals, and
+   places the container on the selection's video lane (or the first video lane for an audio/text-only
+   selection). One undo step.
+2. Double-click the container to open its sequence; the timeline and preview switch to that sequence's
+   tracks and a breadcrumb appears above the lanes. Click a crumb to jump back; `Project` returns to the
+   root.
+3. Editing inside a sequence is the normal edit set, scoped to that sequence's lanes. Deleting the last
+   clip on a nested lane prunes the lane, EXCEPT when it is the sequence's only lane: at least one lane
+   always survives (the same rule the root has), so a one-lane sequence keeps its lane after its last
+   clip goes. Deleting the last container of a sequence prunes the sequence (and any descendants it
+   alone reached) in the same committed history entry, so undo restores it.
+4. The preview composites a compound as a group and mixes its audio through the container's gain/mute/
+   volume curve; the export does the same, starting from the project root and never consulting the open
+   path.
+
 ## Save, load, autosave, restore
 
-- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 3; versions 1 and 2 still load) and
+- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 4; versions 1, 2 and 3 still load) and
   downloads it; object URLs are stripped and never persisted.
 - **Open** hydrates every asset with `missing: true`. Bundled samples then refetch themselves
   (`hydrateSampleMedia(doc)`), which the restore path shares: their bytes are the app's own. The merge

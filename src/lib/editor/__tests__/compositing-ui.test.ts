@@ -101,7 +101,7 @@ describe('drop-between-tracks (media → new layer at an exact z-position)', () 
     expect(commands).toMatch(/command\.atIndex !== undefined/)
     // explicit placement splices verbatim; only the default path re-sorts
     expect(commands).toMatch(/splice\(index, 0, track\)/)
-    expect(commands).toMatch(/reorderTracksConvention\(doc\)/)
+    expect(commands).toMatch(/reorderTracksConvention\(tracks\)/)
   })
 })
 
@@ -208,18 +208,24 @@ describe('A/V linked clips (Premiere-style split + unlink)', () => {
     // Clipboard (multi-selection aware).
     expect(keyboard).toMatch(/commandsToCutClips\(doc, selectedIds\)/)
     expect(keyboard).toMatch(/copyClips\(doc, selectedIds\)/)
-    expect(keyboard).toMatch(/commandsToPasteClips\(doc, playhead, store\.untargetedTracks\)/)
+    expect(keyboard).toMatch(
+      /commandsToPasteClips\(\s*doc,\s*playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
+    )
     // Tools: V selection / C razor / Escape back.
     expect(keyboard).toMatch(/setActiveTool\('razor'\)/)
     expect(keyboard).toMatch(/setActiveTool\('select'\)/)
     // Add Edit (Ctrl+K): split selection, or ALL tracks with no selection.
     expect(keyboard).toMatch(/commandsToSplitClipsAt\(doc, selectedIds, playhead\)/)
-    expect(keyboard).toMatch(/commandsToSplitAllAt\(doc, playhead\)/)
+    expect(keyboard).toMatch(
+      /commandsToSplitAllAt\(\s*doc,\s*playhead,\s*store\.activeSequencePath/,
+    )
     // S toggles snapping (Premiere), split moved to Ctrl+K.
     expect(keyboard).toMatch(/store\.toggleSnap\(\)/)
     // Delete / Shift+Delete ripple / Ctrl+L smart link-unlink toggle.
     expect(keyboard).toMatch(/commandsToDeleteClips\(doc, selectedIds\)/)
-    expect(keyboard).toMatch(/commandsToRippleDeleteClips\(doc, selectedIds\)/)
+    expect(keyboard).toMatch(
+      /commandsToRippleDeleteClips\(\s*doc,\s*selectedIds,\s*store\.activeSequencePath/,
+    )
     expect(keyboard).toMatch(/commandsToUnlinkClips\(doc, selectedIds\)/)
     expect(keyboard).toMatch(/commandsToLinkClips\(doc, selectedIds\)/)
     // Select all / deselect all.
@@ -228,8 +234,12 @@ describe('A/V linked clips (Premiere-style split + unlink)', () => {
     // Shuttle + edit points + frame steps + zoom-to-fit.
     expect(keyboard).toMatch(/playbackRef\.current\?\.play\(\)/)
     expect(keyboard).toMatch(/playbackRef\.current\?\.pause\(\)/)
-    expect(keyboard).toMatch(/nearestEditPoint\(doc, playhead, 'prev'\)/)
-    expect(keyboard).toMatch(/nearestEditPoint\(doc, playhead, 'next'\)/)
+    expect(keyboard).toMatch(
+      /nearestEditPoint\(\s*doc,\s*playhead,\s*'prev',\s*store\.activeSequencePath/,
+    )
+    expect(keyboard).toMatch(
+      /nearestEditPoint\(\s*doc,\s*playhead,\s*'next',\s*store\.activeSequencePath/,
+    )
     expect(keyboard).toMatch(/FRAME_STEPS/)
     expect(keyboard).toMatch(/'\\\\'/)
     // Mute still routes to the audio twin; G opens the gain dialog by event.
@@ -262,7 +272,7 @@ describe('track operations are reachable from the timeline UI', () => {
   })
 
   it('delete is offered but disabled for the last remaining lane', () => {
-    expect(panel).toMatch(/canDelete=\{doc\.project\.tracks\.length > 1\}/)
+    expect(panel).toMatch(/canDelete=\{tracks\.length > 1\}/)
     expect(panel).toMatch(/disabled=\{!canDelete\}/)
   })
 
@@ -369,34 +379,40 @@ describe('targeting is threaded through every lane-less placement entry point', 
   const toolbar = read('src/components/editor/Toolbar.tsx')
 
   it('paste carries the list from the keyboard, the Edit menu and the clip menu', () => {
-    expect(keyboard).toMatch(/commandsToPasteClips\(doc, playhead, store\.untargetedTracks\)/)
+    expect(keyboard).toMatch(
+      /commandsToPasteClips\(\s*doc,\s*playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
+    )
     // MenuBar wraps the call across lines at printWidth 100.
     expect(menuBar).toMatch(
-      /commandsToPasteClips\(\s*store\.doc,\s*store\.playhead,\s*store\.untargetedTracks,?\s*\)/,
+      /commandsToPasteClips\(\s*store\.doc,\s*store\.playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
     )
     expect(clipView).toMatch(
-      /commandsToPasteClips\(store\.doc, store\.playhead, store\.untargetedTracks\)/,
+      /commandsToPasteClips\(\s*store\.doc,\s*store\.playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
     )
   })
 
   it('add text carries the list from the keyboard, the Graphics menu and the toolbar', () => {
-    expect(keyboard).toMatch(/commandsToAddText\(doc, playhead, store\.untargetedTracks\)/)
-    expect(menuBar).toMatch(
-      /commandsToAddText\(store\.doc, store\.playhead, store\.untargetedTracks\)/,
+    expect(keyboard).toMatch(
+      /commandsToAddText\(\s*doc,\s*playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
     )
-    expect(toolbar).toMatch(/commandsToAddText\(doc, playhead, untargetedTracks\)/)
+    expect(menuBar).toMatch(
+      /commandsToAddText\(\s*store\.doc,\s*store\.playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
+    )
+    expect(toolbar).toMatch(
+      /commandsToAddText\(\s*doc,\s*playhead,\s*untargetedTracks,\s*activeSequencePath/,
+    )
   })
 
   it('media placement carries the list from quick-add and both drop paths', () => {
     // MediaBin passes `undefined` for trackId: quick-add has no pointed lane.
     expect(bin).toMatch(
-      /commandsToAddMedia\(\s*store\.doc,\s*asset,\s*docDuration\(store\.doc\),\s*undefined,\s*store\.untargetedTracks,?\s*\)/,
+      /commandsToAddMedia\(\s*store\.doc,\s*asset,\s*activeSequenceDuration\(store\.doc, store\.activeSequencePath\),\s*undefined,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
     )
     expect(panel).toMatch(
-      /commandsToAddMedia\(store\.doc, asset, t, track\.id, store\.untargetedTracks\)/,
+      /commandsToAddMedia\(\s*store\.doc,\s*asset,\s*t,\s*track\.id,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
     )
     expect(panel).toMatch(
-      /commandsToAddMediaInNewTrack\(store\.doc, asset, t, target\.index, store\.untargetedTracks\)/,
+      /commandsToAddMediaInNewTrack\(\s*store\.doc,\s*asset,\s*t,\s*target\.index,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
     )
   })
 })
@@ -432,7 +448,65 @@ describe('placement mode control and drop routing (0.7.2)', () => {
     expect(panel).toMatch(/placementRefusalMessage\(outcome\.refusal \?\? 'span'\)/)
     // The create-track path (edge strip) never honors the mode.
     expect(panel).toMatch(
-      /commandsToAddMediaInNewTrack\(store\.doc, asset, t, target\.index, store\.untargetedTracks\)/,
+      /commandsToAddMediaInNewTrack\(\s*store\.doc,\s*asset,\s*t,\s*target\.index,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
     )
+  })
+})
+
+describe('compound clips (0.8.1) static locks', () => {
+  it('the timeline renders the active sequence tracks and a breadcrumb', () => {
+    const panel = read('src/components/editor/timeline/TimelinePanel.tsx')
+    expect(panel).toMatch(/activeTracks\(doc, activeSequencePath\)/)
+    expect(panel).toMatch(/data-testid="sequence-breadcrumb"/)
+  })
+
+  it('a compound clip opens on double-click and wears a badge', () => {
+    const clipView = read('src/components/editor/timeline/ClipView.tsx')
+    expect(clipView).toMatch(/openSequence\(clip\.sequenceId\)/)
+    expect(clipView).toMatch(/data-testid="clip-compound-badge"/)
+  })
+
+  it('ColorFilterDefs includes clips in nested sequences', () => {
+    const defs = read('src/components/editor/ColorFilterDefs.tsx')
+    expect(defs).toMatch(/doc\.project\.sequences/)
+  })
+
+  it('the speed and reverse controls are hidden for a compound clip', () => {
+    const controls = read('src/components/editor/effect-controls/EffectControlsPanel.tsx')
+    expect(controls).toMatch(/!isText && !clip\.sequenceId && <SpeedSection/)
+  })
+
+  it('add-track dispatches carry the active sequence field', () => {
+    expect(read('src/components/editor/Toolbar.tsx')).toMatch(
+      /type: 'addTrack',[\s\S]{0,120}sequenceId/,
+    )
+    expect(read('src/components/editor/timeline/TimelinePanel.tsx')).toMatch(
+      /type: 'addTrack',[\s\S]{0,120}sequenceId/,
+    )
+  })
+
+  it('the keyboard paste reports a rejected paste instead of swallowing it', () => {
+    const keyboard = read('src/hooks/editor/useEditorKeyboard.ts')
+    const at = keyboard.lastIndexOf('commandsToPasteClips')
+    const block = keyboard.slice(at, at + 700)
+    expect(block).toMatch(/catch \(error\)/)
+    expect(block).toMatch(/title: 'Action failed'/)
+  })
+
+  it('the clip context menu passes the active path to ripple delete', () => {
+    const clipView = read('src/components/editor/timeline/ClipView.tsx')
+    expect(clipView).toMatch(
+      /commandsToRippleDeleteClips\(\s*store\.doc,\s*menuSelectionIds\(\),\s*store\.activeSequencePath/,
+    )
+  })
+
+  it('the preview redraws when the active sequence path changes, not on mount', () => {
+    const panel = read('src/components/editor/PreviewPanel.tsx')
+    expect(panel).toMatch(/const activePathKey = activeSequencePath\.join\('\/'\)/)
+    // The ref starts at the current key so the initial render leaves the
+    // playhead untouched; only a later change seeks.
+    expect(panel).toMatch(/const prevPathKeyRef = useRef\(activePathKey\)/)
+    expect(panel).toMatch(/if \(prevPathKeyRef\.current === activePathKey\) return/)
+    expect(panel).toMatch(/playbackRef\.current\?\.seek\(0\)/)
   })
 })

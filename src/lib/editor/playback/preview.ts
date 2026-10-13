@@ -19,6 +19,7 @@ export function attachPreviewEngine(canvas: HTMLCanvasElement): PlaybackControll
     canvas,
     getDoc: () => useEditorStore.getState().doc,
     resolveMediaUrl: effectiveMediaUrl,
+    getActiveSequencePath: () => useEditorStore.getState().activeSequencePath,
     onFrame: (t) => {
       const state = useEditorStore.getState()
       if (state.playhead !== t) state.setPlayhead(t)

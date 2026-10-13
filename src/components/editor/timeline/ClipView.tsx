@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   Copy,
   CopyPlus,
+  Layers,
   Link2,
   Scissors,
   Split,
@@ -13,7 +14,7 @@ import {
 } from 'lucide-react'
 import { applyCommands } from '@/lib/editor/commands'
 import { MIN_CLIP_DURATION } from '@/lib/editor/constants'
-import { findMedia } from '@/lib/editor/factories'
+import { activeTracks, findMedia, findSequence } from '@/lib/editor/factories'
 import { hasTimeScaleCurve } from '@/lib/editor/keyframes'
 import { computeSnapPoints } from '@/lib/editor/snap'
 import {
@@ -25,6 +26,7 @@ import {
 } from '@/lib/editor/clip-gesture'
 import { autoScrollStep } from '@/lib/editor/timeline-scroll'
 import {
+  commandsToCreateCompoundClip,
   commandsToDeleteClips,
   commandsToDuplicateClips,
   commandsToLinkClips,
@@ -105,6 +107,7 @@ export function ClipView({
   const isSelected = clipIsSelected(doc, selections, clip)
 
   const asset: MediaAsset | undefined = findMedia(doc, clip.mediaId)
+  const compoundSequence = clip.sequenceId ? findSequence(doc, clip.sequenceId) : undefined
   const isMedia = !!asset && asset.kind !== 'image' && track.kind !== 'text'
   const widthPx = Math.max(6, clip.duration * pxPerSec)
   const leftPx = clip.start * pxPerSec
@@ -232,7 +235,7 @@ export function ClipView({
     // the full selection in sync — same time delta, each keeps its own lane
     // unless the whole selection shifts by the same track-index offset.
     const fresh = useEditorStore.getState()
-    const tracks = fresh.doc.project.tracks
+    const tracks = activeTracks(fresh.doc, fresh.activeSequencePath)
     const trackIndexOf = (clipId: string) =>
       tracks.findIndex((t) => t.clips.some((c) => c.id === clipId))
     const selIds = fresh.selections.length > 0 ? fresh.selections : [clip.id]
@@ -387,6 +390,7 @@ export function ClipView({
     const points = computeSnapPoints(liveDoc, {
       excludeClipIds: g.mode === 'move' ? [clip.id, ...g.partners.map((p) => p.id)] : [clip.id],
       includeTimelineEnd: false,
+      activeSequencePath: useEditorStore.getState().activeSequencePath,
     })
 
     if (g.mode === 'move') {
@@ -404,7 +408,7 @@ export function ClipView({
         clientY,
         startX: g.startX,
         lanes: g.lanes,
-        tracks: liveDoc.project.tracks,
+        tracks: activeTracks(liveDoc, useEditorStore.getState().activeSequencePath),
         scale,
         snapping,
         snapPoints: points,
@@ -668,7 +672,12 @@ export function ClipView({
   const onMenuPaste = () =>
     runMenuAction(() => {
       const store = useEditorStore.getState()
-      const commands = commandsToPasteClips(store.doc, store.playhead, store.untargetedTracks)
+      const commands = commandsToPasteClips(
+        store.doc,
+        store.playhead,
+        store.untargetedTracks,
+        store.activeSequencePath[store.activeSequencePath.length - 1],
+      )
       if (!commands) return
       store.apply(commands)
     })
@@ -688,6 +697,14 @@ export function ClipView({
     runMenuAction(() => {
       const store = useEditorStore.getState()
       const commands = commandsToDuplicateClips(store.doc, menuSelectionIds())
+      if (!commands) return
+      store.apply(commands)
+    })
+
+  const onMenuCreateCompound = () =>
+    runMenuAction(() => {
+      const store = useEditorStore.getState()
+      const commands = commandsToCreateCompoundClip(store.doc, menuSelectionIds())
       if (!commands) return
       store.apply(commands)
     })
@@ -713,7 +730,11 @@ export function ClipView({
   const onMenuRippleDelete = () =>
     runMenuAction(() => {
       const store = useEditorStore.getState()
-      const commands = commandsToRippleDeleteClips(store.doc, menuSelectionIds())
+      const commands = commandsToRippleDeleteClips(
+        store.doc,
+        menuSelectionIds(),
+        store.activeSequencePath,
+      )
       if (!commands) return
       store.apply(commands)
       store.deselectAll()
@@ -763,6 +784,13 @@ export function ClipView({
           )}
           style={{ left: leftPx, width: widthPx, touchAction: 'none' }}
           onPointerDown={(e) => beginGesture(e, 'move')}
+          onDoubleClick={(e) => {
+            // Double-click a compound clip opens its sequence (Premiere-style).
+            if (clip.sequenceId) {
+              e.stopPropagation()
+              useEditorStore.getState().openSequence(clip.sequenceId)
+            }
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') useEditorStore.getState().select(clip.id)
           }}
@@ -801,16 +829,27 @@ export function ClipView({
 
           {/* label */}
           <div className="pointer-events-none absolute inset-x-1 top-0.5 flex items-center gap-1 truncate font-medium text-white/95 drop-shadow">
-            {clip.text !== undefined ? (
+            {clip.sequenceId ? (
+              <span className="truncate">{compoundSequence?.name ?? 'Compound Clip'}</span>
+            ) : clip.text !== undefined ? (
               <span className="truncate">{clip.text || '(empty text)'}</span>
             ) : (
               <span className="truncate">{asset?.name ?? 'missing media'}</span>
+            )}
+            {clip.sequenceId && (
+              <span
+                data-testid="clip-compound-badge"
+                title="Compound clip. Double-click to open"
+                className="shrink-0 rounded bg-black/40 px-1 text-[9px]"
+              >
+                COMPOUND
+              </span>
             )}
             {/* A/V link marker: this clip moves/deletes/splits with its twin */}
             {isLinked && (
               <span
                 aria-label="Linked with audio"
-                title="Linked with the audio track — right-click to unlink"
+                title="Linked with the audio track. Right-click to unlink"
                 data-testid="clip-link-badge"
                 className="shrink-0 rounded bg-black/40 p-0.5"
               >
@@ -893,6 +932,9 @@ export function ClipView({
         <ContextMenuItem data-testid="menu-duplicate" onSelect={onMenuDuplicate}>
           <CopyPlus className="mr-2 size-4" /> Duplicate
           <ContextMenuShortcut>D</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem data-testid="menu-create-compound" onSelect={onMenuCreateCompound}>
+          <Layers className="mr-2 size-4" /> Create Compound Clip
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem data-testid="menu-link" disabled={!canLink} onSelect={onMenuLink}>

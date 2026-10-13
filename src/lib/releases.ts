@@ -22,6 +22,26 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.8.1',
+    date: '2026-10-12',
+    highlights: [
+      'Compound clips: select clips and create one reusable unit that replaces them in place, then double-click to open and edit it',
+      'A compound renders as a group, so its opacity, transform and grade apply once to the whole nested result, in the preview and the export alike',
+      'Nested audio plays through every enclosing container, whose gain, mute and volume curve apply once to the nested mix',
+      'A breadcrumb shows the open sequence and jumps back to the parent; a compound can contain another compound, and a cycle is refused',
+    ],
+  },
+  {
+    version: '0.8.0',
+    date: '2026-10-12',
+    highlights: [
+      'Export to file streams the MP4 straight to disk, so a long export no longer has to fit in memory',
+      'The export dialog estimates the file size and points you to Export to file once it grows past 100 MB',
+      'Proxies: build a lighter preview copy of a heavy source and toggle View > Use Proxies for smoother playback, while the export still reads the original',
+      'The Media bin shows proxy status and builds one on demand, and toggling proxies reroutes the monitors without losing your place',
+    ],
+  },
+  {
     version: '0.7.3',
     date: '2026-10-10',
     highlights: [

@@ -41,7 +41,7 @@ import {
   commandsToSplitClipsAt,
 } from '@/lib/editor/actions'
 import { canSplitAnySelectedAt } from '@/lib/editor/links'
-import { docDuration, uid } from '@/lib/editor/factories'
+import { activeSequenceDuration, uid } from '@/lib/editor/factories'
 import { PPS_MAX, PPS_MIN } from '@/lib/editor/constants'
 import { projectFileName, serializeDoc } from '@/lib/editor/serialization'
 import { openProjectFile } from '@/lib/editor/project-io'
@@ -60,13 +60,14 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
   const activeTool = useEditorStore((s) => s.activeTool)
   const dropMode = useEditorStore((s) => s.dropMode)
   const untargetedTracks = useEditorStore((s) => s.untargetedTracks)
+  const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
   const { apply, undo, redo, toggleSnap, setPxPerSec, setActiveTool, setDropMode } =
     useEditorStore.getState()
 
   const loadInputRef = useRef<HTMLInputElement>(null)
   const [isLoading, setIsLoading] = useState(false)
 
-  const duration = docDuration(doc)
+  const duration = activeSequenceDuration(doc, activeSequencePath)
   const selectedIds = selections
   const hasSelection = selectedIds.length > 0
 
@@ -107,14 +108,22 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
 
   const addTextAtPlayhead = () => {
     try {
-      apply(commandsToAddText(doc, playhead, untargetedTracks))
+      apply(
+        commandsToAddText(
+          doc,
+          playhead,
+          untargetedTracks,
+          activeSequencePath[activeSequencePath.length - 1],
+        ),
+      )
     } catch (error) {
       showError(error)
     }
   }
 
   const addTrack = (kind: 'video' | 'audio' | 'text') => {
-    apply({ type: 'addTrack', kind, trackId: uid('track') })
+    const sequenceId = activeSequencePath[activeSequencePath.length - 1]
+    apply({ type: 'addTrack', kind, trackId: uid('track'), ...(sequenceId ? { sequenceId } : {}) })
   }
 
   const saveProject = () => {

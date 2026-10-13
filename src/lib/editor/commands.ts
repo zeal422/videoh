@@ -2,6 +2,7 @@ import {
   GAIN_MAX,
   GAIN_MIN,
   KEYFRAME_PROPERTY_BOUNDS,
+  MAX_SEQUENCE_DEPTH,
   MIN_CLIP_DURATION,
   MIN_SPLIT_HEADROOM,
   FPS_MAX,
@@ -28,11 +29,17 @@ import {
   docDuration,
   findClip,
   findMedia,
+  findSequence,
   findTrack,
+  findTrackIn,
+  maxSequenceDepth,
   nextClipOnTrack,
+  sequenceReachable,
+  sequenceTracks,
   uid,
 } from './factories'
 import { rehomeSegmentShapes } from './ease-segment'
+import { linkedClips } from './links'
 import { lutBudgetMessage, lutLibraryChars } from './lut'
 import { clamp } from './time'
 import {
@@ -64,6 +71,7 @@ import type {
   MediaAsset,
   Project,
   ProjectLut,
+  Sequence,
   TextStyle,
   Track,
   Transition,
@@ -108,8 +116,25 @@ export type EditorCommand =
   | { type: 'addMediaAsset'; asset: MediaAsset }
   | { type: 'removeMediaAsset'; mediaId: string }
   | { type: 'relinkMedia'; mediaId: string; patch: Partial<MediaAsset> }
+  // sequences (compound clips, 0.8.1)
+  | { type: 'addSequence'; sequence: Sequence }
+  | {
+      type: 'createCompoundClip'
+      /** The clips to fold into the compound (all in one sequence). */
+      clipIds: string[]
+      /** The video lane in the SAME sequence the container clip lands on. */
+      trackId: string
+      name?: string
+    }
   // tracks
-  | { type: 'addTrack'; kind: TrackKind; trackId?: string; atIndex?: number }
+  | {
+      type: 'addTrack'
+      kind: TrackKind
+      trackId?: string
+      atIndex?: number
+      /** Owning compound sequence; undefined = the project root. */
+      sequenceId?: string
+    }
   | { type: 'removeTrack'; trackId: string }
   | { type: 'renameTrack'; trackId: string; name: string }
   | { type: 'toggleTrackMute'; trackId: string }
@@ -230,29 +255,137 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       return
     }
 
+    case 'addSequence': {
+      const sequences = doc.project.sequences ?? (doc.project.sequences = [])
+      if (sequences.some((s) => s.id === command.sequence.id)) {
+        throw new EditorCommandError(`Sequence ${command.sequence.id} already exists`)
+      }
+      if (sequences.some((s) => s.id === doc.project.id)) {
+        throw new EditorCommandError('Sequence id collides with the project id')
+      }
+      sequences.push(structuredClone(command.sequence))
+      return
+    }
+
+    case 'createCompoundClip': {
+      if (command.clipIds.length === 0) throw new EditorCommandError('Select at least one clip')
+      const found = command.clipIds.map((id) => requireClip(doc, id))
+      // Expand through link groups: a link group is one unit, so the compound
+      // must take every member or it would split the group, which the
+      // sequence-local link policy forbids.
+      const byId = new Map<string, ReturnType<typeof requireClip>>()
+      for (const f of found) {
+        for (const member of linkedClips(doc, f.clip.id)) {
+          const m = findClip(doc, member.id)
+          if (m) byId.set(m.clip.id, m)
+        }
+      }
+      const members = [...byId.values()]
+      // The whole selection must live in ONE sequence (independent local time
+      // origins make a cross-sequence container meaningless).
+      const owner = members[0].sequenceId
+      if (members.some((f) => f.sequenceId !== owner)) {
+        throw new EditorCommandError('Cannot combine clips across sequences')
+      }
+      const dest = findTrackIn(doc, command.trackId)
+      if (!dest) throw new EditorCommandError('Unknown track')
+      if (dest.sequenceId !== owner) {
+        throw new EditorCommandError('Destination track is in another sequence')
+      }
+      if (dest.track.kind !== 'video') {
+        throw new EditorCommandError('Compound clips live on video tracks')
+      }
+      // Cycle guard: refuse when the owner is reachable from a selected
+      // compound's referenced sequence (the new edge would close a loop).
+      if (owner) {
+        for (const f of members) {
+          if (f.clip.sequenceId && sequenceReachable(doc, f.clip.sequenceId, owner)) {
+            throw new EditorCommandError('This compound would create a cycle')
+          }
+        }
+      }
+      const minStart = Math.min(...members.map((f) => f.clip.start))
+      const maxEnd = Math.max(...members.map((f) => f.clip.start + f.clip.duration))
+      const duration = maxEnd - minStart
+      if (duration < MIN_CLIP_DURATION) throw new EditorCommandError('Selection is too short')
+
+      const selectedIds = new Set(members.map((f) => f.clip.id))
+      const ownerTracks = sequenceTracks(doc, owner)
+      // The new sequence mirrors the owner lanes that hold selected clips,
+      // rebasing every clip to local 0.
+      const seqTracks: Track[] = []
+      for (const track of ownerTracks) {
+        const clips = track.clips.filter((c) => selectedIds.has(c.id))
+        if (clips.length === 0) continue
+        seqTracks.push({
+          id: `track_${cryptoRandom()}`,
+          kind: track.kind,
+          name: track.name,
+          clips: clips.map((c) => ({ ...structuredClone(c), start: c.start - minStart })),
+        })
+      }
+      const sequenceId = `seq_${cryptoRandom()}`
+      const sequences = doc.project.sequences ?? (doc.project.sequences = [])
+      sequences.push({
+        id: sequenceId,
+        name: command.name?.trim() || 'Compound Clip',
+        tracks: seqTracks,
+      })
+      // Add the container first so the depth walk SEES the new edge, then check.
+      const compound: Clip = {
+        id: `clip_${cryptoRandom()}`,
+        sequenceId,
+        start: minStart,
+        duration,
+        inPoint: 0,
+      }
+      dest.track.clips.push(compound)
+      // Depth guard on the prospective graph (also catches a cycle that slipped
+      // past the per-clip check, since the walk returns Infinity on a loop).
+      if (maxSequenceDepth(doc) > MAX_SEQUENCE_DEPTH) {
+        sequences.pop()
+        dest.track.clips = dest.track.clips.filter((c) => c.id !== compound.id)
+        throw new EditorCommandError('Compound clip nesting is too deep')
+      }
+      // Remove the originals from the owner's lanes now that the container is in.
+      for (const track of ownerTracks) {
+        track.clips = track.clips.filter((c) => !selectedIds.has(c.id))
+      }
+      dest.track.clips.sort((a, b) => a.start - b.start)
+      return
+    }
+
     case 'addTrack': {
-      const track = newTrackForKind(doc, command.kind)
+      const owner = command.sequenceId ? findSequence(doc, command.sequenceId) : undefined
+      if (command.sequenceId && !owner) throw new EditorCommandError('Unknown sequence')
+      const tracks = owner ? owner.tracks : doc.project.tracks
+      const track = newTrackForKind(doc, command.kind, command.sequenceId)
       if (command.trackId) track.id = command.trackId
       if (command.atIndex !== undefined) {
         // Explicit z-placement (drop-between-tracks): insert exactly where the
         // user pointed. The text→video→audio convention sort is intentionally
         // skipped — explicit layering intent wins over the default ordering.
-        const index = Math.max(0, Math.min(command.atIndex, doc.project.tracks.length))
-        doc.project.tracks.splice(index, 0, track)
+        const index = Math.max(0, Math.min(command.atIndex, tracks.length))
+        tracks.splice(index, 0, track)
       } else {
-        insertTrack(doc, track)
-        reorderTracksConvention(doc)
+        insertTrack(tracks, track)
+        reorderTracksConvention(tracks)
       }
       return
     }
 
     case 'removeTrack': {
-      if (doc.project.tracks.length <= 1) {
+      const found = findTrackIn(doc, command.trackId)
+      if (!found) throw new EditorCommandError('Unknown track')
+      const tracks = found.sequenceId
+        ? (findSequence(doc, found.sequenceId)?.tracks ?? [])
+        : doc.project.tracks
+      if (tracks.length <= 1) {
         throw new EditorCommandError('Cannot remove the last track')
       }
-      const index = doc.project.tracks.findIndex((t) => t.id === command.trackId)
+      const index = tracks.findIndex((t) => t.id === command.trackId)
       if (index === -1) throw new EditorCommandError('Unknown track')
-      doc.project.tracks.splice(index, 1)
+      tracks.splice(index, 1)
       return
     }
 
@@ -280,8 +413,15 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
           `${describeClip(doc, clip)} cannot be placed on a ${track.kind} track`,
         )
       }
+      // A compound clip placed on a lane must not close a reference cycle
+      // (paste/move are the paths the create-time guard cannot see).
+      assertCompoundCycle(doc, clip, findTrackIn(doc, track.id)?.sequenceId)
       clampClipToMedia(doc, clip)
       track.clips.push(clip)
+      if (clip.sequenceId && maxSequenceDepth(doc) > MAX_SEQUENCE_DEPTH) {
+        track.clips = track.clips.filter((c) => c.id !== clip.id)
+        throw new EditorCommandError('Compound clip nesting is too deep')
+      }
       track.clips.sort((a, b) => a.start - b.start)
       return
     }
@@ -295,10 +435,23 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
           `${describeClip(doc, found.clip)} cannot be placed on a ${target.kind} track`,
         )
       }
-      found.clip.start = Math.max(0, command.start)
-      if (target.id !== found.track.id) {
-        found.track.clips = found.track.clips.filter((c) => c.id !== found.clip.id)
-        target.clips.push(found.clip)
+      const clip = found.clip
+      if (clip.sequenceId) {
+        assertCompoundCycle(doc, clip, findTrackIn(doc, target.id)?.sequenceId)
+      }
+      const oldStart = clip.start
+      const movedTrack = target.id !== found.track.id
+      clip.start = Math.max(0, command.start)
+      if (movedTrack) {
+        found.track.clips = found.track.clips.filter((c) => c.id !== clip.id)
+        target.clips.push(clip)
+        if (clip.sequenceId && maxSequenceDepth(doc) > MAX_SEQUENCE_DEPTH) {
+          target.clips = target.clips.filter((c) => c.id !== clip.id)
+          clip.start = oldStart
+          found.track.clips.push(clip)
+          found.track.clips.sort((a, b) => a.start - b.start)
+          throw new EditorCommandError('Compound clip nesting is too deep')
+        }
       }
       target.clips.sort((a, b) => a.start - b.start)
       return
@@ -656,10 +809,12 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       // NOTE: capture the group id BEFORE mutating — `clip` is itself a group
       // member, so clearing its linkId mid-loop would destroy the anchor and
       // silently skip the twin.
-      const { clip } = requireClip(doc, command.clipId)
+      const { clip, sequenceId } = requireClip(doc, command.clipId)
       const groupId = clip.linkId
       if (!groupId) throw new EditorCommandError('Clip is not linked')
-      for (const track of doc.project.tracks) {
+      // Sequence-local: a link group lives in ONE sequence, so the walk is
+      // scoped to the clip's owner.
+      for (const track of sequenceTracks(doc, sequenceId)) {
         for (const c of track.clips) {
           if (c.linkId === groupId) c.linkId = undefined
         }
@@ -675,13 +830,21 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       if (command.clipIds.length < 2) {
         throw new EditorCommandError('Linking needs at least two clips')
       }
-      const clips = command.clipIds.map((id) => requireClip(doc, id).clip)
+      const found = command.clipIds.map((id) => requireClip(doc, id))
+      const clips = found.map((f) => f.clip)
       if (clips.some((c) => c.text !== undefined)) {
         throw new EditorCommandError('Text clips cannot be linked')
       }
+      // Sequence-local: independent local time origins mean a cross-sequence
+      // link could never be moved safely as a unit, so it is refused.
+      const owners = new Set(found.map((f) => f.sequenceId))
+      if (owners.size > 1) {
+        throw new EditorCommandError('Cannot link clips across sequences')
+      }
+      const sequenceId = found[0].sequenceId
       const mergedGroupId = clips.find((c) => c.linkId)?.linkId ?? `link_${cryptoRandom()}`
       const oldGroupIds = new Set(clips.map((c) => c.linkId).filter((x): x is string => !!x))
-      for (const track of doc.project.tracks) {
+      for (const track of sequenceTracks(doc, sequenceId)) {
         for (const c of track.clips) {
           if (c.linkId && oldGroupIds.has(c.linkId)) c.linkId = mergedGroupId
         }
@@ -755,6 +918,7 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
 
     case 'setClipSpeed': {
       const { clip } = requireClip(doc, command.clipId)
+      if (clip.sequenceId) throw new EditorCommandError('Compound clips cannot change speed')
       if (clip.text !== undefined) throw new EditorCommandError('Text clips cannot change speed')
       const speed = clamp(command.speed, SPEED_MIN, SPEED_MAX)
       const asset = findMedia(doc, clip.mediaId)
@@ -773,6 +937,7 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
 
     case 'setClipReverse': {
       const { clip } = requireClip(doc, command.clipId)
+      if (clip.sequenceId) throw new EditorCommandError('Compound clips cannot reverse')
       if (clip.text !== undefined) throw new EditorCommandError('Text clips cannot reverse')
       clip.reverse = command.reverse
       return
@@ -1050,9 +1215,27 @@ function foundTrackId(doc: Doc, clipId: string): string {
 }
 
 function describeClip(doc: Doc, clip: Clip): string {
+  if (clip.sequenceId) return 'Compound clip'
   if (clip.text !== undefined) return 'Text'
   const asset = findMedia(doc, clip.mediaId)
   return asset ? `“${asset.name}” (${asset.kind})` : 'Clip'
+}
+
+/**
+ * Refuses placing a compound clip where it would close a reference cycle: the
+ * destination lane's owner must not be reachable from the referenced sequence.
+ * Shared by every insert/move path (addClip, moveClip) so paste and drag pay
+ * the same guard the create-time command enforces. Depth is checked separately
+ * after the mutation, because it depends on the placement.
+ */
+function assertCompoundCycle(doc: Doc, clip: Clip, owner: string | undefined): void {
+  if (!clip.sequenceId) return
+  if (!findSequence(doc, clip.sequenceId)) {
+    throw new EditorCommandError('Unknown sequence')
+  }
+  if (owner && sequenceReachable(doc, clip.sequenceId, owner)) {
+    throw new EditorCommandError('This compound would create a cycle')
+  }
 }
 
 /**
@@ -1085,28 +1268,28 @@ function clampClipToMedia(doc: Doc, clip: Clip): void {
  * The name the next new track of `kind` would get (V2, A3, …) — shared by the
  * command itself and the drop indicator's "+ V2" preview label.
  */
-export function previewTrackName(doc: Doc, kind: TrackKind): string {
-  const count = doc.project.tracks.filter((t) => t.kind === kind).length
+export function previewTrackName(doc: Doc, kind: TrackKind, sequenceId?: string): string {
+  const count = sequenceTracks(doc, sequenceId).filter((t) => t.kind === kind).length
   const prefix = kind === 'video' ? 'V' : kind === 'audio' ? 'A' : 'T'
   return `${prefix}${count + 1}`
 }
 
-function newTrackForKind(doc: Doc, kind: TrackKind) {
+function newTrackForKind(doc: Doc, kind: TrackKind, sequenceId?: string) {
   return {
     id: `track_${cryptoRandom()}`,
     kind,
-    name: previewTrackName(doc, kind),
+    name: previewTrackName(doc, kind, sequenceId),
     clips: [],
   }
 }
 
 /**
- * Re-orders tracks to the editor convention: text tracks on top, then video,
- * then audio. Stable (preserves relative order inside each group).
+ * Re-orders a sequence's tracks to the editor convention: text tracks on top,
+ * then video, then audio. Stable (preserves relative order inside each group).
  */
-function reorderTracksConvention(doc: Doc): void {
+function reorderTracksConvention(tracks: Track[]): void {
   const rank: Record<TrackKind, number> = { text: 0, video: 1, audio: 2 }
-  doc.project.tracks.sort((a, b) => rank[a.kind] - rank[b.kind])
+  tracks.sort((a, b) => rank[a.kind] - rank[b.kind])
 }
 
 /**
@@ -1115,10 +1298,10 @@ function reorderTracksConvention(doc: Doc): void {
  * on top, so fresh material lands on the higher layer by default. The
  * stable convention sort afterwards keeps this relative order.
  */
-function insertTrack(doc: Doc, track: Track): void {
-  const firstOfKind = doc.project.tracks.findIndex((t) => t.kind === track.kind)
-  if (firstOfKind === -1) doc.project.tracks.push(track)
-  else doc.project.tracks.splice(firstOfKind, 0, track)
+function insertTrack(tracks: Track[], track: Track): void {
+  const firstOfKind = tracks.findIndex((t) => t.kind === track.kind)
+  if (firstOfKind === -1) tracks.push(track)
+  else tracks.splice(firstOfKind, 0, track)
 }
 
 function cryptoRandom(): string {

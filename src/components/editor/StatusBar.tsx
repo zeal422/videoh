@@ -2,13 +2,14 @@
 
 import { Check, CloudOff, Loader2 } from 'lucide-react'
 import { useEditorStore } from '@/lib/editor/store'
-import { docDuration } from '@/lib/editor/factories'
+import { activeSequenceDuration, findClip } from '@/lib/editor/factories'
 import { formatTime } from '@/lib/editor/time'
 
 /** Bottom status bar — always pinned to the viewport bottom (app-shell footer). */
 export function StatusBar() {
   const project = useEditorStore((s) => s.doc.project)
-  const duration = useEditorStore((s) => docDuration(s.doc))
+  const doc = useEditorStore((s) => s.doc)
+  const duration = useEditorStore((s) => activeSequenceDuration(s.doc, s.activeSequencePath))
   const autosaveStatus = useEditorStore((s) => s.autosaveStatus)
   const autosavedAt = useEditorStore((s) => s.autosavedAt)
   const selections = useEditorStore((s) => s.selections)
@@ -17,10 +18,7 @@ export function StatusBar() {
   const clock = autosavedAt ? new Date(autosavedAt).toLocaleTimeString() : ''
 
   const primary = selections[0]
-  const selected =
-    primary != null
-      ? project.tracks.flatMap((t) => t.clips).find((c) => c.id === primary)
-      : undefined
+  const selected = primary != null ? findClip(doc, primary)?.clip : undefined
 
   return (
     <footer

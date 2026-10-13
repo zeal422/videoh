@@ -14,6 +14,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { commandsToDeleteMarker } from '@/lib/editor/actions'
+import { findClip } from '@/lib/editor/factories'
 import {
   clipMarkerTimelineTime,
   DEFAULT_MARKER_COLOR,
@@ -75,7 +76,7 @@ export function MarkerDialog() {
     if (editing.scope === 'sequence') {
       timeLabel = formatTime(target.time)
     } else {
-      const clip = doc.project.tracks.flatMap((t) => t.clips).find((c) => c.id === editing.clipId)
+      const clip = findClip(doc, editing.clipId)?.clip
       const timelineTime = clip ? clipMarkerTimelineTime(clip, target) : null
       timeLabel = timelineTime === null ? 'outside the clip span' : formatTime(timelineTime)
     }
