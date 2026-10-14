@@ -194,7 +194,7 @@ export type EditorCommand =
   | { type: 'setTextContent'; clipId: string; text: string }
   | { type: 'setTextStyle'; clipId: string; style: Partial<TextStyle> }
   // transitions
-  | { type: 'addTransition'; clipId: string; duration: number }
+  | { type: 'addTransition'; clipId: string; duration: number; transitionType?: Transition['type'] }
   | { type: 'removeTransition'; clipId: string }
   // markers (0.5.5)
   | { type: 'addSequenceMarker'; marker: Marker }
@@ -1059,9 +1059,19 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       if (duration < TRANSITION_MIN) {
         throw new EditorCommandError('Not enough room for a transition between these clips')
       }
-      // Pull the next clip left so the crossfade has a real overlap.
-      b.start = a.start + a.duration - duration
-      a.transitionOut = { type: 'crossfade', duration } as Transition
+      // Pull the next clip left so the transition has a real overlap —
+      // unless this re-dispatch changes nothing about the geometry. With
+      // an existing transition and an unchanged duration (a type switch),
+      // the clips stay where the user put them and only the type restamps.
+      // Duration-only re-dispatches (slider drags) keep the clip's
+      // existing type instead of resetting it to crossfade.
+      const transitionType = command.transitionType ?? a.transitionOut?.type ?? 'crossfade'
+      if (!a.transitionOut || command.duration !== a.transitionOut.duration) {
+        b.start = a.start + a.duration - duration
+        a.transitionOut = { type: transitionType, duration }
+      } else {
+        a.transitionOut = { type: transitionType, duration: a.transitionOut.duration }
+      }
       track.clips.sort((x, y) => x.start - y.start)
       return
     }

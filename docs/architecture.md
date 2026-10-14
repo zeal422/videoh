@@ -315,11 +315,13 @@ Fallbacks and edge cases:
 
 ## The crossfade model
 
-One transition type exists: `crossfade`. The model is asymmetric and deliberately
+Two transition types exist: `crossfade` and `dipToBlack` (0.8.2 adds the dip). The model is asymmetric and deliberately
 render-time-tolerant:
 
-1. **The transition lives on the outgoing clip.** `clipA.transitionOut = { type: 'crossfade', duration }`
-   means "dissolve from A into whatever follows A on the same track."
+1. **The transition lives on the outgoing clip.** `clipA.transitionOut = { type: 'crossfade' | 'dipToBlack', duration }`
+   means "dissolve (or dip through black) from A into whatever follows A on the same track." `addTransition`
+   takes an optional `transitionType` defaulting to `crossfade`, and a duration-only re-dispatch keeps the
+   clip's existing type instead of resetting it.
 2. **Overlap is real, not virtual.** `addTransition` pulls the next clip left so its head overlaps A's
    tail by exactly the (clamped) duration: `b.start = a.start + a.duration - duration`. The duration is
    clamped to `TRANSITION_MIN..TRANSITION_MAX` and to `maxTransitionDuration(a, b, aEnd)`.
@@ -327,9 +329,14 @@ render-time-tolerant:
    `overlap = a.end - b.start` and uses `min(requested, overlap)`; if the overlap disappears there is
    no transition, and later moves/trims shorten it instead of breaking it.
 4. **Rendering.** Over `[b.start, b.start + effectiveDuration]`, `transitionAlphas(span, t)` yields
-   linear complementary alphas (`aAlpha = 1 - p`, `bAlpha = p`); both are fully opaque outside the span.
-5. **Audio follows the same math.** `computeGain` multiplies the outgoing gain by `1 - p` and the
-   incoming gain by `p` inside the same span, so the video dissolve and audio ramp stay in sync.
+   linear complementary alphas for a crossfade (`aAlpha = 1 - p`, `bAlpha = p`); both are fully opaque outside the span.
+   For a dip the outgoing clip fades 1 → 0 over the first half and the incoming clip 0 → 1 over the
+   second half, so both alphas are exactly 0 at the midpoint: the pair contributes nothing and lower tracks
+   show through fully (track-pair black, not program black; at a crossfade midpoint they show through
+   the two half layers instead).
+5. **Audio follows the same math for both types.** `computeGain` multiplies the outgoing gain by `1 - p` and the
+   incoming gain by `p` inside the same span, so the video transition and audio ramp stay in sync; the dip
+   is video-only by design.
 6. **`removeTransition` only clears the flag.** The next clip keeps its overlap; visually the later clip
    wins during the overlap, which keeps undo semantics predictable.
 

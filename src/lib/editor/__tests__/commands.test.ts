@@ -1845,6 +1845,64 @@ describe('transitions', () => {
     expect(nb.start).toBe(5) // 6 - 1
   })
 
+  it('addTransition stamps the requested dip type', () => {
+    const { doc, a } = twoClips()
+    const next = applyCommand(doc, {
+      type: 'addTransition',
+      clipId: a.id,
+      duration: 1,
+      transitionType: 'dipToBlack',
+    })
+    const [na, nb] = videoTrack(next).clips
+    expect(na.transitionOut).toEqual({ type: 'dipToBlack', duration: 1 })
+    expect(nb.start).toBe(5) // 6 - 1
+  })
+
+  it('duration-only re-dispatch preserves an existing dip type', () => {
+    const { doc, a } = twoClips()
+    const dipped = applyCommand(doc, {
+      type: 'addTransition',
+      clipId: a.id,
+      duration: 1,
+      transitionType: 'dipToBlack',
+    })
+    // Slider drags dispatch duration only; the dip must survive them.
+    const next = applyCommand(dipped, {
+      type: 'addTransition',
+      clipId: a.id,
+      duration: 2,
+    })
+    expect(videoTrack(next).clips[0].transitionOut).toEqual({
+      type: 'dipToBlack',
+      duration: 2,
+    })
+  })
+
+  it('type-only re-dispatch preserves the next clip placement', () => {
+    const { doc, a, b, trackId } = twoClips()
+    const dipped = applyCommand(doc, {
+      type: 'addTransition',
+      clipId: a.id,
+      duration: 1,
+      transitionType: 'dipToBlack',
+    })
+    // Shorten the overlap without touching the stored duration, then
+    // switch the type: the clips must stay where the user put them.
+    const moved = applyCommand(dipped, { type: 'moveClip', clipId: b.id, trackId, start: 3.5 })
+    expect(videoTrack(moved).clips[1].start).toBe(3.5)
+    const next = applyCommand(moved, {
+      type: 'addTransition',
+      clipId: a.id,
+      duration: 1,
+      transitionType: 'crossfade',
+    })
+    expect(videoTrack(next).clips[1].start).toBe(3.5)
+    expect(videoTrack(next).clips[0].transitionOut).toEqual({
+      type: 'crossfade',
+      duration: 1,
+    })
+  })
+
   it('clamps duration to the shorter clip', () => {
     const { doc, a } = twoClips()
     const next = applyCommand(doc, {

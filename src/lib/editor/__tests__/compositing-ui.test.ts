@@ -55,6 +55,31 @@ describe('inspector opacity slider', () => {
   })
 })
 
+describe('timeline transition badge glyph', () => {
+  const view = read('src/components/editor/timeline/ClipView.tsx')
+
+  it('branches the badge glyph on the transition type, duration text unchanged', () => {
+    expect(view).toMatch(/prevTransition\.type === 'dipToBlack'/)
+    expect(view).toMatch(/◼/)
+    expect(view).toMatch(/⤬/)
+    expect(view).toMatch(/prevTransition\.duration\.toFixed\(1\)/)
+  })
+})
+
+describe('inspector transition picker wiring', () => {
+  // The menu itself cannot be driven in jsdom (Radix portals never mount
+  // there), so the dispatch wiring is locked here while presence and
+  // gating are locked by the InspectorPanel render tests.
+  const panel = read('src/components/editor/InspectorPanel.tsx')
+
+  it('dispatches addTransition with the chosen type and current duration', () => {
+    expect(panel).toMatch(/aria-label="Transition type"/)
+    expect(panel).toMatch(/transitionType: v as 'crossfade' \| 'dipToBlack'/)
+    expect(panel).toMatch(/<SelectItem value="crossfade">Cross dissolve<\/SelectItem>/)
+    expect(panel).toMatch(/<SelectItem value="dipToBlack">Dip to black<\/SelectItem>/)
+  })
+})
+
 describe('add track affordance (discoverable V2/V3)', () => {
   const panel = read('src/components/editor/timeline/TimelinePanel.tsx')
 

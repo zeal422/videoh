@@ -969,13 +969,13 @@ f02_trim() {
 # ————— F3 crossfade —————
 f03_crossfade() {
   click_clip 'sample-video' || { echo "f03: video clip not found" >&2; return 1; }
-  insp '[role=switch][aria-label="Enable crossfade transition"]'
-  ab find role switch click --name 'Enable crossfade transition' >/dev/null 2>&1 || {
+  insp '[role=switch][aria-label="Enable transition"]'
+  ab find role switch click --name 'Enable transition' >/dev/null 2>&1 || {
     echo "f03: switch missing, inspector switches: $(snap | grep -c switch)" >&2
     return 1
   }
   sleeps 0.5
-  snap | grep -q '"Enable crossfade transition" \[checked=true'
+  snap | grep -q '"Enable transition" \[checked=true'
 }
 
 # ————— F4 text —————

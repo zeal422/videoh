@@ -38,17 +38,27 @@ export function getTransitionSpan(a: Clip, b: Clip): TransitionSpan | null {
 }
 
 export interface TransitionAlphas {
-  /** Opacity of the outgoing clip at time t (1 → 0 across the span). */
+  /** Outgoing clip's share at time t (crossfade: 1 → 0 across the span; dip: 1 → 0 across the first half). */
   aAlpha: number
-  /** Opacity of the incoming clip at time t (0 → 1 across the span). */
+  /** Incoming clip's share at time t (crossfade: 0 → 1 across the span; dip: 0 → 1 across the second half). */
   bAlpha: number
 }
 
-/** Linear crossfade alphas at absolute time `t`. Outside the span both are 1. */
+/**
+ * Transition alphas at absolute time `t`. Outside the span both are 1.
+ * Crossfade ramps linearly across the whole span; dip-to-black fades the
+ * outgoing clip out over the first half and the incoming clip in over the
+ * second half, so both are 0 at the midpoint (track-pair black: lower
+ * tracks show through, exactly as under any transparency).
+ */
 export function transitionAlphas(span: TransitionSpan, t: number): TransitionAlphas {
   if (t <= span.start) return { aAlpha: 1, bAlpha: 0 }
   if (t >= span.end) return { aAlpha: 0, bAlpha: 1 }
   const p = (t - span.start) / Math.max(1e-9, span.duration)
+  if (span.a.transitionOut?.type === 'dipToBlack') {
+    if (p < 0.5) return { aAlpha: 1 - 2 * p, bAlpha: 0 }
+    return { aAlpha: 0, bAlpha: 2 * p - 1 }
+  }
   return { aAlpha: 1 - p, bAlpha: p }
 }
 

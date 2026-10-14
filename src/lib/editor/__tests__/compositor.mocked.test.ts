@@ -187,6 +187,61 @@ describe('compositor drawFrame (mocked 2D context)', () => {
     expect(draws[1].args[0]).toBe(eb) // incoming clip at p
   })
 
+  it('dips through black at the midpoint: neither clip draws', () => {
+    const { doc, asset } = makeDoc()
+    doc.project.tracks[0].clips.push(
+      createClip({
+        id: 'a',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        transitionOut: { type: 'dipToBlack', duration: 1 },
+      }),
+    )
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'b', mediaId: asset.id, start: 3, duration: 4, inPoint: 0 }),
+    )
+    const ea = videoEl()
+    const eb = videoEl()
+    const resolve: MediaResolver = (clip) => ({ asset, el: clip.id === 'a' ? ea : eb })
+    const ctx = createFake2DContext()
+    drawFrame({ ctx, doc, time: 3.5, resolve }) // midpoint: both alphas 0
+
+    expect(drawOps(ctx, 'drawImage')).toEqual([])
+  })
+
+  it('dip midpoint with a visible lower track draws only the lower clip', () => {
+    const { doc, asset } = makeDoc()
+    const top = createTrack('video', 1, { id: 't-top' })
+    const bottom = createTrack('video', 2, { id: 't-bottom' })
+    doc.project.tracks = [top, bottom]
+    top.clips.push(
+      createClip({
+        id: 'a',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        transitionOut: { type: 'dipToBlack', duration: 1 },
+      }),
+      createClip({ id: 'b', mediaId: asset.id, start: 3, duration: 4, inPoint: 0 }),
+    )
+    bottom.clips.push(createClip({ id: 'c', mediaId: asset.id, start: 0, duration: 8, inPoint: 0 }))
+    const els = new Map([
+      ['a', videoEl()],
+      ['b', videoEl()],
+      ['c', videoEl()],
+    ])
+    const resolve: MediaResolver = (clip) => ({ asset, el: els.get(clip.id) })
+    const ctx = createFake2DContext()
+    drawFrame({ ctx, doc, time: 3.5, resolve })
+
+    const draws = drawOps(ctx, 'drawImage')
+    expect(draws).toHaveLength(1)
+    expect(draws[0].args[0]).toBe(els.get('c'))
+  })
+
   it('renders styled multi-line text with shadow settings', () => {
     const { doc } = makeDoc()
     doc.project.tracks.unshift(createTrack('text', 1, { id: 't-text' }))

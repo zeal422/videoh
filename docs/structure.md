@@ -127,7 +127,7 @@ src/lib/editor/
 ├── lut.ts                # `.cube` parsing/storage/budget (pure) + the 3D trilinear pixel pass
 ├── frame-blend.ts        # sub-frame-rate blend math: the partner read + the pair weight BOTH render paths share
 ├── offline.ts            # offline-media detection for the monitor (pure)
-├── transition.ts         # crossfade span + alpha math
+├── transition.ts         # transition span + alpha math (crossfade, dip to black)
 ├── links.ts              # multi-selection / A/V link-group helpers
 ├── clipboard.ts          # copy / cut / paste (module memory, outside undo)
 ├── actions.ts            # multi-command UI actions (add media/text, group ops, ripple delete)
@@ -157,7 +157,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 60 test files (1189 tests) + src/lib/gate.test.ts: see testing.md
+└── __tests__/            # 60 test files (1206 tests) + src/lib/gate.test.ts: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

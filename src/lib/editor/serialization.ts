@@ -493,8 +493,9 @@ function hydrateClip(raw: Record<string, unknown>, media: MediaAsset[]): Clip {
     raw.transitionOut !== null &&
     typeof (raw.transitionOut as Record<string, unknown>).duration === 'number'
   ) {
+    const rawType = (raw.transitionOut as Record<string, unknown>).type
     clip.transitionOut = {
-      type: 'crossfade',
+      type: rawType === 'dipToBlack' ? 'dipToBlack' : 'crossfade',
       duration: (raw.transitionOut as { duration: number }).duration,
     }
   }

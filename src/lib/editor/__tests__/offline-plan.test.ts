@@ -188,6 +188,47 @@ describe('planVideoFrame', () => {
     expect(alphaB).toBeCloseTo(0.5, 5)
   })
 
+  it('dip spans fade out, hit black, then fade in', () => {
+    const a = videoClip({
+      id: 'd1',
+      start: 0,
+      duration: 4,
+      transitionOut: { type: 'dipToBlack', duration: 1 },
+    })
+    const b = videoClip({ id: 'd2', start: 3, duration: 4 })
+    const d = doc([{ kind: 'video', clips: [a, b] }], [])
+    // First half: outgoing fading, incoming not yet drawn (alpha 0 skips it).
+    const early = planVideoFrame(d, 3.25)
+    expect(early.draws.find((x) => x.clip.id === 'd1')!.alpha).toBeCloseTo(0.5, 5)
+    expect(early.draws.find((x) => x.clip.id === 'd2')).toBeUndefined()
+    // Midpoint: the pair contributes no draws at all.
+    expect(planVideoFrame(d, 3.5).draws).toEqual([])
+    // Second half: incoming fading in, outgoing gone.
+    const late = planVideoFrame(d, 3.75)
+    expect(late.draws.find((x) => x.clip.id === 'd1')).toBeUndefined()
+    expect(late.draws.find((x) => x.clip.id === 'd2')!.alpha).toBeCloseTo(0.5, 5)
+  })
+
+  it('dip midpoint with a visible lower track keeps only the lower draw', () => {
+    const a = videoClip({
+      id: 'd1',
+      start: 0,
+      duration: 4,
+      transitionOut: { type: 'dipToBlack', duration: 1 },
+    })
+    const b = videoClip({ id: 'd2', start: 3, duration: 4 })
+    const lower = videoClip({ id: 'lo', start: 0, duration: 8 })
+    const d = doc(
+      [
+        { kind: 'video', clips: [a, b] },
+        { kind: 'video', clips: [lower] },
+      ],
+      [],
+    )
+    const ids = planVideoFrame(d, 3.5).draws.map((x) => x.clip.id)
+    expect(ids).toEqual(['lo'])
+  })
+
   it('track order: bottom track draws first', () => {
     const top = videoClip({ id: 'top' })
     const bottom = videoClip({ id: 'bot' })

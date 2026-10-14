@@ -14,8 +14,10 @@ import type { Clip, Doc, MediaAsset, ProjectLut, Track } from '../types'
  *   position/scale transform and the color filter stack applied per clip
  *   (built by the shared `clipFilter` in color.ts).
  * - Text clips render their styled text (position/scale/opacity animated).
- * - Crossfades: when clip A (with transitionOut) overlaps clip B, both are
- *   drawn with complementary alpha across the transition span.
+ * - Transitions: when clip A (with transitionOut) overlaps clip B, both are
+ *   drawn across the transition span — complementary alpha for a crossfade,
+ *   out-then-in through black for a dip to black (both alphas 0 at the
+ *   midpoint, so lower tracks show through there like under any transparency).
  * - Clip `opacity` (0..1, default 1, keyframe-able) multiplies into every
  *   draw and stacks with crossfade alphas.
  * - Sub-frame-rate reads blend: a clip playing below realtime combines its
@@ -120,7 +122,7 @@ function drawTrack(
     return
   }
 
-  // Two overlapping clips: crossfade when the earlier one has a transitionOut.
+  // Two overlapping clips: transition when the earlier one has a transitionOut.
   const a = active[0]
   const b = active[1]
   const span = a.transitionOut ? getTransitionSpan(a, b) : null

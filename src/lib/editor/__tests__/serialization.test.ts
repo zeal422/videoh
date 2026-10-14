@@ -155,6 +155,26 @@ describe('deserializeDoc', () => {
     expect(doc.project.tracks[0].clips[0].mediaId).toBeUndefined()
   })
 
+  it('round-trips a dip-to-black transition', () => {
+    const data = JSON.parse(JSON.stringify(serializeDoc(makeDoc())))
+    data.project.tracks[0].clips[0].transitionOut = { type: 'dipToBlack', duration: 0.5 }
+    const { doc } = deserializeDoc(data)
+    expect(doc.project.tracks[0].clips[0].transitionOut).toEqual({
+      type: 'dipToBlack',
+      duration: 0.5,
+    })
+  })
+
+  it('falls back to crossfade for unknown transition types', () => {
+    const data = JSON.parse(JSON.stringify(serializeDoc(makeDoc())))
+    data.project.tracks[0].clips[0].transitionOut = { type: 'wipe', duration: 1 }
+    const { doc } = deserializeDoc(data)
+    expect(doc.project.tracks[0].clips[0].transitionOut).toEqual({
+      type: 'crossfade',
+      duration: 1,
+    })
+  })
+
   it('clamps hostile fps and dimensions to the command-layer bounds', () => {
     const { doc } = deserializeDoc({
       version: 1,

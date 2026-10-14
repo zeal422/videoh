@@ -53,9 +53,9 @@ export interface TextStyle {
   shadow: boolean
 }
 
-/** Only cross-dissolve is supported in 0.5.0. */
+/** Cross-dissolve or dip-to-black into the next clip (0.8.2 adds the dip). */
 export interface Transition {
-  type: 'crossfade'
+  type: 'crossfade' | 'dipToBlack'
   duration: number
 }
 

@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.8.2',
+    date: '2026-10-14',
+    highlights: [
+      'Dip to black: each transition picks Cross dissolve or Dip to black in the Inspector, beside the unchanged duration slider',
+      'The pair blacks out at the midpoint while lower tracks show through, the same layering a crossfade uses',
+      'Preview and export render the dip identically through the one shared alpha function',
+      'Project files keep working: dips round-trip, and unknown transition types read as cross dissolves',
+    ],
+  },
+  {
     version: '0.8.1',
     date: '2026-10-12',
     highlights: [

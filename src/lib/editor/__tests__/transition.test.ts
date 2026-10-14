@@ -68,6 +68,36 @@ describe('transitionAlphas', () => {
   })
 })
 
+describe('transitionAlphas for dipToBlack', () => {
+  const a = createClip({
+    id: 'a',
+    start: 0,
+    duration: 4,
+    transitionOut: { type: 'dipToBlack', duration: 1 },
+  })
+  const b = createClip({ id: 'b', start: 3, duration: 4 })
+  const span = getTransitionSpan(a, b)!
+
+  it('is fully opaque outside the span', () => {
+    expect(transitionAlphas(span, 2)).toEqual({ aAlpha: 1, bAlpha: 0 })
+    expect(transitionAlphas(span, 4.5)).toEqual({ aAlpha: 0, bAlpha: 1 })
+  })
+
+  it('fades the outgoing clip out over the first half', () => {
+    expect(transitionAlphas(span, 3)).toEqual({ aAlpha: 1, bAlpha: 0 })
+    expect(transitionAlphas(span, 3.25)).toEqual({ aAlpha: 0.5, bAlpha: 0 })
+  })
+
+  it('is exactly black at the midpoint', () => {
+    expect(transitionAlphas(span, 3.5)).toEqual({ aAlpha: 0, bAlpha: 0 })
+  })
+
+  it('fades the incoming clip in over the second half', () => {
+    expect(transitionAlphas(span, 3.75)).toEqual({ aAlpha: 0, bAlpha: 0.5 })
+    expect(transitionAlphas(span, 4)).toEqual({ aAlpha: 0, bAlpha: 1 })
+  })
+})
+
 describe('maxTransitionDuration', () => {
   it('is bounded by both durations and the available headroom to A.end', () => {
     const a = createClip({ start: 0, duration: 4 })

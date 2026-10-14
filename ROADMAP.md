@@ -5,7 +5,7 @@ questions, two sections: what has shipped (so a closed gap is not listed twice)
 and what remains, grouped by how often a working editor would feel it.
 
 Research date: September 2026 (Premiere 26.x); every status re-verified against
-the code on 2026-10-12, at 0.8.1. A gap moves to "Shipped" only once the release
+the code on 2026-10-14, at 0.8.2. A gap moves to "Shipped" only once the release
 that closed it is recorded in [CHANGELOG.md](CHANGELOG.md).
 
 The editing core is not tracked as a gap: the multi-track timeline, trim / split
@@ -18,6 +18,7 @@ Newest first. Releases before 0.5.0 are in [CHANGELOG.md](CHANGELOG.md).
 
 | Version   | What landed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **0.8.2** | Dip to black, the first Tier 3 item: a second `Transition` type picked per transition in the Inspector, fading the outgoing clip out over the first half of the span and the incoming clip in over the second half, with both alphas zero at the midpoint (lower tracks show through, as under any transparency). Audio keeps the full-span crossfade ramp for both types, and files stay at v4 with unknown transition types falling back to crossfade.                                                                                                                                                                                                                                                                                                                                                                                    |
 | **0.8.1** | Compound clips, the last Tier 2 item: select clips and create one reusable unit that replaces them in place, double-click to open its sequence, and a breadcrumb to return. The referenced sequence composites as a group (opacity, transform and grade apply once), nested audio mixes through each container gain/mute/volume curve, navigation scopes the timeline and selection to the open sequence, and serialization v4 stores the sequence graph (refusing cycles, duplicate ids, incompatible compound fields and over-deep nesting).                                                                                                                                                                                                                                                                                              |
 | **0.8.0** | Two Tier 2 items: bounded export memory (an `Export to file` action that streams the MP4 straight to disk through the File System Access API, leaving the in-memory `Download` unchanged, with a size estimate and the streamed sink committed only after finalize and aborted on any failure) and proxies (a session lower-resolution A/V stand-in for a source over 1920 px, built on demand from the Media bin or the import prompt and toggled with `View > Use Proxies`; the source's demuxed audio track decides whether audio is carried, and the export still reads the original).                                                                                                                                                                                                                                                  |
 | **0.7.3** | Panel collapse fix. The upper row becomes `source                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | preview | inspector`, because a collapsible panel in the middle of a group has its freed space land on a neighbour pinned at its own maximum, and the collapse is refused: the Source Monitor kept its full width with a strip drawn inside it, and collapsing the Inspector reopened it at 44%. The workspace store now reconciles against the layout engine's real state, so a refused collapse reverts instead of leaving a ghost strip, and both upper-row panels collapse together at `[2.5, 95, 2.5]`. |
@@ -45,8 +46,8 @@ both render paths), and the table below records how each of the five original
 gaps closed: four shipped, two cells closed as recorded non-goals. Open cells:
 none. **Tier 2 is complete:** 0.8.0 shipped bounded export memory (the streamed
 `Export to file` path) and proxies (a session lower-resolution preview stand-in),
-and 0.8.1 shipped nested sequences / compound clips. Nothing in Tier 3 has
-started.
+and 0.8.1 shipped nested sequences / compound clips. Tier 3 has started:
+0.8.2 shipped dip to black, the first of the four transition items.
 
 ### Tier 1: felt every day (complete at 0.7.0)
 
@@ -65,11 +66,11 @@ bounded export memory and proxies (0.8.0), and nested sequences / compound clips
 
 ### Tier 3: content and polish
 
-- **More transitions: wipe, slide, dip-to-black, push.** The span model in
+- **More transitions: wipe, slide, push (dip-to-black shipped at 0.8.2).** The span model in
   `transition.ts` already computes the overlap, but a wipe, slide or push also
   needs a spatial parameter (a mask or a position offset) that the model does not
-  carry, so this is real work rather than one more enum value. Dip-to-black fits
-  the existing alpha ramp and is the cheap first step.
+  carry, so this is real work rather than one more enum value. Dip-to-black fit
+  the existing alpha ramp as a second `Transition` type with split-span alphas.
 - **Effects beyond opacity:** crop, blends, chroma key, track matte, motion blur.
 - **Subtitles / captions:** a caption track plus SRT / VTT import and export. The
   web competitors (CapCut web, VEED) lead here and it matters for social cuts.

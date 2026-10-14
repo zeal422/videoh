@@ -478,16 +478,16 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
 
       {isText && <TextFields clip={clip} />}
 
-      <Section title="Transition out (cross-dissolve)">
+      <Section title="Transition out">
         {nextClip ? (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <Label htmlFor="transition" className="text-xs">
-                Crossfade to next clip
+                Transition to next clip
               </Label>
               <Switch
                 id="transition"
-                aria-label="Enable crossfade transition"
+                aria-label="Enable transition"
                 checked={!!clip.transitionOut}
                 onCheckedChange={(checked) => {
                   tryApply(() => {
@@ -506,6 +506,38 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
             </div>
             {clip.transitionOut && (
               <div>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <Label htmlFor="transition-type" className="text-xs">
+                    Type
+                  </Label>
+                  <Select
+                    value={clip.transitionOut.type}
+                    onValueChange={(v) => {
+                      const current = clip.transitionOut
+                      if (!current) return
+                      tryApply(() =>
+                        apply({
+                          type: 'addTransition',
+                          clipId: clip.id,
+                          duration: current.duration,
+                          transitionType: v as 'crossfade' | 'dipToBlack',
+                        }),
+                      )
+                    }}
+                  >
+                    <SelectTrigger
+                      id="transition-type"
+                      className="h-8 w-36"
+                      aria-label="Transition type"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="crossfade">Cross dissolve</SelectItem>
+                      <SelectItem value="dipToBlack">Dip to black</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="mb-1.5 flex items-center justify-between">
                   <Label htmlFor="transition-duration" className="text-xs">
                     Duration
@@ -539,8 +571,9 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                   }
                 />
                 <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-                  The next clip is pulled left to create the dissolve overlap. Video/audio ramp
-                  automatically during the fade.
+                  The next clip is pulled left to create the transition overlap. Cross dissolve
+                  blends the pictures; dip to black fades the pair through black while lower tracks
+                  stay visible. Video/audio ramp automatically during the fade.
                 </p>
               </div>
             )}

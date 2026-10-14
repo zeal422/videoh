@@ -1684,3 +1684,55 @@ describe('InspectorPanel LUT import', () => {
     expect(useEditorStore.getState().past).toHaveLength(0)
   })
 })
+
+describe('InspectorPanel transition picker', () => {
+  function docWithTransition(): { clipId: string } {
+    const asset = createMediaAsset({ kind: 'video', duration: 30, name: 'demo.mp4' })
+    // The section (and picker) renders only with a following clip and an
+    // existing transitionOut: nextClip gates the section, transitionOut
+    // gates the picker.
+    const a = createClip({
+      id: 'clip_ta',
+      mediaId: asset.id,
+      start: 0,
+      duration: 6,
+      transitionOut: { type: 'crossfade', duration: 0.5 },
+    })
+    const b = createClip({ id: 'clip_tb', mediaId: asset.id, start: 5.5, duration: 6 })
+    const track = createTrack('video', 1, { clips: [a as Clip, b as Clip] })
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [asset],
+    }
+    useEditorStore.setState({ doc, selection: a.id, selections: [a.id], playhead: 1 })
+    return { clipId: a.id }
+  }
+
+  // NOTE: jsdom never mounts Radix Select portals (verified: trigger goes
+  // aria-expanded with zero listbox/option nodes via pointer, keyboard,
+  // and pumped rAF alike), so the menu cannot be driven here. Presence
+  // and gating are locked here; the dispatch wiring is locked by a
+  // static-source assertion in compositing-ui.test.ts, and the real
+  // open-and-choose interaction is covered by manual UI proof.
+  it('renders the picker and a checked switch when a transition exists', () => {
+    docWithTransition()
+    render(<InspectorPanel />)
+    expect(screen.getByRole('combobox', { name: 'Transition type' })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Enable transition' })).toBeChecked()
+  })
+
+  it('hides the picker without an existing transition', () => {
+    const asset = createMediaAsset({ kind: 'video', duration: 30, name: 'demo.mp4' })
+    const a = createClip({ id: 'clip_ta', mediaId: asset.id, start: 0, duration: 6 })
+    const b = createClip({ id: 'clip_tb', mediaId: asset.id, start: 6, duration: 6 })
+    const track = createTrack('video', 1, { clips: [a as Clip, b as Clip] })
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [asset],
+    }
+    useEditorStore.setState({ doc, selection: a.id, selections: [a.id], playhead: 1 })
+    render(<InspectorPanel />)
+    expect(screen.getByRole('switch', { name: 'Enable transition' })).not.toBeChecked()
+    expect(screen.queryByRole('combobox', { name: 'Transition type' })).not.toBeInTheDocument()
+  })
+})

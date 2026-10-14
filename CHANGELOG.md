@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.2] - 2026-10-14
+
+### Added
+
+- **Dip-to-black transitions.** `Transition.type` gains `dipToBlack` beside
+  `crossfade`, and `addTransition` takes an optional `transitionType`
+  (defaulting to crossfade, so duration-only slider drags keep the clip's
+  existing type). The Inspector's transition section adds a type picker
+  beside the duration slider with neutral wording throughout, and the
+  timeline badge shows a dip glyph for dips.
+- **Split-span timing.** The outgoing clip fades out over the first half of
+  the span and the incoming clip fades in over the second half, both linear,
+  so both alphas are exactly zero at the midpoint. Zero alphas mean the pair
+  contributes nothing (track-pair black, not program black): lower tracks
+  show through fully at a dip midpoint, partially at a crossfade midpoint,
+  in the preview and the export alike, through the one shared alpha
+  function. Audio is unchanged: the full-span crossfade ramp applies to
+  both types.
+- **File compat.** The loader preserves `dipToBlack` and falls back to
+  `crossfade` for unknown or missing types, so old files load identically
+  and new files degrade gracefully in older builds. No format bump (stays
+  v4).
+
 ## [0.8.1] - 2026-10-12
 
 ### Added
