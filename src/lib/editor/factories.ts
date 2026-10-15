@@ -7,6 +7,7 @@ import type {
   MediaKind,
   Project,
   Sequence,
+  TextPreset,
   TextStyle,
   Track,
   TrackKind,
@@ -45,6 +46,110 @@ export function createTextClip(partial: Partial<Clip> = {}): Clip {
     style: createDefaultTextStyle(),
     ...partial,
   }
+}
+
+/**
+ * The Inspector's text size bounds, mirrored here so styles crossing a
+ * trust boundary into the preset library collapse into the same ranges
+ * the controls enforce (see the Size NumberField in InspectorPanel).
+ */
+export const TEXT_PRESET_FONT_MIN = 8
+export const TEXT_PRESET_FONT_MAX = 400
+
+/**
+ * Bounds a text style into the ranges the Inspector enforces (font size
+ * 8..400, position 0..1), returning a fresh object. Used wherever a style
+ * crosses into the preset library: file loads and preset saves alike, so
+ * a wild value can never sit in a preset waiting to be applied.
+ */
+export function sanitizePresetStyle(style: TextStyle): TextStyle {
+  // clamp() propagates NaN (Math.min/Math.max do), so non-finite values
+  // fall back to the defaults FIRST: a malformed command payload must not
+  // store a NaN the clamp cannot see. Every non-finite input takes the
+  // default (Infinity becomes 64 for fontSize, 0.5 for x or y) and never
+  // reaches the clamp bounds below.
+  const defaults = createDefaultTextStyle()
+  const finite = (v: number, fallback: number) => (Number.isFinite(v) ? v : fallback)
+  return {
+    ...style,
+    fontSize: clamp(
+      finite(style.fontSize, defaults.fontSize),
+      TEXT_PRESET_FONT_MIN,
+      TEXT_PRESET_FONT_MAX,
+    ),
+    x: clamp(finite(style.x, defaults.x), 0, 1),
+    y: clamp(finite(style.y, defaults.y), 0, 1),
+  }
+}
+
+/**
+ * The four built-in title presets (0.8.3): stable ids, shown above user
+ * presets, never editable or deletable. Returns a fresh list per call so
+ * callers cannot mutate the shared set.
+ */
+export function createBuiltinTextPresets(): TextPreset[] {
+  return [
+    {
+      id: 'preset_builtin_title',
+      name: 'Title',
+      style: {
+        fontSize: 96,
+        color: '#ffffff',
+        fontFamily: 'Arial, sans-serif',
+        bold: true,
+        italic: false,
+        align: 'center',
+        x: 0.5,
+        y: 0.38,
+        shadow: true,
+      },
+    },
+    {
+      id: 'preset_builtin_subtitle',
+      name: 'Subtitle',
+      style: {
+        fontSize: 48,
+        color: '#ffffff',
+        fontFamily: 'Arial, sans-serif',
+        bold: false,
+        italic: false,
+        align: 'center',
+        x: 0.5,
+        y: 0.52,
+        shadow: false,
+      },
+    },
+    {
+      id: 'preset_builtin_lower_third',
+      name: 'Lower third',
+      style: {
+        fontSize: 56,
+        color: '#ffffff',
+        fontFamily: 'Arial, sans-serif',
+        bold: true,
+        italic: false,
+        align: 'left',
+        x: 0.08,
+        y: 0.78,
+        shadow: true,
+      },
+    },
+    {
+      id: 'preset_builtin_caption',
+      name: 'Caption',
+      style: {
+        fontSize: 40,
+        color: '#ffffff',
+        fontFamily: 'Arial, sans-serif',
+        bold: false,
+        italic: false,
+        align: 'center',
+        x: 0.5,
+        y: 0.88,
+        shadow: true,
+      },
+    },
+  ]
 }
 
 export function createClip(partial: Partial<Clip> = {}): Clip {

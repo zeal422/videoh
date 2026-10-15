@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.8.3',
+    date: '2026-10-14',
+    highlights: [
+      'Title presets: save any text style as a named preset and reuse it across clips, with Title, Subtitle, Lower third and Caption built in',
+      'Apply a preset from the Inspector, or pick one straight from the Add Text button so a new title is born styled',
+      'Presets travel with the project file: they round-trip on save and load, and older projects open with an empty library',
+      'Saving or renaming to an existing name is refused, and the built-in presets cannot be renamed or deleted',
+    ],
+  },
+  {
     version: '0.8.2',
     date: '2026-10-14',
     highlights: [

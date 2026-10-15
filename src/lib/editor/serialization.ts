@@ -30,6 +30,7 @@ import {
   lutGridByteLength,
 } from './lut'
 import { applyMarkerPatch, isMarkerColor } from './markers'
+import { createBuiltinTextPresets, createDefaultTextStyle, sanitizePresetStyle } from './factories'
 import { clamp } from './time'
 import type {
   AnimStaticProperty,
@@ -45,6 +46,7 @@ import type {
   Project,
   ProjectLut,
   Sequence,
+  TextPreset,
   Track,
   TrackKind,
 } from './types'
@@ -157,6 +159,7 @@ export function deserializeDoc(data: unknown): {
   const projectDefaults = hydrateKeyframeDefaults(projectRaw.keyframeDefaults)
   const projectLuts = hydrateLuts(projectRaw.luts)
   const projectSequences = hydrateSequences(projectRaw.sequences, media)
+  const projectPresets = hydrateTextPresets(projectRaw.textPresets)
   const project: Project = {
     id: typeof projectRaw.id === 'string' ? projectRaw.id : 'proj_loaded',
     name: typeof projectRaw.name === 'string' ? projectRaw.name : 'Imported Project',
@@ -171,6 +174,7 @@ export function deserializeDoc(data: unknown): {
     ...(projectDefaults ? { keyframeDefaults: projectDefaults } : {}),
     ...(projectLuts ? { luts: projectLuts } : {}),
     ...(projectSequences ? { sequences: projectSequences } : {}),
+    ...(projectPresets ? { textPresets: projectPresets } : {}),
     tracks: hydrateTracks(projectRaw.tracks, media),
   }
 
@@ -664,6 +668,63 @@ function hydrateStyle(raw: Record<string, unknown> | undefined): Clip['style'] {
 
 function numOr(v: unknown, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback
+}
+
+/**
+ * Hydrates the project's user title presets (0.8.3), dropping broken
+ * entries. Preset ids live in their own namespace (`preset_`), so dupes
+ * are dropped here with one warning instead of refusing the file in
+ * `assertUniqueIds`. A corrupt style field falls back per-field through
+ * `hydrateStyle` and the entry is kept; only unusable entries are dropped.
+ */
+function hydrateTextPresets(raw: unknown): TextPreset[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const presets: TextPreset[] = []
+  const seen = new Set<string>()
+  // Built-in ids are reserved: a user entry reusing one would lose every
+  // lookup to the built-in (the UI resolves built-ins first). Built-in
+  // names are reserved the same way, so a loaded " Title " cannot sit
+  // beside the built-in Title and bypass the save/rename guards.
+  const builtins = createBuiltinTextPresets()
+  const builtinIds = new Set(builtins.map((p) => p.id))
+  const seenNames = new Set(builtins.map((p) => p.name.toLowerCase()))
+  let dropped = false
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) {
+      dropped = true
+      continue
+    }
+    const p = entry as Record<string, unknown>
+    // Names hydrate trimmed, so a loaded " Opener " can neither display
+    // oddly nor slip past the save/rename duplicate guards.
+    const name = typeof p.name === 'string' ? p.name.trim() : ''
+    if (typeof p.id !== 'string' || !p.id || !name) {
+      dropped = true
+      continue
+    }
+    if (seen.has(p.id) || builtinIds.has(p.id)) {
+      dropped = true
+      continue
+    }
+    if (seenNames.has(name.toLowerCase())) {
+      dropped = true
+      continue
+    }
+    seen.add(p.id)
+    seenNames.add(name.toLowerCase())
+    // hydrateStyle types as Clip['style'] (optional); at runtime it always
+    // returns the full defaulted object, and the fallback below only guards
+    // the type, reusing the one default style both call sites share.
+    const style = hydrateStyle(p.style as Record<string, unknown> | undefined)
+    // One shared bounds helper with the save path (see factories.ts), so a
+    // finite-but-wild file value collapses instead of reaching the canvas.
+    const full = sanitizePresetStyle(style ?? createDefaultTextStyle())
+    presets.push({ id: p.id, name, style: full })
+  }
+  if (dropped) {
+    console.warn('[serialization] dropped a broken title preset entry')
+  }
+  return presets.length > 0 ? presets : undefined
 }
 
 /** Builds a downloadable filename from the project name. */

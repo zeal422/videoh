@@ -112,7 +112,7 @@ src/lib/editor/
 ├── constants.ts          # all tuning constants and limits
 ├── factories.ts          # uid + create* constructors, finders, compatibility checks, sourceTimeAt
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
-├── commands.ts           # the 42 EditorCommand variants + applyCommand(s), direction-aware split spans
+├── commands.ts           # the 47 EditorCommand variants + applyCommand(s), direction-aware split spans
 ├── trim.ts               # pure trim/split math: source-fitting bisection, timeScale curve rebases
 ├── snap.ts               # snap-point computation and application
 ├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
@@ -157,7 +157,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 60 test files (1206 tests) + src/lib/gate.test.ts: see testing.md
+└── __tests__/            # 62 test files (1235 tests) + src/lib/gate.test.ts: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

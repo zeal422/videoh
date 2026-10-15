@@ -248,6 +248,9 @@ All mutations flow through 42 named commands in `src/lib/editor/commands.ts`, ap
 | `setClipColorParams`   | Set temperature and tint (clamped); a neutral 0 collapses to absent.                                                                                                                                                      |
 | `setTextContent`       | Change a text clip's content.                                                                                                                                                                                             |
 | `setTextStyle`         | Merge a partial `TextStyle` into a text clip.                                                                                                                                                                             |
+| `saveTextPreset`       | Save a named `TextStyle` into the project's preset library (empty, overlong and duplicate names rejected).                                                                                                                |
+| `renameTextPreset`     | Rename a user preset (built-in ids and duplicate names rejected).                                                                                                                                                         |
+| `deleteTextPreset`     | Remove a user preset (built-in ids rejected).                                                                                                                                                                             |
 | `addTransition`        | Add a cross-dissolve or dip-to-black transition by pulling the next clip left to overlap. The type is optional: a new transition defaults to crossfade, and omitting it on an existing transition keeps its current type. |
 | `removeTransition`     | Clear a clip's `transitionOut` (the overlap remains).                                                                                                                                                                     |
 | `addSequenceMarker`    | Add a sequence marker (time-sorted; duplicate ids rejected).                                                                                                                                                              |
@@ -335,7 +338,7 @@ bun run battery        # scripted UI battery (reuses a server already on :3000, 
 
 The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **1230 tests across 61 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **1259 tests across 63 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -413,7 +416,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 61 test files (1230 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
+│   └── __tests__/               # 63 test files (1259 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs

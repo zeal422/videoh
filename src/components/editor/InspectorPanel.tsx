@@ -12,7 +12,9 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
@@ -20,7 +22,13 @@ import { Separator } from '@/components/ui/separator'
 import { toast } from '@/hooks/use-toast'
 
 import { EditorCommandError } from '@/lib/editor/commands'
-import { findClip, findMedia, nextClipOnTrack } from '@/lib/editor/factories'
+import {
+  createBuiltinTextPresets,
+  findClip,
+  findMedia,
+  nextClipOnTrack,
+  uid,
+} from '@/lib/editor/factories'
 import { linkedAudioTwin } from '@/lib/editor/links'
 import { parseCubeLut } from '@/lib/editor/lut'
 import { formatTime } from '@/lib/editor/time'
@@ -33,7 +41,7 @@ import {
   TRANSITION_MIN,
 } from '@/lib/editor/constants'
 import { useEditorStore } from '@/lib/editor/store'
-import type { Clip, TextStyle } from '@/lib/editor/types'
+import type { Clip, TextPreset, TextStyle } from '@/lib/editor/types'
 import { useState } from 'react'
 import { EffectControlsPanel } from '@/components/editor/effect-controls/EffectControlsPanel'
 import { cn } from '@/lib/utils'
@@ -712,7 +720,164 @@ function TextFields({ clip }: { clip: Clip }) {
         </div>
       </Section>
       <Separator />
+      <TextPresetFields clip={clip} />
+      <Separator />
     </>
+  )
+}
+
+/**
+ * Title preset library (0.8.3): apply a built-in or user preset to this
+ * clip, save this clip's style under a new name, rename or delete a user
+ * preset. The only management surface (plan decision 7): it renders only
+ * with a text clip selected, so no selection means no preset UI.
+ */
+function TextPresetFields({ clip }: { clip: Clip }) {
+  const doc = useEditorStore((s) => s.doc)
+  const apply = useEditorStore((s) => s.apply)
+  const builtins = createBuiltinTextPresets()
+  const user = doc.project.textPresets ?? []
+  const [selectedId, setSelectedId] = useState<TextPreset['id']>(builtins[0].id)
+  const [saveName, setSaveName] = useState('')
+  const [renameName, setRenameName] = useState('')
+  const selected = [...builtins, ...user].find((p) => p.id === selectedId) ?? builtins[0]
+  const isUserPreset = user.some((p) => p.id === selected.id)
+
+  const showError = (error: unknown) =>
+    toast({
+      title: 'Preset failed',
+      description: error instanceof Error ? error.message : String(error),
+      variant: 'destructive',
+    })
+
+  const tryApply = (fn: () => void) => {
+    try {
+      fn()
+    } catch (error) {
+      if (error instanceof EditorCommandError) showError(error)
+      else throw error
+    }
+  }
+
+  return (
+    <Section title="Presets">
+      <div className="space-y-3">
+        <div>
+          <Label className="text-xs">Title preset</Label>
+          <Select
+            value={selected.id}
+            onValueChange={(id) => {
+              // A typed rename belongs to the preset it was typed for:
+              // switching presets with stale text would rename the wrong one.
+              setSelectedId(id)
+              setRenameName('')
+            }}
+          >
+            <SelectTrigger className="mt-1 h-8" aria-label="Title preset">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectLabel>Built-in</SelectLabel>
+                {builtins.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+              {user.length > 0 && (
+                <SelectGroup>
+                  <SelectLabel>Saved</SelectLabel>
+                  {user.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              )}
+            </SelectContent>
+          </Select>
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="w-full"
+          onClick={() =>
+            tryApply(() => apply({ type: 'setTextStyle', clipId: clip.id, style: selected.style }))
+          }
+        >
+          Apply preset
+        </Button>
+        <div>
+          <Label htmlFor="preset-save-name" className="text-xs">
+            Save current style
+          </Label>
+          <div className="mt-1 flex gap-2">
+            <Input
+              id="preset-save-name"
+              value={saveName}
+              onChange={(e) => setSaveName(e.target.value)}
+              placeholder="Preset name"
+              className="h-8"
+            />
+            <Button
+              size="sm"
+              onClick={() =>
+                tryApply(() => {
+                  if (!clip.style) throw new EditorCommandError('Not a text clip')
+                  apply({
+                    type: 'saveTextPreset',
+                    preset: { id: uid('preset'), name: saveName, style: clip.style },
+                  })
+                  setSaveName('')
+                })
+              }
+            >
+              Save
+            </Button>
+          </div>
+        </div>
+        {isUserPreset && (
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <Input
+                aria-label="Preset name"
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+                placeholder={selected.name}
+                className="h-8"
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() =>
+                  tryApply(() => {
+                    apply({ type: 'renameTextPreset', presetId: selected.id, name: renameName })
+                    setRenameName('')
+                  })
+                }
+              >
+                Rename
+              </Button>
+            </div>
+            <Button
+              size="sm"
+              variant="destructive"
+              className="w-full"
+              onClick={() =>
+                tryApply(() => {
+                  apply({ type: 'deleteTextPreset', presetId: selected.id })
+                  setSelectedId(builtins[0].id)
+                  setRenameName('')
+                })
+              }
+            >
+              Delete preset
+            </Button>
+          </div>
+        )}
+      </div>
+    </Section>
   )
 }
 

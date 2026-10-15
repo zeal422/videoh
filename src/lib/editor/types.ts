@@ -53,6 +53,13 @@ export interface TextStyle {
   shadow: boolean
 }
 
+/** A saved text style (0.8.3), applied via `setTextStyle`, never touches text. */
+export interface TextPreset {
+  id: string
+  name: string
+  style: TextStyle
+}
+
 /** Cross-dissolve or dip-to-black into the next clip (0.8.2 adds the dip). */
 export interface Transition {
   type: 'crossfade' | 'dipToBlack'
@@ -297,6 +304,12 @@ export interface Project {
    * is removed. Absent for a project with no compound clips.
    */
   sequences?: Sequence[]
+  /**
+   * The project's title preset library (0.8.3): user-saved text styles.
+   * Lives on the project (not on `Doc`) so it travels with the edit,
+   * like `luts`. Absent for a project with no saved presets.
+   */
+  textPresets?: TextPreset[]
   /** Index 0 = topmost layer. Conventional order: text tracks, video tracks, audio tracks. */
   tracks: Track[]
 }

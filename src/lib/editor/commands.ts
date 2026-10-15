@@ -37,6 +37,8 @@ import {
   sequenceReachable,
   sequenceTracks,
   uid,
+  createBuiltinTextPresets,
+  sanitizePresetStyle,
 } from './factories'
 import { rehomeSegmentShapes } from './ease-segment'
 import { linkedClips } from './links'
@@ -72,6 +74,7 @@ import type {
   Project,
   ProjectLut,
   Sequence,
+  TextPreset,
   TextStyle,
   Track,
   Transition,
@@ -193,6 +196,10 @@ export type EditorCommand =
   // text
   | { type: 'setTextContent'; clipId: string; text: string }
   | { type: 'setTextStyle'; clipId: string; style: Partial<TextStyle> }
+  // title presets (0.8.3)
+  | { type: 'saveTextPreset'; preset: TextPreset }
+  | { type: 'renameTextPreset'; presetId: string; name: string }
+  | { type: 'deleteTextPreset'; presetId: string }
   // transitions
   | { type: 'addTransition'; clipId: string; duration: number; transitionType?: Transition['type'] }
   | { type: 'removeTransition'; clipId: string }
@@ -1049,6 +1056,69 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       return
     }
 
+    case 'saveTextPreset': {
+      // The guard lives HERE, not in the Inspector: every path into the
+      // library pays the same check, and the refusal is a normal command
+      // error a caller can surface.
+      const name = normalizePresetName(command.preset.name)
+      if (!name) throw new EditorCommandError('Preset name cannot be empty')
+      if (name.length > TEXT_PRESET_NAME_MAX) {
+        throw new EditorCommandError(
+          `Preset name is too long (max ${TEXT_PRESET_NAME_MAX} characters)`,
+        )
+      }
+      const presets = doc.project.textPresets ?? (doc.project.textPresets = [])
+      if (presets.some((p) => p.id === command.preset.id)) {
+        throw new EditorCommandError(`Preset ${command.preset.id} already exists`)
+      }
+      // Built-in ids are reserved: a user entry reusing one would lose
+      // every lookup to the built-in (the UI resolves built-ins first).
+      if (createBuiltinTextPresets().some((p) => p.id === command.preset.id)) {
+        throw new EditorCommandError(`Preset id ${command.preset.id} is reserved`)
+      }
+      if (presetNameTaken(doc, name)) {
+        throw new EditorCommandError(`A preset named "${name}" already exists`)
+      }
+      // The style is normalized, not refused: it may come from a clip a
+      // file loaded with finite-but-wild values, and the preset library
+      // only ever holds appliable styles.
+      presets.push(
+        structuredClone({
+          ...command.preset,
+          name,
+          style: sanitizePresetStyle(command.preset.style),
+        }),
+      )
+      return
+    }
+
+    case 'renameTextPreset': {
+      const name = normalizePresetName(command.name)
+      if (!name) throw new EditorCommandError('Preset name cannot be empty')
+      if (name.length > TEXT_PRESET_NAME_MAX) {
+        throw new EditorCommandError(
+          `Preset name is too long (max ${TEXT_PRESET_NAME_MAX} characters)`,
+        )
+      }
+      // Built-in ids never reach the store (the UI only manages user
+      // presets), so an unknown id here covers both missing and built-in.
+      const preset = doc.project.textPresets?.find((p) => p.id === command.presetId)
+      if (!preset) throw new EditorCommandError(`Unknown preset ${command.presetId}`)
+      if (presetNameTaken(doc, name, preset.id)) {
+        throw new EditorCommandError(`A preset named "${name}" already exists`)
+      }
+      preset.name = name
+      return
+    }
+
+    case 'deleteTextPreset': {
+      const presets = doc.project.textPresets ?? []
+      const index = presets.findIndex((p) => p.id === command.presetId)
+      if (index === -1) throw new EditorCommandError(`Unknown preset ${command.presetId}`)
+      presets.splice(index, 1)
+      return
+    }
+
     case 'addTransition': {
       const { clip: a, track } = requireClip(doc, command.clipId)
       const b = nextClipOnTrack(track, a)
@@ -1181,6 +1251,26 @@ function requireClip(doc: Doc, clipId: string) {
   const found = findClip(doc, clipId)
   if (!found) throw new EditorCommandError('Unknown clip')
   return found
+}
+
+/** Longest title preset name the save/rename commands accept. */
+export const TEXT_PRESET_NAME_MAX = 60
+
+/** Trims a preset name; emptiness is refused by the commands, not here. */
+export function normalizePresetName(name: string): string {
+  return name.trim()
+}
+
+/**
+ * True when a user preset (other than `exceptId`) or a built-in already
+ * carries `name`, so a user preset can never shadow a built-in name either.
+ */
+function presetNameTaken(doc: Doc, name: string, exceptId?: string): boolean {
+  const lowered = name.toLowerCase()
+  if (createBuiltinTextPresets().some((p) => p.name.toLowerCase() === lowered)) return true
+  return (doc.project.textPresets ?? []).some(
+    (p) => p.id !== exceptId && p.name.toLowerCase() === lowered,
+  )
 }
 
 function markerTime(time: number): number {

@@ -242,6 +242,10 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
 
 - `T` adds a text clip at the playhead on a text track; content and style (size, colour, family,
   bold/italic, alignment, position, shadow) are edited in the inspector.
+- **Title presets** reuse a style across clips: the Inspector's Presets section applies a built-in
+  (Title, Subtitle, Lower third, Caption) or a saved preset, saves the selected clip's style under a
+  new name, and renames or deletes user presets. The Add Text toolbar picker births a clip already
+  styled. Presets live on the project, so they save and load with the file.
 - **Drag the text in the program monitor** to reposition it: a dashed outline
   (`[data-testid="text-drag-outline"]`) shows the box, one drag is one undo step, and the geometry is
   measured by `measureTextBox`, the twin of the compositor's renderer.

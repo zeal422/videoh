@@ -97,6 +97,10 @@ e2e/battery.sh e2e/run-battery.sh`. If the user started the dev server, leave
 6. **Tests.** Add tests under `src/lib/editor/__tests__/`. A regression test must fail on the unfixed
    code before it counts as proof. Behavior that is about code shape (z-order, CSS, mounted markup) is
    locked with static-source assertions; runtime engine behavior uses the mocked harness.
+   **Validate both directions at trust boundaries.** A value the UI constrains (slider bounds, unique
+   names, reserved ids) must be re-validated when it arrives from a file, a command payload, or
+   hydration, not just when the UI produces it. Regression tests must include hostile input
+   (out-of-range numbers, colliding ids, untrimmed names), not only the values your own controls emit.
 7. **Grep is an indicator, not truth.** Open the cited code and verify before writing any factual claim
    — in code, docs, or commit messages. Report problems regardless of when they were introduced.
 8. **Dev server:** check first (`curl -s --max-time 3 http://localhost:3000`), never start a duplicate,

@@ -411,6 +411,138 @@ describe('marker serialization (0.5.5)', () => {
     expect(() => deserializeDoc({ version: SERIALIZATION_VERSION + 1 })).toThrow(SerializationError)
   })
 
+  it('drops preset ids reserved by built-ins and trims loaded names', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { doc } = deserializeDoc({
+      version: SERIALIZATION_VERSION,
+      project: {
+        textPresets: [
+          { id: 'preset_builtin_title', name: 'Shadow', style: {} },
+          { id: 'preset_user_1', name: '  Opener  ', style: {} },
+          { id: 'preset_user_2', name: 'opener', style: {} },
+          { id: 'preset_user_3', name: '   ', style: {} },
+          { id: 'preset_user_4', name: ' Title ', style: {} },
+        ],
+        tracks: [{ kind: 'video', clips: [] }],
+      },
+    })
+    // The built-in id is dropped, the survivor is trimmed, and the
+    // post-trim duplicate and the blank name are dropped with one warning.
+    expect(doc.project.textPresets?.map((p) => p.id)).toEqual(['preset_user_1'])
+    expect(doc.project.textPresets?.[0].name).toBe('Opener')
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+
+  it('clamps finite out-of-range preset style values to the UI bounds', () => {
+    const { doc } = deserializeDoc({
+      version: SERIALIZATION_VERSION,
+      project: {
+        textPresets: [
+          {
+            id: 'preset_user_1',
+            name: 'Wild',
+            style: { fontSize: -1e300, x: 5, y: -2 },
+          },
+        ],
+        tracks: [{ kind: 'video', clips: [] }],
+      },
+    })
+    // The entry is kept (every value was finite), but font size and
+    // position collapse into the ranges the Inspector itself enforces.
+    expect(doc.project.textPresets?.[0].style.fontSize).toBe(8)
+    expect(doc.project.textPresets?.[0].style.x).toBe(1)
+    expect(doc.project.textPresets?.[0].style.y).toBe(0)
+  })
+
+  it('round-trips the title preset library', () => {
+    const doc = makeDoc()
+    doc.project.textPresets = [
+      {
+        id: 'preset_user_1',
+        name: 'Opener',
+        style: {
+          fontSize: 96,
+          color: '#ff0000',
+          fontFamily: 'Arial, sans-serif',
+          bold: true,
+          italic: false,
+          align: 'left',
+          x: 0.1,
+          y: 0.2,
+          shadow: false,
+        },
+      },
+    ]
+    const json = serializeDoc(doc)
+    expect(json.version).toBe(4)
+    expect(json.project.textPresets).toEqual(doc.project.textPresets)
+    const back = deserializeDoc(json)
+    expect(back.doc.project.textPresets).toEqual(doc.project.textPresets)
+  })
+
+  it('reads a file without title presets as an empty user list', () => {
+    const v1 = { version: 1, project: { tracks: [{ kind: 'video', clips: [] }] } }
+    expect(deserializeDoc(v1).doc.project.textPresets).toBeUndefined()
+  })
+
+  it('falls corrupt preset fields back per-field and drops broken entries once', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const good = {
+      id: 'preset_ok',
+      name: 'ok',
+      style: {
+        fontSize: 96,
+        color: '#ff0000',
+        fontFamily: 'Arial, sans-serif',
+        bold: true,
+        italic: false,
+        align: 'left',
+        x: 0.1,
+        y: 0.2,
+        shadow: false,
+      },
+    }
+    const { doc } = deserializeDoc({
+      version: SERIALIZATION_VERSION,
+      project: {
+        textPresets: [
+          null,
+          'nope',
+          { id: '', name: 'no id' },
+          { id: 'preset_noname' },
+          { ...good, id: 'preset_dup', name: 'dup' },
+          { ...good, id: 'preset_dup', name: 'dup' },
+          {
+            id: 'preset_partial',
+            name: 'partial',
+            style: { fontSize: 'huge', align: 'justify', bold: 'yes', x: Number.NaN },
+          },
+          good,
+        ],
+        tracks: [{ kind: 'video', clips: [] }],
+      },
+    })
+    expect(doc.project.textPresets?.map((p) => p.id)).toEqual([
+      'preset_dup',
+      'preset_partial',
+      'preset_ok',
+    ])
+    // Corrupt fields fall back per-field and the entry is kept.
+    expect(doc.project.textPresets?.[1].style).toEqual({
+      fontSize: 64,
+      color: '#ffffff',
+      fontFamily: 'Arial, sans-serif',
+      bold: true,
+      italic: false,
+      align: 'center',
+      x: 0.5,
+      y: 0.5,
+      shadow: true,
+    })
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(String(warn.mock.calls[0][0])).toMatch(/dropped a broken title preset entry/)
+  })
+
   it('round-trips the LUT library and the clips that reference it', () => {
     const lut = parseCubeLut(identityCubeText(2), { id: 'lut_fixed', name: 'Identity' })
     const doc = makeDoc()

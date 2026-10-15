@@ -5,6 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.3] - 2026-10-14
+
+### Added
+
+- **Title presets.** A saved text style (`TextPreset`: id, name and the
+  full 9-field `TextStyle`) lives in the project-level `textPresets`
+  library, so presets travel with the file and every change is one undo
+  step. Four built-ins ship (Title, Subtitle, Lower third, Caption) with
+  stable ids, shown above user presets and never editable or deletable.
+- **Preset commands.** `saveTextPreset`, `renameTextPreset` and
+  `deleteTextPreset` validate in the command layer: empty and overlong
+  names refuse, duplicate names refuse trimmed and case-insensitive
+  (against built-ins too), built-in ids are reserved, and unknown ids refuse. Saved styles
+  normalize into the Inspector bounds (size 8..400, position 0..1), so the
+  library only ever holds appliable styles. Applying reuses the
+  existing `setTextStyle`, stamping the full style without touching the
+  clip's text.
+- **Preset UI.** The text Inspector gains a Presets section (apply,
+  save-as, rename, delete, refusals through the existing error toast),
+  and the toolbar Add Text control gains a preset picker so a new clip
+  can be born styled; both ride the existing `commandsToAddText`
+  placement path, and the `T` shortcut still creates default text.
+- **File compat.** `textPresets` serializes with the project at format
+  v4 (no bump). Old files load with an empty user list, corrupt style
+  fields fall back per-field, and broken entries drop with one warning.
+
 ## [0.8.2] - 2026-10-14
 
 ### Added

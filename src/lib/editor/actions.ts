@@ -29,7 +29,7 @@ import {
   type MarkerSelection,
 } from './markers'
 import { clamp } from './time'
-import type { Clip, Doc, MediaAsset, MediaKind, Track, TrackKind } from './types'
+import type { Clip, Doc, MediaAsset, MediaKind, TextStyle, Track, TrackKind } from './types'
 
 /**
  * High-level UI actions that compose MULTIPLE commands into a single undoable
@@ -280,6 +280,10 @@ export function commandsToAddText(
   start: number,
   untargetedTrackIds: readonly string[] = [],
   sequenceId?: string,
+  // A picked title preset style (0.8.3): the clip is born styled, in the
+  // same batch. Absent means the default style; the keyboard path passes
+  // nothing, so `T` behavior is unchanged.
+  style?: TextStyle,
 ): EditorCommand[] {
   const commands: EditorCommand[] = []
   let textTrack =
@@ -298,6 +302,7 @@ export function commandsToAddText(
   const clip = createTextClip({
     start: Math.max(0, start),
     duration: DEFAULT_TEXT_DURATION,
+    ...(style ? { style: structuredClone(style) } : {}),
   })
   commands.push({ type: 'addClip', trackId: textTrack.id, clip })
   return commands

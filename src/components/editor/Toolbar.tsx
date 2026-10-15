@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react'
 import {
   Copy,
+  ChevronDown,
   FolderOpen,
   Magnet,
   Loader2,
@@ -30,6 +31,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -41,12 +44,13 @@ import {
   commandsToSplitClipsAt,
 } from '@/lib/editor/actions'
 import { canSplitAnySelectedAt } from '@/lib/editor/links'
-import { activeSequenceDuration, uid } from '@/lib/editor/factories'
+import { activeSequenceDuration, createBuiltinTextPresets, uid } from '@/lib/editor/factories'
 import { PPS_MAX, PPS_MIN } from '@/lib/editor/constants'
 import { projectFileName, serializeDoc } from '@/lib/editor/serialization'
 import { openProjectFile } from '@/lib/editor/project-io'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { useEditorStore } from '@/lib/editor/store'
+import type { TextStyle } from '@/lib/editor/types'
 
 /** Top toolbar: tools (V/C), edit history, edit tools, zoom, project name, project IO, export. */
 export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
@@ -106,7 +110,9 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
     }
   }
 
-  const addTextAtPlayhead = () => {
+  const addTextAtPlayhead = () => addTextWithStyle()
+
+  const addTextWithStyle = (style?: TextStyle) => {
     try {
       apply(
         commandsToAddText(
@@ -114,6 +120,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
           playhead,
           untargetedTracks,
           activeSequencePath[activeSequencePath.length - 1],
+          style,
         ),
       )
     } catch (error) {
@@ -249,11 +256,54 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
         <Separator orientation="vertical" className="mx-1 h-6" />
 
         {/* Add material */}
-        <ToolButton
-          label="Add text clip (T)"
-          onClick={addTextAtPlayhead}
-          icon={<TypeIcon className="size-4" />}
-        />
+        <div className="flex items-center">
+          <ToolButton
+            label="Add text clip (T)"
+            onClick={addTextAtPlayhead}
+            icon={<TypeIcon className="size-4" />}
+          />
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Add text with preset style"
+                    className="-ml-1 size-8"
+                  >
+                    <ChevronDown className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent>Add text with preset style</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent aria-label="Text style presets">
+              <DropdownMenuItem onSelect={() => addTextWithStyle()}>Default style</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Built-in presets</DropdownMenuLabel>
+              {createBuiltinTextPresets().map((preset) => (
+                <DropdownMenuItem key={preset.id} onSelect={() => addTextWithStyle(preset.style)}>
+                  {preset.name}
+                </DropdownMenuItem>
+              ))}
+              {(doc.project.textPresets ?? []).length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>Saved presets</DropdownMenuLabel>
+                  {(doc.project.textPresets ?? []).map((preset) => (
+                    <DropdownMenuItem
+                      key={preset.id}
+                      onSelect={() => addTextWithStyle(preset.style)}
+                    >
+                      {preset.name}
+                    </DropdownMenuItem>
+                  ))}
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
         <DropdownMenu>
           <Tooltip>
             <TooltipTrigger asChild>
