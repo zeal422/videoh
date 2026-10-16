@@ -73,7 +73,7 @@ e2e/battery.sh e2e/run-battery.sh`. If the user started the dev server, leave
 - `src/app/` — `layout.tsx` (dark `<html>`, fonts, Toaster), `page.tsx`, `globals.css` (tokens),
   `icon.svg`.
 - `src/lib/editor/__tests__/` — all tests (`*.test.ts`), plus the mocked browser harness in `mocks/`.
-- `e2e/battery.sh`: 52-step UI battery, first step is the gate login (needs the dev server +
+- `e2e/battery.sh`: 54-step UI battery, first step is the gate login (needs the dev server +
   `agent-browser`; set `GATE_PASSWORD` when the gate is active). Drive it through
   `e2e/run-battery.sh` (`bun run battery`), which owns the server, the password, the session and the
   strict verdict.

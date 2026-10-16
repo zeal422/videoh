@@ -60,10 +60,24 @@ export interface TextPreset {
   style: TextStyle
 }
 
-/** Cross-dissolve or dip-to-black into the next clip (0.8.2 adds the dip). */
+/** Cross-dissolve, dip-to-black, or a spatial move into the next clip (0.8.4 adds the spatial types). */
+export type TransitionType = 'crossfade' | 'dipToBlack' | 'wipe' | 'slide' | 'push'
+
+/** Edge the incoming picture enters from for wipe/slide/push. Defaults to 'left'. */
+export type TransitionDirection = 'left' | 'right' | 'up' | 'down'
+
+/** Wipe boundary look. Read by wipe only. Defaults to 'hard'. */
+export type WipeEdge = 'hard' | 'feathered'
+
 export interface Transition {
-  type: 'crossfade' | 'dipToBlack'
+  type: TransitionType
   duration: number
+  /** Edge the incoming picture enters from. Read by wipe/slide/push. Defaults to 'left'. */
+  direction?: TransitionDirection
+  /** Wipe boundary look. Read by wipe only. Defaults to 'hard'. */
+  edge?: WipeEdge
+  /** Feather width as a fraction of the motion-axis frame dimension, 0..0.5. Read by feathered wipes. Defaults to 0.1. */
+  feather?: number
 }
 
 /**

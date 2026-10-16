@@ -5,6 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.4] - 2026-10-15
+
+### Added
+
+- **Wipe, slide and push transitions.** The `Transition` type grows from two
+  values to five, with three optional spatial fields (`direction` with four
+  edges, `edge` hard or feathered, `feather` width as a fraction of the
+  motion-axis frame dimension). A wipe reveals the incoming picture from the
+  chosen edge, a slide moves it over the static outgoing picture, and a push
+  moves both pictures together so the pair always tiles the frame.
+- **Shared spatial geometry.** `transitionGeometry(span, t, width, height)`
+  computes clip regions and picture offsets in one pure function consumed by
+  the preview compositor and the export planner alike, so monitor and file
+  cannot drift apart. Progress clamps to the span, absent fields default
+  before any pixel math, and the frame stays fully covered in all three
+  types, unlike the crossfade blend or the dip midpoint.
+- **Transition commands and UI.** `addTransition` stamps the spatial fields
+  with the same preserve-on-switch pattern as the type (unknown direction
+  or edge refuses, non-finite feather refuses, finite out-of-range feather
+  clamps). The Inspector gains direction, edge and feather controls gated
+  per type and edge, and the timeline badge wears a per-type glyph.
+- **File compat.** The format stays at v4: unknown transition types fall
+  back to crossfade, unknown direction and edge values drop so readers
+  default them, and hostile feather values pin to exact outcomes
+  (non-numbers and non-finite to 0.1, out-of-range clamped).
+
 ## [0.8.3] - 2026-10-14
 
 ### Added

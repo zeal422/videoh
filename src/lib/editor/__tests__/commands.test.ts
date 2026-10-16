@@ -1841,7 +1841,13 @@ describe('transitions', () => {
       duration: 1,
     })
     const [na, nb] = videoTrack(next).clips
-    expect(na.transitionOut).toEqual({ type: 'crossfade', duration: 1 })
+    expect(na.transitionOut).toEqual({
+      type: 'crossfade',
+      duration: 1,
+      direction: 'left',
+      edge: 'hard',
+      feather: 0.1,
+    })
     expect(nb.start).toBe(5) // 6 - 1
   })
 
@@ -1854,7 +1860,13 @@ describe('transitions', () => {
       transitionType: 'dipToBlack',
     })
     const [na, nb] = videoTrack(next).clips
-    expect(na.transitionOut).toEqual({ type: 'dipToBlack', duration: 1 })
+    expect(na.transitionOut).toEqual({
+      type: 'dipToBlack',
+      duration: 1,
+      direction: 'left',
+      edge: 'hard',
+      feather: 0.1,
+    })
     expect(nb.start).toBe(5) // 6 - 1
   })
 
@@ -1875,6 +1887,9 @@ describe('transitions', () => {
     expect(videoTrack(next).clips[0].transitionOut).toEqual({
       type: 'dipToBlack',
       duration: 2,
+      direction: 'left',
+      edge: 'hard',
+      feather: 0.1,
     })
   })
 
@@ -1900,6 +1915,9 @@ describe('transitions', () => {
     expect(videoTrack(next).clips[0].transitionOut).toEqual({
       type: 'crossfade',
       duration: 1,
+      direction: 'left',
+      edge: 'hard',
+      feather: 0.1,
     })
   })
 
@@ -1946,6 +1964,107 @@ describe('transitions', () => {
     })
     expect(videoTrack(removed).clips[0].transitionOut).toBeUndefined()
     expect(videoTrack(removed).clips[1].start).toBe(5)
+  })
+
+  it('direction-only re-dispatch preserves type and duration', () => {
+    const { doc, a } = twoClips()
+    const wiped = applyCommand(doc, {
+      type: 'addTransition',
+      clipId: a.id,
+      duration: 1,
+      transitionType: 'wipe',
+      direction: 'right',
+    })
+    const next = applyCommand(wiped, {
+      type: 'addTransition',
+      clipId: a.id,
+      duration: 1,
+      direction: 'up',
+    })
+    expect(videoTrack(next).clips[0].transitionOut).toEqual({
+      type: 'wipe',
+      duration: 1,
+      direction: 'up',
+      edge: 'hard',
+      feather: 0.1,
+    })
+  })
+
+  it('type switch preserves direction, edge, feather and duration', () => {
+    const { doc, a } = twoClips()
+    const wiped = applyCommand(doc, {
+      type: 'addTransition',
+      clipId: a.id,
+      duration: 1,
+      transitionType: 'wipe',
+      direction: 'right',
+      edge: 'feathered',
+      feather: 0.2,
+    })
+    const next = applyCommand(wiped, {
+      type: 'addTransition',
+      clipId: a.id,
+      duration: 1,
+      transitionType: 'push',
+    })
+    expect(videoTrack(next).clips[0].transitionOut).toEqual({
+      type: 'push',
+      duration: 1,
+      direction: 'right',
+      edge: 'feathered',
+      feather: 0.2,
+    })
+  })
+
+  it('refuses unknown direction and edge values', () => {
+    const { doc, a } = twoClips()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'addTransition',
+        clipId: a.id,
+        duration: 1,
+        transitionType: 'wipe',
+        direction: 'diagonal' as 'left',
+      }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
+      applyCommand(doc, {
+        type: 'addTransition',
+        clipId: a.id,
+        duration: 1,
+        transitionType: 'wipe',
+        edge: 'dotted' as 'hard',
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('refuses non-finite feather but clamps finite out-of-range values', () => {
+    const { doc, a } = twoClips()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'addTransition',
+        clipId: a.id,
+        duration: 1,
+        transitionType: 'wipe',
+        feather: NaN,
+      }),
+    ).toThrow(EditorCommandError)
+    const low = applyCommand(doc, {
+      type: 'addTransition',
+      clipId: a.id,
+      duration: 1,
+      transitionType: 'wipe',
+      feather: -1,
+    })
+    expect(videoTrack(low).clips[0].transitionOut?.feather).toBe(0)
+    const high = applyCommand(doc, {
+      type: 'addTransition',
+      clipId: a.id,
+      duration: 1,
+      transitionType: 'wipe',
+      feather: 2,
+    })
+    expect(videoTrack(high).clips[0].transitionOut?.feather).toBe(0.5)
   })
 })
 

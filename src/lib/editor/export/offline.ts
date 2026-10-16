@@ -8,7 +8,13 @@ import {
 } from '../factories'
 import { blendPartnerTime } from '../frame-blend'
 import { findLut } from '../lut'
-import { crossfadeFactor, getTransitionSpan, transitionAlphas } from '../transition'
+import {
+  crossfadeFactor,
+  getTransitionSpan,
+  transitionAlphas,
+  transitionGeometry,
+} from '../transition'
+import type { TransitionGeometry } from '../transition'
 import { animatedValue } from '../keyframes'
 import { segmentControls } from '../ease-segment'
 import { clipRendersAudio, linkGroupChangesRate } from '../links'
@@ -58,6 +64,14 @@ export interface ClipDraw {
    * filter and transform (a GROUP composite, not a per-child fan-out).
    */
   nested?: FramePlan
+  /**
+   * For a wipe/slide/push span (0.8.4): the shared spatial geometry and this
+   * draw's role in the pair. The planner forces both clips' alpha to 1 when
+   * this is present (the alpha lerp would ghost-blend under the geometry).
+   * `compositeFrame` places the draw by role at the container level, the
+   * same level alpha applies, including for compound containers.
+   */
+  spatial?: { role: 'outgoing' | 'incoming'; geometry: TransitionGeometry }
 }
 
 export interface FramePlan {
@@ -123,6 +137,7 @@ export function planVideoFrame(
     if (active.length === 0) continue
 
     const alphas = new Map<string, number>()
+    let spatialPair: { aId: string; bId: string; geometry: TransitionGeometry } | null = null
     if (active.length === 1) {
       alphas.set(active[0].id, 1)
     } else {
@@ -130,12 +145,30 @@ export function planVideoFrame(
       const b = active[1]
       const span = a.transitionOut ? getTransitionSpan(a, b) : null
       if (span && t >= span.start) {
-        const { aAlpha, bAlpha } = transitionAlphas(span, t)
-        alphas.set(a.id, aAlpha)
-        alphas.set(b.id, bAlpha)
+        const { width, height } = doc.project
+        const geometry = transitionGeometry(span, t, width, height)
+        if (geometry) {
+          // Full opacity for the pair: the alpha lerp falls through to the
+          // crossfade ramp for spatial types, which would ghost-blend the
+          // pictures under the geometry.
+          alphas.set(a.id, 1)
+          alphas.set(b.id, 1)
+          spatialPair = { aId: a.id, bId: b.id, geometry }
+        } else {
+          const { aAlpha, bAlpha } = transitionAlphas(span, t)
+          alphas.set(a.id, aAlpha)
+          alphas.set(b.id, bAlpha)
+        }
       } else {
         for (const clip of active) alphas.set(clip.id, 1)
       }
+    }
+
+    const spatialFor = (clipId: string): ClipDraw['spatial'] => {
+      if (!spatialPair) return undefined
+      if (clipId === spatialPair.aId) return { role: 'outgoing', geometry: spatialPair.geometry }
+      if (clipId === spatialPair.bId) return { role: 'incoming', geometry: spatialPair.geometry }
+      return undefined
     }
 
     for (const clip of active) {
@@ -155,6 +188,7 @@ export function planVideoFrame(
           filter,
           transform,
           nested: planVideoFrame(doc, local, sequence.tracks),
+          spatial: spatialFor(clip.id),
         })
         continue
       }
@@ -170,6 +204,7 @@ export function planVideoFrame(
         // to the decoded frames by the renderer instead.
         filter,
         transform,
+        spatial: spatialFor(clip.id),
       })
     }
   }

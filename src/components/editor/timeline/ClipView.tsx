@@ -879,7 +879,15 @@ export function ClipView({
             )}
             {prevTransition && (
               <span className="shrink-0 rounded bg-black/40 px-1 text-[9px]">
-                {prevTransition.type === 'dipToBlack' ? '◼' : '⤬'}
+                {prevTransition.type === 'dipToBlack'
+                  ? '◼'
+                  : prevTransition.type === 'wipe'
+                    ? '◧'
+                    : prevTransition.type === 'slide'
+                      ? '⇄'
+                      : prevTransition.type === 'push'
+                        ? '⇥'
+                        : '⤬'}
                 {prevTransition.duration.toFixed(1)}s
               </span>
             )}

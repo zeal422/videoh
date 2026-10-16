@@ -17,6 +17,7 @@ Format:
 ## Entries
 
 ## 2026-10-08 - Phase 3, affected tests (a lock added after docs were synced)
+
 What happened: adding 3 call-site locks to `compositing-ui.test.ts` (34 -> 37 cases) left the count
 claims stale, so `bun run test src/lib/editor/__tests__/docs-drift.test.ts` went red on the next run
 (README and testing.md said 1045, structure.md 1021, the inventory row 34) while the suite I edited
@@ -27,6 +28,7 @@ move with the tests.
 Action: promoted to rule 6.
 
 ## 2026-10-08 - Phase 3, manual proof (harness assumption)
+
 What happened: `agent-browser mouse down right` delivered button=2 to the page but never fired a
 native `contextmenu`, so Radix's track menu never opened and the first proof run asserted against an
 absent menu (and `find text "Load sample media"` had clicked the empty-state `<em>` instead of the
@@ -37,6 +39,7 @@ Action: kept as a note (the workaround is dispatching a `contextmenu` event and 
 no checklist rule needs it.
 
 ## 2026-10-10 - plan review (fixing one defect introduced another)
+
 What happened: fixing the "proxy drops preview audio" finding, `PLAN-0.8.0-tier2.md` described the proxy
 audio decode as `Input -> getPrimaryAudioTrack() ... the exact pattern mp4.ts:160,505 already uses`.
 `mp4.ts` never calls `getPrimaryAudioTrack` (grep is empty); it decodes with `ctx.decodeAudioData` on the
@@ -48,6 +51,7 @@ Action: kept as a note. In the plan this became a standing habit: every `file:li
 "already does this" is opened before it ships.
 
 ## 2026-10-10 - plan claim audit (a "pass" that was hand-counted)
+
 What happened: the plan's Class A audit claimed "pass (37 citations)" but had not opened every line, so
 it passed `core.ts:668` where the intended comment sits at `:671` (668 is the `computeGain` signature).
 A reviewer's line-by-line pass caught it.
@@ -57,6 +61,7 @@ Action: promoted the wording into the plan's Class A row ("read the named thing 
 list of line numbers is not a pass until each is opened").
 
 ## 2026-10-11 - Feature C source inventory (search root was too narrow)
+
 What happened: the first `project.tracks` inventory searched editor modules and components but omitted
 `src/hooks/editor/useEditorKeyboard.ts`, reporting 90 line occurrences in 27 files instead of 92 in 28.
 Would-have-caught: rule 4 now requires structural sweeps from the full `src/` root, with test exclusions,
@@ -64,9 +69,50 @@ separate line and file counts, and each source location opened.
 Action: promoted into rule 4.
 
 ## 2026-10-12 - Feature C createCompoundClip depth guard (checked before the edge existed)
+
 What happened: the nesting-depth guard ran `maxSequenceDepth(doc)` after pushing the new sequence but
 BEFORE adding the container clip, so the new sequence was unreachable from the root and the walk never
 saw the extra edge; a depth-9 compound was accepted. The `compound.test.ts` boundary test caught it.
 Would-have-caught: rule 5 (write the lock first and watch it fail) applied to a guard that depends on a
 mutation ORDER: the prospective-graph check must run with every edge of the prospective graph present.
 Action: kept as a note; the command now adds the container, checks depth, then removes the originals.
+
+## 2026-10-15 - Static-source locks pin import lines (0.8.4 color.test.ts red gate)
+
+What happened: adding `paintSpatialMask` to mp4.ts's compositor import broke the color.test.ts lock
+that pins the exact import statement, failing the full gate after all affected suites were green.
+Would-have-caught: rule 4 (grep every caller is not enough; grep every QUOTER: static-source tests
+quote production lines verbatim, so a new import or symbol must be searched in `__tests__` too).
+Action: kept as a note; pre-gate sweep now includes `grep` for the touched symbol across tests.
+
+## 2026-10-15 - Battery insp() needs raw CSS, and blind keypresses corrupt state (0.8.4 t01/t02)
+
+What happened: the new `select_option` helper passed an a11y query (`combobox "Name"`) to `insp()`,
+which takes a CSS selector, so nothing scrolled and the clicks missed; the following arrows+Enter
+went into the page body with no failure signal, and the later f07/settings/f06 failures were
+cascade from that corrupted state. A menu-open guard (fail fast when no listbox appears) now
+prevents silent corruption.
+Would-have-caught: rule 7 (proof names the action and the observed result): the helper proved
+"the run finished" instead of "the menu opened".
+Action: kept as a note; battery helpers that drive overlays must assert the overlay opened
+before sending keys.
+
+## 2026-10-15 - pkill -f matches the harness itself
+
+What happened: `pkill -f 'next dev'` to stop an own dev server returned a ChildProcess.kill
+error against the tool harness; the port check confirmed the server did stop, but the blunt
+match is exactly what AGENTS.md rule 8 forbids. `fuser 3000/tcp` only identifies the port
+owner; stopping is a separate `kill` of that PID, and only for a server you started yourself
+(record the PID or process group at start, never `pkill -f`, and leave a user-started server
+running per rule 8).
+Would-have-caught: AGENTS.md rule 8, already written; this is a compliance failure, not a gap.
+Action: kept as a note.
+
+## 2026-10-15 - A trailing negative grep fails the battery step when the toast is absent (0.8.4 t01)
+
+What happened: the new `snap | grep -q 'Update failed' && { ...; return 1; }` guard sat last
+in t01_wipe, so the good case (no toast) exited the function nonzero and failed a green step
+with zero output. Restructured to an `if` so absence exits 0.
+Would-have-caught: the round-2 lesson directly above (helpers must assert before keying);
+a negative assertion as the last line inverts the verdict by construction.
+Action: kept as a note; battery steps end with an explicit `return 0` or a positive assertion.

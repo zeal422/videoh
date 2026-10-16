@@ -1735,4 +1735,50 @@ describe('InspectorPanel transition picker', () => {
     expect(screen.getByRole('switch', { name: 'Enable transition' })).not.toBeChecked()
     expect(screen.queryByRole('combobox', { name: 'Transition type' })).not.toBeInTheDocument()
   })
+
+  function docWithSpatialTransition(transitionOut: {
+    type: 'wipe' | 'slide' | 'push'
+    duration: number
+    edge?: 'hard' | 'feathered'
+  }): void {
+    const asset = createMediaAsset({ kind: 'video', duration: 30, name: 'demo.mp4' })
+    const a = createClip({
+      id: 'clip_ta',
+      mediaId: asset.id,
+      start: 0,
+      duration: 6,
+      transitionOut,
+    })
+    const b = createClip({ id: 'clip_tb', mediaId: asset.id, start: 5.5, duration: 6 })
+    const track = createTrack('video', 1, { clips: [a as Clip, b as Clip] })
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [asset],
+    }
+    useEditorStore.setState({ doc, selection: a.id, selections: [a.id], playhead: 1 })
+  }
+
+  it('shows direction, edge and feather controls for a feathered wipe', () => {
+    docWithSpatialTransition({ type: 'wipe', duration: 0.5, edge: 'feathered' })
+    render(<InspectorPanel />)
+    expect(screen.getByRole('combobox', { name: 'Transition direction' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Wipe edge' })).toBeInTheDocument()
+    expect(screen.getByRole('slider', { name: 'Wipe feather width' })).toBeInTheDocument()
+  })
+
+  it('hides the feather slider for a hard-edge wipe', () => {
+    docWithSpatialTransition({ type: 'wipe', duration: 0.5, edge: 'hard' })
+    render(<InspectorPanel />)
+    expect(screen.getByRole('combobox', { name: 'Transition direction' })).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Wipe edge' })).toBeInTheDocument()
+    expect(screen.queryByRole('slider', { name: 'Wipe feather width' })).not.toBeInTheDocument()
+  })
+
+  it('hides all spatial controls for a crossfade', () => {
+    docWithTransition()
+    render(<InspectorPanel />)
+    expect(screen.queryByRole('combobox', { name: 'Transition direction' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Wipe edge' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('slider', { name: 'Wipe feather width' })).not.toBeInTheDocument()
+  })
 })

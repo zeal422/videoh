@@ -497,10 +497,37 @@ function hydrateClip(raw: Record<string, unknown>, media: MediaAsset[]): Clip {
     raw.transitionOut !== null &&
     typeof (raw.transitionOut as Record<string, unknown>).duration === 'number'
   ) {
-    const rawType = (raw.transitionOut as Record<string, unknown>).type
+    const rawTransition = raw.transitionOut as Record<string, unknown>
+    const rawType = rawTransition.type
+    const rawDirection = rawTransition.direction
+    const rawEdge = rawTransition.edge
     clip.transitionOut = {
-      type: rawType === 'dipToBlack' ? 'dipToBlack' : 'crossfade',
+      type:
+        rawType === 'dipToBlack' || rawType === 'wipe' || rawType === 'slide' || rawType === 'push'
+          ? rawType
+          : 'crossfade',
       duration: (raw.transitionOut as { duration: number }).duration,
+    }
+    // Spatial fields stay absent when absent: readers default direction to
+    // left, edge to hard and feather to 0.1. Present-but-unknown values
+    // are dropped so they degrade the same way.
+    if (
+      rawDirection === 'left' ||
+      rawDirection === 'right' ||
+      rawDirection === 'up' ||
+      rawDirection === 'down'
+    ) {
+      clip.transitionOut.direction = rawDirection
+    }
+    if (rawEdge === 'hard' || rawEdge === 'feathered') {
+      clip.transitionOut.edge = rawEdge
+    }
+    if ('feather' in rawTransition) {
+      const rawFeather = rawTransition.feather
+      clip.transitionOut.feather =
+        typeof rawFeather === 'number' && Number.isFinite(rawFeather)
+          ? Math.min(0.5, Math.max(0, rawFeather))
+          : 0.1
     }
   }
   const markers = hydrateMarkers(raw.markers)

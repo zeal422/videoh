@@ -61,6 +61,9 @@ describe('timeline transition badge glyph', () => {
   it('branches the badge glyph on the transition type, duration text unchanged', () => {
     expect(view).toMatch(/prevTransition\.type === 'dipToBlack'/)
     expect(view).toMatch(/◼/)
+    expect(view).toMatch(/◧/)
+    expect(view).toMatch(/⇄/)
+    expect(view).toMatch(/⇥/)
     expect(view).toMatch(/⤬/)
     expect(view).toMatch(/prevTransition\.duration\.toFixed\(1\)/)
   })
@@ -74,9 +77,15 @@ describe('inspector transition picker wiring', () => {
 
   it('dispatches addTransition with the chosen type and current duration', () => {
     expect(panel).toMatch(/aria-label="Transition type"/)
-    expect(panel).toMatch(/transitionType: v as 'crossfade' \| 'dipToBlack'/)
+    expect(panel).toMatch(/transitionType: v as Transition\['type'\]/)
     expect(panel).toMatch(/<SelectItem value="crossfade">Cross dissolve<\/SelectItem>/)
     expect(panel).toMatch(/<SelectItem value="dipToBlack">Dip to black<\/SelectItem>/)
+    expect(panel).toMatch(/<SelectItem value="wipe">Wipe<\/SelectItem>/)
+    expect(panel).toMatch(/<SelectItem value="slide">Slide<\/SelectItem>/)
+    expect(panel).toMatch(/<SelectItem value="push">Push<\/SelectItem>/)
+    expect(panel).toMatch(/aria-label="Transition direction"/)
+    expect(panel).toMatch(/aria-label="Wipe edge"/)
+    expect(panel).toMatch(/aria-label="Wipe feather width"/)
   })
 })
 

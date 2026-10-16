@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.8.4',
+    date: '2026-10-15',
+    highlights: [
+      'Wipe, slide and push transitions: each transition picks from five types in the Inspector, with direction, wipe edge and feather width controls',
+      'A wipe reveals the next picture from any edge (hard or feathered), a slide moves it over the current one, and a push moves both together',
+      'Preview and export render the spatial moves identically through one shared geometry function, at full opacity in both',
+      'Files stay at v4 with old projects opening unchanged, and switching type preserves duration, direction and edge settings',
+    ],
+  },
+  {
     version: '0.8.3',
     date: '2026-10-14',
     highlights: [

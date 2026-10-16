@@ -1,7 +1,13 @@
 import { clipFilter } from '../color'
 import { findSequence } from '../factories'
 import { applyLut3dToRgba, decodeLutGrid, findLut } from '../lut'
-import { getTransitionSpan, transitionAlphas } from '../transition'
+import {
+  featherGradient,
+  getTransitionSpan,
+  transitionAlphas,
+  transitionGeometry,
+} from '../transition'
+import type { TransitionGeometry } from '../transition'
 import { animatedValue } from '../keyframes'
 import type { Clip, Doc, MediaAsset, ProjectLut, Track } from '../types'
 
@@ -17,7 +23,9 @@ import type { Clip, Doc, MediaAsset, ProjectLut, Track } from '../types'
  * - Transitions: when clip A (with transitionOut) overlaps clip B, both are
  *   drawn across the transition span — complementary alpha for a crossfade,
  *   out-then-in through black for a dip to black (both alphas 0 at the
- *   midpoint, so lower tracks show through there like under any transparency).
+ *   midpoint, so lower tracks show through there like under any transparency),
+ *   and full-opacity geometry for wipe/slide/push (a clip region, picture
+ *   offsets, or both, with the wipe edge optionally feathered).
  * - Clip `opacity` (0..1, default 1, keyframe-able) multiplies into every
  *   draw and stacks with crossfade alphas.
  * - Sub-frame-rate reads blend: a clip playing below realtime combines its
@@ -127,6 +135,11 @@ function drawTrack(
   const b = active[1]
   const span = a.transitionOut ? getTransitionSpan(a, b) : null
   if (span && t >= span.start) {
+    const geo = transitionGeometry(span, t, width, height)
+    if (geo) {
+      drawSpatialTransition(ctx, span, geo, t, resolve, width, height, doc, depth)
+      return
+    }
     const { aAlpha, bAlpha } = transitionAlphas(span, t)
     drawClip(ctx, a, t, resolve, aAlpha, width, height, doc, depth)
     drawClip(ctx, b, t, resolve, bAlpha, width, height, doc, depth)
@@ -134,6 +147,126 @@ function drawTrack(
   }
   // Plain overlap: the later clip wins.
   for (const clip of active) drawClip(ctx, clip, t, resolve, 1, width, height, doc, depth)
+}
+
+/** Reused scratch surfaces for feathered-wipe masking, one per nesting depth. */
+const spatialScratch: HTMLCanvasElement[] = []
+
+function spatialSurface(
+  depth: number,
+  width: number,
+  height: number,
+): { canvas: HTMLCanvasElement; sctx: CanvasRenderingContext2D } | null {
+  if (typeof document === 'undefined') return null
+  const canvas = (spatialScratch[depth] ??= document.createElement('canvas'))
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+  const sctx = canvas.getContext('2d')
+  return sctx ? { canvas, sctx } : null
+}
+
+/**
+ * Wipe/slide/push draw: both pictures at full opacity, placed by the shared
+ * geometry. The outgoing draws full-frame (translated for push); the
+ * incoming draws through the wipe region or translated. A feathered wipe
+ * masks the incoming through a scratch surface: the outgoing already
+ * underneath acts as the complementary gradient, so the band cross-blends
+ * the pair with the frame fully covered.
+ */
+function drawSpatialTransition(
+  ctx: CanvasRenderingContext2D,
+  span: { a: Clip; b: Clip },
+  geo: TransitionGeometry,
+  t: number,
+  resolve: MediaResolver,
+  width: number,
+  height: number,
+  doc: Doc,
+  depth: number,
+): void {
+  const { a, b } = span
+  if (geo.aOffset.x === 0 && geo.aOffset.y === 0) {
+    drawClip(ctx, a, t, resolve, 1, width, height, doc, depth)
+  } else {
+    ctx.save()
+    ctx.translate(geo.aOffset.x, geo.aOffset.y)
+    drawClip(ctx, a, t, resolve, 1, width, height, doc, depth)
+    ctx.restore()
+  }
+  if (geo.wipeRect && !geo.featherBand) {
+    const r = geo.wipeRect
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(r.x, r.y, r.w, r.h)
+    ctx.clip()
+    drawClip(ctx, b, t, resolve, 1, width, height, doc, depth)
+    ctx.restore()
+    return
+  }
+  if (geo.wipeRect && geo.featherBand) {
+    // Depth-routed scratch: the incoming picture may itself be a compound
+    // clip whose nested tracks carry another feathered wipe, which masks
+    // into its own depth surface instead of this one.
+    const surface = spatialSurface(depth, width, height)
+    if (!surface) {
+      // No scratch (or no 2D context): fall back to the hard region.
+      const r = geo.wipeRect
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(r.x, r.y, r.w, r.h)
+      ctx.clip()
+      drawClip(ctx, b, t, resolve, 1, width, height, doc, depth)
+      ctx.restore()
+      return
+    }
+    const { canvas, sctx } = surface
+    sctx.save()
+    sctx.globalAlpha = 1
+    sctx.clearRect(0, 0, width, height)
+    drawClip(sctx, b, t, resolve, 1, width, height, doc, depth)
+    paintSpatialMask(sctx, geo, width, height)
+    sctx.restore()
+    ctx.drawImage(canvas, 0, 0)
+    return
+  }
+  ctx.save()
+  ctx.translate(geo.bOffset.x, geo.bOffset.y)
+  drawClip(ctx, b, t, resolve, 1, width, height, doc, depth)
+  ctx.restore()
+}
+
+/**
+ * Applies the feathered-wipe mask to a scratch surface holding the incoming
+ * picture full-frame: erases the unrevealed region, then keeps the revealed
+ * region through a destination-in gradient that is opaque up to the feather
+ * band and fades to transparent at the wipe boundary. Filling only the band
+ * would erase the revealed interior (destination-in clears everything the
+ * new shape does not cover). Shared by the preview compositor and the
+ * exporter, so the band cannot differ between monitor and file. No-op
+ * without a feather band.
+ */
+export function paintSpatialMask(
+  sctx: CanvasRenderingContext2D,
+  geo: TransitionGeometry,
+  width: number,
+  height: number,
+): void {
+  const rect = geo.wipeRect
+  if (!rect || !featherGradient(geo)) return
+  if (geo.direction === 'left') sctx.clearRect(rect.x + rect.w, 0, width - rect.x - rect.w, height)
+  else if (geo.direction === 'right') sctx.clearRect(0, 0, rect.x, height)
+  else if (geo.direction === 'up')
+    sctx.clearRect(0, rect.y + rect.h, width, height - rect.y - rect.h)
+  else sctx.clearRect(0, 0, width, rect.y)
+  const g = featherGradient(geo)
+  if (!g) return
+  const grad = sctx.createLinearGradient(g.x0, g.y0, g.x1, g.y1)
+  for (const stop of g.stops) grad.addColorStop(stop.at, `rgba(0,0,0,${stop.opacity})`)
+  sctx.globalCompositeOperation = 'destination-in'
+  sctx.fillStyle = grad
+  sctx.fillRect(rect.x, rect.y, rect.w, rect.h)
 }
 
 function drawClip(

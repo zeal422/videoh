@@ -282,7 +282,7 @@ describe('color flow: one builder for both render paths', () => {
     // draws (`drawContain` for a single frame, `drawBlendedContain` per layer of
     // a blend pair), which is why the exporter must not call it directly.
     expect(mp4).toMatch(
-      /import \{ drawBlendedContain, drawContain, drawTextClip \} from '\.\.\/playback\/compositor'/,
+      /import \{\s*drawBlendedContain,\s*drawContain,\s*drawTextClip,\s*paintSpatialMask,?\s*\} from '\.\.\/playback\/compositor'/,
     )
     expect(mp4).not.toMatch(/applyLut3d\(/)
     expect(mp4).toMatch(/findLut\(doc\.project\.luts, draw\.clip\.lutId\)/)

@@ -229,6 +229,8 @@ export function createFake2DContext() {
     fillText: (...a: unknown[]) => calls.push({ op: 'fillText', args: a }),
     strokeText: (...a: unknown[]) => calls.push({ op: 'strokeText', args: a }),
     beginPath: () => calls.push({ op: 'beginPath', args: [] }),
+    rect: (...a: unknown[]) => calls.push({ op: 'rect', args: a }),
+    clip: () => calls.push({ op: 'clip', args: [] }),
     moveTo: (...a: unknown[]) => calls.push({ op: 'moveTo', args: a }),
     lineTo: (...a: unknown[]) => calls.push({ op: 'lineTo', args: a }),
     stroke: () => calls.push({ op: 'stroke', args: [] }),

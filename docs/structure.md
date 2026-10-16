@@ -13,7 +13,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── robots.txt           # crawler policy
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
-│   ├── battery.sh           # scripted UI battery (52 steps) driven by agent-browser
+│   ├── battery.sh           # scripted UI battery (54 steps) driven by agent-browser
 │   └── run-battery.sh       # runner: dev server, gate password, session cleanup, strict verdict
 ├── docs/                    # this documentation set
 ├── next.config.ts           # output: "standalone"
@@ -127,7 +127,7 @@ src/lib/editor/
 ├── lut.ts                # `.cube` parsing/storage/budget (pure) + the 3D trilinear pixel pass
 ├── frame-blend.ts        # sub-frame-rate blend math: the partner read + the pair weight BOTH render paths share
 ├── offline.ts            # offline-media detection for the monitor (pure)
-├── transition.ts         # transition span + alpha math (crossfade, dip to black)
+├── transition.ts         # transition span + alpha math (crossfade, dip to black) + spatial geometry (wipe, slide, push)
 ├── links.ts              # multi-selection / A/V link-group helpers
 ├── clipboard.ts          # copy / cut / paste (module memory, outside undo)
 ├── actions.ts            # multi-command UI actions (add media/text, group ops, ripple delete)
@@ -157,7 +157,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 62 test files (1235 tests) + src/lib/gate.test.ts: see testing.md
+└── __tests__/            # 62 test files (1263 tests) + src/lib/gate.test.ts: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

@@ -154,6 +154,26 @@ insp() { # insp <selector inside the Inspector>
   sleeps 0.3
 }
 
+# Drive a Radix Select by keyboard: no battery step clicks into a portal,
+# so the trigger is scrolled into view and clicked to open the menu, then
+# arrows move from the current value and Enter commits. <downs> counts how
+# many options below the current one to move. The insp selector must be raw
+# CSS (an a11y "combobox" query is not a selector and scrolls nothing,
+# which leaves the click landing off-target below the fold).
+select_option() { # select_option <combobox-name> <downs>
+  local r; r=$(firstref "combobox \"$1\"")
+  [ -n "$r" ] || { echo "select_option: no combobox $1" >&2; return 1; }
+  insp "[aria-label=\"$1\"]"
+  ab click "@$r" >/dev/null 2>&1 && sleeps 0.5
+  # A closed menu here means the trigger was not actually in view: surface
+  # it instead of blindly arrowing into the page body.
+  snap | grep -q 'listbox' || { echo "select_option: menu did not open for $1" >&2; return 1; }
+  local i=0
+  while [ "$i" -lt "$2" ]; do ab press ArrowDown >/dev/null 2>&1; i=$((i + 1)); done
+  sleeps 0.3
+  ab press Enter >/dev/null 2>&1 && sleeps 0.5
+}
+
 click_clip() { # click_clip <name-regex>
   local r; r=$(firstref "button \"Clip $1")
   [ -n "$r" ] || return 1
@@ -976,6 +996,43 @@ f03_crossfade() {
   }
   sleeps 0.5
   snap | grep -q '"Enable transition" \[checked=true'
+}
+
+# --- T spatial transitions (0.8.4) ---
+t01_wipe() {
+  click_clip 'sample-video' || { echo "t01: video clip not found" >&2; return 1; }
+  # Type select opens on Cross dissolve (first option): two downs reach Wipe.
+  select_option 'Transition type' 2 || return 1
+  snap | grep -q 'combobox "Transition direction"' || {
+    echo "t01: direction select missing" >&2; return 1
+  }
+  # Direction opens on From left: one down reaches From right.
+  select_option 'Transition direction' 1 || return 1
+  # Edge opens on Hard: one down reaches Feathered.
+  select_option 'Wipe edge' 1 || return 1
+  snap | grep -q 'Wipe feather width' || {
+    echo "t01: feather slider missing" >&2; return 1
+  }
+  snap | grep -q 'Wipe' || { echo "t01: wipe type not shown" >&2; return 1; }
+  if snap | grep -q 'Update failed'; then
+    echo "t01: error toast shown" >&2
+    return 1
+  fi
+}
+
+t02_slide_push() {
+  click_clip 'sample-video' || { echo "t02: video clip not found" >&2; return 1; }
+  # From Wipe (third option): one down reaches Slide, another reaches Push.
+  select_option 'Transition type' 1 || return 1
+  snap | grep -q 'Slide' || { echo "t02: slide type not shown" >&2; return 1; }
+  snap | grep -q 'From right' || {
+    echo "t02: direction did not persist across the type switch" >&2; return 1
+  }
+  select_option 'Transition type' 1 || return 1
+  snap | grep -q 'Push' || { echo "t02: push type not shown" >&2; return 1; }
+  snap | grep -q 'From right' || {
+    echo "t02: direction did not persist across the type switch" >&2; return 1
+  }
 }
 
 # ————— F4 text —————
@@ -2566,6 +2623,8 @@ step "f02 duplicate: D clones the selected audio clip" f02_duplicate
 step "f02 clipboard: Ctrl+C / Ctrl+V pastes a copy"  f02_copy_paste
 step "f02 link: Ctrl+L drops the A/V bond, Ctrl+Z restores it" f02_link_unlink
 step "f03 crossfade: enable on first clip"         f03_crossfade
+step "t01 wipe: type wipe applies and direction select appears" t01_wipe
+step "t02 slide+push: each type applies without errors" t02_slide_push
 step "f04 text: T adds a text clip"                f04_text_add
 step "f04 text: content edited via Inspector"      f04_text_edit
 step "f05 audio: mute + reduce-noise switches work" f05_mute

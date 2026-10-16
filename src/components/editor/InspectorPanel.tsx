@@ -41,7 +41,7 @@ import {
   TRANSITION_MIN,
 } from '@/lib/editor/constants'
 import { useEditorStore } from '@/lib/editor/store'
-import type { Clip, TextPreset, TextStyle } from '@/lib/editor/types'
+import type { Clip, TextPreset, TextStyle, Transition } from '@/lib/editor/types'
 import { useState } from 'react'
 import { EffectControlsPanel } from '@/components/editor/effect-controls/EffectControlsPanel'
 import { cn } from '@/lib/utils'
@@ -528,7 +528,7 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                           type: 'addTransition',
                           clipId: clip.id,
                           duration: current.duration,
-                          transitionType: v as 'crossfade' | 'dipToBlack',
+                          transitionType: v as Transition['type'],
                         }),
                       )
                     }}
@@ -543,9 +543,132 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                     <SelectContent>
                       <SelectItem value="crossfade">Cross dissolve</SelectItem>
                       <SelectItem value="dipToBlack">Dip to black</SelectItem>
+                      <SelectItem value="wipe">Wipe</SelectItem>
+                      <SelectItem value="slide">Slide</SelectItem>
+                      <SelectItem value="push">Push</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
+                {(clip.transitionOut.type === 'wipe' ||
+                  clip.transitionOut.type === 'slide' ||
+                  clip.transitionOut.type === 'push') && (
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <Label htmlFor="transition-direction" className="text-xs">
+                      Direction
+                    </Label>
+                    <Select
+                      value={clip.transitionOut.direction ?? 'left'}
+                      onValueChange={(v) => {
+                        const current = clip.transitionOut
+                        if (!current) return
+                        tryApply(() =>
+                          apply({
+                            type: 'addTransition',
+                            clipId: clip.id,
+                            duration: current.duration,
+                            transitionType: current.type,
+                            direction: v as Transition['direction'],
+                          }),
+                        )
+                      }}
+                    >
+                      <SelectTrigger
+                        id="transition-direction"
+                        className="h-8 w-36"
+                        aria-label="Transition direction"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="left">From left</SelectItem>
+                        <SelectItem value="right">From right</SelectItem>
+                        <SelectItem value="up">From top</SelectItem>
+                        <SelectItem value="down">From bottom</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                {clip.transitionOut.type === 'wipe' && (
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <Label htmlFor="transition-edge" className="text-xs">
+                      Edge
+                    </Label>
+                    <Select
+                      value={clip.transitionOut.edge ?? 'hard'}
+                      onValueChange={(v) => {
+                        const current = clip.transitionOut
+                        if (!current) return
+                        tryApply(() =>
+                          apply({
+                            type: 'addTransition',
+                            clipId: clip.id,
+                            duration: current.duration,
+                            transitionType: current.type,
+                            direction: current.direction ?? 'left',
+                            edge: v as Transition['edge'],
+                          }),
+                        )
+                      }}
+                    >
+                      <SelectTrigger
+                        id="transition-edge"
+                        className="h-8 w-36"
+                        aria-label="Wipe edge"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="hard">Hard</SelectItem>
+                        <SelectItem value="feathered">Feathered</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                {clip.transitionOut.type === 'wipe' &&
+                  (clip.transitionOut.edge ?? 'hard') === 'feathered' && (
+                    <div>
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <Label htmlFor="transition-feather" className="text-xs">
+                          Feather
+                        </Label>
+                        <span className="text-xs tabular-nums text-muted-foreground">
+                          {((clip.transitionOut.feather ?? 0.1) * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                      <NamedSlider
+                        id="transition-feather"
+                        aria-label="Wipe feather width"
+                        value={[clip.transitionOut.feather ?? 0.1]}
+                        min={0}
+                        max={0.5}
+                        step={0.01}
+                        onValueChange={([v]) =>
+                          useEditorStore.getState().applyTransient({
+                            type: 'addTransition',
+                            clipId: clip.id,
+                            duration: clip.transitionOut?.duration ?? 0.5,
+                            transitionType: clip.transitionOut?.type ?? 'wipe',
+                            direction: clip.transitionOut?.direction ?? 'left',
+                            edge: 'feathered',
+                            feather: v,
+                          })
+                        }
+                        onValueCommit={([v]) =>
+                          tryApply(() =>
+                            apply({
+                              type: 'addTransition',
+                              clipId: clip.id,
+                              duration: clip.transitionOut?.duration ?? 0.5,
+                              transitionType: clip.transitionOut?.type ?? 'wipe',
+                              direction: clip.transitionOut?.direction ?? 'left',
+                              edge: 'feathered',
+                              feather: v,
+                            }),
+                          )
+                        }
+                      />
+                    </div>
+                  )}
                 <div className="mb-1.5 flex items-center justify-between">
                   <Label htmlFor="transition-duration" className="text-xs">
                     Duration
@@ -581,7 +704,9 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                 <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
                   The next clip is pulled left to create the transition overlap. Cross dissolve
                   blends the pictures; dip to black fades the pair through black while lower tracks
-                  stay visible. Video/audio ramp automatically during the fade.
+                  stay visible. A wipe reveals the next picture from one edge, a slide moves it over
+                  the current one, and a push moves both pictures together. Video/audio ramp
+                  automatically during the fade.
                 </p>
               </div>
             )}

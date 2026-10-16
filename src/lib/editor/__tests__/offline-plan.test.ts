@@ -13,6 +13,7 @@ import {
 } from '../export/offline'
 import {
   closeDecodedFrames,
+  compositeFrame,
   createExportOutput,
   exportTimeline,
   pickAudioCodec,
@@ -207,6 +208,69 @@ describe('planVideoFrame', () => {
     const late = planVideoFrame(d, 3.75)
     expect(late.draws.find((x) => x.clip.id === 'd1')).toBeUndefined()
     expect(late.draws.find((x) => x.clip.id === 'd2')!.alpha).toBeCloseTo(0.5, 5)
+  })
+
+  it('spatial spans emit geometry with both alphas forced to 1', () => {
+    const a = videoClip({
+      id: 's1',
+      start: 0,
+      duration: 4,
+      transitionOut: { type: 'wipe', duration: 1, direction: 'left' },
+    })
+    const b = videoClip({ id: 's2', start: 3, duration: 4 })
+    const d = doc([{ kind: 'video', clips: [a, b] }], [])
+    const plan = planVideoFrame(d, 3.5)
+    const out = plan.draws.find((x) => x.clip.id === 's1')!
+    const inc = plan.draws.find((x) => x.clip.id === 's2')!
+    expect(out.alpha).toBe(1)
+    expect(inc.alpha).toBe(1)
+    expect(out.spatial?.role).toBe('outgoing')
+    expect(inc.spatial?.role).toBe('incoming')
+    expect(inc.spatial?.geometry.wipeRect).toEqual({ x: 0, y: 0, w: 960, h: 1080 })
+    expect(inc.spatial?.geometry).toBe(out.spatial?.geometry)
+  })
+
+  it('alpha spans omit the geometry entry', () => {
+    const a = videoClip({
+      id: 'c1',
+      start: 0,
+      duration: 4,
+      transitionOut: { type: 'crossfade', duration: 1 },
+    })
+    const b = videoClip({ id: 'c2', start: 3, duration: 4 })
+    const d = doc([{ kind: 'video', clips: [a, b] }], [])
+    const plan = planVideoFrame(d, 3.5)
+    for (const draw of plan.draws) expect(draw.spatial).toBeUndefined()
+  })
+
+  it('compositeFrame applies the clip region at full alpha for a wipe entry', () => {
+    const a = createTextClip({
+      id: 't1',
+      start: 0,
+      duration: 4,
+      transitionOut: { type: 'wipe', duration: 1, direction: 'left' },
+    })
+    const b = createTextClip({ id: 't2', start: 3, duration: 4 })
+    const d = doc([{ kind: 'text', clips: [a, b] }], [])
+    const plan = planVideoFrame(d, 3.5)
+    expect(plan.draws).toHaveLength(2)
+    const ctx = createFake2DContext()
+    compositeFrame(
+      ctx as unknown as CanvasRenderingContext2D,
+      d,
+      plan,
+      new Map(),
+      1920,
+      1080,
+      new Map(),
+    )
+    const rects = (ctx.calls as { op: string; args: unknown[] }[]).filter((c) => c.op === 'rect')
+    expect(rects).toEqual([{ op: 'rect', args: [0, 0, 960, 1080] }])
+    const alphas = (ctx.calls as { op: string; args: unknown[] }[])
+      .filter((c) => c.op === 'set:globalAlpha')
+      .map((c) => c.args[0])
+    expect(alphas.length).toBeGreaterThan(0)
+    for (const alpha of alphas) expect(alpha).toBe(1)
   })
 
   it('dip midpoint with a visible lower track keeps only the lower draw', () => {

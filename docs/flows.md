@@ -234,7 +234,9 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
 
 - The inspector's transition switch adds `transitionOut` to the clip and pulls the next clip left to
   overlap; durations clamp to `TRANSITION_MIN..TRANSITION_MAX` and to the available overlap. A type
-  picker beside the duration slider switches the transition between cross-dissolve and dip to black.
+  picker beside the duration slider switches the transition between cross-dissolve, dip to black, wipe,
+  slide and push; the spatial types add a direction picker, and wipes add an edge picker plus a feather
+  slider for feathered edges.
 - The video dissolve and audio ramp use the same linear alpha math and stay in sync.
 - Removing the transition only clears the flag; the overlap remains (the later clip wins visually).
 

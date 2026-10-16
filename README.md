@@ -1,6 +1,6 @@
 # Web Video Editor
 
-A browser-based multi-track video editor MVP: a minimal Premiere Pro / CapCut-style editing experience that runs entirely client-side. Import media, arrange clips on a timeline, add transitions (cross-dissolve, dip to black) and text overlays, animate properties with keyframes, re-time clips, mix and shape audio, preview in real time, and export to MP4. No uploads and no server-side processing: object URLs, canvas compositing, Web Audio, and WebCodecs do all of the work in the tab.
+A browser-based multi-track video editor MVP: a minimal Premiere Pro / CapCut-style editing experience that runs entirely client-side. Import media, arrange clips on a timeline, add transitions (cross-dissolve, dip to black, wipe, slide, push) and text overlays, animate properties with keyframes, re-time clips, mix and shape audio, preview in real time, and export to MP4. No uploads and no server-side processing: object URLs, canvas compositing, Web Audio, and WebCodecs do all of the work in the tab.
 
 Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/ui, and Vitest.
 
@@ -338,7 +338,7 @@ bun run battery        # scripted UI battery (reuses a server already on :3000, 
 
 The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **1259 tests across 63 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **1287 tests across 63 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -416,7 +416,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 63 test files (1259 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
+│   └── __tests__/               # 63 test files (1287 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs

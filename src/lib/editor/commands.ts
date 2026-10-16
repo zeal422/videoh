@@ -53,7 +53,7 @@ import {
   splitKeyframeMap,
 } from './keyframes'
 import { applyMarkerPatch, reIdMarkers } from './markers'
-import { maxTransitionDuration } from './transition'
+import { maxTransitionDuration, TRANSITION_FEATHER_DEFAULT } from './transition'
 import {
   largestFittingDuration,
   rebaseCurveFromCut,
@@ -201,7 +201,15 @@ export type EditorCommand =
   | { type: 'renameTextPreset'; presetId: string; name: string }
   | { type: 'deleteTextPreset'; presetId: string }
   // transitions
-  | { type: 'addTransition'; clipId: string; duration: number; transitionType?: Transition['type'] }
+  | {
+      type: 'addTransition'
+      clipId: string
+      duration: number
+      transitionType?: Transition['type']
+      direction?: Transition['direction']
+      edge?: Transition['edge']
+      feather?: Transition['feather']
+    }
   | { type: 'removeTransition'; clipId: string }
   // markers (0.5.5)
   | { type: 'addSequenceMarker'; marker: Marker }
@@ -1136,11 +1144,35 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       // Duration-only re-dispatches (slider drags) keep the clip's
       // existing type instead of resetting it to crossfade.
       const transitionType = command.transitionType ?? a.transitionOut?.type ?? 'crossfade'
+      const direction = command.direction ?? a.transitionOut?.direction ?? 'left'
+      if (
+        direction !== 'left' &&
+        direction !== 'right' &&
+        direction !== 'up' &&
+        direction !== 'down'
+      ) {
+        throw new EditorCommandError(`Unknown transition direction: ${String(direction)}`)
+      }
+      const edge = command.edge ?? a.transitionOut?.edge ?? 'hard'
+      if (edge !== 'hard' && edge !== 'feathered') {
+        throw new EditorCommandError(`Unknown wipe edge: ${String(edge)}`)
+      }
+      const rawFeather = command.feather ?? a.transitionOut?.feather ?? TRANSITION_FEATHER_DEFAULT
+      if (!Number.isFinite(rawFeather)) {
+        throw new EditorCommandError('Transition feather must be a finite number')
+      }
+      const feather = Math.min(0.5, Math.max(0, rawFeather))
       if (!a.transitionOut || command.duration !== a.transitionOut.duration) {
         b.start = a.start + a.duration - duration
-        a.transitionOut = { type: transitionType, duration }
+        a.transitionOut = { type: transitionType, duration, direction, edge, feather }
       } else {
-        a.transitionOut = { type: transitionType, duration: a.transitionOut.duration }
+        a.transitionOut = {
+          type: transitionType,
+          duration: a.transitionOut.duration,
+          direction,
+          edge,
+          feather,
+        }
       }
       track.clips.sort((x, y) => x.start - y.start)
       return

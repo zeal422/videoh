@@ -551,4 +551,36 @@ describe('compositor frame blending (mocked 2D context)', () => {
     expect(midSurface).not.toBe(outerSurface)
     expect(lastDrawSource(midSurface.getContext('2d'))).toBe(el)
   })
+
+  it('draws a hard wipe at full opacity through the shared clip region', () => {
+    const { doc, asset } = makeDoc()
+    doc.project.tracks[0].clips.push(
+      createClip({
+        id: 'a',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        transitionOut: { type: 'wipe', duration: 1, direction: 'left' },
+      }),
+    )
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'b', mediaId: asset.id, start: 3, duration: 4, inPoint: 0 }),
+    )
+    const ea = videoEl()
+    const eb = videoEl()
+    const resolve: MediaResolver = (clip) => ({ asset, el: clip.id === 'a' ? ea : eb })
+    const ctx = createFake2DContext()
+    drawFrame({ ctx, doc, time: 3.5, resolve }) // p = 0.5 on a 1920x1080 frame
+
+    // The mocked context receives the planner's region: left half revealed.
+    expect(drawOps(ctx, 'rect')).toEqual([{ op: 'rect', args: [0, 0, 960, 1080] }])
+    expect(drawOps(ctx, 'clip')).toHaveLength(1)
+    // Full-opacity rule: no alpha below 1 anywhere in the frame.
+    const alphas = drawOps(ctx, 'set:globalAlpha').map((c) => c.args[0])
+    expect(alphas.length).toBeGreaterThan(0)
+    for (const alpha of alphas) expect(alpha).toBe(1)
+    const draws = drawOps(ctx, 'drawImage')
+    expect(draws.map((d) => d.args[0])).toEqual([ea, eb])
+  })
 })

@@ -21,7 +21,12 @@ import { clampSourceTime, docDuration, findMedia, findSequence } from '../factor
 import { constantTimeScaleRate } from '../keyframes'
 import { clipRendersAudio, linkGroupChangesRate } from '../links'
 import { findLut } from '../lut'
-import { drawBlendedContain, drawContain, drawTextClip } from '../playback/compositor'
+import {
+  drawBlendedContain,
+  drawContain,
+  drawTextClip,
+  paintSpatialMask,
+} from '../playback/compositor'
 import { denoiseFilters } from '../playback/denoise'
 import { clamp } from '../time'
 import {
@@ -144,7 +149,7 @@ function scratchContext(
  * scratch index for compounds drawn at THIS level; the root call (depth 0)
  * fills the frame black, nested surfaces are cleared instead.
  */
-function compositeFrame(
+export function compositeFrame(
   ctx: CanvasRenderingContext2D,
   doc: Doc,
   drawPlan: ReturnType<typeof planVideoFrame>,
@@ -165,54 +170,135 @@ function compositeFrame(
   ctx.restore()
 
   for (const draw of drawPlan.draws) {
-    if (draw.nested) {
-      const sctx = scratchContext(depth, width, height)
-      if (!sctx) continue
-      compositeFrame(sctx, doc, draw.nested, frames, width, height, blends, depth + 1)
-      const lut = findLut(doc.project.luts, draw.clip.lutId)
-      const alpha = Math.min(1, Math.max(0, draw.alpha))
-      drawContain(
-        ctx,
-        compoundScratch[depth],
-        width,
-        height,
-        alpha,
-        draw.filter,
-        draw.transform,
-        lut,
-      )
+    const spatial = draw.spatial
+    if (spatial?.role === 'incoming' && spatial.geometry.wipeRect && spatial.geometry.featherBand) {
+      paintFeatheredIncoming(ctx, doc, draw, frames, width, height, blends, depth)
       continue
     }
-    // Text clips have no decoded frame: they are drawn by the same helper the
-    // preview compositor uses, so exported titles match the program monitor.
-    if (draw.clip.text !== undefined && draw.clip.style) {
-      drawTextClip(ctx, draw.clip, width, height, draw.alpha, draw.filter, draw.transform)
-      continue
+    ctx.save()
+    if (spatial) {
+      const geo = spatial.geometry
+      if (spatial.role === 'outgoing') {
+        ctx.translate(geo.aOffset.x, geo.aOffset.y)
+      } else if (geo.wipeRect) {
+        ctx.beginPath()
+        ctx.rect(geo.wipeRect.x, geo.wipeRect.y, geo.wipeRect.w, geo.wipeRect.h)
+        ctx.clip()
+      } else {
+        ctx.translate(geo.bOffset.x, geo.bOffset.y)
+      }
     }
-    const source = frames.get(draw.clip.id)
-    if (!source) continue
-    // The clip's LUT, resolved exactly the way the preview compositor resolves
-    // it: a 1D shaper already rides `draw.filter`, a 3D cube is applied here.
-    const lut = findLut(doc.project.luts, draw.clip.lutId)
-    // Alpha is clamped here: the plan carries the clip's own opacity stack and
-    // a malformed doc must not draw outside 0..1. Both paths then share the
-    // geometry, the grading and the blend compositing (playback/compositor.ts).
-    const alpha = Math.min(1, Math.max(0, draw.alpha))
-    const blend = blends.get(draw.clip.id)
-    if (blend && blend.frame !== source) {
-      drawBlendedContain(ctx, {
-        blend: { first: source, second: blend.frame, weight: blend.weight },
-        width,
-        height,
-        alpha,
-        filter: draw.filter,
-        transform: draw.transform,
-        lut,
-      })
-      continue
-    }
-    drawContain(ctx, source, width, height, alpha, draw.filter, draw.transform, lut)
+    paintExportDraw(ctx, doc, draw, frames, width, height, blends, depth)
+    ctx.restore()
   }
+}
+
+/** Dedicated scratch surfaces for feathered-wipe masking, one per nesting depth (never the compound scratch). */
+const featherScratch: HTMLCanvasElement[] = []
+
+/**
+ * Feathered incoming picture: renders the draw into a scratch surface, masks
+ * it with the shared `paintSpatialMask`, and blits the result. The outgoing
+ * picture is already underneath at full opacity, so the band cross-blends
+ * the pair with the frame fully covered.
+ */
+function paintFeatheredIncoming(
+  ctx: CanvasRenderingContext2D,
+  doc: Doc,
+  draw: ClipDraw,
+  frames: Map<string, VideoFrame | ImageBitmap | HTMLImageElement>,
+  width: number,
+  height: number,
+  blends: Map<string, BlendSample>,
+  depth: number,
+): void {
+  const geo = draw.spatial?.geometry
+  if (typeof document === 'undefined' || !geo) {
+    ctx.save()
+    if (geo?.wipeRect) {
+      ctx.beginPath()
+      ctx.rect(geo.wipeRect.x, geo.wipeRect.y, geo.wipeRect.w, geo.wipeRect.h)
+      ctx.clip()
+    }
+    paintExportDraw(ctx, doc, draw, frames, width, height, blends, depth)
+    ctx.restore()
+    return
+  }
+  const canvas = (featherScratch[depth] ??= document.createElement('canvas'))
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+  const sctx = canvas.getContext('2d')
+  if (!sctx) {
+    ctx.save()
+    if (geo.wipeRect) {
+      ctx.beginPath()
+      ctx.rect(geo.wipeRect.x, geo.wipeRect.y, geo.wipeRect.w, geo.wipeRect.h)
+      ctx.clip()
+    }
+    paintExportDraw(ctx, doc, draw, frames, width, height, blends, depth)
+    ctx.restore()
+    return
+  }
+  sctx.save()
+  sctx.globalAlpha = 1
+  sctx.clearRect(0, 0, width, height)
+  paintExportDraw(sctx, doc, draw, frames, width, height, blends, depth)
+  paintSpatialMask(sctx, geo, width, height)
+  sctx.restore()
+  ctx.drawImage(canvas, 0, 0)
+}
+
+/** One plan entry onto the target context (extracted body of the draw loop). */
+function paintExportDraw(
+  ctx: CanvasRenderingContext2D,
+  doc: Doc,
+  draw: ClipDraw,
+  frames: Map<string, VideoFrame | ImageBitmap | HTMLImageElement>,
+  width: number,
+  height: number,
+  blends: Map<string, BlendSample>,
+  depth: number,
+): void {
+  if (draw.nested) {
+    const sctx = scratchContext(depth, width, height)
+    if (!sctx) return
+    compositeFrame(sctx, doc, draw.nested, frames, width, height, blends, depth + 1)
+    const lut = findLut(doc.project.luts, draw.clip.lutId)
+    const alpha = Math.min(1, Math.max(0, draw.alpha))
+    drawContain(ctx, compoundScratch[depth], width, height, alpha, draw.filter, draw.transform, lut)
+    return
+  }
+  // Text clips have no decoded frame: they are drawn by the same helper the
+  // preview compositor uses, so exported titles match the program monitor.
+  if (draw.clip.text !== undefined && draw.clip.style) {
+    drawTextClip(ctx, draw.clip, width, height, draw.alpha, draw.filter, draw.transform)
+    return
+  }
+  const source = frames.get(draw.clip.id)
+  if (!source) return
+  // The clip's LUT, resolved exactly the way the preview compositor resolves
+  // it: a 1D shaper already rides `draw.filter`, a 3D cube is applied here.
+  const lut = findLut(doc.project.luts, draw.clip.lutId)
+  // Alpha is clamped here: the plan carries the clip's own opacity stack and
+  // a malformed doc must not draw outside 0..1. Both paths then share the
+  // geometry, the grading and the blend compositing (playback/compositor.ts).
+  const alpha = Math.min(1, Math.max(0, draw.alpha))
+  const blend = blends.get(draw.clip.id)
+  if (blend && blend.frame !== source) {
+    drawBlendedContain(ctx, {
+      blend: { first: source, second: blend.frame, weight: blend.weight },
+      width,
+      height,
+      alpha,
+      filter: draw.filter,
+      transform: draw.transform,
+      lut,
+    })
+    return
+  }
+  drawContain(ctx, source, width, height, alpha, draw.filter, draw.transform, lut)
 }
 
 /** The second decoded frame of a sub-frame-rate draw, with its blend weight. */

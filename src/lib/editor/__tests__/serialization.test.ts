@@ -167,10 +167,70 @@ describe('deserializeDoc', () => {
 
   it('falls back to crossfade for unknown transition types', () => {
     const data = JSON.parse(JSON.stringify(serializeDoc(makeDoc())))
-    data.project.tracks[0].clips[0].transitionOut = { type: 'wipe', duration: 1 }
+    data.project.tracks[0].clips[0].transitionOut = { type: 'spinWipe', duration: 1 }
     const { doc } = deserializeDoc(data)
     expect(doc.project.tracks[0].clips[0].transitionOut).toEqual({
       type: 'crossfade',
+      duration: 1,
+    })
+  })
+
+  it('keeps known transition direction, edge and feather on load', () => {
+    const data = JSON.parse(JSON.stringify(serializeDoc(makeDoc())))
+    data.project.tracks[0].clips[0].transitionOut = {
+      type: 'wipe',
+      duration: 1,
+      direction: 'right',
+      edge: 'feathered',
+      feather: 0.25,
+    }
+    const { doc } = deserializeDoc(data)
+    expect(doc.project.tracks[0].clips[0].transitionOut).toEqual({
+      type: 'wipe',
+      duration: 1,
+      direction: 'right',
+      edge: 'feathered',
+      feather: 0.25,
+    })
+  })
+
+  it('drops unknown direction and edge values so readers default them', () => {
+    const data = JSON.parse(JSON.stringify(serializeDoc(makeDoc())))
+    data.project.tracks[0].clips[0].transitionOut = {
+      type: 'wipe',
+      duration: 1,
+      direction: 'diagonal',
+      edge: 'dotted',
+    }
+    const { doc } = deserializeDoc(data)
+    expect(doc.project.tracks[0].clips[0].transitionOut).toEqual({
+      type: 'wipe',
+      duration: 1,
+    })
+  })
+
+  it('pins hostile feather values to exact outcomes', () => {
+    const data = JSON.parse(JSON.stringify(serializeDoc(makeDoc())))
+    const load = (feather: unknown) => {
+      const d = JSON.parse(JSON.stringify(data))
+      d.project.tracks[0].clips[0].transitionOut = { type: 'wipe', duration: 1, feather }
+      return deserializeDoc(d).doc.project.tracks[0].clips[0].transitionOut?.feather
+    }
+    expect(load('huge')).toBe(0.1)
+    expect(load(-1)).toBe(0)
+    expect(load(2)).toBe(0.5)
+    // NaN cannot ride JSON (it stringifies to null), so it goes in direct.
+    const nanData = serializeDoc(makeDoc())
+    nanData.project.tracks[0].clips[0].transitionOut = { type: 'wipe', duration: 1, feather: NaN }
+    expect(deserializeDoc(nanData).doc.project.tracks[0].clips[0].transitionOut?.feather).toBe(0.1)
+  })
+
+  it('loads a v4 file without the new transition keys with those keys absent', () => {
+    const data = JSON.parse(JSON.stringify(serializeDoc(makeDoc())))
+    data.project.tracks[0].clips[0].transitionOut = { type: 'wipe', duration: 1 }
+    const { doc } = deserializeDoc(data)
+    expect(doc.project.tracks[0].clips[0].transitionOut).toEqual({
+      type: 'wipe',
       duration: 1,
     })
   })
