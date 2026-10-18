@@ -105,6 +105,11 @@ export function PanelShell({
   const vertical = side !== 'bottom'
 
   return (
+    // No onCollapse/onExpand subscriptions: the library fires both spuriously
+    // during mount init, which reverts persisted collapsed flags to expanded
+    // before first paint. Collapse state is owned by the explicit setters,
+    // the drag-size sync in the workspace store, and the post-transition
+    // reconcile above.
     <ResizablePanel
       ref={panelRef}
       id={`panel-${id}`}
@@ -114,8 +119,6 @@ export function PanelShell({
       minSize={minSize}
       maxSize={maxSize}
       defaultSize={initialSize}
-      onCollapse={() => setCollapsed(id, true)}
-      onExpand={() => setCollapsed(id, false)}
       className={cn('min-h-0 min-w-0', className)}
     >
       {collapsed ? (

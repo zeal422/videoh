@@ -230,6 +230,8 @@ export interface Clip {
   /** Text content — present for text clips only. */
   text?: string
   style?: TextStyle
+  /** Caption cue (0.8.5). Set on text clips by SRT import; SRT export collects flagged clips. */
+  isCaption?: boolean
   /** Cross-dissolve into the next clip on the same track. */
   transitionOut?: Transition
   /** Clip markers, `time` in source seconds (see {@link Marker}). */

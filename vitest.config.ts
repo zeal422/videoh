@@ -33,6 +33,7 @@ export default defineConfig({
         'src/lib/editor/sequence-ops.ts',
         'src/lib/editor/factories.ts',
         'src/lib/editor/snap.ts',
+        'src/lib/editor/srt.ts',
         'src/lib/editor/time.ts',
         'src/lib/editor/transition.ts',
         'src/lib/editor/tracks.ts',

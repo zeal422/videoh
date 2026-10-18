@@ -72,8 +72,16 @@ function baseCtx(overrides: Partial<MenuContext> = {}): MenuContext {
     canAddMarker: true,
     snapEnabled: true,
     proxiesEnabled: false,
-    panelHidden: { media: false, preview: false, source: false, inspector: false, timeline: false },
+    panelHidden: {
+      media: false,
+      preview: false,
+      source: false,
+      inspector: false,
+      timeline: false,
+      captions: false,
+    },
     workspaceDirty: false,
+    isMobile: false,
     ...overrides,
   }
 }
@@ -182,7 +190,7 @@ describe('menu structure (Premiere Pro–style)', () => {
     expect(itemOf('Sequence', 'sequence.settings').action).toBe('sequence.settings')
   })
 
-  it('Window menu toggles all five workspace panels + reset', () => {
+  it('Window menu toggles all six workspace panels + reset', () => {
     const menu = findMenu('Window')
     const toggles = menu.items.filter((i) => i.kind === 'checkbox')
     expect(toggles.map((i) => i.action)).toEqual([
@@ -191,6 +199,7 @@ describe('menu structure (Premiere Pro–style)', () => {
       'window.toggleSource',
       'window.toggleInspector',
       'window.toggleTimeline',
+      'window.toggleCaptions',
     ])
     expect(itemOf('Window', 'window.source').label).toBe('Source Monitor')
     expect(itemOf('Window', 'window.reset').action).toBe('window.resetLayout')
@@ -335,6 +344,20 @@ describe('menu state resolution (buildMenus)', () => {
     expect(window.items.find((i) => i.spec.id === 'window.source')!.checked).toBe(false)
     expect(window.items.find((i) => i.spec.id === 'window.preview')!.checked).toBe(true)
     expect(window.items.find((i) => i.spec.id === 'window.timeline')!.checked).toBe(true)
+    expect(window.items.find((i) => i.spec.id === 'window.captions')!.checked).toBe(true)
+  })
+
+  it('Window panel toggles disable on mobile (no workspace panels there)', () => {
+    const menus = buildMenus(baseCtx({ isMobile: true }))
+    const window = menus.find((m) => m.spec.id === 'window')!
+    const toggles = window.items.filter((i) => i.spec.kind === 'checkbox')
+    expect(toggles.map((i) => i.spec.id)).toContain('window.captions')
+    for (const item of toggles) expect(item.enabled).toBe(false)
+    const desktop = buildMenus(baseCtx({ isMobile: false }))
+    const desktopToggles = desktop
+      .find((m) => m.spec.id === 'window')!
+      .items.filter((i) => i.spec.kind === 'checkbox')
+    for (const item of desktopToggles) expect(item.enabled).toBe(true)
   })
 
   it('reset layout is enabled whenever the workspace deviates from defaults', () => {
@@ -353,6 +376,7 @@ describe('menu state resolution (buildMenus)', () => {
           source: false,
           inspector: false,
           timeline: false,
+          captions: false,
         },
         workspaceDirty: true,
       }),

@@ -42,6 +42,7 @@ describe('defaults and catalog', () => {
       source: false,
       inspector: false,
       timeline: false,
+      captions: false,
     })
     expect(ws.collapsed).toEqual({
       media: false,
@@ -49,15 +50,18 @@ describe('defaults and catalog', () => {
       source: false,
       inspector: false,
       timeline: false,
+      captions: false,
     })
     expect(ws.sizes.media).toBe(PANEL_BOUNDS.media.default)
     expect(ws.sizes.source).toBe(PANEL_BOUNDS.source.default)
     expect(ws.sizes.inspector).toBe(PANEL_BOUNDS.inspector.default)
     expect(ws.sizes.timeline).toBe(PANEL_BOUNDS.timeline.default)
+    expect(ws.sizes.captions).toBe(PANEL_BOUNDS.captions.default)
   })
 
-  it('panel catalog covers exactly the five workspace panels', () => {
+  it('panel catalog covers exactly the six workspace panels', () => {
     expect(PANELS.map((p) => p.id).sort()).toEqual([
+      'captions',
       'inspector',
       'media',
       'preview',
@@ -71,7 +75,7 @@ describe('defaults and catalog', () => {
   })
 
   it('default sizes respect the panel bounds', () => {
-    for (const key of ['media', 'source', 'inspector', 'timeline'] as const) {
+    for (const key of ['media', 'source', 'inspector', 'timeline', 'captions'] as const) {
       const b = PANEL_BOUNDS[key]
       expect(b.default).toBeGreaterThanOrEqual(b.min)
       expect(b.default).toBeLessThanOrEqual(b.max)
@@ -147,6 +151,28 @@ describe('sanitizeWorkspace', () => {
     expect(legacy.sizes.source).toBe(PANEL_BOUNDS.source.default)
     expect(legacy.hidden.source).toBe(false)
     expect(legacy.collapsed.media).toBe(true)
+  })
+
+  it('a stored layout from before the Captions panel simply lacks the key', () => {
+    // Same forward-compat migration one release later: the five-size shape
+    // loads as valid, with captions taking its default (and staying visible).
+    const legacy = sanitizeWorkspace({
+      sizes: { media: 22, source: 24, inspector: 30, timeline: 40 },
+      collapsed: { media: true, preview: false, source: false, inspector: false, timeline: false },
+      hidden: { media: false, preview: false, source: false, inspector: false, timeline: false },
+    })
+    expect(legacy.sizes.captions).toBe(PANEL_BOUNDS.captions.default)
+    expect(legacy.hidden.captions).toBe(false)
+    expect(legacy.collapsed.captions).toBe(false)
+    expect(legacy.sizes.media).toBe(22)
+  })
+
+  it('withSize stores the captions width inside its bounds', () => {
+    const ws = withSize(defaultWorkspace(), 'captions', 30)
+    expect(ws.sizes.captions).toBe(30)
+    expect(withSize(defaultWorkspace(), 'captions', 90).sizes.captions).toBe(
+      PANEL_BOUNDS.captions.max,
+    )
   })
 
   it('ignores non-numeric and unknown size keys', () => {

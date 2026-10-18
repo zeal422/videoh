@@ -1,4 +1,5 @@
 import type { EditorCommand } from './commands'
+import { firstFreeCaptionsName } from './commands'
 import {
   activeTracks,
   clipFitsTrack,
@@ -306,6 +307,20 @@ export function commandsToAddText(
   })
   commands.push({ type: 'addClip', trackId: textTrack.id, clip })
   return commands
+}
+
+/**
+ * Fresh-track New Cue batch (0.8.5): a first-free Captions text track plus
+ * one flagged cue at `start`, applied as ONE history entry. Plain `addTrack`
+ * would name it T1, T2, …, so the batch renames it explicitly.
+ */
+export function commandsToAddCaptionCue(doc: Doc, start: number): EditorCommand[] {
+  const newId = newTrackId()
+  return [
+    { type: 'addTrack', kind: 'text', trackId: newId },
+    { type: 'renameTrack', trackId: newId, name: firstFreeCaptionsName(doc) },
+    { type: 'addCaptionCue', trackId: newId, start },
+  ]
 }
 
 /** Generates a fresh track id (used by UI actions that create tracks). */

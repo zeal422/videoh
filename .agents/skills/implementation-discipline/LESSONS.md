@@ -116,3 +116,17 @@ with zero output. Restructured to an `if` so absence exits 0.
 Would-have-caught: the round-2 lesson directly above (helpers must assert before keying);
 a negative assertion as the last line inverts the verdict by construction.
 Action: kept as a note; battery steps end with an explicit `return 0` or a positive assertion.
+
+## 2026-10-17 - Browser proof measured a stale dev server (0.8.5 collapse fix)
+
+What happened: a second `setsid bun run dev` died with EADDRINUSE while the
+first server kept serving, so a whole proof round (collapse, reload, widths)
+measured pre-fix code and "disproved" a working fix. Turbopack also does not
+always recompile on edit (single "Compiled" line despite changes), so HMR
+cannot be assumed either.
+Would-have-caught: trigger 7 (proof names the action and the observed result)
+applied to the harness itself: prove WHICH server answers (kill by recorded
+PID/group, confirm the port free, start fresh, confirm Ready) before proving
+anything through it.
+Action: kept as a note; browser proofs start from a known-fresh server, and a
+result that contradicts the code on disk triggers a freshness check first.

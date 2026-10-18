@@ -3,12 +3,16 @@
  * Every command is validated: happy path + rejection + immutability of the input doc.
  */
 import { describe, expect, it } from 'vitest'
-import { applyCommand, applyCommands, EditorCommandError } from '../commands'
+import { applyCommand, applyCommands, EditorCommandError, firstFreeCaptionsName } from '../commands'
 import {
+  clipFitsTrack,
+  createCaptionStyle,
   createClip,
+  createDefaultTextStyle,
   createDoc,
   createMediaAsset,
   createTextClip,
+  createTrack,
   docDuration,
   sourceTimeAt,
 } from '../factories'
@@ -2346,5 +2350,260 @@ describe('markers (0.5.5)', () => {
     for (const id of left.markers!.map((m) => m.id)) {
       expect(rightIds.has(id)).toBe(false)
     }
+  })
+})
+
+describe('captions commands (0.8.5)', () => {
+  it('importCaptions stamps flagged clips at cue times on a first-free Captions track', () => {
+    const { doc } = makeDoc()
+    const next = applyCommand(doc, {
+      type: 'importCaptions',
+      cues: [
+        { start: 4, duration: 1, text: 'Second' },
+        { start: 1, duration: 1, text: 'First' },
+      ],
+    })
+    const track = next.project.tracks.find((t) => t.name === 'Captions')
+    expect(track?.kind).toBe('text')
+    // Convention order: the Captions track stacks above the video and audio
+    // lanes (`tracks[0]` is topmost), or opaque video would cover the cues.
+    expect(next.project.tracks[0].name).toBe('Captions')
+    // Sorted by start despite the input order.
+    expect(track?.clips.map((c) => c.text)).toEqual(['First', 'Second'])
+    expect(track?.clips.map((c) => c.start)).toEqual([1, 4])
+    for (const clip of track?.clips ?? []) {
+      expect(clip.isCaption).toBe(true)
+      expect(clip.style).toEqual(createCaptionStyle())
+    }
+    // A second import numbers up instead of reusing the name.
+    const twice = applyCommand(next, {
+      type: 'importCaptions',
+      cues: [{ start: 0, duration: 1, text: 'Third' }],
+    })
+    expect(twice.project.tracks.map((t) => t.name)).toContain('Captions 2')
+  })
+
+  it('importCaptions tops a custom track order without reshuffling it', () => {
+    // Drop-between-tracks allows any z-order, and the array order is user
+    // intent: a resort would silently re-stack lanes the user arranged.
+    const { doc } = makeDoc()
+    const [v1, a1] = doc.project.tracks
+    doc.project.tracks = [a1, v1] // audio lane deliberately on top
+    const next = applyCommand(doc, {
+      type: 'importCaptions',
+      cues: [{ start: 1, duration: 1, text: 'Hi' }],
+    })
+    expect(next.project.tracks.map((t) => t.name)).toEqual(['Captions', 'A1', 'V1'])
+  })
+
+  it('trimClip refuses non-finite durations without touching the doc', () => {
+    const { doc, videoAsset } = makeDoc()
+    const lane = doc.project.tracks.find((t) => t.kind === 'video')!
+    lane.clips.push(createClip({ id: 'c1', mediaId: videoAsset.id, start: 0, duration: 2 }))
+    for (const duration of [NaN, Infinity]) {
+      const before = JSON.stringify(doc)
+      expect(() =>
+        applyCommand(doc, {
+          type: 'trimClip',
+          clipId: 'c1',
+          start: 0,
+          inPoint: 0,
+          duration,
+          edge: 'tail',
+        }),
+      ).toThrow(EditorCommandError)
+      expect(JSON.stringify(doc)).toBe(before)
+    }
+  })
+
+  it('addClip clamps non-finite starts to zero', () => {
+    const { doc, videoAsset } = makeDoc()
+    const lane = doc.project.tracks.find((t) => t.kind === 'video')!
+    for (const start of [NaN, Infinity]) {
+      const next = applyCommand(doc, {
+        type: 'addClip',
+        trackId: lane.id,
+        clip: createClip({ id: 'c1', mediaId: videoAsset.id, start, duration: 2 }),
+      })
+      expect(next.project.tracks.find((t) => t.id === lane.id)!.clips[0].start).toBe(0)
+    }
+  })
+
+  it('trimClip refuses non-finite starts and inPoints without touching the doc', () => {
+    const { doc, videoAsset } = makeDoc()
+    const lane = doc.project.tracks.find((t) => t.kind === 'video')!
+    lane.clips.push(createClip({ id: 'c1', mediaId: videoAsset.id, start: 0, duration: 2 }))
+    for (const [start, inPoint] of [
+      [NaN, 0],
+      [0, NaN],
+      [Infinity, 0],
+    ]) {
+      const before = JSON.stringify(doc)
+      expect(() =>
+        applyCommand(doc, {
+          type: 'trimClip',
+          clipId: 'c1',
+          start,
+          inPoint,
+          duration: 1,
+          edge: 'tail',
+        }),
+      ).toThrow(EditorCommandError)
+      expect(JSON.stringify(doc)).toBe(before)
+    }
+  })
+
+  it('addClip clamps a non-finite inPoint to zero without poisoning duration', () => {
+    const { doc, videoAsset } = makeDoc()
+    const lane = doc.project.tracks.find((t) => t.kind === 'video')!
+    const next = applyCommand(doc, {
+      type: 'addClip',
+      trackId: lane.id,
+      clip: createClip({ id: 'c1', mediaId: videoAsset.id, start: 1, duration: 2, inPoint: NaN }),
+    })
+    const placed = next.project.tracks.find((t) => t.id === lane.id)!.clips[0]
+    expect(placed.inPoint).toBe(0)
+    expect(placed.duration).toBe(2)
+  })
+
+  it('splitClip refuses a non-finite split point without touching the doc', () => {
+    const { doc, videoAsset } = makeDoc()
+    const lane = doc.project.tracks.find((t) => t.kind === 'video')!
+    lane.clips.push(createClip({ id: 'c1', mediaId: videoAsset.id, start: 0, duration: 4 }))
+    for (const atTime of [NaN, Infinity]) {
+      const before = JSON.stringify(doc)
+      expect(() => applyCommand(doc, { type: 'splitClip', clipId: 'c1', atTime })).toThrow(
+        EditorCommandError,
+      )
+      expect(JSON.stringify(doc)).toBe(before)
+    }
+  })
+
+  it('moveClip refuses non-finite starts without touching the doc', () => {
+    const { doc } = makeDoc()
+    const withTrack = applyCommand(doc, { type: 'addTrack', kind: 'text' })
+    const trackId = withTrack.project.tracks.find((t) => t.kind === 'text')!.id
+    const cued = applyCommand(withTrack, { type: 'addCaptionCue', trackId, start: 3 })
+    const clipId = cued.project.tracks.find((t) => t.id === trackId)!.clips[0].id
+    for (const start of [NaN, Infinity]) {
+      const before = JSON.stringify(cued)
+      expect(() => applyCommand(cued, { type: 'moveClip', clipId, trackId, start })).toThrow(
+        EditorCommandError,
+      )
+      expect(JSON.stringify(cued)).toBe(before)
+    }
+  })
+
+  it('importCaptions refuses zero cues and hostile payloads without touching the doc', () => {
+    const bad: { start: number; duration: number; text: string }[][] = [
+      [],
+      [{ start: NaN, duration: 1, text: 'x' }],
+      [{ start: Infinity, duration: 1, text: 'x' }],
+      [{ start: 1, duration: Infinity, text: 'x' }],
+      [{ start: -1, duration: 1, text: 'x' }],
+      [{ start: 1, duration: -1, text: 'x' }],
+      [{ start: 1, duration: 1, text: '   ' }],
+      [{ start: 1, duration: 0.05, text: 'x' }],
+      [{ start: 2_000_000_000, duration: 1, text: 'x' }],
+      // Raw end lands exactly on the limit, but the rounded span passes it.
+      [{ start: 999999999.8505, duration: 0.1495, text: 'x' }],
+    ]
+    for (const cues of bad) {
+      const { doc } = makeDoc()
+      const before = JSON.stringify(doc)
+      expect(() => applyCommand(doc, { type: 'importCaptions', cues })).toThrow(EditorCommandError)
+      expect(JSON.stringify(doc)).toBe(before)
+    }
+    // Shape-invalid payloads refuse with EditorCommandError, never TypeError.
+    for (const cues of [null, undefined, 'nope', [null], [{ start: 1, duration: 1 }]]) {
+      const { doc } = makeDoc()
+      expect(() => applyCommand(doc, { type: 'importCaptions', cues: cues as never })).toThrow(
+        EditorCommandError,
+      )
+    }
+    for (const text of [42, null, {}]) {
+      const { doc } = makeDoc()
+      expect(() =>
+        applyCommand(doc, {
+          type: 'importCaptions',
+          cues: [{ start: 1, duration: 1, text: text as never }],
+        }),
+      ).toThrow(EditorCommandError)
+    }
+    // Non-string New Cue text refuses the same way.
+    const { doc } = makeDoc()
+    const withTrack = applyCommand(doc, { type: 'addTrack', kind: 'text' })
+    const trackId = withTrack.project.tracks.find((t) => t.kind === 'text')!.id
+    expect(() =>
+      applyCommand(withTrack, { type: 'addCaptionCue', trackId, start: 1, text: 42 as never }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('addCaptionCue stamps a 2 s flagged clip and refuses bad targets', () => {
+    const { doc } = makeDoc()
+    const withTrack = applyCommand(doc, { type: 'addTrack', kind: 'text' })
+    const trackId = withTrack.project.tracks.find((t) => t.kind === 'text')!.id
+    const next = applyCommand(withTrack, { type: 'addCaptionCue', trackId, start: 3 })
+    const clips = next.project.tracks.find((t) => t.id === trackId)!.clips
+    expect(clips).toHaveLength(1)
+    expect(clips[0].isCaption).toBe(true)
+    expect(clips[0].start).toBe(3)
+    expect(clips[0].duration).toBe(2)
+    expect(clips[0].text).toBe('')
+    expect(() =>
+      applyCommand(next, { type: 'addCaptionCue', trackId: 'track_nope', start: 0 }),
+    ).toThrow(EditorCommandError)
+    const videoId = next.project.tracks.find((t) => t.kind === 'video')!.id
+    expect(() => applyCommand(next, { type: 'addCaptionCue', trackId: videoId, start: 0 })).toThrow(
+      EditorCommandError,
+    )
+    for (const start of [NaN, -1]) {
+      expect(() => applyCommand(next, { type: 'addCaptionCue', trackId, start })).toThrow(
+        EditorCommandError,
+      )
+    }
+    // The import bound applies here too: a cue past the supported range can
+    // never be exported, so the dispatch refuses instead of creating one.
+    const before = JSON.stringify(next)
+    expect(() =>
+      applyCommand(next, { type: 'addCaptionCue', trackId, start: 2_000_000_000 }),
+    ).toThrow(EditorCommandError)
+    expect(JSON.stringify(next)).toBe(before)
+  })
+
+  it('caption-flagged clips fit a text track only with a text field', () => {
+    const { doc } = makeDoc()
+    const textTrack = createTrack('text', 1)
+    // Empty text is placeable when flagged (new cues start blank) ...
+    expect(clipFitsTrack(doc, createTextClip({ text: '', isCaption: true }), textTrack)).toBe(true)
+    // ... but a flagged clip with NO text field is not a text clip at all.
+    const fieldless = createTextClip({ text: '', isCaption: true })
+    delete fieldless.text
+    expect(clipFitsTrack(doc, fieldless, textTrack)).toBe(false)
+    // Null and non-string text are not text either, whatever the flag says.
+    for (const text of [null, 42, {}]) {
+      const odd = createTextClip({ text: '', isCaption: true })
+      odd.text = text as never
+      expect(clipFitsTrack(doc, odd, textTrack)).toBe(false)
+    }
+    expect(clipFitsTrack(doc, createTextClip({ text: 'Hi' }), textTrack)).toBe(true)
+  })
+
+  it('createCaptionStyle spreads the default style with bottom-center overrides', () => {
+    expect(createCaptionStyle()).toEqual({
+      ...createDefaultTextStyle(),
+      fontSize: 48,
+      x: 0.5,
+      y: 0.92,
+    })
+  })
+
+  it('firstFreeCaptionsName skips taken names', () => {
+    const { doc } = makeDoc()
+    expect(firstFreeCaptionsName(doc)).toBe('Captions')
+    doc.project.tracks.push(createTrack('text', 1, { name: 'Captions' }))
+    expect(firstFreeCaptionsName(doc)).toBe('Captions 2')
+    doc.project.tracks.push(createTrack('text', 2, { name: 'Captions 2' }))
+    expect(firstFreeCaptionsName(doc)).toBe('Captions 3')
   })
 })

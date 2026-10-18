@@ -392,6 +392,8 @@ function hydrateClip(raw: Record<string, unknown>, media: MediaAsset[]): Clip {
   if (typeof raw.mediaId === 'string') clip.mediaId = raw.mediaId
   if (typeof raw.linkId === 'string') clip.linkId = raw.linkId
   if (raw.audioOnly === true) clip.audioOnly = true
+  // Caption flag (0.8.5): true stays true, anything else stays absent.
+  if (raw.isCaption === true) clip.isCaption = true
   // Compound clip reference (0.8.1). Kept only when it names a hydrated
   // sequence; the caller drops a dangling one after the whole project is built.
   if (typeof raw.sequenceId === 'string' && raw.sequenceId) clip.sequenceId = raw.sequenceId

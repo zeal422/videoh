@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  commandsToAddCaptionCue,
   commandsToAddMarker,
   commandsToAddMedia,
   commandsToAddMediaInNewTrack,
@@ -446,5 +447,24 @@ describe('commandsToPlaceMedia / commandsToPlaceSource', () => {
     expect(outcome.refusal).toBe('geometry')
     // Nothing written: the input doc is untouched (the batch never exists).
     expect(doc.project.tracks[0].clips[0].duration).toBe(4)
+  })
+})
+
+describe('commandsToAddCaptionCue (0.8.5)', () => {
+  it('builds a fresh-track batch with a first-free Captions name', () => {
+    const doc = createDoc()
+    const batch = commandsToAddCaptionCue(doc, 2)
+    expect(batch.map((c) => c.type)).toEqual(['addTrack', 'renameTrack', 'addCaptionCue'])
+    const trackId = (batch[0] as Extract<EditorCommand, { type: 'addTrack' }>).trackId
+    expect(trackId).toBeDefined()
+    expect(batch[1]).toMatchObject({ trackId, name: 'Captions' })
+    expect(batch[2]).toMatchObject({ trackId, start: 2 })
+    // The batch applies as a whole: one Captions track, one flagged cue.
+    const next = applyCommands(doc, batch)
+    const track = next.project.tracks.find((t) => t.name === 'Captions')
+    expect(track?.kind).toBe('text')
+    expect(track?.clips).toHaveLength(1)
+    expect(track?.clips[0].start).toBe(2)
+    expect(track?.clips[0].isCaption).toBe(true)
   })
 })

@@ -938,3 +938,42 @@ describe('A/V link serialization', () => {
     expect(restored.media[0].hasAudio).toBeUndefined()
   })
 })
+
+describe('caption flag serialization (0.8.5)', () => {
+  const withFlag = (isCaption: unknown) => ({
+    version: SERIALIZATION_VERSION,
+    project: {
+      tracks: [
+        {
+          kind: 'text',
+          clips: [{ id: 'c1', start: 0, duration: 1, text: 'Hi', isCaption }],
+        },
+      ],
+    },
+  })
+
+  it('round-trips true and drops anything else', () => {
+    expect(deserializeDoc(withFlag(true)).doc.project.tracks[0].clips[0].isCaption).toBe(true)
+    expect(deserializeDoc(withFlag(false)).doc.project.tracks[0].clips[0].isCaption).toBeUndefined()
+    expect(deserializeDoc(withFlag(1)).doc.project.tracks[0].clips[0].isCaption).toBeUndefined()
+    expect(deserializeDoc(withFlag('yes')).doc.project.tracks[0].clips[0].isCaption).toBeUndefined()
+    // Absent stays absent: old files read identically.
+    const noField = withFlag(undefined)
+    delete (noField.project.tracks[0].clips[0] as Record<string, unknown>).isCaption
+    expect(deserializeDoc(noField).doc.project.tracks[0].clips[0].isCaption).toBeUndefined()
+  })
+
+  it('saves the flag as-is through serializeDoc', () => {
+    const doc = makeDoc()
+    doc.project.tracks.push({
+      id: 'track_cap',
+      kind: 'text',
+      name: 'Captions',
+      clips: [
+        createTextClip({ id: 'clip_cap', start: 0, duration: 1, text: 'Hi', isCaption: true }),
+      ],
+    })
+    const { doc: loaded } = deserializeDoc(JSON.parse(JSON.stringify(serializeDoc(doc))))
+    expect(loaded.project.tracks.find((t) => t.id === 'track_cap')!.clips[0].isCaption).toBe(true)
+  })
+})

@@ -71,7 +71,7 @@ The video surfaces stay dark regardless of the token theme, the way an NLE's mon
 - **Responsive shell.** At ≥768 px the shell is the resizable panel workspace; below 768 px it falls
   back to a fixed stacked layout. Panel sizes, collapsed state, and visibility persist via
   `workspace.ts`.
-- **The Source monitor is the fifth workspace panel** (`panel-source`, the upper row is
+- **The Source monitor is one of the six workspace panels** (`panel-source`, the upper row is
   `source | preview | inspector`), built exactly like the inspector: a `PanelShell` plus a
   `HandleWithReset` inside the upper `ResizablePanelGroup`. The Source Monitor sits FIRST, not in the
   middle: in a shared row a collapsible panel's freed space can only flow into the panel to its right,
@@ -85,6 +85,12 @@ The video surfaces stay dark regardless of the token theme, the way an NLE's mon
   singleton `<video data-testid="source-preview">`; a still renders as
   `<img data-testid="source-image">` inside the same `aspect-video` black host instead, because a
   `<video>` cannot decode a PNG (left alone it showed a black box with a demuxer error).
+- **The bottom row is timeline plus captions.** The Captions panel docks to the
+  right of the timeline (`panel-captions`, `side="bottom"`, same flex chain as
+  every other panel). The timeline fills the horizontal remainder with no
+  stored width (like the Program Monitor upstairs); only the captions width
+  persists, while `sizes.timeline` keeps meaning the bottom group's vertical
+  share. It follows the flex-chain rule above.
 - **The placement-mode control is a segmented group, not three tool buttons.** It renders as one
   `role="group" aria-label="Placement mode"` bordered box with three square-cornered `Button`s
   (`placement-mode-place|insert|overwrite`); the active one takes `variant="secondary"` and

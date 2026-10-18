@@ -13,7 +13,7 @@
  * the editor on boot.
  */
 
-export type PanelId = 'media' | 'preview' | 'source' | 'inspector' | 'timeline'
+export type PanelId = 'media' | 'preview' | 'source' | 'inspector' | 'timeline' | 'captions'
 
 export interface PanelInfo {
   id: PanelId
@@ -27,6 +27,7 @@ export const PANELS: PanelInfo[] = [
   { id: 'source', title: 'Source Monitor' },
   { id: 'inspector', title: 'Inspector' },
   { id: 'timeline', title: 'Timeline' },
+  { id: 'captions', title: 'Captions' },
 ]
 
 export const PANEL_IDS: PanelId[] = PANELS.map((p) => p.id)
@@ -41,11 +42,15 @@ export interface PanelBounds {
   max: number
 }
 
-export const PANEL_BOUNDS: Record<'media' | 'source' | 'inspector' | 'timeline', PanelBounds> = {
+export const PANEL_BOUNDS: Record<
+  'media' | 'source' | 'inspector' | 'timeline' | 'captions',
+  PanelBounds
+> = {
   media: { default: 20, min: 12, max: 42 },
   source: { default: 24, min: 14, max: 44 },
   inspector: { default: 26, min: 16, max: 46 },
   timeline: { default: 38, min: 15, max: 72 },
+  captions: { default: 24, min: 15, max: 45 },
 }
 
 /**
@@ -62,6 +67,7 @@ export interface WorkspaceState {
     source: number
     inspector: number
     timeline: number
+    captions: number
   }
   collapsed: Record<PanelId, boolean>
   hidden: Record<PanelId, boolean>
@@ -77,9 +83,24 @@ export function defaultWorkspace(): WorkspaceState {
       source: PANEL_BOUNDS.source.default,
       inspector: PANEL_BOUNDS.inspector.default,
       timeline: PANEL_BOUNDS.timeline.default,
+      captions: PANEL_BOUNDS.captions.default,
     },
-    collapsed: { media: false, preview: false, source: false, inspector: false, timeline: false },
-    hidden: { media: false, preview: false, source: false, inspector: false, timeline: false },
+    collapsed: {
+      media: false,
+      preview: false,
+      source: false,
+      inspector: false,
+      timeline: false,
+      captions: false,
+    },
+    hidden: {
+      media: false,
+      preview: false,
+      source: false,
+      inspector: false,
+      timeline: false,
+      captions: false,
+    },
   }
 }
 
@@ -108,7 +129,7 @@ export function sanitizeWorkspace(raw: unknown): WorkspaceState {
   const obj = raw as Record<string, unknown>
 
   // Only known panel sizes are read; unknown keys are ignored (forward compat).
-  const sizeKeys = ['media', 'source', 'inspector', 'timeline'] as const
+  const sizeKeys = ['media', 'source', 'inspector', 'timeline', 'captions'] as const
   const sizes = { ...fallback.sizes }
   for (const key of sizeKeys) {
     const value = (obj.sizes as Record<string, unknown> | null)?.[key]
@@ -174,7 +195,7 @@ export function withCollapsed(
 /** Immutable update helper: store a panel size observed from the layout engine. */
 export function withSize(
   state: WorkspaceState,
-  id: 'media' | 'source' | 'inspector' | 'timeline',
+  id: 'media' | 'source' | 'inspector' | 'timeline' | 'captions',
   size: number,
 ): WorkspaceState {
   const clamped = clamp(size, PANEL_BOUNDS[id].min, PANEL_BOUNDS[id].max)

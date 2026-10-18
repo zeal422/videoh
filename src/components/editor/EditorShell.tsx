@@ -14,6 +14,7 @@ import { MediaBin } from './MediaBin'
 import { PreviewPanel } from './PreviewPanel'
 import { SourcePanel } from './SourcePanel'
 import { InspectorPanel } from './InspectorPanel'
+import { CaptionsPanel } from './CaptionsPanel'
 import { TimelinePanel } from './timeline/TimelinePanel'
 import { MarkerDialog } from './timeline/MarkerDialog'
 import { StatusBar } from './StatusBar'
@@ -59,11 +60,16 @@ export function EditorShell() {
   const pendingRestore = useEditorStore((s) => s.pendingRestore)
   const hidden = useWorkspaceStore((s) => s.hidden)
   const sizes = useWorkspaceStore((s) => s.sizes)
+  const collapsed = useWorkspaceStore((s) => s.collapsed)
   const setSize = useWorkspaceStore((s) => s.setSize)
   const resetWorkspace = useWorkspaceStore((s) => s.resetWorkspace)
 
   // Imperative handles for "double-click handle → reset neighbor to default".
   const panelRefs = useRef<Partial<Record<PanelId, ImperativePanelHandle | null>>>({})
+  // The bottom group panel is a bare panel (no PanelShell chrome), so it
+  // carries its own ref: resetting the bottom height targets the group,
+  // not the timeline's width share inside it.
+  const bottomPanelRef = useRef<ImperativePanelHandle | null>(null)
   const registerRef = useCallback((id: PanelId, ref: ImperativePanelHandle | null) => {
     panelRefs.current[id] = ref
   }, [])
@@ -81,12 +87,16 @@ export function EditorShell() {
   const handleResetLayout = useCallback(() => {
     resetWorkspace()
     for (const id of PANEL_IDS) {
+      // The timeline's height lives on the bottom group panel (its own size
+      // is a horizontal share now), so it resets with the group below.
+      if (id === 'timeline') continue
       const bounds = PANEL_BOUNDS[id as keyof typeof PANEL_BOUNDS]
       const ref = panelRefs.current[id]
       if (!bounds || !ref) continue
       ref.expand()
       ref.resize(bounds.default)
     }
+    bottomPanelRef.current?.resize(PANEL_BOUNDS.timeline.default)
   }, [resetWorkspace])
 
   // Layout observers. Only persist while the measured panel is actually
@@ -99,10 +109,72 @@ export function EditorShell() {
   )
   const handleTimelineLayout = useCallback(
     (layout: number[]) => {
-      if (!hidden.timeline && layout[1] !== undefined) setSize('timeline', layout[1])
+      // The vertical group's second entry is the bottom group's height,
+      // whichever bottom panel is visible: persisting must not depend on the
+      // timeline itself being shown.
+      if ((!hidden.timeline || !hidden.captions) && layout[1] !== undefined) {
+        setSize('timeline', layout[1])
+      }
     },
-    [hidden.timeline, setSize],
+    [hidden.captions, hidden.timeline, setSize],
   )
+  /**
+   * Bottom row: `timeline | captions`. The timeline fills the remainder
+   * (like the preview upstairs) and only the captions width is stored; the
+   * captions sit second unless the timeline is hidden.
+   */
+  const handleBottomRowLayout = useCallback(
+    (layout: number[]) => {
+      // The timeline fills the remainder (like the preview upstairs) and only
+      // the captions width is stored — and only while both panels share the
+      // row. Alone, a panel fills the group past its maxSize, so recording
+      // that constrained size would persist a lie.
+      if (!hidden.timeline && !hidden.captions) {
+        if (layout[1] !== undefined) setSize('captions', layout[1])
+      }
+    },
+    [hidden.captions, hidden.timeline, setSize],
+  )
+  /** Double-click on the vertical timeline handle resets the bottom height. */
+  const resetBottomRow = useCallback(() => {
+    bottomPanelRef.current?.resize(PANEL_BOUNDS.timeline.default)
+  }, [])
+
+  /**
+   * Collapse intent snapshot for bottom-row mounts. Mount init rewrites live
+   * flags (any size the layout engine reports during init un-collapses its
+   * panel via setSize), so the enforcer below cannot trust them — and a
+   * mount-only effect would miss the mobile-to-desktop transition and
+   * hidden-to-visible mounts entirely. Captured on first render (before any
+   * mount can rewrite) and refreshed whenever either bottom panel is absent
+   * (mobile, or timeline or captions hidden): a snapshot frozen while the
+   * row is fully visible goes stale the moment the user expands a panel,
+   * and a later unhide would then slam it shut again against explicit
+   * intent. While any part of the row is absent no chevron can change the
+   * flags, so the capture stays correct indefinitely; live flags drive
+   * everything else.
+   */
+  const bottomCollapsedWant = useRef<Record<PanelId, boolean> | null>(null)
+  if (bottomCollapsedWant.current === null || isMobile || hidden.timeline || hidden.captions) {
+    bottomCollapsedWant.current = { ...useWorkspaceStore.getState().collapsed }
+  }
+  useEffect(() => {
+    // Cleanup cancels the frame, so under StrictMode double-mount (or any
+    // remount) the enforcement below still runs exactly once per real mount.
+    const timer = requestAnimationFrame(() => {
+      const workspace = useWorkspaceStore.getState()
+      const want = bottomCollapsedWant.current ?? workspace.collapsed
+      if (!isMobile && !workspace.hidden.timeline && want.timeline) {
+        if (!workspace.collapsed.timeline) workspace.setCollapsed('timeline', true)
+        panelRefs.current.timeline?.collapse()
+      }
+      if (!isMobile && !workspace.hidden.captions && want.captions) {
+        if (!workspace.collapsed.captions) workspace.setCollapsed('captions', true)
+        panelRefs.current.captions?.collapse()
+      }
+    })
+    return () => cancelAnimationFrame(timer)
+  }, [hidden.captions, hidden.timeline, isMobile])
   /**
    * Upper row: `source | preview | inspector`. A hidden panel is not rendered, so
    * each panel's index is its position among the VISIBLE panels (0-based).
@@ -400,24 +472,72 @@ export function EditorShell() {
                 )}
               </ResizablePanel>
 
-              {!hidden.timeline && (
+              {(!hidden.timeline || !hidden.captions) && (
                 <>
                   <HandleWithReset
                     ariaLabel="Resize timeline panel (double-click to reset)"
-                    onReset={() => resetPanel('timeline')}
+                    onReset={resetBottomRow}
                   />
-                  <PanelShell
-                    id="timeline"
-                    title="Timeline"
-                    side="bottom"
+                  <ResizablePanel
+                    id="panel-bottom"
                     order={2}
-                    minSize={PANEL_BOUNDS.timeline.min}
-                    maxSize={PANEL_BOUNDS.timeline.max}
+                    ref={bottomPanelRef}
                     defaultSize={sizes.timeline}
-                    registerRef={registerRef}
+                    className="min-h-0"
                   >
-                    <TimelinePanel />
-                  </PanelShell>
+                    {/* Bottom row: timeline | captions. The timeline fills the
+                        remainder horizontally (no defaultSize, like the preview
+                        upstairs); sizes.timeline keeps meaning the bottom
+                        group's vertical share. */}
+                    <ResizablePanelGroup
+                      direction="horizontal"
+                      className="min-h-0"
+                      onLayout={handleBottomRowLayout}
+                    >
+                      {!hidden.timeline && (
+                        <PanelShell
+                          id="timeline"
+                          title="Timeline"
+                          side="bottom"
+                          order={1}
+                          minSize={PANEL_BOUNDS.timeline.min}
+                          registerRef={registerRef}
+                        >
+                          <TimelinePanel />
+                        </PanelShell>
+                      )}
+                      {!hidden.timeline && !hidden.captions && (
+                        <HandleWithReset
+                          ariaLabel="Resize captions panel (double-click to reset)"
+                          onReset={() => resetPanel('captions')}
+                        />
+                      )}
+                      {!hidden.captions && (
+                        <PanelShell
+                          id="captions"
+                          title="Captions"
+                          side="bottom"
+                          order={2}
+                          minSize={PANEL_BOUNDS.captions.min}
+                          // No maxSize: either panel collapsing must fit
+                          // inside the other, and a cap refuses the collapse
+                          // (leaving a dead chevron and a persisted lie).
+                          // Alone, the panel fills the row instead of its
+                          // stored width (mirrors the timeline above). With a
+                          // collapsed timeline it mounts auto for the same
+                          // reason: a fixed pair summing far under 100 gets
+                          // normalized and the 2.5 strip breaks at minSize,
+                          // while an auto member absorbs the slack instead.
+                          defaultSize={
+                            hidden.timeline || collapsed.timeline ? undefined : sizes.captions
+                          }
+                          registerRef={registerRef}
+                        >
+                          <CaptionsPanel />
+                        </PanelShell>
+                      )}
+                    </ResizablePanelGroup>
+                  </ResizablePanel>
                 </>
               )}
             </ResizablePanelGroup>

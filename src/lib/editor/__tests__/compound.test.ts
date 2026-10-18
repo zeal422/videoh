@@ -48,6 +48,18 @@ function withCompound(doc: Doc): { doc: Doc; compound: Clip; sequence: Sequence 
 }
 
 describe('createCompoundClip', () => {
+  it('refuses a selection whose span is not finite', () => {
+    const doc = docWithClips()
+    videoLane(doc).clips[0].start = NaN
+    expect(() =>
+      applyCommand(doc, {
+        type: 'createCompoundClip',
+        clipIds: ['c1', 'c2'],
+        trackId: videoLane(doc).id,
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
   it('folds the selection into one container and rebases the sequence', () => {
     const { doc, compound, sequence } = withCompound(docWithClips())
     const lane = videoLane(doc)

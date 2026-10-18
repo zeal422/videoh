@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { toast } from '@/hooks/use-toast'
+import { useIsMobile } from '@/hooks/use-mobile'
 
 import { NamedSlider } from '@/components/editor/NamedSlider'
 import { Button } from '@/components/ui/button'
@@ -115,6 +116,7 @@ export function MenuBar({
   const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
 
   const panelHidden = useWorkspaceStore((s) => s.hidden)
+  const isMobile = useIsMobile()
   const collapsed = useWorkspaceStore((s) => s.collapsed)
   const sizes = useWorkspaceStore((s) => s.sizes)
   const toggleHidden = useWorkspaceStore((s) => s.toggleHidden)
@@ -168,13 +170,15 @@ export function MenuBar({
     snapEnabled,
     proxiesEnabled,
     panelHidden,
+    isMobile,
     workspaceDirty:
       PANEL_IDS.some((id) => panelHidden[id]) ||
       PANEL_IDS.some((id) => collapsed[id]) ||
       sizes.media !== PANEL_BOUNDS.media.default ||
       sizes.source !== PANEL_BOUNDS.source.default ||
       sizes.inspector !== PANEL_BOUNDS.inspector.default ||
-      sizes.timeline !== PANEL_BOUNDS.timeline.default,
+      sizes.timeline !== PANEL_BOUNDS.timeline.default ||
+      sizes.captions !== PANEL_BOUNDS.captions.default,
   }
 
   const showError = useCallback((error: unknown) => {
@@ -481,6 +485,9 @@ export function MenuBar({
             break
           case 'window.toggleTimeline':
             toggleHidden('timeline')
+            break
+          case 'window.toggleCaptions':
+            toggleHidden('captions')
             break
           case 'window.resetLayout':
             onResetLayout()

@@ -63,6 +63,7 @@ export type MenuActionId =
   | 'window.toggleSource'
   | 'window.toggleInspector'
   | 'window.toggleTimeline'
+  | 'window.toggleCaptions'
   | 'window.resetLayout'
   | 'help.shortcuts'
   | 'help.releaseNotes'
@@ -108,6 +109,12 @@ export interface MenuContext {
   panelHidden: Record<PanelId, boolean>
   /** True when the layout differs from the default (hidden, collapsed, or resized). */
   workspaceDirty: boolean
+  /**
+   * Viewport below 768 px: the shell mounts the fixed compact layout instead
+   * of the workspace panels, so the Window visibility toggles have nothing
+   * to show or hide and render disabled.
+   */
+  isMobile: boolean
 }
 
 /**
@@ -467,6 +474,7 @@ export const MENU_SPECS: MenuSpec[] = [
         kind: 'checkbox',
         label: 'Media',
         action: 'window.toggleMedia',
+        enabled: (ctx) => !ctx.isMobile,
         checked: (ctx) => !ctx.panelHidden.media,
       },
       {
@@ -474,6 +482,7 @@ export const MENU_SPECS: MenuSpec[] = [
         kind: 'checkbox',
         label: 'Program Monitor',
         action: 'window.togglePreview',
+        enabled: (ctx) => !ctx.isMobile,
         checked: (ctx) => !ctx.panelHidden.preview,
       },
       {
@@ -481,6 +490,7 @@ export const MENU_SPECS: MenuSpec[] = [
         kind: 'checkbox',
         label: 'Source Monitor',
         action: 'window.toggleSource',
+        enabled: (ctx) => !ctx.isMobile,
         checked: (ctx) => !ctx.panelHidden.source,
       },
       {
@@ -488,6 +498,7 @@ export const MENU_SPECS: MenuSpec[] = [
         kind: 'checkbox',
         label: 'Inspector',
         action: 'window.toggleInspector',
+        enabled: (ctx) => !ctx.isMobile,
         checked: (ctx) => !ctx.panelHidden.inspector,
       },
       {
@@ -495,7 +506,16 @@ export const MENU_SPECS: MenuSpec[] = [
         kind: 'checkbox',
         label: 'Timeline',
         action: 'window.toggleTimeline',
+        enabled: (ctx) => !ctx.isMobile,
         checked: (ctx) => !ctx.panelHidden.timeline,
+      },
+      {
+        id: 'window.captions',
+        kind: 'checkbox',
+        label: 'Captions',
+        action: 'window.toggleCaptions',
+        enabled: (ctx) => !ctx.isMobile,
+        checked: (ctx) => !ctx.panelHidden.captions,
       },
       { id: 'window.sep1', kind: 'separator' },
       {

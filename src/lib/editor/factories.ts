@@ -36,6 +36,15 @@ export function createDefaultTextStyle(): TextStyle {
   }
 }
 
+/**
+ * The caption style (0.8.5): the default text style, bottom-centered.
+ * Spread-then-override, so the required `fontFamily` and `italic` fields
+ * are always present. Fixed values, no parameters.
+ */
+export function createCaptionStyle(): TextStyle {
+  return { ...createDefaultTextStyle(), fontSize: 48, x: 0.5, y: 0.92 }
+}
+
 export function createTextClip(partial: Partial<Clip> = {}): Clip {
   return {
     id: uid('clip'),
@@ -475,7 +484,8 @@ export function clipFitsTrack(doc: Doc, clip: Clip, track: Track): boolean {
   // A compound clip renders picture and nowhere else. Checked FIRST: it has no
   // `mediaId`, so the `!asset` gate below would otherwise refuse it everywhere.
   if (clip.sequenceId) return track.kind === 'video'
-  if (track.kind === 'text') return !!clip.text
+  if (track.kind === 'text')
+    return typeof clip.text === 'string' && (!!clip.text || clip.isCaption === true)
   const asset = findMedia(doc, clip.mediaId)
   if (!asset) return false
   if (track.kind === 'video') return asset.kind === 'video' || asset.kind === 'image'

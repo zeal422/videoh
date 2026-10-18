@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.5] - 2026-10-17
+
+### Added
+
+- **Subtitles and captions (SRT).** `parseSrt` and `serializeSrt` in a new
+  pure `srt.ts` module read and write SubRip files in integer milliseconds
+  (BOM, CRLF, multi-line cues, inline tag stripping, exact dropped-cue
+  counts), bounded at 1,000,000,000 seconds so the supported range stays
+  exactly representable. `collectCaptionCues` gathers flagged clips from
+  the root tracks in start order (end time, then text tiebreak, overlaps
+  kept) and refuses, rather than silently dropping, a clip the range
+  cannot represent.
+- **Caption commands.** `importCaptions` validates every cue at the trust
+  boundary (finite numbers, non-negative start, duration at least
+  `MIN_CLIP_DURATION`, range, non-blank text) and stamps one flagged text
+  clip per cue on a first-free `Captions` track in one undo step; zero
+  cues refuses with no track. `addCaptionCue` stamps a 2 s flagged clip
+  on a text track. Imported cues arrive bottom-centered through
+  `createCaptionStyle`, and empty flagged clips fit their lane so a new
+  cue can start blank.
+- **Captions panel.** A sixth workspace panel docked beside the timeline
+  lists every flagged root clip in export order with editable start/end
+  text fields (the existing clip commands, no new mutation path),
+  click-to-seek that returns to the root sequence first, a New Cue
+  button that stamps at the playhead (converting compound-relative time
+  to root-absolute, and staying unavailable when the open path is
+  ambiguous), SRT import with a skipped-cue count, and SRT download
+  through the existing `downloadBlob`.
+- **File compat.** The format stays at v4: `isCaption` defaults absent,
+  unknown values drop, and old files read identically.
+
 ## [0.8.4] - 2026-10-15
 
 ### Added

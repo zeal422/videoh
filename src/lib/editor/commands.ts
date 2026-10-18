@@ -26,6 +26,8 @@ import {
 } from './constants'
 import {
   clipFitsTrack,
+  createCaptionStyle,
+  createTextClip,
   docDuration,
   findClip,
   findMedia,
@@ -53,6 +55,7 @@ import {
   splitKeyframeMap,
 } from './keyframes'
 import { applyMarkerPatch, reIdMarkers } from './markers'
+import { MAX_SRT_TIME_SECONDS } from './srt'
 import { maxTransitionDuration, TRANSITION_FEATHER_DEFAULT } from './transition'
 import {
   largestFittingDuration,
@@ -200,6 +203,9 @@ export type EditorCommand =
   | { type: 'saveTextPreset'; preset: TextPreset }
   | { type: 'renameTextPreset'; presetId: string; name: string }
   | { type: 'deleteTextPreset'; presetId: string }
+  // captions (0.8.5)
+  | { type: 'importCaptions'; cues: { start: number; duration: number; text: string }[] }
+  | { type: 'addCaptionCue'; trackId: string; start: number; text?: string }
   // transitions
   | {
       type: 'addTransition'
@@ -322,7 +328,9 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       const minStart = Math.min(...members.map((f) => f.clip.start))
       const maxEnd = Math.max(...members.map((f) => f.clip.start + f.clip.duration))
       const duration = maxEnd - minStart
-      if (duration < MIN_CLIP_DURATION) throw new EditorCommandError('Selection is too short')
+      if (!Number.isFinite(duration) || duration < MIN_CLIP_DURATION) {
+        throw new EditorCommandError('Selection is too short')
+      }
 
       const selectedIds = new Set(members.map((f) => f.clip.id))
       const ownerTracks = sequenceTracks(doc, owner)
@@ -422,7 +430,10 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       if (!Number.isFinite(clip.duration) || clip.duration < MIN_CLIP_DURATION) {
         throw new EditorCommandError('Clip duration is too short')
       }
-      if (clip.start < 0) clip.start = 0
+      // Clamp keeps the negative-start convention; non-finite has no
+      // position to clamp to, so it lands at zero rather than poisoning
+      // sort order and span math with NaN.
+      if (!Number.isFinite(clip.start) || clip.start < 0) clip.start = 0
       if (!clipFitsTrack(doc, clip, track)) {
         throw new EditorCommandError(
           `${describeClip(doc, clip)} cannot be placed on a ${track.kind} track`,
@@ -456,6 +467,9 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       }
       const oldStart = clip.start
       const movedTrack = target.id !== found.track.id
+      if (!Number.isFinite(command.start)) {
+        throw new EditorCommandError('Invalid clip position')
+      }
       clip.start = Math.max(0, command.start)
       if (movedTrack) {
         found.track.clips = found.track.clips.filter((c) => c.id !== clip.id)
@@ -476,7 +490,12 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       const { clip } = requireClip(doc, command.clipId)
       const asset = findMedia(doc, clip.mediaId)
       let { start, inPoint, duration } = command
-      if (duration < MIN_CLIP_DURATION) throw new EditorCommandError('Clip would become too short')
+      if (!Number.isFinite(duration) || duration < MIN_CLIP_DURATION) {
+        throw new EditorCommandError('Clip would become too short')
+      }
+      if (!Number.isFinite(start) || !Number.isFinite(inPoint)) {
+        throw new EditorCommandError('Invalid trim position')
+      }
       start = Math.max(0, start)
       if (inPoint < 0) throw new EditorCommandError('Trim exceeds the start of the source')
       const inPointBefore = clip.inPoint
@@ -750,6 +769,7 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
     case 'splitClip': {
       const { clip, track } = requireClip(doc, command.clipId)
       const at = command.atTime
+      if (!Number.isFinite(at)) throw new EditorCommandError('Invalid split point')
       if (
         at <= clip.start + MIN_SPLIT_HEADROOM ||
         at >= clip.start + clip.duration - MIN_SPLIT_HEADROOM
@@ -1127,6 +1147,93 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       return
     }
 
+    case 'importCaptions': {
+      // Trust-boundary validation lives HERE: the parser already dropped
+      // malformed file data, but this payload is general, and `addClip`
+      // clamps negative starts and lets NaN through, so the check must not
+      // ride a lower layer. Anything invalid refuses the whole dispatch
+      // with EditorCommandError, never a TypeError from a blind dereference.
+      if (!Array.isArray(command.cues) || command.cues.length === 0) {
+        throw new EditorCommandError('No captions to import')
+      }
+      const limitMs = MAX_SRT_TIME_SECONDS * 1000
+      for (const cue of command.cues) {
+        if (
+          typeof cue !== 'object' ||
+          cue === null ||
+          !Number.isFinite(cue.start) ||
+          !Number.isFinite(cue.duration) ||
+          typeof cue.text !== 'string'
+        ) {
+          throw new EditorCommandError('Invalid caption cue')
+        }
+        const startMs = Math.round(cue.start * 1000)
+        const durationMs = Math.round(cue.duration * 1000)
+        if (
+          cue.start < 0 ||
+          cue.duration < MIN_CLIP_DURATION ||
+          startMs > limitMs ||
+          startMs + durationMs > limitMs ||
+          cue.text.trim() === ''
+        ) {
+          throw new EditorCommandError('Invalid caption cue')
+        }
+      }
+      const track = {
+        id: uid('track'),
+        kind: 'text' as const,
+        name: firstFreeCaptionsName(doc),
+        clips: [] as Clip[],
+      }
+      // Straight to the top, with no resort: the array order is user intent
+      // (drop-between-tracks allows any z-order), so existing lanes keep
+      // their relative stacking while captions take the topmost layer.
+      doc.project.tracks.unshift(track)
+      for (const cue of command.cues) {
+        track.clips.push(
+          createTextClip({
+            start: cue.start,
+            duration: cue.duration,
+            text: cue.text.trim(),
+            style: createCaptionStyle(),
+            isCaption: true,
+          }),
+        )
+      }
+      track.clips.sort((a, b) => a.start - b.start)
+      return
+    }
+
+    case 'addCaptionCue': {
+      const track = requireTrack(doc, command.trackId)
+      if (track.kind !== 'text') throw new EditorCommandError('Captions need a text track')
+      if (!Number.isFinite(command.start) || command.start < 0) {
+        throw new EditorCommandError('Invalid caption start')
+      }
+      if (command.text !== undefined && typeof command.text !== 'string') {
+        throw new EditorCommandError('Invalid caption text')
+      }
+      // Same millisecond bound as importCaptions: the fixed 2 s cue must
+      // end inside the supported range, or the export could never
+      // represent the clip this creates.
+      const limitMs = MAX_SRT_TIME_SECONDS * 1000
+      const startMs = Math.round(command.start * 1000)
+      if (startMs > limitMs || startMs + 2000 > limitMs) {
+        throw new EditorCommandError('Caption is past the supported range')
+      }
+      track.clips.push(
+        createTextClip({
+          start: command.start,
+          duration: 2,
+          text: (command.text ?? '').trim(),
+          style: createCaptionStyle(),
+          isCaption: true,
+        }),
+      )
+      track.clips.sort((a, b) => a.start - b.start)
+      return
+    }
+
     case 'addTransition': {
       const { clip: a, track } = requireClip(doc, command.clipId)
       const b = nextClipOnTrack(track, a)
@@ -1389,7 +1496,9 @@ function assignTimeScale(clip: Clip, keyframes: Keyframe[]): void {
 function clampClipToMedia(doc: Doc, clip: Clip): void {
   const asset = findMedia(doc, clip.mediaId)
   if (!asset || asset.kind === 'image') return
-  if (clip.inPoint < 0) clip.inPoint = 0
+  // Non-finite has no position to clamp to: without this, NaN slips past
+  // the comparison below and poisons maxDuration (and the duration) to NaN.
+  if (!Number.isFinite(clip.inPoint) || clip.inPoint < 0) clip.inPoint = 0
   if (hasTimeScaleCurve(clip)) return
   const speed = clip.speed ?? 1
   const maxDuration = Math.max(MIN_CLIP_DURATION, (asset.duration - clip.inPoint) / speed)
@@ -1404,6 +1513,19 @@ export function previewTrackName(doc: Doc, kind: TrackKind, sequenceId?: string)
   const count = sequenceTracks(doc, sequenceId).filter((t) => t.kind === kind).length
   const prefix = kind === 'video' ? 'V' : kind === 'audio' ? 'A' : 'T'
   return `${prefix}${count + 1}`
+}
+
+/**
+ * First free captions track name (`Captions`, `Captions 2`, …) — shared by
+ * the `importCaptions` command and the panel's fresh-track batch, so both
+ * number the same way.
+ */
+export function firstFreeCaptionsName(doc: Doc): string {
+  const taken = new Set(doc.project.tracks.map((t) => t.name))
+  if (!taken.has('Captions')) return 'Captions'
+  let n = 2
+  while (taken.has(`Captions ${n}`)) n += 1
+  return `Captions ${n}`
 }
 
 function newTrackForKind(doc: Doc, kind: TrackKind, sequenceId?: string) {

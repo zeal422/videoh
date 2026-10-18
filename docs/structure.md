@@ -13,7 +13,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── robots.txt           # crawler policy
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
-│   ├── battery.sh           # scripted UI battery (54 steps) driven by agent-browser
+│   ├── battery.sh           # scripted UI battery (56 steps) driven by agent-browser
 │   └── run-battery.sh       # runner: dev server, gate password, session cleanup, strict verdict
 ├── docs/                    # this documentation set
 ├── next.config.ts           # output: "standalone"
@@ -58,6 +58,7 @@ src/components/
 │   ├── SourcePanel.tsx           #   source monitor: preview, transport, mark In/Out
 │   ├── PreviewPanel.tsx          #   program monitor + transport + text drag
 │   ├── InspectorPanel.tsx        #   clip properties / project settings
+│   ├── CaptionsPanel.tsx         #   captions: cue list, SRT import/export, New Cue
 │   ├── StatusBar.tsx             #   pinned footer
 │   ├── ExportDialog.tsx          #   export: quality, progress, preview, download
 │   └── timeline/
@@ -112,9 +113,10 @@ src/lib/editor/
 ├── constants.ts          # all tuning constants and limits
 ├── factories.ts          # uid + create* constructors, finders, compatibility checks, sourceTimeAt
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
-├── commands.ts           # the 47 EditorCommand variants + applyCommand(s), direction-aware split spans
+├── commands.ts           # the 49 EditorCommand variants + applyCommand(s), direction-aware split spans
 ├── trim.ts               # pure trim/split math: source-fitting bisection, timeScale curve rebases
 ├── snap.ts               # snap-point computation and application
+├── srt.ts                # SRT parse/serialize + the caption cue collector (pure)
 ├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
 ├── sequence-ops.ts       # insert/overwrite placement planner + source in/out range helpers (pure)
 ├── marquee.ts            # marquee (box) selection: lane-space rect math + group resolution (pure)
@@ -157,7 +159,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 62 test files (1263 tests) + src/lib/gate.test.ts: see testing.md
+└── __tests__/            # 63 test files (1335 tests) + src/lib/gate.test.ts: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

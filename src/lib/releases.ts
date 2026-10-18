@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.8.5',
+    date: '2026-10-17',
+    highlights: [
+      'Subtitles and captions: import an SRT file to create timed caption cues on their own Captions track',
+      'A Captions panel lists every cue with editable text and timing, click-to-seek, and one-click cue creation at the playhead',
+      'Export the cues back to SRT in start order, or leave them burned into the MP4 exactly as the monitor shows',
+      'Files stay at v4 with old projects opening unchanged, and imported cues arrive styled bottom-centered',
+    ],
+  },
+  {
     version: '0.8.4',
     date: '2026-10-15',
     highlights: [

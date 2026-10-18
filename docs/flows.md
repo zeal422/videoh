@@ -20,7 +20,8 @@ Stable hooks used across flows and tests:
 - `[data-lane-kind]` on each lane and `[data-track-row]` on the newly inserted row
 - `[data-drop-blocked="true"]` — a lane marked as an illegal drop target for the duration of a drag
 - `[data-timeline-scroll]` — the timeline's scroll container
-- Panel ids `panel-media`, `panel-source`, `panel-preview`, `panel-inspector`, `panel-timeline`
+- Panel ids `panel-media`, `panel-source`, `panel-preview`, `panel-inspector`, `panel-timeline`,
+  `panel-captions`
 - `[data-testid="source-panel"]` (with `data-selected-asset`), `[data-testid="source-preview"]`,
   `[data-testid="source-image"]` (stills), `[data-testid="source-time"]`, `[data-testid="source-mark-in"]`,
   `[data-testid="source-mark-out"]`, `[data-testid="source-clear"]`, `[data-testid="source-span"]`
@@ -251,6 +252,32 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
 - **Drag the text in the program monitor** to reposition it: a dashed outline
   (`[data-testid="text-drag-outline"]`) shows the box, one drag is one undo step, and the geometry is
   measured by `measureTextBox`, the twin of the compositor's renderer.
+
+## Captions
+
+- **SRT import.** The Captions panel's Import SRT reads a `.srt` file, parses
+  it (malformed cues skip with a count), and stamps one flagged text clip per
+  cue on a first-free `Captions` track in one undo step. A file with zero
+  valid cues, or an unreadable file, toasts a refusal and writes nothing.
+- **Editing cues.** The panel lists every flagged root clip in export order
+  (cue number, start/end seconds fields, text field). Start edits move the
+  clip, end edits tail-trim it, text edits rewrite it, all through the
+  existing clip commands. Clicking a cue number returns to the root sequence
+  first when a compound is open, then seeks to the cue start. New Cue stamps
+  a blank flagged clip at the playhead (converting compound-relative time
+  to root-absolute, and staying unavailable when the open path is shared by
+  two containers), creating the Captions track in the same undo step when
+  none exists yet.
+- **SRT export.** Download SRT writes the flagged root clips in export order
+  (overlaps kept, blank and sub-floor cues skipped). Zero cues, or a clip
+  past the supported range, refuses with one toast and downloads nothing.
+- Captions are text clips: they render in the monitor and burn into the MP4
+  through the shared text draw, with no visibility toggle in this release.
+  Desktop-only: below 768 px the shell mounts a fixed compact layout with
+  no workspace panel system (the menu bar, toolbar, export dialog and status
+  bar still render, but the Source and Captions panels are not mounted and
+  the Window visibility toggles render disabled), so SRT import, SRT export
+  and New Cue live only in the desktop Captions panel.
 
 ## Layers, opacity, and playback
 

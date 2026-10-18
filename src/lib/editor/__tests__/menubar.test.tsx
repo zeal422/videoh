@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { cleanup, render, screen } from '@testing-library/react'
@@ -44,6 +44,18 @@ describe('menubar version label', () => {
 
   beforeEach(() => {
     h = installBrowserMocks()
+    // MenuBar reads the viewport hook for the Window toggles; jsdom has no
+    // matchMedia (same stub as the shell suite).
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }))
     useEditorStore.setState(useEditorStore.getInitialState())
   })
 

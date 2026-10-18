@@ -1047,6 +1047,68 @@ f04_text_edit() {
   [ -n "$t" ] && ab fill "@$t" 'Hello A/B' >/dev/null && sleeps 0.3
 }
 
+# ————— C captions (0.8.5) —————
+c01_captions_import() {
+  local srt; srt="${TMPDIR:-/tmp}/battery-captions-$$.srt"
+  cat > "$srt" << 'SRT'
+1
+00:00:01,000 --> 00:00:02,000
+Alpha
+
+2
+00:00:01,000 --> 00:00:02,000
+Beta
+
+3
+00:00:02,500 --> 00:00:03,500
+Gamma
+SRT
+  ab upload '[data-testid=captions-import]' "$srt" >/dev/null 2>&1 || {
+    echo "c01: the SRT upload into the captions panel failed" >&2
+    rm -f "$srt"
+    return 1
+  }
+  rm -f "$srt"
+  # The import is async (file.text() then one command batch): poll the cue
+  # list for the last text instead of sleeping a guess.
+  local landed=0
+  local i
+  for i in $(seq 1 20); do
+    if snap | grep -q 'Gamma'; then landed=1; break; fi
+    sleep 0.25
+  done
+  [ "$landed" = "1" ] || { echo "c01: the imported cues never landed" >&2; return 1; }
+  snap | grep -q 'Alpha' || { echo "c01: the Alpha cue is missing" >&2; return 1; }
+  snap | grep -q 'Beta' || { echo "c01: the Beta cue is missing" >&2; return 1; }
+}
+c02_captions_export() {
+  # The captions panel sits in the bottom row: scroll its button into view
+  # first, like every other below-the-fold control in this battery.
+  ab scrollintoview '[data-testid=captions-download]' >/dev/null 2>&1
+  sleeps 0.3
+  local out; out=$(mktemp /tmp/battery-captions.XXXXXX.srt)
+  ab download '[data-testid=captions-download]' "$out" >/dev/null 2>&1 || {
+    echo "c02: the SRT download failed" >&2
+    rm -f "$out"
+    return 1
+  }
+  [ -s "$out" ] || { echo "c02: the downloaded SRT is empty" >&2; rm -f "$out"; return 1; }
+  # Three cues in start order separated by arrow lines; the equal-start pair
+  # keeps both overlaps in tiebreak (code-unit) order: Alpha before Beta.
+  local al be ga arrows
+  al=$(grep -n '^Alpha$' "$out" | cut -d: -f1)
+  be=$(grep -n '^Beta$' "$out" | cut -d: -f1)
+  ga=$(grep -n '^Gamma$' "$out" | cut -d: -f1)
+  arrows=$(grep -c -- '-->' "$out")
+  rm -f "$out"
+  [ -n "$al" ] && [ -n "$be" ] && [ -n "$ga" ] || {
+    echo "c02: a cue text is missing from the SRT" >&2; return 1; }
+  [ "$arrows" -ge 3 ] || {
+    echo "c02: expected 3 arrow lines, got $arrows" >&2; return 1; }
+  [ "$al" -lt "$be" ] && [ "$be" -lt "$ga" ] || {
+    echo "c02: cue order wrong ($al,$be,$ga)" >&2; return 1; }
+}
+
 # ————— F5 audio —————
 f05_mute() {
   click_clip 'sample-audio' || { echo "f05: audio clip not found" >&2; return 1; }
@@ -2627,6 +2689,8 @@ step "t01 wipe: type wipe applies and direction select appears" t01_wipe
 step "t02 slide+push: each type applies without errors" t02_slide_push
 step "f04 text: T adds a text clip"                f04_text_add
 step "f04 text: content edited via Inspector"      f04_text_edit
+step "c01 captions: SRT import creates timed flagged clips" c01_captions_import
+step "c02 captions: SRT export downloads the cues in order" c02_captions_export
 step "f05 audio: mute + reduce-noise switches work" f05_mute
 step "f05 audio: gain slider reaches 200%"         f05_gain
 step "f05 reverse: picture-only rows + the mirrored curve" f05_reverse
