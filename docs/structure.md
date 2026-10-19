@@ -13,7 +13,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── robots.txt           # crawler policy
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
-│   ├── battery.sh           # scripted UI battery (62 steps) driven by agent-browser
+│   ├── battery.sh           # scripted UI battery (63 steps) driven by agent-browser
 │   └── run-battery.sh       # runner: dev server, gate password, session cleanup, strict verdict
 ├── docs/                    # this documentation set
 ├── next.config.ts           # output: "standalone"

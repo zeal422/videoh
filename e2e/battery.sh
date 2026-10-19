@@ -1427,6 +1427,95 @@ e05_blur_accumulates() {
   return 0
 }
 
+# Best-effort return to the e05 end state. Returns 0 only when the export
+# dialog is gone and the blur entry is gone; anything else aborts the run
+# via the caller (a failed step must never hand dirty state downstream).
+e06_cleanup() {
+  if snap | grep -q 'Export video'; then
+    ab find role button click --name 'Cancel' >/dev/null 2>&1
+    sleeps 1
+    ab find role button click --name 'Close' >/dev/null 2>&1 && sleeps 0.5
+  fi
+  snap | grep -q 'Export video' && {
+    echo "e06: cleanup could not close the dialog" >&2; return 1; }
+  if snap | grep -q 'Shutter angle'; then
+    ab press Control+z >/dev/null; sleeps 0.5
+    snap | grep -q 'Shutter angle' && {
+      echo "e06: cleanup could not remove the blur" >&2; return 1; }
+  fi
+  return 0
+}
+
+e06_effects_export() {
+  # Precondition: start clean. e05 does not restore on every failure path,
+  # so stacking onto a dirty timeline would desync the undo below.
+  select_named 'sample-video' || { echo "e06: video clip not found" >&2; return 1; }
+  ab eval 'document.querySelector("[data-testid=inspector-tab-effects]").click()' >/dev/null 2>&1
+  sleeps 0.4
+  # The empty-state paragraph has no ARIA role, so `snap` omits it: read
+  # the DOM section directly (a missing section also fails into the abort).
+  [ "$(evaln 'document.querySelector("[data-testid=applied-effects]")?.innerText.includes("No effects")')" = "true" ] || {
+    echo "e06: effects already present (dirty timeline)" >&2; exit 1; }
+  insp '[aria-label="Add effect"]'
+  # The picker menu can miss opening on a single click; poll and reopen.
+  local opened=0
+  for i in $(seq 1 6); do
+    if snap | grep -q 'menuitem "Motion blur"'; then
+      opened=1
+      break
+    fi
+    ab find role button click --name 'Add effect' >/dev/null 2>&1
+    sleeps 0.5
+  done
+  [ "$opened" = "1" ] || { echo "e06: Motion blur menu item missing" >&2; return 1; }
+  ab find role menuitem click --name 'Motion blur' >/dev/null 2>&1 || {
+    echo "e06: Motion blur menu item missing" >&2; return 1; }
+  sleeps 0.5
+  snap | grep -q 'Shutter angle' || {
+    echo "e06: the blur entry never landed" >&2
+    e06_cleanup || exit 1
+    return 1
+  }
+  ab find role button click --name 'Export' >/dev/null && sleep 0.8
+  ab find role button click --name 'Start export' >/dev/null && sleep 1
+  # Local completion poll (export_done is local to f07_export): the
+  # completion toast lives ~1s, so accept the persistent result view too.
+  local i done=0
+  for i in $(seq 1 120); do
+    if [ "$(evaln 'document.body.innerText.includes("Export complete") || !!document.querySelector("[data-testid=export-result-video]")')" = "true" ]; then
+      done=1
+      break
+    fi
+    sleep 1
+  done
+  if [ "$done" != "1" ]; then
+    echo "e06: no export-complete signal within 120s" >&2
+    e06_cleanup || exit 1
+    return 1
+  fi
+  local rgb r
+  rgb=$(export_rgb_sums)
+  r=${rgb%% *}
+  [ -n "$r" ] && [ "$r" -gt 0 ] 2>/dev/null || {
+    echo "e06: exported frame is empty ($rgb)" >&2
+    e06_cleanup || exit 1
+    return 1
+  }
+  ab find role button click --name 'Close' >/dev/null 2>&1 && sleeps 0.5
+  snap | grep -q 'Export video' && {
+    echo "e06: export dialog did not close" >&2
+    e06_cleanup || exit 1
+    return 1
+  }
+  ab press Control+z >/dev/null; sleeps 0.5
+  snap | grep -q 'Shutter angle' && {
+    echo "e06: undo did not remove the blur" >&2
+    e06_cleanup || exit 1
+    return 1
+  }
+  return 0
+}
+
 # ————— F5 audio —————
 f05_mute() {
   click_clip 'sample-audio' || { echo "f05: audio clip not found" >&2; return 1; }
@@ -3015,6 +3104,7 @@ step "e02 effects: blend mode switches to Multiply and undoes" e02_blend_mode
 step "e03 effects: chroma key adds through the picker and undoes" e03_chroma_hex
 step "e04 effects: track matte masks and survives hiding the source" e04_matte_masks_and_survives_hide
 step "e05 effects: motion blur adds, renders, and undoes" e05_blur_accumulates
+step "e06 effects: motion blur exports to completion" e06_effects_export
 step "f05 audio: mute + reduce-noise switches work" f05_mute
 step "f05 audio: gain slider reaches 200%"         f05_gain
 step "f05 reverse: picture-only rows + the mirrored curve" f05_reverse

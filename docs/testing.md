@@ -10,7 +10,7 @@ How the editor is verified. Sibling docs: [docs index](README.md) ·
 bun run test            # vitest run — single pass (NOT bare `bun test`)
 bun run test:watch      # watch mode
 bun run test:coverage   # v8 coverage with enforced thresholds
-bun run battery         # scripted 62-step UI battery against a live server
+bun run battery         # scripted 63-step UI battery against a live server
 bun run check           # full gate: format:check → lint → typecheck → test → build
 ```
 
@@ -144,7 +144,7 @@ a comment explaining the regression it prevents.
 
 ## End-to-end battery
 
-`e2e/battery.sh` drives the real UI through every product feature in 62 steps (gate login with
+`e2e/battery.sh` drives the real UI through every product feature in 63 steps (gate login with
 welcome-modal dismissal, sample import plus a real non-bundled file upload, quick-add, a keyboard-only
 insert of a marked source range at the playhead (bin selection, `I`/`O`, `,`, one Ctrl+Z), marquee box
 selection, the welcome modal (Help > What's new opens it; a recorded version stays silent on
@@ -221,7 +221,7 @@ bun run build && bun run start   # standalone server on :3000 (production needs 
 bun run battery                  # reuses the server above and starts nothing
 ```
 
-Recorded at 0.8.6: 62 passed, 0 failed, the same as the dev-server run. The gate is live in this mode
+Recorded at 0.8.6: 63 passed, 0 failed, the same as the dev-server run. The gate is live in this mode
 too (`/` answers 307 to `/gate`, and the battery's `g0` step logs in with the same `.env.local`).
 
 ### Two trees (A/B)
