@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import { HISTORY_LIMIT, PPS_DEFAULT } from './constants'
 import { clearClipboard } from './clipboard'
 import { applyCommand, applyCommands, EditorCommand } from './commands'
-import { activeTracks, createDoc, findSequence, findTrack } from './factories'
+import { activeTracks, createDoc, findClip, findSequence, findTrack } from './factories'
 import { linkedClips } from './links'
 import { markerSelectionExists, type MarkerSelection } from './markers'
 import type { PlacementMode } from './sequence-ops'
@@ -108,6 +108,13 @@ export interface EditorState {
    * the doc changes (a compound deletion or an undo past creation truncates it).
    */
   activeSequencePath: string[]
+  /**
+   * Armed chroma-key eyedropper (0.8.6): the clip + effect awaiting a Program
+   * Monitor click to sample. Session-only: never in the Doc, never
+   * serialized, never undoable. Cleared on sample, on second button click,
+   * on Escape, and whenever the doc changes under it.
+   */
+  eyedropper: { clipId: string; effectId: string } | null
 
   autosaveStatus: AutosaveStatus
   autosavedAt: number | null
@@ -157,6 +164,8 @@ export interface EditorState {
   clearSourceMarks: () => void
   /** Toggle a lane's targeting: session UI state, never a history entry. */
   setTrackTargeted: (trackId: string, targeted: boolean) => void
+  /** Arm or disarm the chroma-key eyedropper (session UI state, never a history entry). */
+  setEyedropper: (armed: { clipId: string; effectId: string } | null) => void
   /** Enable or disable proxies for preview (View > Use Proxies). */
   setProxiesEnabled: (enabled: boolean) => void
   /** Record one asset's proxy build state (status + optional object URL). */
@@ -319,6 +328,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   proxiesEnabled: false,
   proxyByAssetId: {},
   activeSequencePath: [],
+  eyedropper: null,
   autosaveStatus: 'idle',
   autosavedAt: null,
   pendingRestore: null,
@@ -338,12 +348,23 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // as the edit, so undo restores them.
     const pruned = pruneOrphanSequences(pruneEmptiedTracks(doc, next))
     const path = normalizeActivePath(pruned, get().activeSequencePath)
+    // An armed eyedropper whose clip or chroma entry vanished disarms.
+    const armed = get().eyedropper
+    const eyedropperAlive =
+      armed !== null &&
+      (() => {
+        const entry = findClip(pruned, armed.clipId)?.clip.effects?.find(
+          (e) => e.id === armed.effectId,
+        )
+        return entry?.type === 'chromaKey'
+      })()
     set({
       doc: pruned,
       activeSequencePath: path,
       past: [...past, doc].slice(-HISTORY_LIMIT),
       future: [],
-      // Commands may delete selected clips — drop dangling selection ids.
+      // Commands may delete selected clips: drop dangling selection ids.
+      ...(eyedropperAlive ? {} : { eyedropper: null }),
       ...normalizeSelections(pruned, get().selections, path),
       selectedMarker: normalizeMarkerSelection(pruned, get().selectedMarker),
       // A removed media asset takes the Source monitor's selection with it.
@@ -426,6 +447,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // Drop selection members that no longer exist in the restored doc.
       ...normalizeSelections(previous, selections, path),
       selectedMarker: normalizeMarkerSelection(previous, selectedMarker),
+      eyedropper: null,
     })
   },
   redo: () => {
@@ -442,6 +464,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       future: future.slice(1),
       ...normalizeSelections(next, selections, path),
       selectedMarker: normalizeMarkerSelection(next, selectedMarker),
+      eyedropper: null,
     })
   },
 
@@ -462,6 +485,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       selections: [],
       selection: null,
       selectedMarker: null,
+      eyedropper: null,
       // The source selection references doc assets, so a project open drops
       // it. `dropMode` is a tool posture (like `activeTool`) and survives.
       sourceAssetId: null,
@@ -503,6 +527,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   setProxiesEnabled: (enabled) => set({ proxiesEnabled: enabled }),
+  setEyedropper: (armed) => set({ eyedropper: armed }),
 
   setProxyEntry: (assetId, entry) =>
     set((s) => ({ proxyByAssetId: { ...s.proxyByAssetId, [assetId]: entry } })),

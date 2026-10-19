@@ -13,6 +13,7 @@ import {
 } from '../export/offline'
 import {
   closeDecodedFrames,
+  collectMatteDraws,
   compositeFrame,
   createExportOutput,
   exportTimeline,
@@ -27,6 +28,7 @@ import { createFake2DContext } from './mocks/browser-mocks'
 import { clampSourceTime, createClip, createTextClip, createTrack } from '../factories'
 import { animatedValue } from '../keyframes'
 import type { Clip, Doc, MediaAsset } from '../types'
+import type { ClipDraw } from '../export/offline'
 
 /** Minimal AudioBuffer stand-in for the OfflineAudioContext stub. */
 function fakeBuffer(): AudioBuffer {
@@ -1713,5 +1715,135 @@ describe('compound clip plans (0.8.1)', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+})
+
+describe('effect stack export (0.8.6)', () => {
+  const textClip = (over: Partial<Clip> = {}) =>
+    createTextClip({ id: 'tx', start: 0, duration: 4, text: 'Hi', ...over })
+
+  it('planVideoFrame carries the enabled stack and blend mode, and skips hidden tracks', () => {
+    const clip = videoClip({
+      effects: [{ id: 'fx', type: 'crop', left: 10 }],
+      blendMode: 'screen',
+    })
+    const hidden = videoClip({ id: 'hid' })
+    const d = doc(
+      [
+        { kind: 'video', clips: [clip] },
+        { kind: 'video', clips: [hidden] },
+      ],
+      [],
+    )
+    d.project.tracks[1].visible = false
+    const plan = planVideoFrame(d, 0)
+    expect(plan.draws.map((x) => x.clip.id)).toEqual(['cv'])
+    expect(plan.draws[0].effects.map((e) => e.type)).toEqual(['crop'])
+    expect(plan.draws[0].blendMode).toBe('screen')
+  })
+})
+
+describe('hidden-track matte sources (0.8.6)', () => {
+  it('planVideoFrame skips hidden tracks by default but plans them as masks', () => {
+    const upper = videoClip({ id: 'up' })
+    const lower = videoClip({
+      id: 'lo',
+      effects: [{ id: 'fx', type: 'trackMatte', trackId: 'track_0' }],
+    })
+    const d = doc(
+      [
+        { kind: 'video', clips: [upper] },
+        { kind: 'video', clips: [lower] },
+      ],
+      [],
+    )
+    d.project.tracks[0].visible = false
+    expect(planVideoFrame(d, 0).draws.map((x) => x.clip.id)).toEqual(['lo'])
+    const masked = planVideoFrame(d, 0, [d.project.tracks[0]], { includeHidden: true })
+    expect(masked.draws.map((x) => x.clip.id)).toEqual(['up'])
+  })
+})
+
+describe('nested matte fetch (0.8.6)', () => {
+  it('collectMatteDraws plans a hidden compound-local source at container-local time', () => {
+    const srcClip = createClip({ id: 'src', mediaId: 'm1', start: 0, duration: 8 })
+    const matted = createClip({
+      id: 'matted',
+      mediaId: 'm1',
+      start: 0,
+      duration: 8,
+      effects: [{ id: 'fx', type: 'trackMatte', trackId: 'st_src' }],
+    })
+    const sequence = {
+      id: 'seq1',
+      name: 'S',
+      tracks: [
+        createTrack('video', 1, { id: 'st_src', clips: [srcClip], visible: false }),
+        createTrack('video', 2, { id: 'st_main', clips: [matted] }),
+      ],
+    }
+    const root = createTrack('video', 1, {
+      id: 'rt1',
+      clips: [createClip({ id: 'comp', sequenceId: 'seq1', start: 2, duration: 8 })],
+    })
+    const d: Doc = {
+      project: {
+        id: 'p',
+        name: 'n',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [root],
+        sequences: [sequence],
+      },
+      media: [asset()],
+    }
+    // Root frame t=5 is container-local 3: the source must plan at 3, not 5.
+    const plan = planVideoFrame(d, 5)
+    const seen = new Set(plan.draws.map((x) => x.clip.id))
+    const out: ClipDraw[] = []
+    collectMatteDraws(d, plan.draws, 5, seen, out)
+    expect(out.map((x) => x.clip.id)).toEqual(['src'])
+    // sourceTimeAt(src, local 3) with speed 1: source time 3, not root 5.
+    expect(out[0].sourceTime).toBe(3)
+  })
+
+  it('collectMatteDraws follows chained mattes across two hidden source tracks', () => {
+    const deep = createClip({ id: 'deep', mediaId: 'm1', start: 0, duration: 8 })
+    const mid = createClip({
+      id: 'mid',
+      mediaId: 'm1',
+      start: 0,
+      duration: 8,
+      effects: [{ id: 'fx2', type: 'trackMatte', trackId: 'st_deep' }],
+    })
+    const top = createClip({
+      id: 'top',
+      mediaId: 'm1',
+      start: 0,
+      duration: 8,
+      effects: [{ id: 'fx1', type: 'trackMatte', trackId: 'st_mid' }],
+    })
+    const d = doc(
+      [
+        { kind: 'video', clips: [deep] },
+        { kind: 'video', clips: [mid] },
+        { kind: 'video', clips: [top] },
+      ],
+      [asset()],
+    )
+    // Rename lanes to the ids the entries name, hiding both sources. Order
+    // is top-to-bottom: deep above mid above the matted top clip.
+    d.project.tracks[0].id = 'st_deep'
+    d.project.tracks[0].visible = false
+    d.project.tracks[1].id = 'st_mid'
+    d.project.tracks[1].visible = false
+    const plan = planVideoFrame(d, 1)
+    // Only the top clip draws (both sources hidden); the mask still needs both.
+    expect(plan.draws.map((x) => x.clip.id)).toEqual(['top'])
+    const seen = new Set(plan.draws.map((x) => x.clip.id))
+    const out: ClipDraw[] = []
+    collectMatteDraws(d, plan.draws, 1, seen, out)
+    expect(out.map((x) => x.clip.id).sort()).toEqual(['deep', 'mid'])
   })
 })

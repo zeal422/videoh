@@ -19,6 +19,27 @@ export const OPACITY_MAX = 1
 export const TRANSITION_MIN = 0.1
 export const TRANSITION_MAX = 4
 
+/** Effect-stack bounds (0.8.6). */
+export const MAX_BLUR_SAMPLES = 8
+export const CROP_MIN = 0
+export const CROP_MAX = 100
+export const CROP_FEATHER_MIN = 0
+export const CROP_FEATHER_MAX = 100
+export const CHROMA_SIMILARITY_MIN = 0
+export const CHROMA_SIMILARITY_MAX = 1
+export const CHROMA_BLEND_MIN = 0
+export const CHROMA_BLEND_MAX = 1
+export const CHROMA_CLIP_MIN = 0
+export const CHROMA_CLIP_MAX = 1
+export const CHROMA_DESPILL_MIN = 0
+export const CHROMA_DESPILL_MAX = 1
+export const BLUR_SHUTTER_MIN = 0
+export const BLUR_SHUTTER_MAX = 360
+/** Chroma plane maximum: (Cb,Cr) each span 0..255, so the euclidean max is 255*sqrt(2). */
+export const CHROMA_PLANE_MAX = 255 * Math.sqrt(2)
+/** Local epsilon for degenerate keyer intervals (hard-step fallback). */
+export const CHROMA_EPS = 1e-6
+
 /** Number of waveform peak buckets stored per media asset. */
 export const WAVEFORM_BUCKETS = 1000
 

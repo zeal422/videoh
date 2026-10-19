@@ -130,3 +130,15 @@ PID/group, confirm the port free, start fresh, confirm Ready) before proving
 anything through it.
 Action: kept as a note; browser proofs start from a known-fresh server, and a
 result that contradicts the code on disk triggers a freshness check first.
+
+## 2026-10-18 - 0.8.6 effects implementation (late-found render defects)
+What happened: two render defects survived unit tests and were caught only by
+live pixel proof: the matte mask loop keyed on its own written white (every
+mask fully opaque), and motion-blur accumulation with fixed 1/N alpha
+converges to 1-(1-1/N)^N (every blurred frame darkened a third). A third
+(hidden matte sources erased the picture instead of masking) survived both
+unit tests and the battery, caught only by adversarial review.
+Would-have-caught: trigger 7 (prove the fix, not the wiring) applied per
+effect with settled frame sums, plus a review pass that re-derives render
+math instead of re-reading code shape.
+Action: kept as a note.

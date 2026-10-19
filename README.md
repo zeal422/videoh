@@ -20,6 +20,7 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/
 - **Text overlays** — text tracks and clips with font size, color, family, bold/italic, alignment, position, and shadow. **Drag the text directly in the program monitor** to reposition it (a dashed outline shows the box; one drag = one undo step; precise control stays in the Inspector's Position X/Y sliders).
 - **Subtitles / captions** — import an SRT file to create timed caption cues on their own Captions track (malformed cues skip with a count, an empty file refuses). The **Captions** panel beside the timeline lists every cue with editable text and timing, click-to-seek, one-click creation at the playhead, and SRT download in start order. Captions burn into the MP4 exactly as the monitor shows.
 - **Layer compositing** — per-clip **opacity** (0–100 %) that stacks with crossfade alphas: put a clip on a higher track, lower its opacity, and the track below shows through — the same model as Photoshop/Premiere layering.
+- **Effects beyond opacity** — every clip carries an ordered effect stack edited in Effect Controls: **crop** (four sides, feather, zoom refill, keyframable), sixteen **blend modes** under Opacity, an eyedropper **chroma keyer** with despill, **track mattes** from any higher lane (luma/alpha, reversible), and **motion blur** that accumulates animated moves. A track eyeball hides video/text lanes from the composite. Preview and export render every effect identically.
 - **Keyframes + Effect Controls**: animate opacity, position, scale, volume and the color set (exposure, contrast, saturation, brightness, hue) per clip. The Inspector has a Clip / Effect Controls tab split: a value slider, a keyframe diamond that adds/removes at the playhead, and a light graph whose dots drag in time. Each segment eases with its outgoing keyframe's interpolation (linear, ease in, ease out, ease in/out, Premiere's curves, picked from a segmented control that always sits under the property and edits the visible segment's start keyframe), the graph draws every segment's real bezier shape with the active segment's two handles draggable (a straight segment eases by dragging it), with a per-property default easing for newly authored keyframes, that same easing drives the exported gain schedule (an eased volume segment is sampled into short linear ramps, since the Web Audio API has no easing primitive), keyframe times are clip-local, splitting a clip redistributes its curves (every segment subdivides exactly at the cut, eased segments included, so both halves re-time the original), and every keyframe drag is one undo step.
 - **Color**: the color set applies through the canvas filter stack in preview and export alike; a neutral clip skips the filter pass entirely. **Temperature/tint** (-100..100 each) grade white balance through one SVG matrix per graded clip that both render paths reference, so what you see is what exports; the monitor can show a **luma histogram, an RGB balance read, a waveform and a vectorscope** (scopes section, collapsible, off by default). **3D `.cube` LUT import** keeps each file once in a project-level library that clips reference by id: a 1D file applies as exact per-channel shapers in one shared SVG node, a 3D file runs a shared trilinear pixel pass in the preview and the export, and the library refuses an import that would push its base64 payloads past 3,000,000 characters rather than trip the autosave quota later.
 - **Speed and reverse**: per-clip speed (0.25×–4×) with an Inspector slider and an Alt-drag rate stretch on either clip edge (the source span stays fixed and the speed re-derives; a clip with a time remapping curve is exempt, see below), plus a reverse toggle for video. A rate stretch the command layer rejects applies nothing and says why. Reverse renders frame-accurately in the export and stepped in the preview; reversed audio is dropped. Below the output frame rate BOTH renders blend neighbouring frames, so a slowed clip stops juddering in the file and in the monitor alike: the export decodes the pair and the monitor parks a second muted element on the partner read, and one shared weight function (frame-blend.ts) gives both the same blend. A reversed clip trims from both edges like a forward one (its head shows the span's high source end and its tail the low one, so each edge reveals the source on its own side rather than sliding the picture). Clips carry speed/reverse badges.
@@ -340,9 +341,9 @@ bun run format:check   # prettier check
 bun run battery        # scripted UI battery (reuses a server already on :3000, else starts one; owns its browser session)
 ```
 
-The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
+The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions, effects), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **1359 tests across 64 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **1464 tests across 68 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -391,6 +392,8 @@ src/
 │   ├── marquee.ts               # box-selection rect math + group resolution
 │   ├── markers.ts               # sequence/clip marker math, colors, navigation, selection
 │   ├── transition.ts            # getTransitionSpan, transitionAlphas, maxTransitionDuration
+│   ├── effects.ts               # effect-stack math: order rule, sample derivation, crop/matte/blur geometry, blend set
+│   ├── chroma-key.ts            # Ultra-Key-lite math: chroma distance, key ramp, despill, mask values
 │   ├── links.ts                 # multi-selection + A/V link-group helpers
 │   ├── clipboard.ts             # copy / cut / paste (module memory, outside undo)
 │   ├── actions.ts               # multi-command UI actions (add media/text, group ops, placement)
@@ -420,7 +423,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 64 test files (1359 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
+│   └── __tests__/               # 68 test files (1464 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs
@@ -433,7 +436,8 @@ src/
 │   ├── StatusBar.tsx            # pinned footer: project info, autosave state
 │   ├── ExportDialog.tsx         # quality, progress, cancel, preview, download
 │   ├── effect-controls/
-│   │   └── EffectControlsPanel.tsx # keyframes, graph, audio shaping, speed/reverse
+│   │   ├── EffectControlsPanel.tsx # keyframes, graph, audio shaping, speed/reverse
+│   │   └── AppliedEffectsSection.tsx # effect stack list, picker, keyframe rows, eyedropper
 │   └── timeline/
 │       ├── TimelinePanel.tsx    # track lanes, playhead, drop targets, zoom, track menu
 │       ├── Ruler.tsx            # canvas time ruler + scrubbing

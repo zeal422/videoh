@@ -20,6 +20,7 @@ import { attachPreviewEngine, detachPreviewEngine } from '@/lib/editor/playback/
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { clamp01, measureTextBox } from '@/lib/editor/playback/text-box'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
+import { toast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import { ScopesPanel } from './ScopesPanel'
 
@@ -40,6 +41,7 @@ export function PreviewPanel() {
   const playhead = useEditorStore((s) => s.playhead)
   const playing = useEditorStore((s) => s.playing)
   const selection = useEditorStore((s) => s.selection)
+  const eyedropperArmed = useEditorStore((s) => s.eyedropper) !== null
   const [volume, setVolume] = useState(1)
   const [monitor, setMonitor] = useState<HTMLCanvasElement | null>(null)
   // Local to this panel by design: scopes are a view option, not workspace
@@ -115,8 +117,51 @@ export function PreviewPanel() {
   }, [canDragText, textClip, doc.project.width, doc.project.height])
 
   const onCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!canDragText || !textClip?.style || e.button !== 0) return
+    // Armed chroma-key eyedropper (0.8.6) takes precedence over text drags:
+    // sample the pixel under the cursor into the entry's key, then disarm.
     const store = useEditorStore.getState()
+    const armed = store.eyedropper
+    if (armed && e.button === 0) {
+      const canvas = canvasRef.current
+      const rect = canvas?.getBoundingClientRect()
+      if (canvas && rect && rect.width > 0 && rect.height > 0) {
+        // Clamped to the last pixel: a click on the exact monitor edge maps
+        // to canvas.width/height, which getImageData rejects with an
+        // IndexSizeError (misreported as an unreadable pixel below).
+        const px = Math.min(
+          canvas.width - 1,
+          Math.max(0, Math.floor(((e.clientX - rect.left) / rect.width) * canvas.width)),
+        )
+        const py = Math.min(
+          canvas.height - 1,
+          Math.max(0, Math.floor(((e.clientY - rect.top) / rect.height) * canvas.height)),
+        )
+        try {
+          const data = canvas.getContext('2d')?.getImageData(px, py, 1, 1).data
+          if (!data) {
+            // Null context (or an unreadable pixel): same notice as a taint,
+            // instead of disarming silently with the old key still showing.
+            throw new Error('unreadable pixel')
+          }
+          const hex = `#${[data[0], data[1], data[2]].map((v) => v.toString(16).padStart(2, '0')).join('')}`
+          store.apply({
+            type: 'setEffectParams',
+            clipId: armed.clipId,
+            effectId: armed.effectId,
+            params: { key: hex },
+          })
+        } catch {
+          // Tainted canvas: keep the previous key (hex fallback stays).
+          toast({
+            title: 'Could not sample that pixel',
+            description: 'Type the hex color instead.',
+          })
+        }
+      }
+      store.setEyedropper(null)
+      return
+    }
+    if (!canDragText || !textClip?.style || e.button !== 0) return
     const canvas = canvasRef.current
     const rect = canvas?.getBoundingClientRect()
     if (!rect || rect.width === 0 || rect.height === 0) return
@@ -195,6 +240,7 @@ export function PreviewPanel() {
               'block h-full max-h-full w-auto max-w-full rounded border border-zinc-800 bg-black shadow-2xl',
               canDragText && !draggingText && 'cursor-grab',
               draggingText && 'cursor-grabbing',
+              eyedropperArmed && 'cursor-crosshair',
             )}
             style={{
               aspectRatio: `${doc.project.width} / ${doc.project.height}`,

@@ -5,7 +5,7 @@ questions, two sections: what has shipped (so a closed gap is not listed twice)
 and what remains, grouped by how often a working editor would feel it.
 
 Research date: September 2026 (Premiere 26.x); every status re-verified against
-the code on 2026-10-17, at 0.8.5. A gap moves to "Shipped" only once the release
+the code on 2026-10-18, at 0.8.6. A gap moves to "Shipped" only once the release
 that closed it is recorded in [CHANGELOG.md](CHANGELOG.md).
 
 The editing core is not tracked as a gap: the multi-track timeline, trim / split
@@ -18,6 +18,7 @@ Newest first. Releases before 0.5.0 are in [CHANGELOG.md](CHANGELOG.md).
 
 | Version   | What landed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **0.8.6** | Effects beyond opacity, the last Tier 3 item: an ordered per-clip effect stack (crop with feather and zoom refill, sixteen canvas blend modes as a fixed field under Opacity, an eyedropper chroma keyer with despill, track mattes by id with luma/alpha modes, and motion blur accumulating clip-local Motion up to 8 samples), a track visibility eyeball on video/text lanes, and files staying at v4 with old projects opening unchanged.                                                                                                                                                                                                                                                                                                                                                                                              |
 | **0.8.5** | Subtitles and captions, the fourth Tier 3 item: SRT import and export on text clips with a caption flag, through a pure integer-millisecond codec (bounded range, exact dropped-cue counts, order-preserving round trips). Import stamps bottom-centered cues on a first-free Captions track in one undo step, a Captions panel beside the timeline lists and edits every cue with click-to-seek and one-click creation at the playhead, and files stay at v4 with old projects opening unchanged.                                                                                                                                                                                                                                                                                                                                          |
 | **0.8.4** | Wipe, slide and push, the rest of the transition items: five `Transition` types with direction, wipe edge and feather width, a shared `transitionGeometry` helper feeding the preview compositor and the export plan alike at full opacity, per-type timeline glyphs, and files staying at v4 with old projects opening unchanged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | **0.8.3** | Title presets, the second Tier 3 item: a project-level `textPresets` library holding named 9-field `TextStyle` snapshots, with Title, Subtitle, Lower third and Caption built in. Presets apply from a new Inspector section or straight from the Add Text picker (the `T` shortcut still creates default text), save/rename/delete ride undoable commands with duplicate and empty names refused, and files stay at v4 with old projects opening on an empty library.                                                                                                                                                                                                                                                                                                                                                                      |
@@ -49,10 +50,11 @@ both render paths), and the table below records how each of the five original
 gaps closed: four shipped, two cells closed as recorded non-goals. Open cells:
 none. **Tier 2 is complete:** 0.8.0 shipped bounded export memory (the streamed
 `Export to file` path) and proxies (a session lower-resolution preview stand-in),
-and 0.8.1 shipped nested sequences / compound clips. Tier 3 is underway:
+and 0.8.1 shipped nested sequences / compound clips. Tier 3 is complete:
 0.8.2 shipped dip to black, the first of the four transition items,
 0.8.3 shipped title presets, and 0.8.4 shipped wipe, slide and push,
-and 0.8.5 shipped subtitles / captions (SRT import and export).
+0.8.5 shipped subtitles / captions (SRT import and export),
+and 0.8.6 shipped effects beyond opacity.
 
 ### Tier 1: felt every day (complete at 0.7.0)
 
@@ -75,7 +77,12 @@ bounded export memory and proxies (0.8.0), and nested sequences / compound clips
   `transition.ts` already computes the overlap, and a shared `transitionGeometry` helper now carries
   the spatial parameter (a clip region for wipes, picture offsets for slide and push, with a feathered
   wipe edge blending the pair), so monitor and export render all five types from the same numbers.
-- **Effects beyond opacity:** crop, blends, chroma key, track matte, motion blur.
+- **Effects beyond opacity (shipped at 0.8.6):** an ordered per-clip effect stack (crop with
+  feather and zoom refill, sixteen canvas blend modes as a fixed field under Opacity, an eyedropper
+  chroma keyer with despill, track mattes by id with luma/alpha modes, motion blur accumulating
+  clip-local Motion up to 8 samples) plus a track visibility eyeball on video/text lanes. The exotic
+  blend remainder (Dissolve, Divide, Subtract, Vivid/Linear/Pin Light, Hard Mix) is a recorded
+  non-goal: no canvas primitive exists for it.
 - **Subtitles / captions (shipped at 0.8.5):** a caption flag on text clips
   plus SRT import and export. Import stamps timed cues on a first-free
   Captions track, a Captions panel beside the timeline edits them with

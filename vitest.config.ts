@@ -24,7 +24,9 @@ export default defineConfig({
       include: [
         'src/lib/editor/bezier.ts',
         'src/lib/editor/ease-segment.ts',
+        'src/lib/editor/chroma-key.ts',
         'src/lib/editor/color.ts',
+        'src/lib/editor/effects.ts',
         'src/lib/editor/lut.ts',
         'src/lib/editor/frame-blend.ts',
         'src/lib/editor/playback/denoise.ts',

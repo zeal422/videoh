@@ -16,10 +16,11 @@ import {
 } from '../transition'
 import type { TransitionGeometry } from '../transition'
 import { animatedValue } from '../keyframes'
+import { enabledEffects } from '../effects'
 import { segmentControls } from '../ease-segment'
 import { clipRendersAudio, linkGroupChangesRate } from '../links'
 import { clamp } from '../time'
-import type { Clip, Doc, MediaAsset, Track } from '../types'
+import type { BlendMode, Clip, Doc, EffectEntry, MediaAsset, Track } from '../types'
 
 /**
  * Offline render plan, pure timeline math for the WebCodecs export pipeline.
@@ -72,6 +73,14 @@ export interface ClipDraw {
    * same level alpha applies, including for compound containers.
    */
   spatial?: { role: 'outgoing' | 'incoming'; geometry: TransitionGeometry }
+  /**
+   * Enabled effect-stack entries in stored order (0.8.6; empty when none).
+   * The executor evaluates them like the preview compositor: stack order
+   * with motion blur forced last, blend mode at composite time.
+   */
+  effects: EffectEntry[]
+  /** Blend mode with the backdrop (absent means normal). */
+  blendMode?: BlendMode
 }
 
 export interface FramePlan {
@@ -98,7 +107,8 @@ export interface AudioFramePlan {
 // and the preview compositor cannot drift apart (see the static lock and the
 // cross-path agreement test in color.test.ts).
 
-function clipTransform(
+/** Clip Motion transform at a clip-local time (exported for the executor's blur sub-samples). */
+export function clipTransform(
   clip: Clip,
   local: number,
 ): { posX: number; posY: number; scale: number } | null {
@@ -126,12 +136,16 @@ export function planVideoFrame(
   doc: Doc,
   t: number,
   tracks: readonly Track[] = doc.project.tracks,
+  opts: { includeHidden?: boolean } = {},
 ): FramePlan {
   const draws: ClipDraw[] = []
   // Tracks composite bottom→top: last track first.
   for (let i = tracks.length - 1; i >= 0; i--) {
     const track: Track = tracks[i]
     if (track.kind === 'audio') continue
+    // Hidden tracks skip export video — except when planned AS a matte mask:
+    // visibility affects the main composite only, never the mask.
+    if (track.visible === false && !opts.includeHidden) continue
     const clips = [...track.clips].sort((a, b) => a.start - b.start)
     const active = clips.filter((c) => isActive(c, t))
     if (active.length === 0) continue
@@ -177,6 +191,8 @@ export function planVideoFrame(
       const local = t - clip.start
       const filter = clipFilter(clip, local, findLut(doc.project.luts, clip.lutId))
       const transform = clipTransform(clip, local)
+      const effects = enabledEffects(clip)
+      const blendMode = clip.blendMode
       if (clip.sequenceId) {
         const sequence = findSequence(doc, clip.sequenceId)
         if (!sequence) continue
@@ -189,6 +205,8 @@ export function planVideoFrame(
           transform,
           nested: planVideoFrame(doc, local, sequence.tracks),
           spatial: spatialFor(clip.id),
+          effects,
+          blendMode,
         })
         continue
       }
@@ -205,6 +223,8 @@ export function planVideoFrame(
         filter,
         transform,
         spatial: spatialFor(clip.id),
+        effects,
+        blendMode,
       })
     }
   }

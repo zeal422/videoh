@@ -1,5 +1,5 @@
 import { clipFilter } from '../color'
-import { findSequence } from '../factories'
+import { findSequence, sequenceTracks } from '../factories'
 import { applyLut3dToRgba, decodeLutGrid, findLut } from '../lut'
 import {
   featherGradient,
@@ -9,7 +9,20 @@ import {
 } from '../transition'
 import type { TransitionGeometry } from '../transition'
 import { animatedValue } from '../keyframes'
-import type { Clip, Doc, MediaAsset, ProjectLut, Track } from '../types'
+import { clipTransform } from '../export/offline'
+import {
+  blendCompositeOperation,
+  blurSampleTimes,
+  cropFeatherPx,
+  cropRect,
+  effectKeyframeValue,
+  effectSamples,
+  enabledEffects,
+  isCropConsumed,
+  resolveMatteTrack,
+} from '../effects'
+import { applyChromaKeyToRgba, buildMatteMask, parseKeyColor } from '../chroma-key'
+import type { Clip, Doc, EffectEntry, MediaAsset, ProjectLut, Track } from '../types'
 
 /**
  * Canvas compositor — draws one frame of the doc at time `t`.
@@ -119,8 +132,13 @@ function drawTrack(
   height: number,
   doc: Doc,
   depth: number,
+  ignoreVisibility = false,
 ): void {
   if (track.kind === 'audio') return // audio tracks have no visual
+  // Hidden tracks skip the video composite — except when rendered AS a matte
+  // mask: visibility affects the main composite only, never the mask (a
+  // hidden source that rendered nothing would erase the matted picture).
+  if (track.visible === false && !ignoreVisibility) return
   const clips = [...track.clips].sort((a, b) => a.start - b.start)
   const active = clips.filter((c) => t >= c.start && t < c.start + c.duration)
   if (active.length === 0) return
@@ -228,7 +246,14 @@ function drawSpatialTransition(
     drawClip(sctx, b, t, resolve, 1, width, height, doc, depth)
     paintSpatialMask(sctx, geo, width, height)
     sctx.restore()
+    // The incoming clip's blend mode travels with the reveal (both
+    // spatial-transition roles blend, per the plan): compositing the masked
+    // scratch source-over would blend against nothing and drop the mode.
+    const gco = blendCompositeOperation(b.blendMode)
+    ctx.save()
+    if (gco !== 'source-over') ctx.globalCompositeOperation = gco
     ctx.drawImage(canvas, 0, 0)
+    ctx.restore()
     return
   }
   ctx.save()
@@ -269,6 +294,118 @@ export function paintSpatialMask(
   sctx.fillRect(rect.x, rect.y, rect.w, rect.h)
 }
 
+/**
+ * Four-side soft-rect mask for crop feather (0.8.6): keeps the rect through
+ * destination-in, then erases a feather band along each edge with
+ * destination-out gradients (opaque at the boundary, transparent inward).
+ * Shared by the preview compositor and the exporter, so feather cannot
+ * differ between monitor and file. The wipe-only `paintSpatialMask` above is
+ * NOT reused here: it takes TransitionGeometry and feathers one direction,
+ * while crop needs all four sides.
+ */
+export function paintSoftRectMask(
+  sctx: CanvasRenderingContext2D,
+  rect: { x: number; y: number; w: number; h: number },
+  featherPx: number,
+): void {
+  sctx.save()
+  sctx.globalCompositeOperation = 'destination-in'
+  sctx.fillStyle = '#000000'
+  sctx.fillRect(rect.x, rect.y, rect.w, rect.h)
+  if (featherPx > 0 && rect.w > 0 && rect.h > 0) {
+    // One gradient band per edge. Corners erase twice (box-feather
+    // approximation); the band clamps to the rect so edges never cross.
+    const bands: {
+      x0: number
+      y0: number
+      x1: number
+      y1: number
+      x: number
+      y: number
+      w: number
+      h: number
+    }[] = [
+      {
+        x0: rect.x,
+        y0: 0,
+        x1: rect.x + featherPx,
+        y1: 0,
+        x: rect.x,
+        y: rect.y,
+        w: featherPx,
+        h: rect.h,
+      },
+      {
+        x0: rect.x + rect.w,
+        y0: 0,
+        x1: rect.x + rect.w - featherPx,
+        y1: 0,
+        x: rect.x + rect.w - featherPx,
+        y: rect.y,
+        w: featherPx,
+        h: rect.h,
+      },
+      {
+        x0: 0,
+        y0: rect.y,
+        x1: 0,
+        y1: rect.y + featherPx,
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: featherPx,
+      },
+      {
+        x0: 0,
+        y0: rect.y + rect.h,
+        x1: 0,
+        y1: rect.y + rect.h - featherPx,
+        x: rect.x,
+        y: rect.y + rect.h - featherPx,
+        w: rect.w,
+        h: featherPx,
+      },
+    ]
+    sctx.globalCompositeOperation = 'destination-out'
+    for (const band of bands) {
+      if (band.w <= 0 || band.h <= 0) continue
+      const grad = sctx.createLinearGradient(band.x0, band.y0, band.x1, band.y1)
+      grad.addColorStop(0, 'rgba(0,0,0,1)')
+      grad.addColorStop(1, 'rgba(0,0,0,0)')
+      sctx.fillStyle = grad
+      sctx.fillRect(band.x, band.y, band.w, band.h)
+    }
+  }
+  sctx.restore()
+}
+
+/**
+ * Blits a frame-sized effect image with the clip's Motion transform.
+ * Matches containRect's geometry exactly (scale grows from the frame center,
+ * then the position offset applies), so the effect path composites the same
+ * picture the fast path draws: the stack evaluates on untransformed
+ * contain-fit content (crop precedes Motion, Premiere's fixed-effects-last
+ * order) and Motion lands here, once, at composite time. Shared by the
+ * preview compositor and the exporter.
+ */
+export function blitTransformed(
+  ctx: CanvasRenderingContext2D,
+  image: CanvasImageSource,
+  width: number,
+  height: number,
+  transform: { posX: number; posY: number; scale: number } | null,
+): void {
+  if (!transform) {
+    ctx.drawImage(image, 0, 0)
+    return
+  }
+  ctx.save()
+  ctx.translate(width / 2 + transform.posX, height / 2 + transform.posY)
+  ctx.scale(transform.scale, transform.scale)
+  ctx.drawImage(image, -width / 2, -height / 2, width, height)
+  ctx.restore()
+}
+
 function drawClip(
   ctx: CanvasRenderingContext2D,
   clip: Clip,
@@ -282,23 +419,101 @@ function drawClip(
 ): void {
   // Clip-local time for keyframe evaluation (0 = clip start).
   const local = t - clip.start
-  // Clip opacity stacks with the transition alpha — a 50%-opaque clip inside a
-  // crossfade draws at alpha*0.5 on every layer (Premiere-style compositing).
+  const stack = enabledEffects(clip)
+  const gco = blendCompositeOperation(clip.blendMode)
+  // Fast path: no stack, no blend. A stack of only zero-sample blurs is
+  // equally inert (shutter 0 or disabled-at-this-frame evaluates nothing),
+  // so it takes the same direct draw instead of a scratch round-trip.
+  // Bit-identical to the pre-effects draw.
+  const inertBlur =
+    stack.length > 0 &&
+    stack.every(
+      (e) =>
+        e.type === 'motionBlur' && effectSamples(effectKeyframeValue(e, 'shutter', local)) <= 0,
+    )
+  if ((stack.length === 0 || inertBlur) && gco === 'source-over') {
+    // Clip opacity stacks with the transition alpha — a 50%-opaque clip inside a
+    // crossfade draws at alpha*0.5 on every layer (Premiere-style compositing).
+    const effective = alpha * animatedValue(clip, 'opacity', local)
+    if (effective <= 0) return
+    const lut = findLut(doc.project.luts, clip.lutId)
+    drawClipCore(
+      ctx,
+      clip,
+      local,
+      resolve,
+      effective,
+      clipFilter(clip, local, lut),
+      clipTransform(clip, local),
+      width,
+      height,
+      doc,
+      depth,
+      lut,
+    )
+    return
+  }
+  if (alpha <= 0) return
+  // Effect path: opacity and grading freeze at frame time (applied once at
+  // the composite below); the core draws UNTRANSFORMED contain-fit content so
+  // the stack evaluates before Motion (crop precedes Motion); Motion lands at
+  // composite time, per sub-sample inside blur, once outside it. Matte pixels
+  // freeze at frame time; chroma params freeze, but the key pass re-evaluates
+  // per sub-sample in stored order (animated crop upstream changes its input).
   const effective = alpha * animatedValue(clip, 'opacity', local)
   if (effective <= 0) return
-
-  // Color stack: exposure/contrast/saturation/brightness/hue, animated or static.
-  // One filter builder for both render paths (color.ts), plus the clip's LUT:
-  // a 1D shaper rides the filter string, a 3D cube is applied to the decoded
-  // pixels below.
   const lut = findLut(doc.project.luts, clip.lutId)
-  const filter = clipFilter(clip, local, lut)
+  const blurs = stack.filter((e) => e.type === 'motionBlur')
+  // "Blurred" means some level actually ran its accumulator (2+ samples):
+  // single-sample levels collapse to the unblurred stack, whose image is
+  // untransformed and still needs its Motion blit below. Aligned with the
+  // collapse decision in renderEffectImage (length <= 1 skips).
+  const blurred =
+    blurs.length > 0 &&
+    blurs.some(
+      (e) =>
+        blurSampleTimes(t, effectKeyframeValue(e, 'shutter', local), doc.project.fps).length > 1,
+    )
+  const image = renderEffectImage(doc, resolve, clip, t, local, width, height, depth, {
+    filter: clipFilter(clip, local, lut),
+    lut,
+  })
+  if (!image) return
+  ctx.save()
+  if (gco !== 'source-over') ctx.globalCompositeOperation = gco
+  ctx.globalAlpha = effective
+  if (blurred) {
+    // Sub-sample transforms are already baked into the accumulation.
+    ctx.drawImage(image, 0, 0)
+  } else {
+    blitTransformed(ctx, image, width, height, clipTransform(clip, local))
+  }
+  ctx.restore()
+}
 
-  const posX = animatedValue(clip, 'positionX', local)
-  const posY = animatedValue(clip, 'positionY', local)
-  const scale = animatedValue(clip, 'scale', local)
-  const transformed = posX !== 0 || posY !== 0 || scale !== 1
-
+/**
+ * The pre-effects clip draw (the old drawClip body): content with caller
+ * chosen alpha/filter/transform. `resolveLocal` drives source resolve,
+ * compound nesting and text; the transform arrives precomputed, so
+ * motion-blur sub-samples reposition without re-resolving (the parked source
+ * frame is frozen; only the transform varies — the same approximation class
+ * as the stepped preview, and Premiere's Transform blur likewise blurs the
+ * transform, not content motion).
+ */
+function drawClipCore(
+  ctx: CanvasRenderingContext2D,
+  clip: Clip,
+  resolveLocal: number,
+  resolve: MediaResolver,
+  alpha: number,
+  filter: string,
+  transform: { posX: number; posY: number; scale: number } | null,
+  width: number,
+  height: number,
+  doc: Doc,
+  depth: number,
+  lut: ProjectLut | undefined,
+): void {
   // Compound clip (0.8.1): composite the referenced sequence into a transparent
   // scratch surface, then draw that single surface with the container's alpha,
   // filter and transform (a GROUP composite, matching the exporter).
@@ -312,56 +527,29 @@ function drawClip(
     sctx.clearRect(0, 0, width, height)
     const childTracks = sequence.tracks
     for (let i = childTracks.length - 1; i >= 0; i--) {
-      drawTrack(sctx, childTracks[i], local, resolve, width, height, doc, depth + 1)
+      drawTrack(sctx, childTracks[i], resolveLocal, resolve, width, height, doc, depth + 1)
     }
     sctx.restore()
-    drawContain(
-      ctx,
-      sequenceSurfaces[depth],
-      width,
-      height,
-      effective,
-      filter,
-      transformed ? { posX, posY, scale } : null,
-      lut,
-    )
+    drawContain(ctx, sequenceSurfaces[depth], width, height, alpha, filter, transform, lut)
     return
   }
 
   if (clip.text !== undefined && clip.style) {
-    drawTextClip(
-      ctx,
-      clip,
-      width,
-      height,
-      effective,
-      filter,
-      transformed ? { posX, posY, scale } : null,
-    )
+    drawTextClip(ctx, clip, width, height, alpha, filter, transform)
     return
   }
 
-  const resolved = resolve(clip, local)
+  const resolved = resolve(clip, resolveLocal)
   if (!resolved) return // missing media → black
   const { asset, el } = resolved
   if (!el) return
 
   if (asset.kind === 'image') {
-    drawContain(
-      ctx,
-      el as HTMLImageElement,
-      width,
-      height,
-      effective,
-      filter,
-      transformed ? { posX, posY, scale } : null,
-      lut,
-    )
+    drawContain(ctx, el as HTMLImageElement, width, height, alpha, filter, transform, lut)
     return
   }
   const video = el as HTMLVideoElement
   if (video.readyState >= 2) {
-    const geometry = transformed ? { posX, posY, scale } : null
     const blend = resolved.blend
     // Gate on a weight strictly inside (0, 1): at the ends the pair reduces to
     // one of the two frames, and the export skips the pair there too. A partner
@@ -372,15 +560,356 @@ function drawClip(
         blend: { first: video, second: blend.el, weight: blend.weight },
         width,
         height,
-        alpha: effective,
+        alpha,
         filter,
-        transform: geometry,
+        transform,
         lut,
       })
       return
     }
-    drawContain(ctx, video, width, height, effective, filter, geometry, lut)
+    drawContain(ctx, video, width, height, alpha, filter, transform, lut)
   }
+}
+
+/**
+ * Depth-indexed scratch surfaces for the effect pipeline (0.8.6), following
+ * the sequenceSurfaces/spatialScratch pattern: lazily allocated, reused
+ * across frames, cleared before reuse. Matte mask renders recurse at
+ * depth + 1, so a matted clip never shares surfaces with its own mask.
+ * Mask builds pool by depth and matte slot, so two mattes on one clip keep
+ * distinct canvases; the transient mask render stays shared per depth.
+ */
+const effectScratch: HTMLCanvasElement[] = []
+const effectZoom: HTMLCanvasElement[] = []
+const effectAccum: HTMLCanvasElement[][] = []
+const effectMaskRender: HTMLCanvasElement[] = []
+const effectMaskBuild: HTMLCanvasElement[][] = []
+/** Transparent frame for null blur samples (consumed crop mid-shutter keeps its weight). */
+const effectClear: HTMLCanvasElement[] = []
+
+function effectSurface(
+  pool: HTMLCanvasElement[],
+  depth: number,
+  width: number,
+  height: number,
+): { canvas: HTMLCanvasElement; sctx: CanvasRenderingContext2D } | null {
+  if (typeof document === 'undefined') return null
+  const canvas = (pool[depth] ??= document.createElement('canvas'))
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+  const sctx = canvas.getContext('2d')
+  return sctx ? { canvas, sctx } : null
+}
+
+function effectAccumSurface(
+  depth: number,
+  level: number,
+  width: number,
+  height: number,
+): { canvas: HTMLCanvasElement; sctx: CanvasRenderingContext2D } | null {
+  if (typeof document === 'undefined') return null
+  const byDepth = (effectAccum[depth] ??= [])
+  const canvas = (byDepth[level] ??= document.createElement('canvas'))
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+  const sctx = canvas.getContext('2d')
+  return sctx ? { canvas, sctx } : null
+}
+
+function effectMaskBuildSurface(
+  depth: number,
+  slot: number,
+  width: number,
+  height: number,
+): { canvas: HTMLCanvasElement; sctx: CanvasRenderingContext2D } | null {
+  if (typeof document === 'undefined') return null
+  const byDepth = (effectMaskBuild[depth] ??= [])
+  const canvas = (byDepth[slot] ??= document.createElement('canvas'))
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+  const sctx = canvas.getContext('2d')
+  return sctx ? { canvas, sctx } : null
+}
+
+interface FrozenEffectParams {
+  filter: string
+  lut: ProjectLut | undefined
+}
+
+/**
+ * Builds a track-matte mask surface once (0.8.6): renders the source track
+ * at frame time, then rewrites it to a white silhouette whose alpha is the
+ * mask value. Returns null when the source is unresolvable or no surface
+ * exists (callers skip the effect, never crash). The mask is frame-time
+ * frozen by construction, so blur sub-samples reuse one build instead of
+ * re-rendering identical pixels per sample.
+ */
+function buildMatteSurface(
+  doc: Doc,
+  resolve: MediaResolver,
+  clip: Clip,
+  entry: Extract<EffectEntry, { type: 'trackMatte' }>,
+  timelineT: number,
+  width: number,
+  height: number,
+  depth: number,
+  slot: number,
+): HTMLCanvasElement | null {
+  const source = resolveMatteTrack(doc, clip.id, entry)
+  if (!source) return null
+  const render = effectSurface(effectMaskRender, depth, width, height)
+  const build = effectMaskBuildSurface(depth, slot, width, height)
+  if (!render || !build) return null
+  // The above-track rule is acyclic, so a mask render cannot recurse back
+  // into this clip (no cycle guard needed).
+  render.sctx.save()
+  render.sctx.globalAlpha = 1
+  render.sctx.clearRect(0, 0, width, height)
+  drawTrack(render.sctx, source, timelineT, resolve, width, height, doc, depth + 1, true)
+  render.sctx.restore()
+  try {
+    build.sctx.save()
+    build.sctx.globalAlpha = 1
+    build.sctx.clearRect(0, 0, width, height)
+    build.sctx.drawImage(render.canvas, 0, 0)
+    const img = build.sctx.getImageData(0, 0, width, height)
+    buildMatteMask(img.data, entry.mode ?? 'luma', entry.reverse === true)
+    build.sctx.putImageData(img, 0, 0)
+    build.sctx.restore()
+  } catch {
+    try {
+      build.sctx.restore()
+    } catch {
+      // Unbalanced save from the failed block above; ignore.
+    }
+    return null
+  }
+  return build.canvas
+}
+function applyStackEntry(
+  canvas: HTMLCanvasElement,
+  sctx: CanvasRenderingContext2D,
+  doc: Doc,
+  resolve: MediaResolver,
+  clip: Clip,
+  timelineT: number,
+  frameLocal: number,
+  motionLocal: number,
+  width: number,
+  height: number,
+  depth: number,
+  entry: EffectEntry,
+  masks: Map<string, HTMLCanvasElement | null>,
+): boolean {
+  if (entry.type === 'crop') {
+    if (isCropConsumed(entry, motionLocal)) return false
+    const rect = cropRect(entry, motionLocal, width, height)
+    paintSoftRectMask(sctx, rect, cropFeatherPx(entry, motionLocal, width, height))
+    if (entry.zoom === true && rect.w > 0 && rect.h > 0) {
+      // Zoom refills the frame with the cropped remainder (Premiere's Zoom).
+      const zoom = effectSurface(effectZoom, depth, width, height)
+      if (!zoom) return true
+      zoom.sctx.save()
+      zoom.sctx.globalAlpha = 1
+      zoom.sctx.clearRect(0, 0, width, height)
+      zoom.sctx.drawImage(canvas, rect.x, rect.y, rect.w, rect.h, 0, 0, width, height)
+      zoom.sctx.restore()
+      sctx.save()
+      sctx.globalAlpha = 1
+      sctx.clearRect(0, 0, width, height)
+      sctx.drawImage(zoom.canvas, 0, 0)
+      sctx.restore()
+    }
+    return true
+  }
+  if (entry.type === 'chromaKey') {
+    const rgb = parseKeyColor(entry.key ?? '#00ff00')
+    if (!rgb) return true
+    try {
+      const img = sctx.getImageData(0, 0, width, height)
+      applyChromaKeyToRgba(img.data, {
+        key: [rgb[0], rgb[1], rgb[2]],
+        similarity: entry.similarity ?? 0,
+        blend: entry.blend ?? 0,
+        clipBlack: entry.clipBlack ?? 0,
+        clipWhite: entry.clipWhite ?? 1,
+        despill: entry.despill ?? 0,
+      })
+      sctx.putImageData(img, 0, 0)
+    } catch {
+      // Tainted canvas: leave the pixels (same posture as the LUT pass).
+    }
+    return true
+  }
+  // Track matte: keep the content through the prebuilt frame-time mask.
+  // (Motion blur never reaches here: the caller applies non-blur entries.)
+  if (entry.type !== 'trackMatte') return true
+  const mask = masks.get(entry.id)
+  // Absent from the map means unresolvable (or no surface): skip the effect.
+  if (!mask) return true
+  sctx.save()
+  sctx.globalCompositeOperation = 'destination-in'
+  sctx.drawImage(mask, 0, 0)
+  sctx.restore()
+  return true
+}
+
+/**
+ * Clip content plus the non-blur stack at one motion time: core draw opaque
+ * (UNTRANSFORMED contain-fit, so the stack evaluates before Motion) into the
+ * base scratch, then each enabled non-blur entry in stored order. Crop
+ * geometry evaluates at `motionLocal`; chroma params are static and the
+ * matte mask arrives prebuilt at frame time. Returns null when a crop
+ * consumes the frame (or no surface exists).
+ */
+function renderStackImage(
+  doc: Doc,
+  resolve: MediaResolver,
+  clip: Clip,
+  timelineT: number,
+  frameLocal: number,
+  motionLocal: number,
+  width: number,
+  height: number,
+  depth: number,
+  frozen: FrozenEffectParams,
+  masks: Map<string, HTMLCanvasElement | null>,
+): HTMLCanvasElement | null {
+  const base = effectSurface(effectScratch, depth, width, height)
+  if (!base) return null
+  base.sctx.save()
+  base.sctx.globalAlpha = 1
+  base.sctx.clearRect(0, 0, width, height)
+  drawClipCore(
+    base.sctx,
+    clip,
+    frameLocal,
+    resolve,
+    1,
+    frozen.filter,
+    null,
+    width,
+    height,
+    doc,
+    depth,
+    frozen.lut,
+  )
+  for (const entry of enabledEffects(clip)) {
+    if (entry.type === 'motionBlur') continue
+    const kept = applyStackEntry(
+      base.canvas,
+      base.sctx,
+      doc,
+      resolve,
+      clip,
+      timelineT,
+      frameLocal,
+      motionLocal,
+      width,
+      height,
+      depth,
+      entry,
+      masks,
+    )
+    if (!kept) {
+      base.sctx.restore()
+      return null
+    }
+  }
+  base.sctx.restore()
+  return base.canvas
+}
+
+/**
+ * The full effect image: blur entries apply in stored order, each
+ * accumulating the previous level's renders over its own shutter window
+ * (duplicates converge naturally: re-averaging an average). Level -1 is the
+ * unblurred stack. Accumulation is additive at 1/N ('lighter'), the exact
+ * uniform mean including transparency; null samples (consumed crop
+ * mid-shutter) dilute at full weight.
+ */
+function renderEffectImage(
+  doc: Doc,
+  resolve: MediaResolver,
+  clip: Clip,
+  timelineT: number,
+  frameLocal: number,
+  width: number,
+  height: number,
+  depth: number,
+  frozen: FrozenEffectParams,
+): HTMLCanvasElement | null {
+  const blurs = enabledEffects(clip).filter((e) => e.type === 'motionBlur')
+  // Matte masks build once at frame time and are reused by every sub-sample:
+  // the mask inputs are frozen (source track rendered at frameLocal), so a
+  // rebuild per sample would redo identical pixel work.
+  const masks = new Map<string, HTMLCanvasElement | null>()
+  let matteSlot = 0
+  for (const entry of enabledEffects(clip)) {
+    if (entry.type !== 'trackMatte') continue
+    masks.set(
+      entry.id,
+      buildMatteSurface(doc, resolve, clip, entry, timelineT, width, height, depth, matteSlot++),
+    )
+  }
+  const renderLevel = (level: number, tTimeline: number): HTMLCanvasElement | null => {
+    if (level < 0)
+      return renderStackImage(
+        doc,
+        resolve,
+        clip,
+        timelineT,
+        frameLocal,
+        tTimeline - clip.start,
+        width,
+        height,
+        depth,
+        frozen,
+        masks,
+      )
+    const shutter = effectKeyframeValue(blurs[level], 'shutter', frameLocal)
+    const times = blurSampleTimes(tTimeline, shutter, doc.project.fps)
+    // A single sample lands exactly at t (blurSampleTimes), so the
+    // accumulator would copy the level below through one 'lighter' blit:
+    // collapse to the unblurred path and skip the surface entirely.
+    if (times.length <= 1) return renderLevel(level - 1, tTimeline)
+    const acc = effectAccumSurface(depth, level, width, height)
+    if (!acc) return renderLevel(level - 1, tTimeline)
+    // Exact uniform mean via additive accumulation (the beginBlendPair
+    // precedent): every sample lands at 1/N under 'lighter', so premultiplied
+    // color AND alpha sum into the mean. The old incremental scheme drew each
+    // sample source-over at 1/(k+1): exact for fully-opaque pixels, but a
+    // transparent sample left the pixel untouched while still counting its
+    // weight, so edges alternating opaque/transparent accumulated too opaque.
+    const clear = effectSurface(effectClear, depth, width, height)
+    if (!clear) return renderLevel(level - 1, tTimeline)
+    clear.sctx.save()
+    clear.sctx.globalAlpha = 1
+    clear.sctx.clearRect(0, 0, width, height)
+    clear.sctx.restore()
+    acc.sctx.save()
+    acc.sctx.globalAlpha = 1
+    acc.sctx.clearRect(0, 0, width, height)
+    acc.sctx.globalCompositeOperation = 'lighter'
+    acc.sctx.globalAlpha = 1 / times.length
+    for (const tau of times) {
+      // Null samples (consumed crop mid-shutter) contribute transparent
+      // black at full weight, diluting the mean honestly. Each sample blits
+      // with its own Motion transform (crop precedes Motion: the stack image
+      // is untransformed, Motion lands here per sub-sample).
+      const img = renderLevel(level - 1, tau) ?? clear.canvas
+      blitTransformed(acc.sctx, img, width, height, clipTransform(clip, tau - clip.start))
+    }
+    acc.sctx.restore()
+    return acc.canvas
+  }
+  return renderLevel(blurs.length - 1, timelineT)
 }
 
 /**

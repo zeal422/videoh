@@ -1,7 +1,16 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Volume2, VolumeX, Video, AudioLines, Plus, Type as TypeIcon } from 'lucide-react'
+import {
+  Volume2,
+  VolumeX,
+  Video,
+  AudioLines,
+  Plus,
+  Type as TypeIcon,
+  Eye,
+  EyeOff,
+} from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -791,8 +800,10 @@ export function TimelinePanel() {
               <div
                 data-lane-id={track.id}
                 data-lane-kind={track.kind}
+                data-visible={track.visible === false ? 'false' : 'true'}
                 className={cn(
                   'relative flex-1 border-b border-border/60',
+                  track.visible === false && 'opacity-60',
                   track.kind === 'video' && 'bg-emerald-950/20',
                   track.kind === 'audio' && 'bg-amber-950/20',
                   track.kind === 'text' && 'bg-violet-950/20',
@@ -947,6 +958,11 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
   const renameFromMenuRef = useRef(false)
   const toggleMute = () =>
     useEditorStore.getState().apply({ type: 'toggleTrackMute', trackId: track.id })
+  // Visibility eyeball (0.8.6): video/text lanes only. Audio lanes keep the
+  // mute toggle above; a video-only flag would do nothing there.
+  const hidden = track.visible === false
+  const toggleVisible = () =>
+    useEditorStore.getState().apply({ type: 'setTrackVisible', trackId: track.id, visible: hidden })
   const setTargeted = (targeted: boolean) =>
     useEditorStore.getState().setTrackTargeted(track.id, targeted)
   const deleteTrack = () =>
@@ -977,7 +993,11 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
         <div
           data-testid={`track-header-${track.id}`}
           data-targeted={untargeted ? 'false' : 'true'}
-          className="sticky left-0 z-30 flex shrink-0 items-center gap-2 border-b border-r border-b-border/60 bg-card px-2"
+          data-visible={hidden ? 'false' : 'true'}
+          className={cn(
+            'sticky left-0 z-30 flex shrink-0 items-center gap-2 border-b border-r border-b-border/60 bg-card px-2',
+            hidden && 'opacity-60',
+          )}
           style={{ width: TRACK_HEADER_WIDTH }}
         >
           <KindIcon
@@ -1017,6 +1037,21 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
             </span>
           )}
           <span className="text-[10px] text-muted-foreground">{track.clips.length}</span>
+          {track.kind !== 'audio' && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-6"
+              aria-label={hidden ? `Show ${track.name}` : `Hide ${track.name}`}
+              onClick={toggleVisible}
+            >
+              {hidden ? (
+                <EyeOff className="size-3.5 text-muted-foreground" />
+              ) : (
+                <Eye className="size-3.5" />
+              )}
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"

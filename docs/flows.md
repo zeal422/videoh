@@ -329,6 +329,47 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
   while playing pauses playback first (Premiere behavior), so dragging the playhead can never inject
   a force-seek per pointer move into a running clock.
 
+## Effects (crop, blend modes, chroma key, track matte, motion blur)
+
+- Each clip carries an ordered **effect stack** (Effect Controls, below the Color group): crop, chroma
+  key, track matte and motion blur, with duplicates allowed and every entry individually bypassable.
+  Entries apply top-first in stored order, except motion blur, which always evaluates last regardless
+  of list position. Clip Motion and Opacity apply after the whole stack, so crop always precedes
+  Motion. New effects arrive through the picker's plus button; there is no drag-reorder.
+- **Crop** takes four sides in percent plus edge feather and a Zoom toggle that refills the frame
+  with the cropped remainder. Feather converts as percent of the smaller frame dimension and can
+  never invert the rect. When opposing edges sum to 100 % or more the crop consumes the frame and
+  the clip draws nothing (zoom cannot refill nothing). Edges and feather keyframe with diamonds.
+- **Blend modes** are a fixed clip field under the Inspector's Opacity section, not a stack entry:
+  Normal plus the canvas-supported Premiere set (Multiply, Screen, Overlay, Soft/Hard Light, Darken,
+  Lighten, Color Dodge/Burn, Linear Dodge, Difference, Exclusion, Hue, Saturation, Color,
+  Luminosity). The blend composites with the backdrop before opacity multiplies. Exotic modes
+  (Dissolve, Divide, Subtract, Vivid/Linear/Pin Light, Hard Mix) are recorded non-goals: no canvas
+  primitive exists for them.
+- **Chroma key** (Ultra-Key-lite) keys on an eyedropper-sampled color with hex fallback: similarity,
+  blend softness, clip black/white and despill. Arming the eyedropper makes the next Program Monitor
+  click sample the pixel (Escape or a second click cancels; a tainted canvas keeps the old key with
+  a notice). All keyer params are static.
+- **Track matte** names a source track by id in the clip's own sequence (cross-sequence refused);
+  the source must sit above the clip. The matte composites by luma or alpha, optionally reversed.
+  The source track keeps showing (Premiere behavior); hide it with the track eyeball. A hidden
+  track still serves as a matte source. Removing the source track drops pointing entries in the
+  same undo step, and moving a clip drops the mattes the move orphans. An unresolvable matte
+  skips the effect instead of crashing, in preview and export alike.
+- **Motion blur** accumulates the clip's own animated position/scale across a shutter window
+  (angle over the frame interval, up to 8 samples, shutter 0 bypasses free). Transition
+  slide/push offsets stay sharp. Chroma params and the matte mask freeze at frame time inside
+  the window while Motion and crop geometry (including animated feather) re-evaluate per
+  sub-sample; the chroma pass itself re-runs per sub-sample in stored order, since animated
+  crop upstream changes its input. The shutter
+  angle keyframes; everything else about blur is static.
+- A track **eyeball** (video/text lanes only) hides the lane from the video composite in preview
+  and export; audio muting stays on the track mute toggle. Effect entry curves split with the clip
+  and ride trims untouched, exactly like flat keyframe curves.
+- Preview and export evaluate the same stack through shared helpers (`effects.ts`,
+  `chroma-key.ts`, the soft-rect mask), so the monitor and the file cannot diverge across
+  transitions, compounds or nesting.
+
 ## Color scopes
 
 - The preview panel carries a collapsible **Scopes** section (off by default), local to the panel:

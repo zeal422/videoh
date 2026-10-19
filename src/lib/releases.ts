@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.8.6',
+    date: '2026-10-18',
+    highlights: [
+      'Effects beyond opacity: crop, blend modes, chroma key, track matte and motion blur on every clip through an ordered effect stack',
+      'Crop with feather and zoom refill, sixteen canvas blend modes under Opacity, and an eyedropper chroma keyer with despill',
+      'Track mattes from any higher lane with luma or alpha compositing, plus motion blur that accumulates your animated moves',
+      'Preview and export render every effect identically, and files stay at v4 with old projects opening unchanged',
+    ],
+  },
+  {
     version: '0.8.5',
     date: '2026-10-17',
     highlights: [

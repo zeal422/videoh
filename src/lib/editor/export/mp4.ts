@@ -17,29 +17,50 @@ import {
   VideoSampleSource,
 } from 'mediabunny'
 import { EQ_DB_MAX, EQ_DB_MIN } from '../constants'
-import { clampSourceTime, docDuration, findMedia, findSequence } from '../factories'
+import {
+  clampSourceTime,
+  docDuration,
+  findClip,
+  findMedia,
+  findSequence,
+  sequenceTracks,
+} from '../factories'
 import { constantTimeScaleRate } from '../keyframes'
 import { clipRendersAudio, linkGroupChangesRate } from '../links'
 import { findLut } from '../lut'
 import {
+  blitTransformed,
   drawBlendedContain,
   drawContain,
   drawTextClip,
+  paintSoftRectMask,
   paintSpatialMask,
 } from '../playback/compositor'
 import { denoiseFilters } from '../playback/denoise'
+import { applyChromaKeyToRgba, buildMatteMask, parseKeyColor } from '../chroma-key'
+import {
+  blendCompositeOperation,
+  blurSampleTimes,
+  cropFeatherPx,
+  cropRect,
+  effectKeyframeValue,
+  effectSamples,
+  isCropConsumed,
+  resolveMatteTrack,
+} from '../effects'
 import { clamp } from '../time'
 import {
   blendWeight,
   clipCrossfadeSchedule,
   clipGainSchedule,
+  clipTransform,
   EXPORT_AUDIO_BITRATE,
   EXPORT_VIDEO_BITRATES,
   flattenDraws,
   planVideoFrame,
   type ClipDraw,
 } from './offline'
-import type { Clip, Doc, ProjectLut, Track } from '../types'
+import type { Clip, Doc, EffectEntry, ProjectLut, Track } from '../types'
 
 /**
  * WebCodecs/MP4 export, offline (no realtime capture), frame-accurate.
@@ -172,7 +193,7 @@ export function compositeFrame(
   for (const draw of drawPlan.draws) {
     const spatial = draw.spatial
     if (spatial?.role === 'incoming' && spatial.geometry.wipeRect && spatial.geometry.featherBand) {
-      paintFeatheredIncoming(ctx, doc, draw, frames, width, height, blends, depth)
+      paintFeatheredIncoming(ctx, doc, draw, frames, width, height, blends, depth, drawPlan.time)
       continue
     }
     ctx.save()
@@ -188,7 +209,7 @@ export function compositeFrame(
         ctx.translate(geo.bOffset.x, geo.bOffset.y)
       }
     }
-    paintExportDraw(ctx, doc, draw, frames, width, height, blends, depth)
+    paintExportDraw(ctx, doc, draw, frames, width, height, blends, depth, drawPlan.time)
     ctx.restore()
   }
 }
@@ -211,6 +232,7 @@ function paintFeatheredIncoming(
   height: number,
   blends: Map<string, BlendSample>,
   depth: number,
+  frameTime: number,
 ): void {
   const geo = draw.spatial?.geometry
   if (typeof document === 'undefined' || !geo) {
@@ -220,7 +242,7 @@ function paintFeatheredIncoming(
       ctx.rect(geo.wipeRect.x, geo.wipeRect.y, geo.wipeRect.w, geo.wipeRect.h)
       ctx.clip()
     }
-    paintExportDraw(ctx, doc, draw, frames, width, height, blends, depth)
+    paintExportDraw(ctx, doc, draw, frames, width, height, blends, depth, frameTime)
     ctx.restore()
     return
   }
@@ -237,17 +259,64 @@ function paintFeatheredIncoming(
       ctx.rect(geo.wipeRect.x, geo.wipeRect.y, geo.wipeRect.w, geo.wipeRect.h)
       ctx.clip()
     }
-    paintExportDraw(ctx, doc, draw, frames, width, height, blends, depth)
+    paintExportDraw(ctx, doc, draw, frames, width, height, blends, depth, frameTime)
     ctx.restore()
     return
   }
   sctx.save()
   sctx.globalAlpha = 1
   sctx.clearRect(0, 0, width, height)
-  paintExportDraw(sctx, doc, draw, frames, width, height, blends, depth)
+  paintExportDraw(sctx, doc, draw, frames, width, height, blends, depth, frameTime)
   paintSpatialMask(sctx, geo, width, height)
   sctx.restore()
+  // The incoming draw's blend mode travels with the reveal (both
+  // spatial-transition roles blend, per the plan): compositing the masked
+  // scratch source-over would blend against nothing and drop the mode.
+  const gco = blendCompositeOperation(draw.blendMode)
+  ctx.save()
+  if (gco !== 'source-over') ctx.globalCompositeOperation = gco
   ctx.drawImage(canvas, 0, 0)
+  ctx.restore()
+}
+
+/**
+ * Collects the matte-source draws a frame needs decoded (exported for tests).
+ * Walks each plan's draws AND nested compound plans, carrying each plan's
+ * LOCAL time: a matte inside a compound at container-local tau reads its
+ * source at tau, not at the root timeline time. Hidden sources plan with
+ * `includeHidden` (visibility skips the main composite, never the mask);
+ * dedupe by clip id so each frame decodes once.
+ */
+export function collectMatteDraws(
+  doc: Doc,
+  draws: ClipDraw[],
+  tLocal: number,
+  seenIds: Set<string>,
+  out: ClipDraw[],
+): void {
+  for (const draw of draws) {
+    for (const e of draw.effects) {
+      if (e.type !== 'trackMatte') continue
+      const source = resolveMatteTrack(doc, draw.clip.id, e)
+      if (!source) continue
+      const owner = findClip(doc, draw.clip.id)
+      const lanes = sequenceTracks(doc, owner?.sequenceId).filter((tr) => tr.id === source.id)
+      const fresh: ClipDraw[] = []
+      for (const md of flattenDraws(planVideoFrame(doc, tLocal, lanes, { includeHidden: true }))) {
+        if (!seenIds.has(md.clip.id)) {
+          seenIds.add(md.clip.id)
+          fresh.push(md)
+          out.push(md)
+        }
+      }
+      // A matte source can itself carry a matte (same-sequence chains):
+      // collect its sources too. seenIds is the cycle guard (a track that
+      // points back at a collected clip contributes nothing new), and the
+      // above-track rule keeps any chain finite.
+      collectMatteDraws(doc, fresh, tLocal, seenIds, out)
+    }
+    if (draw.nested) collectMatteDraws(doc, draw.nested.draws, draw.nested.time, seenIds, out)
+  }
 }
 
 /** One plan entry onto the target context (extracted body of the draw loop). */
@@ -260,20 +329,100 @@ function paintExportDraw(
   height: number,
   blends: Map<string, BlendSample>,
   depth: number,
+  frameTime: number,
 ): void {
+  const gco = blendCompositeOperation(draw.blendMode)
+  const frameLocal = frameTime - draw.clip.start
+  // Fast path: no stack, no blend. A stack of only zero-sample blurs is
+  // equally inert, so it takes the same direct draw instead of a scratch
+  // round-trip. Bit-identical to the pre-effects draw.
+  const inertBlur =
+    draw.effects.length > 0 &&
+    draw.effects.every(
+      (e) =>
+        e.type === 'motionBlur' &&
+        effectSamples(effectKeyframeValue(e, 'shutter', frameLocal)) <= 0,
+    )
+  if ((draw.effects.length === 0 || inertBlur) && gco === 'source-over') {
+    paintExportCore(
+      ctx,
+      doc,
+      draw,
+      frames,
+      width,
+      height,
+      blends,
+      depth,
+      draw.alpha,
+      draw.filter,
+      draw.transform,
+    )
+    return
+  }
+  // Effect path mirrors the preview compositor: content renders opaque and
+  // UNTRANSFORMED into a scratch surface (frozen source frame, filter and
+  // opacity, stack before Motion), then one composite carries blend mode,
+  // alpha and the Motion transform together.
+  const blurs = draw.effects.filter((e) => e.type === 'motionBlur')
+  // "Blurred" means some level actually ran its accumulator (2+ samples):
+  // single-sample levels collapse to the unblurred stack, whose image is
+  // untransformed and still needs its Motion blit below.
+  const blurred =
+    blurs.length > 0 &&
+    blurs.some(
+      (e) =>
+        blurSampleTimes(frameTime, effectKeyframeValue(e, 'shutter', frameLocal), doc.project.fps)
+          .length > 1,
+    )
+  const image = renderExportEffectImage(doc, draw, frameTime, frames, width, height, blends, depth)
+  if (!image) return
+  ctx.save()
+  if (gco !== 'source-over') ctx.globalCompositeOperation = gco
+  ctx.globalAlpha = Math.min(1, Math.max(0, draw.alpha))
+  if (blurred) {
+    // Sub-sample transforms are already baked into the accumulation.
+    ctx.drawImage(image, 0, 0)
+  } else {
+    // draw.transform is the plan-time Motion transform at frame time.
+    blitTransformed(ctx, image, width, height, draw.transform)
+  }
+  ctx.restore()
+}
+
+/**
+ * The pre-effects export draw (the old paintExportDraw body): one plan entry
+ * with caller-chosen alpha/filter/transform. Decoded source frames stay
+ * frozen at plan time; motion-blur sub-samples vary only the transform.
+ */
+function paintExportCore(
+  ctx: CanvasRenderingContext2D,
+  doc: Doc,
+  draw: ClipDraw,
+  frames: Map<string, VideoFrame | ImageBitmap | HTMLImageElement>,
+  width: number,
+  height: number,
+  blends: Map<string, BlendSample>,
+  depth: number,
+  alpha: number,
+  filter: string,
+  transform: { posX: number; posY: number; scale: number } | null,
+): void {
+  // Alpha is clamped here: the plan carries the clip's own opacity stack and
+  // a malformed doc must not draw outside 0..1. Both paths then share the
+  // geometry, the grading and the blend compositing (playback/compositor.ts).
+  const clamped = Math.min(1, Math.max(0, alpha))
   if (draw.nested) {
     const sctx = scratchContext(depth, width, height)
     if (!sctx) return
     compositeFrame(sctx, doc, draw.nested, frames, width, height, blends, depth + 1)
     const lut = findLut(doc.project.luts, draw.clip.lutId)
-    const alpha = Math.min(1, Math.max(0, draw.alpha))
-    drawContain(ctx, compoundScratch[depth], width, height, alpha, draw.filter, draw.transform, lut)
+    drawContain(ctx, compoundScratch[depth], width, height, clamped, filter, transform, lut)
     return
   }
   // Text clips have no decoded frame: they are drawn by the same helper the
   // preview compositor uses, so exported titles match the program monitor.
   if (draw.clip.text !== undefined && draw.clip.style) {
-    drawTextClip(ctx, draw.clip, width, height, draw.alpha, draw.filter, draw.transform)
+    drawTextClip(ctx, draw.clip, width, height, clamped, filter, transform)
     return
   }
   const source = frames.get(draw.clip.id)
@@ -281,24 +430,350 @@ function paintExportDraw(
   // The clip's LUT, resolved exactly the way the preview compositor resolves
   // it: a 1D shaper already rides `draw.filter`, a 3D cube is applied here.
   const lut = findLut(doc.project.luts, draw.clip.lutId)
-  // Alpha is clamped here: the plan carries the clip's own opacity stack and
-  // a malformed doc must not draw outside 0..1. Both paths then share the
-  // geometry, the grading and the blend compositing (playback/compositor.ts).
-  const alpha = Math.min(1, Math.max(0, draw.alpha))
   const blend = blends.get(draw.clip.id)
   if (blend && blend.frame !== source) {
     drawBlendedContain(ctx, {
       blend: { first: source, second: blend.frame, weight: blend.weight },
       width,
       height,
-      alpha,
-      filter: draw.filter,
-      transform: draw.transform,
+      alpha: clamped,
+      filter,
+      transform,
       lut,
     })
     return
   }
-  drawContain(ctx, source, width, height, alpha, draw.filter, draw.transform, lut)
+  drawContain(ctx, source, width, height, clamped, filter, transform, lut)
+}
+
+/**
+ * Depth-indexed scratch surfaces for the export effect pipeline (0.8.6),
+ * mirroring the preview compositor's pools: base content, zoom refill, per
+ * blur-level accumulators, and per-matte-slot mask builds (one canvas per
+ * track matte, so stacked mattes cannot overwrite one another). Lazily
+ * allocated and cleared before reuse; matte mask renders recurse at
+ * depth + 1.
+ */
+const exportEffectScratch: HTMLCanvasElement[] = []
+const exportEffectZoom: HTMLCanvasElement[] = []
+const exportEffectAccum: HTMLCanvasElement[][] = []
+const exportEffectMaskRender: HTMLCanvasElement[] = []
+const exportEffectMaskBuild: HTMLCanvasElement[][] = []
+/** Transparent frame for null blur samples (consumed crop mid-shutter keeps its weight). */
+const exportEffectClear: HTMLCanvasElement[] = []
+
+function exportEffectSurface(
+  pool: HTMLCanvasElement[],
+  depth: number,
+  width: number,
+  height: number,
+): { canvas: HTMLCanvasElement; sctx: CanvasRenderingContext2D } | null {
+  if (typeof document === 'undefined') return null
+  const canvas = (pool[depth] ??= document.createElement('canvas'))
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+  const sctx = canvas.getContext('2d')
+  return sctx ? { canvas, sctx } : null
+}
+
+function exportEffectAccumSurface(
+  depth: number,
+  level: number,
+  width: number,
+  height: number,
+): { canvas: HTMLCanvasElement; sctx: CanvasRenderingContext2D } | null {
+  if (typeof document === 'undefined') return null
+  const byDepth = (exportEffectAccum[depth] ??= [])
+  const canvas = (byDepth[level] ??= document.createElement('canvas'))
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+  const sctx = canvas.getContext('2d')
+  return sctx ? { canvas, sctx } : null
+}
+
+function exportMaskBuildSurface(
+  depth: number,
+  slot: number,
+  width: number,
+  height: number,
+): { canvas: HTMLCanvasElement; sctx: CanvasRenderingContext2D } | null {
+  if (typeof document === 'undefined') return null
+  const byDepth = (exportEffectMaskBuild[depth] ??= [])
+  const canvas = (byDepth[slot] ??= document.createElement('canvas'))
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+  const sctx = canvas.getContext('2d')
+  return sctx ? { canvas, sctx } : null
+}
+
+/**
+ * One non-blur stack entry over export scratch content (mirrors the preview's
+ * applyStackEntry through the same shared math: cropRect, cropFeatherPx,
+ * paintSoftRectMask, applyChromaKeyToRgba, maskValue). Returns false when a
+ * crop consumes the frame. Unresolvable mattes and unparseable keys skip.
+ */
+/**
+ * Builds a track-matte mask surface once (0.8.6, mirrors the preview's
+ * buildMatteSurface): plans the source track at frame time (hidden sources
+ * included) and rewrites it to a white silhouette. Null when unresolvable
+ * or surfaceless (callers skip the effect). Frame-time frozen, so blur
+ * sub-samples share one build.
+ */
+function buildExportMatteSurface(
+  doc: Doc,
+  draw: ClipDraw,
+  frames: Map<string, VideoFrame | ImageBitmap | HTMLImageElement>,
+  blends: Map<string, BlendSample>,
+  entry: Extract<EffectEntry, { type: 'trackMatte' }>,
+  frameTime: number,
+  width: number,
+  height: number,
+  depth: number,
+  slot: number,
+): HTMLCanvasElement | null {
+  const clip = draw.clip
+  const source = resolveMatteTrack(doc, clip.id, entry)
+  if (!source) return null
+  const render = exportEffectSurface(exportEffectMaskRender, depth, width, height)
+  const build = exportMaskBuildSurface(depth, slot, width, height)
+  if (!render || !build) return null
+  const owner = findClip(doc, clip.id)
+  const tracks = sequenceTracks(doc, owner?.sequenceId).filter((tr) => tr.id === source.id)
+  const mattePlan = planVideoFrame(doc, frameTime, tracks, { includeHidden: true })
+  render.sctx.save()
+  render.sctx.globalAlpha = 1
+  render.sctx.clearRect(0, 0, width, height)
+  compositeFrame(render.sctx, doc, mattePlan, frames, width, height, blends, depth + 1)
+  render.sctx.restore()
+  try {
+    build.sctx.save()
+    build.sctx.globalAlpha = 1
+    build.sctx.clearRect(0, 0, width, height)
+    build.sctx.drawImage(render.canvas, 0, 0)
+    const img = build.sctx.getImageData(0, 0, width, height)
+    buildMatteMask(img.data, entry.mode ?? 'luma', entry.reverse === true)
+    build.sctx.putImageData(img, 0, 0)
+    build.sctx.restore()
+  } catch {
+    try {
+      build.sctx.restore()
+    } catch {
+      // Unbalanced save from the failed block above; ignore.
+    }
+    return null
+  }
+  return build.canvas
+}
+
+function applyExportStackEntry(
+  canvas: HTMLCanvasElement,
+  sctx: CanvasRenderingContext2D,
+  doc: Doc,
+  draw: ClipDraw,
+  frames: Map<string, VideoFrame | ImageBitmap | HTMLImageElement>,
+  blends: Map<string, BlendSample>,
+  frameTime: number,
+  motionLocal: number,
+  width: number,
+  height: number,
+  depth: number,
+  entry: EffectEntry,
+  masks: Map<string, HTMLCanvasElement | null>,
+): boolean {
+  const clip = draw.clip
+  if (entry.type === 'crop') {
+    if (isCropConsumed(entry, motionLocal)) return false
+    const rect = cropRect(entry, motionLocal, width, height)
+    paintSoftRectMask(sctx, rect, cropFeatherPx(entry, motionLocal, width, height))
+    if (entry.zoom === true && rect.w > 0 && rect.h > 0) {
+      const zoom = exportEffectSurface(exportEffectZoom, depth, width, height)
+      if (!zoom) return true
+      zoom.sctx.save()
+      zoom.sctx.globalAlpha = 1
+      zoom.sctx.clearRect(0, 0, width, height)
+      zoom.sctx.drawImage(canvas, rect.x, rect.y, rect.w, rect.h, 0, 0, width, height)
+      zoom.sctx.restore()
+      sctx.save()
+      sctx.globalAlpha = 1
+      sctx.clearRect(0, 0, width, height)
+      sctx.drawImage(zoom.canvas, 0, 0)
+      sctx.restore()
+    }
+    return true
+  }
+  if (entry.type === 'chromaKey') {
+    const rgb = parseKeyColor(entry.key ?? '#00ff00')
+    if (!rgb) return true
+    try {
+      const img = sctx.getImageData(0, 0, width, height)
+      applyChromaKeyToRgba(img.data, {
+        key: [rgb[0], rgb[1], rgb[2]],
+        similarity: entry.similarity ?? 0,
+        blend: entry.blend ?? 0,
+        clipBlack: entry.clipBlack ?? 0,
+        clipWhite: entry.clipWhite ?? 1,
+        despill: entry.despill ?? 0,
+      })
+      sctx.putImageData(img, 0, 0)
+    } catch {
+      // Tainted canvas: leave the pixels (same posture as the preview).
+    }
+    return true
+  }
+  // (Motion blur never reaches here: the caller applies non-blur entries.)
+  if (entry.type !== 'trackMatte') return true
+  const mask = masks.get(entry.id)
+  // Absent from the map means unresolvable (or no surface): skip the effect.
+  if (!mask) return true
+  sctx.save()
+  sctx.globalCompositeOperation = 'destination-in'
+  sctx.drawImage(mask, 0, 0)
+  sctx.restore()
+  return true
+}
+
+/**
+ * Export content plus the non-blur stack at one motion time: core draw opaque
+ * (UNTRANSFORMED contain-fit, so the stack evaluates before Motion) into the
+ * base scratch, then each enabled non-blur entry in stored order. Null on
+ * consumed crops.
+ */
+function renderExportStackImage(
+  doc: Doc,
+  draw: ClipDraw,
+  frames: Map<string, VideoFrame | ImageBitmap | HTMLImageElement>,
+  frameTime: number,
+  motionLocal: number,
+  width: number,
+  height: number,
+  blends: Map<string, BlendSample>,
+  depth: number,
+  masks: Map<string, HTMLCanvasElement | null>,
+): HTMLCanvasElement | null {
+  const base = exportEffectSurface(exportEffectScratch, depth, width, height)
+  if (!base) return null
+  base.sctx.save()
+  base.sctx.globalAlpha = 1
+  base.sctx.clearRect(0, 0, width, height)
+  paintExportCore(base.sctx, doc, draw, frames, width, height, blends, depth, 1, draw.filter, null)
+  for (const entry of draw.effects) {
+    if (entry.type === 'motionBlur') continue
+    const kept = applyExportStackEntry(
+      base.canvas,
+      base.sctx,
+      doc,
+      draw,
+      frames,
+      blends,
+      frameTime,
+      motionLocal,
+      width,
+      height,
+      depth,
+      entry,
+      masks,
+    )
+    if (!kept) {
+      base.sctx.restore()
+      return null
+    }
+  }
+  base.sctx.restore()
+  return base.canvas
+}
+
+/**
+ * The full export effect image: blur entries apply in stored order over the
+ * frozen decoded frame, each accumulating the previous level across its own
+ * shutter window (same recursion as the preview; same sample times from the
+ * shared blurSampleTimes).
+ */
+function renderExportEffectImage(
+  doc: Doc,
+  draw: ClipDraw,
+  frameTime: number,
+  frames: Map<string, VideoFrame | ImageBitmap | HTMLImageElement>,
+  width: number,
+  height: number,
+  blends: Map<string, BlendSample>,
+  depth: number,
+): HTMLCanvasElement | null {
+  const frameLocal = frameTime - draw.clip.start
+  const blurs = draw.effects.filter((e) => e.type === 'motionBlur')
+  // Matte masks build once at frame time and are reused by every sub-sample.
+  const masks = new Map<string, HTMLCanvasElement | null>()
+  let matteSlot = 0
+  for (const entry of draw.effects) {
+    if (entry.type !== 'trackMatte') continue
+    masks.set(
+      entry.id,
+      buildExportMatteSurface(
+        doc,
+        draw,
+        frames,
+        blends,
+        entry,
+        frameTime,
+        width,
+        height,
+        depth,
+        matteSlot++,
+      ),
+    )
+  }
+  const renderLevel = (level: number, tTimeline: number): HTMLCanvasElement | null => {
+    if (level < 0) {
+      return renderExportStackImage(
+        doc,
+        draw,
+        frames,
+        frameTime,
+        tTimeline - draw.clip.start,
+        width,
+        height,
+        blends,
+        depth,
+        masks,
+      )
+    }
+    const shutter = effectKeyframeValue(blurs[level], 'shutter', frameLocal)
+    const times = blurSampleTimes(tTimeline, shutter, doc.project.fps)
+    // A single sample lands exactly at t, so the accumulator would copy the
+    // level below through one blit: collapse to the unblurred path instead.
+    if (times.length <= 1) return renderLevel(level - 1, tTimeline)
+    const acc = exportEffectAccumSurface(depth, level, width, height)
+    if (!acc) return renderLevel(level - 1, tTimeline)
+    // Exact uniform mean via additive accumulation (same as the preview):
+    // every sample lands at 1/N under 'lighter', so premultiplied color AND
+    // alpha sum into the mean, transparent samples included.
+    const clear = exportEffectSurface(exportEffectClear, depth, width, height)
+    if (!clear) return renderLevel(level - 1, tTimeline)
+    clear.sctx.save()
+    clear.sctx.globalAlpha = 1
+    clear.sctx.clearRect(0, 0, width, height)
+    clear.sctx.restore()
+    acc.sctx.save()
+    acc.sctx.globalAlpha = 1
+    acc.sctx.clearRect(0, 0, width, height)
+    acc.sctx.globalCompositeOperation = 'lighter'
+    acc.sctx.globalAlpha = 1 / times.length
+    for (const tau of times) {
+      // Null samples (consumed crop mid-shutter) contribute transparent
+      // black at full weight, diluting the mean honestly. Each sample blits
+      // with its own Motion transform (stack before Motion).
+      const img = renderLevel(level - 1, tau) ?? clear.canvas
+      blitTransformed(acc.sctx, img, width, height, clipTransform(draw.clip, tau - draw.clip.start))
+    }
+    acc.sctx.restore()
+    return acc.canvas
+  }
+  return renderLevel(blurs.length - 1, frameTime)
 }
 
 /** The second decoded frame of a sub-frame-rate draw, with its blend weight. */
@@ -678,7 +1153,13 @@ export async function exportTimeline(
       frames.clear()
       for (const blend of blends.values()) closeDecodedFrame(blend.frame)
       blends.clear()
-      for (const draw of flattenDraws(plan)) {
+      // Matte sources decode too: a hidden matte track has no main-plan draws
+      // (visibility skips it), but the mask still renders. Visible sources are
+      // already in the plan; dedupe by clip id so each frame decodes once.
+      const seenIds = new Set(flattenDraws(plan).map((d) => d.clip.id))
+      const matteDraws: ClipDraw[] = []
+      collectMatteDraws(doc, plan.draws, t, seenIds, matteDraws)
+      for (const draw of [...flattenDraws(plan), ...matteDraws]) {
         const asset = draw.asset
         if (!asset) continue
         if (asset.kind === 'image') {

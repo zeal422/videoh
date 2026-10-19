@@ -282,7 +282,7 @@ describe('color flow: one builder for both render paths', () => {
     // draws (`drawContain` for a single frame, `drawBlendedContain` per layer of
     // a blend pair), which is why the exporter must not call it directly.
     expect(mp4).toMatch(
-      /import \{\s*drawBlendedContain,\s*drawContain,\s*drawTextClip,\s*paintSpatialMask,?\s*\} from '\.\.\/playback\/compositor'/,
+      /import \{\s*blitTransformed,\s*drawBlendedContain,\s*drawContain,\s*drawTextClip,\s*paintSoftRectMask,\s*paintSpatialMask,?\s*\} from '\.\.\/playback\/compositor'/,
     )
     expect(mp4).not.toMatch(/applyLut3d\(/)
     expect(mp4).toMatch(/findLut\(doc\.project\.luts, draw\.clip\.lutId\)/)
@@ -293,8 +293,39 @@ describe('color flow: one builder for both render paths', () => {
   it('the preview compositor draws graded clips through the shared helper', () => {
     const compositor = read('src/lib/editor/playback/compositor.ts')
     // The draw call receives the shared string; the SVG reference rides inside
-    // it (ctx.filter accepts url() next to the filter functions).
-    expect(compositor).toMatch(/const filter = clipFilter\(clip, local, lut\)/)
+    // it (ctx.filter accepts url() next to the filter functions). The filter
+    // is built at the drawClip call site (frozen once for the effect path).
+    expect(compositor).toMatch(/clipFilter\(clip, local, lut\)/)
+  })
+
+  it('effects run through shared helpers in both paths (static lock)', () => {
+    const compositor = read('src/lib/editor/playback/compositor.ts')
+    const mp4 = read('src/lib/editor/export/mp4.ts')
+    // One definition, two paths: crop geometry, blur sampling, matte
+    // resolution and the keyer/mask pixel passes live in the shared modules,
+    // so neither render path re-implements them.
+    for (const sym of [
+      'cropRect',
+      'cropFeatherPx',
+      'isCropConsumed',
+      'blurSampleTimes',
+      'effectKeyframeValue',
+      'resolveMatteTrack',
+      'applyChromaKeyToRgba',
+      'buildMatteMask',
+      'paintSoftRectMask',
+      'blitTransformed',
+      'clipTransform',
+    ]) {
+      expect(compositor).toContain(sym)
+      expect(mp4).toContain(sym)
+    }
+    expect(compositor).toMatch(/export function paintSoftRectMask/)
+    expect(mp4).not.toMatch(/function paintSoftRectMask/)
+    // The stack evaluates in stored order with blur forced last: the base
+    // loops skip motion blur, and a dedicated recursion accumulates it.
+    expect(compositor).toMatch(/if \(entry\.type === 'motionBlur'\) continue/)
+    expect(mp4).toMatch(/if \(entry\.type === 'motionBlur'\) continue/)
   })
 })
 

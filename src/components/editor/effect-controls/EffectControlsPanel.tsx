@@ -55,6 +55,7 @@ import {
   sanitizeDuckingOptions,
 } from '@/lib/editor/ducking'
 import { findClip, findMedia } from '@/lib/editor/factories'
+import { AppliedEffectsSection } from '@/components/editor/effect-controls/AppliedEffectsSection'
 import { linkedAudioTwin } from '@/lib/editor/links'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
 import { frameToTime } from '@/lib/editor/time'
@@ -168,6 +169,8 @@ export function EffectControlsPanel({ clip, trackKind }: { clip: Clip; trackKind
           />
           <Separator />
           <PropertyGroup title="Color" clip={clip} props={COLOR_PROPS} playheadLocal={local} />
+          <Separator />
+          <AppliedEffectsSection clip={clip} />
           <Separator />
         </>
       )}

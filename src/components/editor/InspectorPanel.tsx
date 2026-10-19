@@ -41,7 +41,8 @@ import {
   TRANSITION_MIN,
 } from '@/lib/editor/constants'
 import { useEditorStore } from '@/lib/editor/store'
-import type { Clip, TextPreset, TextStyle, Transition } from '@/lib/editor/types'
+import type { BlendMode, Clip, TextPreset, TextStyle, Transition } from '@/lib/editor/types'
+import { BLEND_MODES } from '@/lib/editor/effects'
 import { useState } from 'react'
 import { EffectControlsPanel } from '@/components/editor/effect-controls/EffectControlsPanel'
 import { cn } from '@/lib/utils'
@@ -121,6 +122,27 @@ const GRADE_CONTROLS = [
   { key: 'temperature', label: 'Temperature', min: TEMPERATURE_MIN, max: TEMPERATURE_MAX },
   { key: 'tint', label: 'Tint', min: TINT_MIN, max: TINT_MAX },
 ] as const
+
+/** Display names for the canvas blend set (Premiere names). */
+const BLEND_LABELS: Record<BlendMode, string> = {
+  normal: 'Normal',
+  multiply: 'Multiply',
+  screen: 'Screen',
+  overlay: 'Overlay',
+  softLight: 'Soft Light',
+  hardLight: 'Hard Light',
+  darken: 'Darken',
+  lighten: 'Lighten',
+  colorDodge: 'Color Dodge',
+  colorBurn: 'Color Burn',
+  linearDodge: 'Linear Dodge (Add)',
+  difference: 'Difference',
+  exclusion: 'Exclusion',
+  hue: 'Hue',
+  saturation: 'Saturation',
+  color: 'Color',
+  luminosity: 'Luminosity',
+}
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -300,6 +322,30 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                 Lower it to see through to the tracks below — layering works like Photoshop: higher
                 tracks render on top of lower ones.
               </p>
+            </div>
+            <div className="mt-3 space-y-1">
+              <Label className="text-xs">Blend mode</Label>
+              <Select
+                value={clip.blendMode ?? 'normal'}
+                onValueChange={(v: BlendMode) =>
+                  apply({
+                    type: 'setClipBlendMode',
+                    clipId: clip.id,
+                    blendMode: v === 'normal' ? null : v,
+                  })
+                }
+              >
+                <SelectTrigger aria-label="Clip blend mode" className="h-7 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {BLEND_MODES.map((mode: BlendMode) => (
+                    <SelectItem key={mode} value={mode}>
+                      {BLEND_LABELS[mode]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </Section>
           <Separator />

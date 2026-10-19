@@ -977,3 +977,115 @@ describe('caption flag serialization (0.8.5)', () => {
     expect(loaded.project.tracks.find((t) => t.id === 'track_cap')!.clips[0].isCaption).toBe(true)
   })
 })
+
+describe('effects serialization (0.8.6)', () => {
+  /** V1 on top, V2 below, one clip on V2. */
+  function fxWireDoc() {
+    const doc = createDoc()
+    const v1 = { ...doc.project.tracks[0], id: 'v1' }
+    const v2 = { ...doc.project.tracks[1], id: 'v2', kind: 'video' as const }
+    v2.clips = [{ ...createClip({ id: 'clip1' }), duration: 4 }]
+    doc.project.tracks = [v1, v2]
+    return doc
+  }
+
+  it('round-trips effects, blend mode and visibility at v4', () => {
+    const doc = fxWireDoc()
+    doc.project.tracks[1].clips[0].effects = [
+      { id: 'fx_crop', type: 'crop', left: 10, feather: 5 },
+      { id: 'fx_blur', type: 'motionBlur', shutter: 90 },
+    ]
+    doc.project.tracks[1].clips[0].blendMode = 'multiply'
+    doc.project.tracks[1].visible = false
+    const json = serializeDoc(doc)
+    expect(json.version).toBe(4)
+    const { doc: loaded } = deserializeDoc(JSON.parse(JSON.stringify(json)))
+    expect(loaded.project.tracks[1].clips[0].effects).toEqual([
+      { id: 'fx_crop', type: 'crop', left: 10, right: 0, top: 0, bottom: 0, feather: 5 },
+      { id: 'fx_blur', type: 'motionBlur', shutter: 90 },
+    ])
+    expect(loaded.project.tracks[1].clips[0].blendMode).toBe('multiply')
+    expect(loaded.project.tracks[1].visible).toBe(false)
+    expect(loaded.project.tracks[0].visible).toBeUndefined()
+  })
+
+  it('drops unknown effect types and clamps hostile params', () => {
+    const doc = fxWireDoc()
+    const wire = JSON.parse(JSON.stringify(serializeDoc(doc)))
+    wire.project.tracks[1].clips[0].effects = [
+      { id: 'fx_bloom', type: 'bloom' },
+      { id: 'fx_crop', type: 'crop', left: 500, feather: -20, zoom: 'yes' },
+      { id: 'fx_key', type: 'chromaKey', key: 'green' },
+      { id: 'fx_blend', type: 'clip', blendMode: 'vividLight' },
+    ]
+    wire.project.tracks[1].clips[0].blendMode = 'dissolve'
+    const { doc: loaded } = deserializeDoc(wire)
+    const effects = loaded.project.tracks[1].clips[0].effects ?? []
+    expect(effects.map((e) => e.id)).toEqual(['fx_crop'])
+    expect(effects[0]).toMatchObject({ left: 100, feather: 0 })
+    expect('zoom' in (effects[0] as object)).toBe(false)
+    expect(loaded.project.tracks[1].clips[0].blendMode).toBeUndefined()
+  })
+
+  it('drops chroma entries with inverted thresholds and trims stored keys', () => {
+    const doc = fxWireDoc()
+    const wire = JSON.parse(JSON.stringify(serializeDoc(doc)))
+    wire.project.tracks[1].clips[0].effects = [
+      { id: 'fx inverted', type: 'chromaKey', key: '#00ff00', clipBlack: 0.8, clipWhite: 0.2 },
+      { id: 'fx_spaced', type: 'chromaKey', key: '  #ff0000  ' },
+    ]
+    const { doc: loaded } = deserializeDoc(wire)
+    const effects = loaded.project.tracks[1].clips[0].effects ?? []
+    expect(effects.map((e) => e.id)).toEqual(['fx_spaced'])
+    expect(effects[0]).toMatchObject({ key: '#ff0000' })
+  })
+
+  it('regenerates duplicate effect ids within the clip', () => {
+    const doc = fxWireDoc()
+    const wire = JSON.parse(JSON.stringify(serializeDoc(doc)))
+    wire.project.tracks[1].clips[0].effects = [
+      { id: 'fx_dup', type: 'crop' },
+      { id: 'fx_dup', type: 'motionBlur' },
+    ]
+    const { doc: loaded } = deserializeDoc(wire)
+    const ids = loaded.project.tracks[1].clips[0].effects?.map((e) => e.id) ?? []
+    expect(ids).toHaveLength(2)
+    expect(ids[0]).toBe('fx_dup')
+    expect(ids[1]).not.toBe('fx_dup')
+  })
+
+  it('drops matte entries whose track is unknown, elsewhere, or below', () => {
+    const doc = fxWireDoc()
+    const wire = JSON.parse(JSON.stringify(serializeDoc(doc)))
+    wire.project.tracks[1].clips[0].effects = [
+      { id: 'fx_good', type: 'trackMatte', trackId: 'v1' },
+      { id: 'fx_ghost', type: 'trackMatte', trackId: 'nope' },
+      { id: 'fx_below', type: 'trackMatte', trackId: 'v2' },
+      { id: 'fx_empty', type: 'trackMatte' },
+    ]
+    const { doc: loaded } = deserializeDoc(wire)
+    expect(loaded.project.tracks[1].clips[0].effects?.map((e) => e.id)).toEqual(['fx_good'])
+  })
+
+  it('sanitizes per-effect keyframes and drops foreign curves', () => {
+    const doc = fxWireDoc()
+    const wire = JSON.parse(JSON.stringify(serializeDoc(doc)))
+    wire.project.tracks[1].clips[0].effects = [
+      {
+        id: 'fx_crop',
+        type: 'crop',
+        keyframes: {
+          left: [
+            { time: 0, value: 500 },
+            { time: -2, value: 10 },
+          ],
+          zoom: [{ time: 0, value: 1 }],
+        },
+      },
+    ]
+    const { doc: loaded } = deserializeDoc(wire)
+    expect(loaded.project.tracks[1].clips[0].effects?.[0].keyframes).toEqual({
+      left: [{ time: 0, value: 100, interpolation: 'linear' }],
+    })
+  })
+})

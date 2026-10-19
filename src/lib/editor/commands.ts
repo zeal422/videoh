@@ -1,4 +1,12 @@
 import {
+  CHROMA_BLEND_MAX,
+  CHROMA_BLEND_MIN,
+  CHROMA_CLIP_MAX,
+  CHROMA_CLIP_MIN,
+  CHROMA_DESPILL_MAX,
+  CHROMA_DESPILL_MIN,
+  CHROMA_SIMILARITY_MAX,
+  CHROMA_SIMILARITY_MIN,
   GAIN_MAX,
   GAIN_MIN,
   KEYFRAME_PROPERTY_BOUNDS,
@@ -43,6 +51,17 @@ import {
   sanitizePresetStyle,
 } from './factories'
 import { rehomeSegmentShapes } from './ease-segment'
+import {
+  clampEffectPropertyValue,
+  createEffectEntry,
+  EffectType,
+  findEffect,
+  isBlendMode,
+  isEffectKeyframable,
+  resolveMatteTrack,
+  sanitizeEffectKeyframes,
+  splitEffectKeyframes,
+} from './effects'
 import { linkedClips } from './links'
 import { lutBudgetMessage, lutLibraryChars } from './lut'
 import { clamp } from './time'
@@ -55,6 +74,7 @@ import {
   splitKeyframeMap,
 } from './keyframes'
 import { applyMarkerPatch, reIdMarkers } from './markers'
+import { parseKeyColor } from './chroma-key'
 import { MAX_SRT_TIME_SECONDS } from './srt'
 import { maxTransitionDuration, TRANSITION_FEATHER_DEFAULT } from './transition'
 import {
@@ -65,8 +85,10 @@ import {
 } from './trim'
 import type {
   AnimStaticProperty,
+  BlendMode,
   Clip,
   Doc,
+  EffectEntry,
   Keyframe,
   KeyframeInterpolation,
   KeyframeMap,
@@ -217,6 +239,32 @@ export type EditorCommand =
       feather?: Transition['feather']
     }
   | { type: 'removeTransition'; clipId: string }
+  // effects (0.8.6)
+  | {
+      type: 'addEffect'
+      clipId: string
+      effectType: EffectType
+      effectId?: string
+      trackId?: string
+    }
+  | { type: 'removeEffect'; clipId: string; effectId: string }
+  | { type: 'setEffectEnabled'; clipId: string; effectId: string; enabled: boolean }
+  | { type: 'resetEffect'; clipId: string; effectId: string }
+  | {
+      type: 'setEffectParams'
+      clipId: string
+      effectId: string
+      params: Record<string, unknown>
+    }
+  | {
+      type: 'setEffectKeyframes'
+      clipId: string
+      effectId: string
+      property: string
+      keyframes: Keyframe[]
+    }
+  | { type: 'setClipBlendMode'; clipId: string; blendMode: BlendMode | null }
+  | { type: 'setTrackVisible'; trackId: string; visible: boolean }
   // markers (0.5.5)
   | { type: 'addSequenceMarker'; marker: Marker }
   | { type: 'moveSequenceMarker'; markerId: string; time: number }
@@ -336,15 +384,40 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       const ownerTracks = sequenceTracks(doc, owner)
       // The new sequence mirrors the owner lanes that hold selected clips,
       // rebasing every clip to local 0.
+      const freshTrackByOld = new Map<string, string>()
+      for (const track of ownerTracks) {
+        if (!track.clips.some((c) => selectedIds.has(c.id))) continue
+        freshTrackByOld.set(track.id, `track_${cryptoRandom()}`)
+      }
       const seqTracks: Track[] = []
       for (const track of ownerTracks) {
         const clips = track.clips.filter((c) => selectedIds.has(c.id))
         if (clips.length === 0) continue
+        const freshId = freshTrackByOld.get(track.id)
+        if (!freshId) continue
         seqTracks.push({
-          id: `track_${cryptoRandom()}`,
+          id: freshId,
           kind: track.kind,
           name: track.name,
-          clips: clips.map((c) => ({ ...structuredClone(c), start: c.start - minStart })),
+          clips: clips.map((c) => {
+            const copy = { ...structuredClone(c), start: c.start - minStart }
+            // Matte refs follow their source into the compound; a ref pointing
+            // outside the copied set would go cross-sequence (unresolvable),
+            // so it drops here like moveClip's orphaned mattes.
+            if (copy.effects) {
+              const kept: EffectEntry[] = []
+              for (const e of copy.effects) {
+                if (e.type !== 'trackMatte') {
+                  kept.push(e)
+                  continue
+                }
+                const source = e.trackId ? freshTrackByOld.get(e.trackId) : undefined
+                if (source) kept.push({ ...e, trackId: source })
+              }
+              copy.effects = kept.length > 0 ? kept : undefined
+            }
+            return copy
+          }),
         })
       }
       const sequenceId = `seq_${cryptoRandom()}`
@@ -409,6 +482,19 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       const index = tracks.findIndex((t) => t.id === command.trackId)
       if (index === -1) throw new EditorCommandError('Unknown track')
       tracks.splice(index, 1)
+      // Matte entries pointing at the removed track die with it, in the same
+      // undo step. Only the owning sequence can hold such entries (same-
+      // sequence rule), and anything stranger is still render-safe (the
+      // renderer skips unresolvable mattes).
+      for (const track of tracks) {
+        for (const clip of track.clips) {
+          if (!clip.effects) continue
+          clip.effects = clip.effects.filter(
+            (e) => e.type !== 'trackMatte' || e.trackId !== command.trackId,
+          )
+          if (clip.effects.length === 0) clip.effects = undefined
+        }
+      }
       return
     }
 
@@ -480,6 +566,21 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
           found.track.clips.push(clip)
           found.track.clips.sort((a, b) => a.start - b.start)
           throw new EditorCommandError('Compound clip nesting is too deep')
+        }
+        // A cross-track (or cross-sequence) move can orphan the clip's own
+        // matte entries: drop the ones that no longer resolve, in the same
+        // undo step (after the rollback above, so a refused move loses
+        // nothing). Other clips' mattes point at tracks, never clips, so
+        // they cannot break here.
+        if (clip.effects) {
+          for (const e of clip.effects) {
+            if (e.type !== 'trackMatte') continue
+            const matte = e as Extract<EffectEntry, { type: 'trackMatte' }>
+            if (!resolveMatteTrack(doc, clip.id, matte)) {
+              clip.effects = clip.effects.filter((x) => x.id !== matte.id)
+            }
+          }
+          if (clip.effects.length === 0) clip.effects = undefined
         }
       }
       target.clips.sort((a, b) => a.start - b.start)
@@ -801,6 +902,23 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
         reverse: !!clip.reverse,
         duration: clip.duration,
       })
+      // Effect curves split like flat curves (front-to-back, never mirrored):
+      // each entry's map subdivides at the cut, halves without curves stay
+      // curve-less. Trim never touches entry curves (see trimClip: only the
+      // timeScale ramp rebases), so split is the only structural curve edit.
+      const splitEntryKeyframes = (effects: EffectEntry[] | undefined, side: 'left' | 'right') =>
+        effects?.map((e) => {
+          // Spread always: the halves must never share entry objects (a
+          // later param edit mutates the entry in place on its own clip).
+          if (!e.keyframes) return { ...e }
+          const [left, right] = splitEffectKeyframes(e.keyframes, leftDuration)
+          const kept = side === 'left' ? left : right
+          if (!kept) {
+            const { keyframes: _dropped, ...rest } = e
+            return rest as EffectEntry
+          }
+          return { ...e, keyframes: kept }
+        })
       const right: Clip = {
         ...structuredClone(clip),
         id: command.rightId ?? `clip_${cryptoRandom()}`,
@@ -809,6 +927,7 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
         inPoint: isMedia ? (clip.reverse ? clip.inPoint : splitInPoint(leftDuration)) : 0,
         transitionOut: clip.transitionOut,
         keyframes: rightKeyframes,
+        effects: splitEntryKeyframes(clip.effects, 'right'),
       }
       // Markers are source-anchored, so both halves still show every cue that
       // falls inside their own span — but the ids must be FRESH on the right
@@ -827,6 +946,8 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       clip.inPoint = leftInPoint
       clip.transitionOut = undefined
       clip.keyframes = leftKeyframes
+      clip.effects = splitEntryKeyframes(clip.effects, 'left')
+      if (clip.effects?.length === 0) clip.effects = undefined
       track.clips.push(right)
       track.clips.sort((a, b) => a.start - b.start)
       return
@@ -1293,6 +1414,149 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       return
     }
 
+    case 'addEffect': {
+      const { clip } = requireClip(doc, command.clipId)
+      if (
+        command.effectType !== 'crop' &&
+        command.effectType !== 'chromaKey' &&
+        command.effectType !== 'trackMatte' &&
+        command.effectType !== 'motionBlur'
+      ) {
+        throw new EditorCommandError(`Unknown effect type: ${String(command.effectType)}`)
+      }
+      const effectId =
+        typeof command.effectId === 'string' && command.effectId !== ''
+          ? command.effectId
+          : uid('fx')
+      if (findEffect(clip, effectId)) {
+        throw new EditorCommandError(`Effect id already on this clip: ${effectId}`)
+      }
+      const entry = createEffectEntry(command.effectType)
+      entry.id = effectId
+      if (command.effectType === 'trackMatte') {
+        if (typeof command.trackId !== 'string' || command.trackId === '') {
+          throw new EditorCommandError('A track matte needs a source track')
+        }
+        const matte = entry as Extract<EffectEntry, { type: 'trackMatte' }>
+        matte.trackId = command.trackId
+        if (!resolveMatteTrack(doc, clip.id, matte)) {
+          throw new EditorCommandError(
+            'Matte source must be a track above the clip in its sequence',
+          )
+        }
+      }
+      if (!clip.effects) clip.effects = []
+      clip.effects.push(entry)
+      return
+    }
+
+    case 'removeEffect': {
+      const { clip } = requireClip(doc, command.clipId)
+      const index = (clip.effects ?? []).findIndex((e) => e.id === command.effectId)
+      if (index === -1) throw new EditorCommandError('Unknown effect')
+      clip.effects!.splice(index, 1)
+      if (clip.effects!.length === 0) clip.effects = undefined
+      return
+    }
+
+    case 'setEffectEnabled': {
+      const { clip } = requireClip(doc, command.clipId)
+      const entry = findEffect(clip, command.effectId)
+      if (!entry) throw new EditorCommandError('Unknown effect')
+      if (typeof command.enabled !== 'boolean')
+        throw new EditorCommandError('Effect enabled must be a boolean')
+      entry.enabled = command.enabled
+      return
+    }
+
+    case 'resetEffect': {
+      const { clip } = requireClip(doc, command.clipId)
+      const entry = findEffect(clip, command.effectId)
+      if (!entry) throw new EditorCommandError('Unknown effect')
+      // Params back to defaults; curves are user timing work and stay (clear
+      // them explicitly with an empty setEffectKeyframes). Enabled stays too.
+      const fresh = createEffectEntry(entry.type)
+      if (entry.type === 'crop' && fresh.type === 'crop') {
+        entry.left = fresh.left
+        entry.right = fresh.right
+        entry.top = fresh.top
+        entry.bottom = fresh.bottom
+        entry.feather = fresh.feather
+        entry.zoom = fresh.zoom
+      } else if (entry.type === 'chromaKey' && fresh.type === 'chromaKey') {
+        entry.key = fresh.key
+        entry.similarity = fresh.similarity
+        entry.blend = fresh.blend
+        entry.clipBlack = fresh.clipBlack
+        entry.clipWhite = fresh.clipWhite
+        entry.despill = fresh.despill
+      } else if (entry.type === 'trackMatte' && fresh.type === 'trackMatte') {
+        // The source reference has no default (addEffect refuses without
+        // one), so reset keeps it and restores only mode and reverse.
+        entry.mode = fresh.mode
+        entry.reverse = fresh.reverse
+      } else if (entry.type === 'motionBlur' && fresh.type === 'motionBlur') {
+        entry.shutter = fresh.shutter
+      }
+      return
+    }
+
+    case 'setEffectParams': {
+      const { clip } = requireClip(doc, command.clipId)
+      const entry = findEffect(clip, command.effectId)
+      if (!entry) throw new EditorCommandError('Unknown effect')
+      if (!command.params || typeof command.params !== 'object' || Array.isArray(command.params)) {
+        throw new EditorCommandError('Effect params must be an object')
+      }
+      applyEffectParams(doc, clip, entry, command.params)
+      return
+    }
+
+    case 'setEffectKeyframes': {
+      const { clip } = requireClip(doc, command.clipId)
+      const entry = findEffect(clip, command.effectId)
+      if (!entry) throw new EditorCommandError('Unknown effect')
+      if (!isEffectKeyframable(entry.type, command.property)) {
+        throw new EditorCommandError(
+          `Property is not animatable on this effect: ${command.property}`,
+        )
+      }
+      if (!Array.isArray(command.keyframes)) {
+        throw new EditorCommandError('Effect keyframes must be an array')
+      }
+      const keyframes = sanitizeEffectKeyframes(command.property, command.keyframes)
+      if (!entry.keyframes) entry.keyframes = {}
+      if (keyframes.length === 0) {
+        delete entry.keyframes[command.property]
+        if (Object.keys(entry.keyframes).length === 0) delete entry.keyframes
+      } else {
+        entry.keyframes[command.property] = keyframes
+      }
+      return
+    }
+
+    case 'setClipBlendMode': {
+      const { clip } = requireClip(doc, command.clipId)
+      if (command.blendMode === null) {
+        clip.blendMode = undefined
+        return
+      }
+      if (!isBlendMode(command.blendMode)) {
+        throw new EditorCommandError(`Unknown blend mode: ${String(command.blendMode)}`)
+      }
+      clip.blendMode = command.blendMode === 'normal' ? undefined : command.blendMode
+      return
+    }
+
+    case 'setTrackVisible': {
+      const track = requireTrack(doc, command.trackId)
+      if (typeof command.visible !== 'boolean') {
+        throw new EditorCommandError('Track visible must be a boolean')
+      }
+      track.visible = command.visible
+      return
+    }
+
     case 'addSequenceMarker': {
       const marker = sanitizeMarker(command.marker)
       const list = doc.project.markers ?? (doc.project.markers = [])
@@ -1390,6 +1654,90 @@ function requireClip(doc: Doc, clipId: string) {
   const found = findClip(doc, clipId)
   if (!found) throw new EditorCommandError('Unknown clip')
   return found
+}
+
+/**
+ * Validate + clamp an effect param patch (0.8.6). Known keys validate hard
+ * (non-finite numbers and wrong types refuse, finite numbers clamp);
+ * unknown keys are ignored, matching hydration's drop-unknown posture.
+ */
+function applyEffectParams(
+  doc: Doc,
+  clip: Clip,
+  entry: EffectEntry,
+  params: Record<string, unknown>,
+): void {
+  const num = (v: unknown, what: string): number => {
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      throw new EditorCommandError(`Effect param must be a finite number: ${what}`)
+    }
+    return v
+  }
+  const boolean = (v: unknown, what: string): boolean => {
+    if (typeof v !== 'boolean')
+      throw new EditorCommandError(`Effect param must be a boolean: ${what}`)
+    return v
+  }
+  if (entry.type === 'crop') {
+    for (const p of ['left', 'right', 'top', 'bottom'] as const) {
+      if (params[p] !== undefined) entry[p] = clampEffectPropertyValue(p, num(params[p], p))
+    }
+    if (params.feather !== undefined) {
+      entry.feather = clampEffectPropertyValue('feather', num(params.feather, 'feather'))
+    }
+    if (params.zoom !== undefined) entry.zoom = boolean(params.zoom, 'zoom')
+    return
+  }
+  if (entry.type === 'chromaKey') {
+    if (params.key !== undefined) {
+      if (typeof params.key !== 'string' || !parseKeyColor(params.key)) {
+        throw new EditorCommandError('Chroma key must be a #rrggbb hex color')
+      }
+      // parseKeyColor tolerates surrounding whitespace: store the trimmed
+      // form so the entry never carries what validation did not see.
+      entry.key = params.key.trim()
+    }
+    const bounds = {
+      similarity: { min: CHROMA_SIMILARITY_MIN, max: CHROMA_SIMILARITY_MAX },
+      blend: { min: CHROMA_BLEND_MIN, max: CHROMA_BLEND_MAX },
+      clipBlack: { min: CHROMA_CLIP_MIN, max: CHROMA_CLIP_MAX },
+      clipWhite: { min: CHROMA_CLIP_MIN, max: CHROMA_CLIP_MAX },
+      despill: { min: CHROMA_DESPILL_MIN, max: CHROMA_DESPILL_MAX },
+    } as const
+    for (const p of ['similarity', 'blend', 'clipBlack', 'clipWhite', 'despill'] as const) {
+      if (params[p] !== undefined) {
+        entry[p] = Math.min(bounds[p].max, Math.max(bounds[p].min, num(params[p], p)))
+      }
+    }
+    const black = entry.clipBlack ?? 0
+    const white = entry.clipWhite ?? 1
+    if (black > white) throw new EditorCommandError('Chroma clip black cannot exceed clip white')
+    return
+  }
+  if (entry.type === 'trackMatte') {
+    if (params.trackId !== undefined) {
+      if (typeof params.trackId !== 'string' || params.trackId === '') {
+        throw new EditorCommandError('Matte source must be a track id')
+      }
+      const prev = entry.trackId
+      entry.trackId = params.trackId
+      if (!resolveMatteTrack(doc, clip.id, entry)) {
+        entry.trackId = prev
+        throw new EditorCommandError('Matte source must be a track above the clip in its sequence')
+      }
+    }
+    if (params.mode !== undefined) {
+      if (params.mode !== 'luma' && params.mode !== 'alpha') {
+        throw new EditorCommandError(`Unknown matte mode: ${String(params.mode)}`)
+      }
+      entry.mode = params.mode
+    }
+    if (params.reverse !== undefined) entry.reverse = boolean(params.reverse, 'reverse')
+    return
+  }
+  if (params.shutter !== undefined) {
+    entry.shutter = clampEffectPropertyValue('shutter', num(params.shutter, 'shutter'))
+  }
 }
 
 /** Longest title preset name the save/rename commands accept. */

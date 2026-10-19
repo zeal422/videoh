@@ -1,4 +1,18 @@
 import {
+  BLUR_SHUTTER_MAX,
+  BLUR_SHUTTER_MIN,
+  CHROMA_BLEND_MAX,
+  CHROMA_BLEND_MIN,
+  CHROMA_CLIP_MAX,
+  CHROMA_CLIP_MIN,
+  CHROMA_DESPILL_MAX,
+  CHROMA_DESPILL_MIN,
+  CHROMA_SIMILARITY_MAX,
+  CHROMA_SIMILARITY_MIN,
+  CROP_FEATHER_MAX,
+  CROP_FEATHER_MIN,
+  CROP_MAX,
+  CROP_MIN,
   EQ_DB_MAX,
   EQ_DB_MIN,
   FPS_MAX,
@@ -16,6 +30,13 @@ import {
   TINT_MAX,
   TINT_MIN,
 } from './constants'
+import { parseKeyColor } from './chroma-key'
+import {
+  isBlendMode,
+  isEffectKeyframable,
+  resolveMatteTrack,
+  sanitizeEffectKeyframes,
+} from './effects'
 import {
   clampPropertyValue,
   isAnimatableProperty,
@@ -30,12 +51,18 @@ import {
   lutGridByteLength,
 } from './lut'
 import { applyMarkerPatch, isMarkerColor } from './markers'
-import { createBuiltinTextPresets, createDefaultTextStyle, sanitizePresetStyle } from './factories'
+import {
+  createBuiltinTextPresets,
+  createDefaultTextStyle,
+  sanitizePresetStyle,
+  uid,
+} from './factories'
 import { clamp } from './time'
 import type {
   AnimStaticProperty,
   Clip,
   Doc,
+  EffectEntry,
   Keyframe,
   KeyframeDefaults,
   KeyframeMap,
@@ -220,8 +247,29 @@ export function deserializeDoc(data: unknown): {
   if (droppedCompound) {
     console.warn('[serialization] dropped a compound clip whose referenced sequence is missing')
   }
+  // Matte references need the ASSEMBLED track lists (a clip hydrates before
+  // any complete list exists, and sequences hydrate before root tracks), so
+  // unresolvable entries drop here, not in hydrateClip: unknown track, a
+  // track in another sequence, or one no longer above the clip's track.
+  const doc: Doc = { project, media }
+  const dropBadMattes = (tracks: Track[]) => {
+    for (const track of tracks) {
+      for (const clip of track.clips) {
+        if (!clip.effects) continue
+        clip.effects = clip.effects.filter(
+          (e) =>
+            e.type !== 'trackMatte' ||
+            resolveMatteTrack(doc, clip.id, e as Extract<EffectEntry, { type: 'trackMatte' }>) !==
+              undefined,
+        )
+        if (clip.effects.length === 0) clip.effects = undefined
+      }
+    }
+  }
+  dropBadMattes(project.tracks)
+  for (const sequence of project.sequences ?? []) dropBadMattes(sequence.tracks)
 
-  return { doc: { project, media }, missingMediaIds }
+  return { doc, missingMediaIds }
 }
 
 /** Hydrates a track list (root or a compound sequence). */
@@ -231,6 +279,9 @@ function hydrateTracks(rawTracks: unknown, media: MediaAsset[]): Track[] {
     kind: (t.kind === 'audio' || t.kind === 'text' ? t.kind : 'video') as TrackKind,
     name: typeof t.name === 'string' ? t.name : 'Track',
     muted: !!t.muted,
+    // Absent means visible; only an explicit false survives, so hydrated
+    // docs (and the files saved from them) stay clean.
+    ...(t.visible === false ? { visible: false as const } : {}),
     clips: (Array.isArray(t.clips) ? (t.clips as Record<string, unknown>[]) : []).map((c) =>
       hydrateClip(c, media),
     ),
@@ -534,7 +585,113 @@ function hydrateClip(raw: Record<string, unknown>, media: MediaAsset[]): Clip {
   }
   const markers = hydrateMarkers(raw.markers)
   if (markers) clip.markers = markers
+  if (Array.isArray(raw.effects)) {
+    const seen = new Set<string>()
+    const effects: EffectEntry[] = []
+    for (const rawEntry of raw.effects) {
+      const entry = hydrateEffectEntry(rawEntry)
+      if (!entry) continue
+      // Duplicate ids regenerate within the clip (per-clip scope); identity
+      // refusal is for structural ids in assertUniqueIds, not effect slots.
+      while (seen.has(entry.id)) entry.id = uid('fx')
+      seen.add(entry.id)
+      effects.push(entry)
+    }
+    if (effects.length > 0) clip.effects = effects
+  }
+  // Unknown blend modes drop to absent; 'normal' stays absent (it is the default).
+  if (
+    typeof raw.blendMode === 'string' &&
+    isBlendMode(raw.blendMode) &&
+    raw.blendMode !== 'normal'
+  ) {
+    clip.blendMode = raw.blendMode
+  }
   return clip
+}
+
+/**
+ * Shape-validates one serialized effect entry (0.8.6). Lenient like the rest
+ * of hydration: unknown types drop, params clamp, unknown params drop,
+ * unkeyframable curves drop. Matte REFERENCE validity (track exists, same
+ * sequence, above) cannot be decided here and drops in the post-assembly
+ * pass; a matte without a usable trackId string drops immediately. A chroma
+ * entry without a parseable key color drops (there is nothing to key with).
+ */
+function hydrateEffectEntry(raw: unknown): EffectEntry | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const rec = raw as Record<string, unknown>
+  const type = rec.type
+  if (type !== 'crop' && type !== 'chromaKey' && type !== 'trackMatte' && type !== 'motionBlur') {
+    return undefined
+  }
+  const id = typeof rec.id === 'string' && rec.id !== '' ? rec.id : uid('fx')
+  const enabled = rec.enabled === false ? false : undefined
+  const num = (v: unknown, min: number, max: number, fallback: number): number => {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return fallback
+    return Math.min(max, Math.max(min, v))
+  }
+  let keyframes: EffectEntry['keyframes']
+  if (rec.keyframes && typeof rec.keyframes === 'object') {
+    const map: NonNullable<EffectEntry['keyframes']> = {}
+    for (const [property, value] of Object.entries(rec.keyframes as Record<string, unknown>)) {
+      if (!isEffectKeyframable(type, property) || !Array.isArray(value)) continue
+      const clean = sanitizeEffectKeyframes(property, value as Keyframe[])
+      if (clean.length > 0) map[property] = clean
+    }
+    if (Object.keys(map).length > 0) keyframes = map
+  }
+  const base = {
+    id,
+    ...(enabled === false ? { enabled } : {}),
+    ...(keyframes ? { keyframes } : {}),
+  }
+  if (type === 'crop') {
+    return {
+      ...base,
+      type: 'crop' as const,
+      left: num(rec.left, CROP_MIN, CROP_MAX, 0),
+      right: num(rec.right, CROP_MIN, CROP_MAX, 0),
+      top: num(rec.top, CROP_MIN, CROP_MAX, 0),
+      bottom: num(rec.bottom, CROP_MIN, CROP_MAX, 0),
+      feather: num(rec.feather, CROP_FEATHER_MIN, CROP_FEATHER_MAX, 0),
+      ...(rec.zoom === true ? { zoom: true } : {}),
+    }
+  }
+  if (type === 'chromaKey') {
+    if (typeof rec.key !== 'string' || !parseKeyColor(rec.key)) return undefined
+    const clipBlack = num(rec.clipBlack, CHROMA_CLIP_MIN, CHROMA_CLIP_MAX, 0)
+    const clipWhite = num(rec.clipWhite, CHROMA_CLIP_MIN, CHROMA_CLIP_MAX, 1)
+    // Dispatch refuses inverted thresholds; hydration cannot throw, so the
+    // entry drops like any other unresolvable effect (an inverted remap
+    // gates pixels instead of keying them).
+    if (clipBlack > clipWhite) return undefined
+    return {
+      ...base,
+      type: 'chromaKey' as const,
+      key: rec.key.trim(),
+      similarity: num(rec.similarity, CHROMA_SIMILARITY_MIN, CHROMA_SIMILARITY_MAX, 0),
+      blend: num(rec.blend, CHROMA_BLEND_MIN, CHROMA_BLEND_MAX, 0),
+      clipBlack,
+      clipWhite,
+      despill: num(rec.despill, CHROMA_DESPILL_MIN, CHROMA_DESPILL_MAX, 0),
+    }
+  }
+  if (type === 'trackMatte') {
+    if (typeof rec.trackId !== 'string' || rec.trackId === '') return undefined
+    return {
+      ...base,
+      type: 'trackMatte' as const,
+      trackId: rec.trackId,
+      ...(rec.mode === 'alpha' ? { mode: 'alpha' as const } : {}),
+      ...(rec.reverse === true ? { reverse: true } : {}),
+    }
+  }
+  return {
+    ...base,
+    type: 'motionBlur' as const,
+    shutter: num(rec.shutter, BLUR_SHUTTER_MIN, BLUR_SHUTTER_MAX, 180),
+  }
 }
 
 /**

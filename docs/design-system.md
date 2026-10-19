@@ -106,6 +106,16 @@ The video surfaces stay dark regardless of the token theme, the way an NLE's mon
   `not-allowed` cursor — set by `ClipView` for the duration of a drag whose clip cannot land on that
   lane. It is the only lane-level state style; the outline is drawn inside the lane (`outline-offset:
 -1px`) so the row geometry, and therefore the drop maths, does not shift.
+- **Effects stack cards reuse inspector rows.** The Applied Effects section lists one card per entry
+  (enable toggle, expand, delete, reset); static params render as the same labelled-slider rows the
+  color and transform sections use, so effect controls never invent their own spacing. The Add effect
+  picker is a menu, with the track-matte sources as a submenu listing only video/text lanes above the
+  clip.
+- **Blend mode sits under Opacity.** The `Clip blend mode` dropdown lives in the Clip tab directly
+  below the opacity control (Premiere placement), Normal default, clearing back to absent.
+- **Track eyeball dims the whole lane.** The header eye (video/text lanes only) toggles `visible`;
+  the lane div carries `data-visible` and dims with the header, so a hidden lane reads as one unit.
+  Audio lanes get no eye; muting stays on the track mute toggle.
 
 ## Components
 

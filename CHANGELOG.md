@@ -5,6 +5,69 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.6] - 2026-10-18
+
+### Added
+
+- **Effects beyond opacity (Tier 3).** Every clip carries an ordered
+  effect stack (crop, chroma key, track matte, motion blur) with
+  per-effect bypass, duplicates allowed, applied top-first with motion
+  blur always evaluating last; clip Motion and Opacity apply after the
+  whole stack. Blend mode is a fixed clip field under Opacity (Normal
+  plus the canvas-supported Premiere set), applied blend-with-backdrop
+  before opacity multiplies.
+- **Crop** with four percent sides, edge feather (percent of the smaller
+  frame dimension through a shared soft-rect mask), Zoom refill, and a
+  consumed-frame skip when opposing edges reach 100 %. Edges and feather
+  keyframe with diamonds; entry curves split with the clip and ride
+  trims untouched like flat curves.
+- **Chroma key (Ultra-Key-lite).** Integer-friendly YCbCr distance math
+  with similarity/blend ramp (hard-step fallback on degenerate
+  intervals), clip black/white remap (hard step on equal thresholds),
+  despill, and luma/alpha mask values, all in a shared pixel pass both
+  render paths call. The key color comes from an eyedropper armed in the
+  entry (Program Monitor click samples, Escape cancels, tainted canvas
+  keeps the old key) with hex fallback.
+- **Track matte** by track id in the clip's own sequence (same-sequence
+  plus above-track validated at dispatch, hydration, move, remove and
+  render; unresolvable entries skip instead of crashing). Luma/alpha
+  modes with reverse; the source track keeps showing until hidden with
+  the new track eyeball (video/text lanes only), and hidden tracks still
+  serve as matte sources.
+- **Motion blur** as true temporal accumulation of clip-local Motion
+  (angle-derived samples capped at 8, shutter 0 bypasses free, shutter
+  keyframes). Transition offsets stay sharp; chroma params and the matte mask freeze at
+  frame time while Motion and crop geometry vary per sub-sample (the chroma pass itself
+  re-runs per sub-sample in stored order).
+- **Track visibility.** `setTrackVisible` hides video/text lanes from the
+  video composite in preview and export; audio muting stays on the
+  existing track mute toggle.
+
+### Fixed
+
+- Matte references survive track add/remove (id references instead of
+  indices), moves revalidate the moved clip's mattes in the same undo
+  step, and matte validation moved to a post-assembly hydration pass
+  where the track lists exist.
+- Motion-blur accumulation is an exact uniform mean (additive at 1/N):
+  transparent samples previously left pixels untouched while counting
+  their weight, accumulating too opaque at temporal edges.
+- Feathered wipes composite the incoming clip with its blend mode;
+  previously the masked scratch landed source-over and dropped the mode.
+- Compound creation remaps matte refs that move into the compound and
+  drops refs whose source stays outside (previously all refs silently
+  stopped resolving).
+- Single-sample motion blur skips the accumulator (identical output, no
+  scratch surface); all effect-card commits route through the same
+  refusal-to-toast wrapper; the eyedropper clamps edge clicks to the last
+  pixel and its hint notes it samples the finished frame.
+- Single-sample motion blur keeps the clip's Motion transform: the blurred
+  gate now means a level actually accumulated, so collapsed levels still
+  land through the transformed blit instead of dropping position/scale.
+- `setEffectParams` refuses non-object params; chroma keys store trimmed
+  and hydration drops inverted clip thresholds; Escape disarms the
+  eyedropper section-wide; zero-shutter blur takes the direct draw.
+
 ## [0.8.5] - 2026-10-17
 
 ### Added

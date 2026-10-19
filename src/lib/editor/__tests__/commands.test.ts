@@ -17,9 +17,10 @@ import {
   sourceTimeAt,
 } from '../factories'
 import { decideTrimStart, trimRooms } from '../clip-gesture'
+import { resolveMatteTrack } from '../effects'
 import { evaluateKeyframes, integrateKeyframes } from '../keyframes'
 import { LUT_LIBRARY_MAX_CHARS, lutLibraryChars, parseCubeLut } from '../lut'
-import type { Clip, Doc, Keyframe, MediaAsset, ProjectLut, Track } from '../types'
+import type { Clip, Doc, EffectEntry, Keyframe, MediaAsset, ProjectLut, Track } from '../types'
 import { MIN_CLIP_DURATION } from '../constants'
 
 /** A 2-cube in `.cube` row order (red fastest): enough to exercise the model. */
@@ -2605,5 +2606,535 @@ describe('captions commands (0.8.5)', () => {
     expect(firstFreeCaptionsName(doc)).toBe('Captions 2')
     doc.project.tracks.push(createTrack('text', 2, { name: 'Captions 2' }))
     expect(firstFreeCaptionsName(doc)).toBe('Captions 3')
+  })
+})
+
+describe('effects commands (0.8.6)', () => {
+  /** V1 on top, V2 below, one clip on V2. */
+  function fxDoc() {
+    const { doc, videoAsset } = makeDoc()
+    const v1 = videoTrack(doc)
+    const v2 = { ...createTrack('video', 2), id: 'v2' }
+    v2.clips.push(createClip({ id: 'clip1', mediaId: videoAsset.id, duration: 8 }))
+    doc.project.tracks = [v1, v2]
+    return { doc, v1, v2 }
+  }
+
+  it('addEffect appends default entries of every type', () => {
+    const { doc } = fxDoc()
+    let next = applyCommand(doc, { type: 'addEffect', clipId: 'clip1', effectType: 'crop' })
+    next = applyCommand(next, { type: 'addEffect', clipId: 'clip1', effectType: 'motionBlur' })
+    const clip = next.project.tracks[1].clips[0]
+    expect(clip.effects?.map((e) => e.type)).toEqual(['crop', 'motionBlur'])
+    expect(clip.effects?.[0].enabled).toBe(true)
+    expect(clip.effects?.[0].id).not.toBe(clip.effects?.[1].id)
+  })
+
+  it('addEffect refuses unknown types and colliding ids', () => {
+    const { doc } = fxDoc()
+    expect(() =>
+      applyCommand(doc, { type: 'addEffect', clipId: 'clip1', effectType: 'bloom' as never }),
+    ).toThrow(EditorCommandError)
+    const next = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'crop',
+      effectId: 'fx_dup',
+    })
+    expect(() =>
+      applyCommand(next, {
+        type: 'addEffect',
+        clipId: 'clip1',
+        effectType: 'crop',
+        effectId: 'fx_dup',
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('addEffect matte requires a valid above-track id', () => {
+    const { doc, v1, v2 } = fxDoc()
+    // No trackId at all.
+    expect(() =>
+      applyCommand(doc, { type: 'addEffect', clipId: 'clip1', effectType: 'trackMatte' }),
+    ).toThrow(EditorCommandError)
+    // The clip's own track and unknown ids.
+    for (const trackId of [v2.id, 'ghost']) {
+      expect(() =>
+        applyCommand(doc, {
+          type: 'addEffect',
+          clipId: 'clip1',
+          effectType: 'trackMatte',
+          trackId,
+        }),
+      ).toThrow(EditorCommandError)
+    }
+    // V1 sits above the V2 clip: accepted.
+    const next = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'trackMatte',
+      trackId: v1.id,
+    })
+    expect(next.project.tracks[1].clips[0].effects?.[0]).toMatchObject({
+      type: 'trackMatte',
+      trackId: v1.id,
+    })
+  })
+
+  it('addEffect matte refuses audio lanes and cross-sequence tracks', () => {
+    const { doc } = fxDoc()
+    const audio = createTrack('audio', 1, { id: 'a_hide' })
+    doc.project.tracks.unshift(audio)
+    expect(() =>
+      applyCommand(doc, {
+        type: 'addEffect',
+        clipId: 'clip1',
+        effectType: 'trackMatte',
+        trackId: 'a_hide',
+      }),
+    ).toThrow(EditorCommandError)
+    const seqTrack = createTrack('video', 1, { id: 'seq_v1' })
+    doc.project.sequences = [{ id: 'seq1', name: 'S', tracks: [seqTrack] }]
+    expect(() =>
+      applyCommand(doc, {
+        type: 'addEffect',
+        clipId: 'clip1',
+        effectType: 'trackMatte',
+        trackId: 'seq_v1',
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('a matte still resolves after a track insert above it (ids, not indices)', () => {
+    const { doc, v1 } = fxDoc()
+    const matted = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'trackMatte',
+      effectId: 'fx',
+      trackId: v1.id,
+    })
+    const grown = applyCommand(matted, { type: 'addTrack', kind: 'video', trackId: 'v_new' })
+    const clip = grown.project.tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip1')!
+    const entry = clip.effects?.[0] as Extract<EffectEntry, { type: 'trackMatte' }>
+    expect(entry?.type).toBe('trackMatte')
+    expect(resolveMatteTrack(grown, 'clip1', entry)?.id).toBe(v1.id)
+  })
+
+  it('createCompoundClip remaps matte refs that move into the compound', () => {
+    const { doc, videoAsset } = makeDoc()
+    const src = createTrack('video', 1, { id: 'v_src' })
+    src.clips.push(
+      createClip({ id: 'src', mediaId: videoAsset.id, start: 0, duration: 4, inPoint: 0 }),
+    )
+    const main = createTrack('video', 2, { id: 'v_main' })
+    main.clips.push(
+      createClip({
+        id: 'clip1',
+        mediaId: videoAsset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        effects: [{ id: 'fx', type: 'trackMatte', trackId: 'v_src' }],
+      }),
+    )
+    const dest = createTrack('video', 3, { id: 'v_dest' })
+    doc.project.tracks = [src, main, dest]
+    const next = applyCommand(doc, {
+      type: 'createCompoundClip',
+      clipIds: ['src', 'clip1'],
+      trackId: 'v_dest',
+    })
+    const seq = next.project.sequences?.[0]
+    expect(seq).toBeDefined()
+    const copiedSrc = seq!.tracks.find((t) => t.name === src.name)
+    const copiedMain = seq!.tracks.find((t) => t.name === main.name)
+    expect(copiedSrc).toBeDefined()
+    expect(copiedMain).toBeDefined()
+    const copiedClip = copiedMain!.clips.find((c) => c.id === 'clip1')!
+    const entry = copiedClip.effects?.[0] as Extract<EffectEntry, { type: 'trackMatte' }>
+    // The ref follows its source: old id gone, new sequence-local id in place.
+    expect(entry?.type).toBe('trackMatte')
+    expect(entry.trackId).toBe(copiedSrc!.id)
+    expect(entry.trackId).not.toBe('v_src')
+    expect(resolveMatteTrack(next, 'clip1', entry)?.id).toBe(copiedSrc!.id)
+  })
+
+  it('createCompoundClip drops mattes whose source stays outside', () => {
+    const { doc, videoAsset } = makeDoc()
+    const src = createTrack('video', 1, { id: 'v_src' })
+    src.clips.push(
+      createClip({ id: 'src', mediaId: videoAsset.id, start: 0, duration: 4, inPoint: 0 }),
+    )
+    const main = createTrack('video', 2, { id: 'v_main' })
+    main.clips.push(
+      createClip({
+        id: 'clip1',
+        mediaId: videoAsset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        effects: [{ id: 'fx', type: 'trackMatte', trackId: 'v_src' }],
+      }),
+    )
+    const dest = createTrack('video', 3, { id: 'v_dest' })
+    doc.project.tracks = [src, main, dest]
+    // Only the matted clip moves: the source stays on the root timeline, so
+    // the ref would go cross-sequence (unresolvable) and drops with the move.
+    const next = applyCommand(doc, {
+      type: 'createCompoundClip',
+      clipIds: ['clip1'],
+      trackId: 'v_dest',
+    })
+    const seq = next.project.sequences?.[0]
+    expect(seq).toBeDefined()
+    const copiedClip = seq!.tracks.flatMap((t) => t.clips).find((c) => c.id === 'clip1')!
+    expect((copiedClip.effects ?? []).some((e) => e.type === 'trackMatte')).toBe(false)
+  })
+
+  it('setEffectParams clamps ranges and refuses hostile input', () => {
+    const { doc } = fxDoc()
+    const next = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'crop',
+      effectId: 'fx',
+    })
+    const patched = applyCommand(next, {
+      type: 'setEffectParams',
+      clipId: 'clip1',
+      effectId: 'fx',
+      params: { left: 150, feather: -5, zoom: true },
+    })
+    expect(patched.project.tracks[1].clips[0].effects?.[0]).toMatchObject({
+      left: 100,
+      feather: 0,
+      zoom: true,
+    })
+    expect(() =>
+      applyCommand(next, {
+        type: 'setEffectParams',
+        clipId: 'clip1',
+        effectId: 'fx',
+        params: { left: Number.NaN },
+      }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
+      applyCommand(next, {
+        type: 'setEffectParams',
+        clipId: 'clip1',
+        effectId: 'fx',
+        params: { zoom: 'yes' },
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('setEffectParams refuses non-object params with EditorCommandError', () => {
+    const { doc } = fxDoc()
+    const next = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'crop',
+      effectId: 'fx',
+    })
+    for (const params of [null, undefined, 5, 'left', [{ left: 1 }]]) {
+      expect(() =>
+        applyCommand(next, {
+          type: 'setEffectParams',
+          clipId: 'clip1',
+          effectId: 'fx',
+          params: params as unknown as Record<string, unknown>,
+        }),
+      ).toThrow(EditorCommandError)
+    }
+  })
+
+  it('setEffectParams stores the trimmed chroma key', () => {
+    const { doc } = fxDoc()
+    const next = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'chromaKey',
+      effectId: 'fx',
+    })
+    const patched = applyCommand(next, {
+      type: 'setEffectParams',
+      clipId: 'clip1',
+      effectId: 'fx',
+      params: { key: '  #ff0000  ' },
+    })
+    expect(patched.project.tracks[1].clips[0].effects?.[0]).toMatchObject({ key: '#ff0000' })
+  })
+
+  it('setEffectParams validates chroma colors and the clip range', () => {
+    const { doc } = fxDoc()
+    const next = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'chromaKey',
+      effectId: 'fx',
+    })
+    expect(() =>
+      applyCommand(next, {
+        type: 'setEffectParams',
+        clipId: 'clip1',
+        effectId: 'fx',
+        params: { key: 'green' },
+      }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
+      applyCommand(next, {
+        type: 'setEffectParams',
+        clipId: 'clip1',
+        effectId: 'fx',
+        params: { clipBlack: 0.8, clipWhite: 0.2 },
+      }),
+    ).toThrow(EditorCommandError)
+    const ok = applyCommand(next, {
+      type: 'setEffectParams',
+      clipId: 'clip1',
+      effectId: 'fx',
+      params: { key: '#00ff00', similarity: 2, clipBlack: 0.2, clipWhite: 0.8 },
+    })
+    expect(ok.project.tracks[1].clips[0].effects?.[0]).toMatchObject({
+      key: '#00ff00',
+      similarity: 1,
+      clipBlack: 0.2,
+      clipWhite: 0.8,
+    })
+  })
+
+  it('setEffectKeyframes animates keyframable props and refuses the rest', () => {
+    const { doc } = fxDoc()
+    const next = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'crop',
+      effectId: 'fx',
+    })
+    const keyed = applyCommand(next, {
+      type: 'setEffectKeyframes',
+      clipId: 'clip1',
+      effectId: 'fx',
+      property: 'left',
+      keyframes: [
+        { time: 0, value: 0 },
+        { time: 8, value: 200 },
+      ],
+    })
+    expect(keyed.project.tracks[1].clips[0].effects?.[0].keyframes?.left?.[1].value).toBe(100)
+    expect(() =>
+      applyCommand(next, {
+        type: 'setEffectKeyframes',
+        clipId: 'clip1',
+        effectId: 'fx',
+        property: 'zoom',
+        keyframes: [{ time: 0, value: 1 }],
+      }),
+    ).toThrow(EditorCommandError)
+    // Empty array clears the curve.
+    const cleared = applyCommand(keyed, {
+      type: 'setEffectKeyframes',
+      clipId: 'clip1',
+      effectId: 'fx',
+      property: 'left',
+      keyframes: [],
+    })
+    expect(cleared.project.tracks[1].clips[0].effects?.[0].keyframes).toBeUndefined()
+    // A non-array payload refuses instead of throwing a TypeError.
+    expect(() =>
+      applyCommand(next, {
+        type: 'setEffectKeyframes',
+        clipId: 'clip1',
+        effectId: 'fx',
+        property: 'left',
+        keyframes: 'nope' as never,
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('removeEffect / setEffectEnabled / resetEffect keep curves on reset', () => {
+    const { doc } = fxDoc()
+    const next = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'crop',
+      effectId: 'fx',
+    })
+    const keyed = applyCommand(next, {
+      type: 'setEffectKeyframes',
+      clipId: 'clip1',
+      effectId: 'fx',
+      property: 'left',
+      keyframes: [{ time: 0, value: 40 }],
+    })
+    const disabled = applyCommand(keyed, {
+      type: 'setEffectEnabled',
+      clipId: 'clip1',
+      effectId: 'fx',
+      enabled: false,
+    })
+    expect(disabled.project.tracks[1].clips[0].effects?.[0].enabled).toBe(false)
+    const reset = applyCommand(disabled, { type: 'resetEffect', clipId: 'clip1', effectId: 'fx' })
+    const entry = reset.project.tracks[1].clips[0].effects?.[0]
+    expect(entry?.enabled).toBe(false)
+    expect(entry?.keyframes?.left).toHaveLength(1)
+    expect(entry).toMatchObject({ left: undefined })
+    const removed = applyCommand(reset, { type: 'removeEffect', clipId: 'clip1', effectId: 'fx' })
+    expect(removed.project.tracks[1].clips[0].effects).toBeUndefined()
+  })
+
+  it('resetEffect on a matte keeps the source and restores mode/reverse', () => {
+    const { doc, v1 } = fxDoc()
+    const matted = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'trackMatte',
+      effectId: 'fx',
+      trackId: v1.id,
+    })
+    const changed = applyCommand(matted, {
+      type: 'setEffectParams',
+      clipId: 'clip1',
+      effectId: 'fx',
+      params: { mode: 'alpha', reverse: true },
+    })
+    const reset = applyCommand(changed, { type: 'resetEffect', clipId: 'clip1', effectId: 'fx' })
+    expect(reset.project.tracks[1].clips[0].effects?.[0]).toMatchObject({
+      type: 'trackMatte',
+      trackId: v1.id,
+      mode: undefined,
+      reverse: undefined,
+    })
+  })
+
+  it('setClipBlendMode sets, clears, and refuses unknown modes', () => {
+    const { doc } = fxDoc()
+    const next = applyCommand(doc, {
+      type: 'setClipBlendMode',
+      clipId: 'clip1',
+      blendMode: 'multiply',
+    })
+    expect(next.project.tracks[1].clips[0].blendMode).toBe('multiply')
+    const cleared = applyCommand(next, {
+      type: 'setClipBlendMode',
+      clipId: 'clip1',
+      blendMode: null,
+    })
+    expect(cleared.project.tracks[1].clips[0].blendMode).toBeUndefined()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setClipBlendMode',
+        clipId: 'clip1',
+        blendMode: 'vividLight' as never,
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('setTrackVisible flips the flag and refuses non-booleans', () => {
+    const { doc, v2 } = fxDoc()
+    const next = applyCommand(doc, { type: 'setTrackVisible', trackId: v2.id, visible: false })
+    expect(next.project.tracks[1].visible).toBe(false)
+    expect(() =>
+      applyCommand(doc, { type: 'setTrackVisible', trackId: v2.id, visible: 'no' as never }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('moveClip drops mattes orphaned by the move in the same step', () => {
+    const { doc, v1 } = fxDoc()
+    const matted = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'trackMatte',
+      trackId: v1.id,
+    })
+    // Moving the clip UP onto V1 puts it above its matte source: dropped.
+    const moved = applyCommand(matted, {
+      type: 'moveClip',
+      clipId: 'clip1',
+      trackId: v1.id,
+      start: 0,
+    })
+    expect(moved.project.tracks[0].clips.map((c) => c.id)).toContain('clip1')
+    expect(moved.project.tracks[0].clips.find((c) => c.id === 'clip1')?.effects).toBeUndefined()
+    // A same-track nudge keeps the matte.
+    const nudged = applyCommand(matted, {
+      type: 'moveClip',
+      clipId: 'clip1',
+      trackId: 'v2',
+      start: 1,
+    })
+    expect(nudged.project.tracks[1].clips[0].effects).toHaveLength(1)
+  })
+
+  it('removeTrack drops mattes pointing at the removed track', () => {
+    const { doc, v1 } = fxDoc()
+    const matted = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'trackMatte',
+      trackId: v1.id,
+    })
+    const next = applyCommand(matted, { type: 'removeTrack', trackId: v1.id })
+    expect(next.project.tracks.map((t) => t.id)).not.toContain(v1.id)
+    expect(next.project.tracks[0].clips[0].effects).toBeUndefined()
+  })
+
+  it('splitClip subdivides entry curves without sharing objects', () => {
+    const { doc } = fxDoc()
+    const withFx = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'crop',
+      effectId: 'fx',
+    })
+    const curved = applyCommand(withFx, {
+      type: 'setEffectKeyframes',
+      clipId: 'clip1',
+      effectId: 'fx',
+      property: 'left',
+      keyframes: [
+        { time: 0, value: 0 },
+        { time: 8, value: 80 },
+      ],
+    })
+    const split = applyCommand(curved, { type: 'splitClip', clipId: 'clip1', atTime: 2 })
+    const clips = split.project.tracks[1].clips
+    expect(clips).toHaveLength(2)
+    const [left, right] = clips
+    expect(left.effects?.[0].keyframes?.left?.map((k) => k.time)).toEqual([0, 2])
+    expect(right.effects?.[0].keyframes?.left?.map((k) => k.time)).toEqual([0, 6])
+    expect(right.effects?.[0].keyframes?.left?.[0].value).toBe(20)
+    expect(right.effects?.[0]).not.toBe(left.effects?.[0])
+  })
+
+  it('trimClip leaves entry curves untouched like flat curves', () => {
+    const { doc } = fxDoc()
+    const withFx = applyCommand(doc, {
+      type: 'addEffect',
+      clipId: 'clip1',
+      effectType: 'crop',
+      effectId: 'fx',
+    })
+    const curved = applyCommand(withFx, {
+      type: 'setEffectKeyframes',
+      clipId: 'clip1',
+      effectId: 'fx',
+      property: 'left',
+      keyframes: [
+        { time: 0, value: 10 },
+        { time: 8, value: 20 },
+      ],
+    })
+    const trimmed = applyCommand(curved, {
+      type: 'trimClip',
+      clipId: 'clip1',
+      edge: 'head',
+      start: 2,
+      inPoint: 2,
+      duration: 6,
+    })
+    const keys = trimmed.project.tracks[1].clips[0].effects?.[0].keyframes?.left
+    expect(keys?.map((k) => k.time)).toEqual([0, 8])
   })
 })

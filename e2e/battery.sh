@@ -470,6 +470,12 @@ between() { awk -v t="$1" -v lo="$2" -v hi="$3" 'BEGIN { exit !(t > lo && t < hi
 time_display_is() {
   evaln "document.querySelector('[data-testid=time-display]').innerText.trim().startsWith('$1')"
 }
+# Playhead seconds from the transport readout ("m:ss.s / ..."), "" when unreadable.
+playhead_seconds() {
+  local t
+  t=$(evaln "document.querySelector('[data-testid=time-display]').innerText")
+  awk -v t="${t%%/*}" 'BEGIN { split(t, p, ":"); if (p[1] == "" || p[2] == "") exit 1; printf "%.3f", p[1]*60+p[2] }'
+}
 f10_markers_sequence() {
   ab press Control+Shift+a >/dev/null 2>&1   # no live clip selection -> M targets the timeline
   ab find role button click --name 'Go to start (Home)' >/dev/null && sleep 0.4
@@ -682,6 +688,22 @@ frame_sum() { # frame_sum <css selector for the canvas>
     let s = 0; for (let i = 0; i < d.length; i += 40) s += d[i] + d[i+1] + d[i+2];
     return s;
   })()"
+}
+
+# A settled frame sum: polls until two consecutive reads agree (a parked
+# seek composites asynchronously, and a single read can catch a transitional
+# frame). Echoes the stable sum, or "" after ~4s of disagreement.
+settled_sum() { # settled_sum <css selector for the canvas>
+  local a b i
+  a=$(frame_sum "$1")
+  for i in $(seq 1 8); do
+    sleep 0.5
+    b=$(frame_sum "$1")
+    if [ -n "$a" ] && [ "$a" = "$b" ]; then echo "$b"; return 0; fi
+    a="$b"
+  done
+  echo ""
+  return 1
 }
 
 # Per-channel sums of one canvas as "r g b" (the same stride-40 sample frame_sum
@@ -1107,6 +1129,302 @@ c02_captions_export() {
     echo "c02: expected 3 arrow lines, got $arrows" >&2; return 1; }
   [ "$al" -lt "$be" ] && [ "$be" -lt "$ga" ] || {
     echo "c02: cue order wrong ($al,$be,$ga)" >&2; return 1; }
+}
+
+# ————— E effects (0.8.6) —————
+# Each step adds one effect through the real picker, proves it landed (and,
+# where pixels allow, that it renders), then undoes the add so every later
+# step sees the timeline it left behind. The Effect Controls tab hosts the
+# picker; the Clip tab hosts the blend dropdown.
+
+e00_effects_tab() {
+  ab press Escape >/dev/null 2>&1; sleeps 0.2
+  click_clip 'sample-video' || { echo "e00: video clip not found" >&2; return 1; }
+  ab eval 'document.querySelector("[data-testid=inspector-tab-effects]").click()' >/dev/null 2>&1
+  sleeps 0.5
+  snap | grep -q 'Add effect' || { echo "e00: effects section missing" >&2; return 1; }
+}
+
+e01_crop_add_remove() {
+  insp '[aria-label="Add effect"]'
+  ab find role button click --name 'Add effect' >/dev/null 2>&1 || {
+    echo "e01: Add effect button missing" >&2; return 1; }
+  sleeps 0.4
+  ab find role menuitem click --name 'Crop' >/dev/null 2>&1 || {
+    echo "e01: Crop menu item missing" >&2; return 1; }
+  sleeps 0.5
+  snap | grep -q 'Remove Crop' || { echo "e01: the crop entry never landed" >&2; return 1; }
+  # Geometry proof: Left to max consumes the frame, so the settled monitor
+  # must differ from the unkeyed frame (an ignored crop would composite
+  # identically). Parked at 0.3s, inside the first video part and clear of
+  # the 1.0s caption cues; any non-fully-occluding stack differs.
+  ab eval "document.activeElement && document.activeElement.blur()" >/dev/null 2>&1
+  ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
+  local i
+  for i in $(seq 1 9); do ab press ArrowRight >/dev/null 2>&1; done
+  if ! between "$(playhead_seconds)" 0.29 0.41; then
+    echo "e01: playhead missed 0.3s ($(playhead_seconds))" >&2; return 1
+  fi
+  local plain1
+  plain1=$(settled_sum "[data-testid=preview-canvas]")
+  [ -n "$plain1" ] || { echo "e01: monitor never settled" >&2; return 1; }
+  # aria-label rides the thumb itself (see NamedSlider), so the selector
+  # must not use a descendant combinator.
+  ab eval "document.querySelector('[aria-label=\"Left value\"][role=slider]').focus()" >/dev/null 2>&1
+  ab press End >/dev/null 2>&1 && sleeps 0.6
+  # End must not leak to transport, and the slider must actually read 100:
+  # a lost End leaves one command too few, and the second undo below would
+  # then eat a pre-step entry (this exact desync once deleted the Captions
+  # lane and failed e04 downstream).
+  if ! between "$(playhead_seconds)" 0.29 0.41; then
+    echo "e01: End moved the playhead ($(playhead_seconds))" >&2; return 1
+  fi
+  snap | grep -q 'slider "Left value".*: 100' || {
+    echo "e01: Left did not reach max" >&2; return 1; }
+  local cropped
+  cropped=$(settled_sum "[data-testid=preview-canvas]")
+  [ -n "$cropped" ] || { echo "e01: monitor never settled after cropping" >&2; return 1; }
+  [ "$cropped" != "$plain1" ] || { echo "e01: consumed crop rendered identically ($cropped)" >&2; return 1; }
+  ab press Control+z >/dev/null; sleeps 0.4
+  ab press Control+z >/dev/null; sleeps 0.5
+  snap | grep -q 'Remove Crop' && { echo "e01: undo did not remove the crop" >&2; return 1; }
+  return 0
+}
+
+e02_blend_mode() {
+  ab eval 'document.querySelector("[data-testid=inspector-tab-clip]").click()' >/dev/null 2>&1
+  sleeps 0.4
+  select_option 'Clip blend mode' 1 || return 1
+  snap | grep -q '"Clip blend mode" selected="Multiply"' || snap | grep -q 'Multiply' || {
+    echo "e02: blend mode did not switch to Multiply" >&2; return 1; }
+  ab press Control+z >/dev/null; sleeps 0.5
+  # The undo must restore Normal: the closed combobox prints its value after
+  # a colon in the snapshot (verified live: `: Multiply` vs `: Normal`).
+  snap | grep -q 'combobox "Clip blend mode".*: Normal' || {
+    echo "e02: undo did not restore Normal" >&2; return 1; }
+  return 0
+}
+
+e03_chroma_hex() {
+  ab eval 'document.querySelector("[data-testid=inspector-tab-effects]").click()' >/dev/null 2>&1
+  sleeps 0.4
+  insp '[aria-label="Add effect"]'
+  ab find role button click --name 'Add effect' >/dev/null 2>&1 || {
+    echo "e03: Add effect button missing" >&2; return 1; }
+  sleeps 0.4
+  ab find role menuitem click --name 'Chroma key' >/dev/null 2>&1 || {
+    echo "e03: Chroma key menu item missing" >&2; return 1; }
+  sleeps 0.5
+  snap | grep -q 'Pick key color from monitor' || { echo "e03: the keyer entry never landed" >&2; return 1; }
+  # Non-default key through the real hex field, committed with Enter.
+  ab fill '[aria-label="Key color hex"]' '#ff0000' >/dev/null 2>&1 || {
+    echo "e03: hex fill failed" >&2; return 1; }
+  ab press Enter >/dev/null 2>&1 && sleeps 0.5
+  snap | grep -q '#ff0000' || { echo "e03: hex key did not display" >&2; return 1; }
+  # Similarity to max collapses the ramp to a hard step at dN <= 1, which
+  # keys nearly every pixel regardless of content: the monitor must erase.
+  # Focus through the DOM like the grade slider (f06): a snapshot ref can go
+  # stale between lookup and use (a commit re-renders and detaches the thumb),
+  # but the labelled slider does not move.
+  snap | grep -q 'slider "Similarity value"' || { echo "e03: Similarity slider missing" >&2; return 1; }
+  # Park where the keyed first video part is live (0..1.50, same seam rule as
+  # e04: 1.2s is safely inside), polling for a live frame before sampling.
+  ab eval "document.activeElement && document.activeElement.blur()" >/dev/null 2>&1
+  ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
+  local i
+  for i in $(seq 1 36); do ab press ArrowRight >/dev/null 2>&1; done
+  if ! between "$(playhead_seconds)" 1.09 1.41; then
+    echo "e03: playhead missed 1.2s ($(playhead_seconds))" >&2; return 1
+  fi
+  local plain3
+  plain3=$(settled_sum "[data-testid=preview-canvas]")
+  [ -n "$plain3" ] || { echo "e03: monitor never settled at 1.2s" >&2; return 1; }
+  [ "${plain3:-0}" -gt 1000000 ] 2>/dev/null || { echo "e03: monitor dark at 1.2s ($plain3)" >&2; return 1; }
+  ab eval "document.querySelector('[data-testid=fx-static-similarity] [role=slider]').focus()" >/dev/null 2>&1
+  ab press End >/dev/null 2>&1 && sleeps 0.6
+  # End must not leak to transport: the playhead stays at 1.2s.
+  if ! between "$(playhead_seconds)" 1.09 1.41; then
+    echo "e03: End moved the playhead ($(playhead_seconds))" >&2; return 1
+  fi
+  # The slider must actually read 1: this separates a lost keypress (test
+  # bug) from a committed value that renders wrong (product bug).
+  snap | grep -q 'slider "Similarity value".*: 1' || {
+    echo "e03: Similarity did not reach max" >&2; return 1; }
+  local keyed
+  keyed=$(settled_sum "[data-testid=preview-canvas]")
+  [ -n "$keyed" ] || { echo "e03: monitor never settled after keying" >&2; return 1; }
+  # Keying must remove most of the top layer. No absolute zero: lower lanes
+  # show through fully-keyed regions (an image beneath reads as content, not
+  # black). Three quarters, not one half: the layer beneath can be nearly as
+  # bright as the keyed one, and an ignored key would composite identically.
+  awk -v a="${keyed:-0}" -v b="${plain3:-1}" 'BEGIN { exit !(a * 4 < b * 3) }' || {
+    # No blind undos here (see above): a leftover inert keyer is harmless to
+    # later steps (their pixel proofs are all relative), a corrupted history
+    # is not.
+    echo "e03: max similarity did not key the picture ($keyed vs $plain3)" >&2; return 1; }
+  ab press Control+z >/dev/null; sleeps 0.4
+  # Each undo is verified before the next: an unverified undo chain can
+  # silently desync (popping a pre-step entry) when a commit never landed.
+  snap | grep -q 'slider "Similarity value".*: 0' || {
+    echo "e03: first undo did not restore similarity" >&2; return 1; }
+  ab press Control+z >/dev/null; sleeps 0.4
+  snap | grep -q '#00ff00' || { echo "e03: second undo did not restore the key" >&2; return 1; }
+  ab press Control+z >/dev/null; sleeps 0.5
+  snap | grep -q 'Pick key color from monitor' && { echo "e03: undo did not remove the keyer" >&2; return 1; }
+  return 0
+}
+
+e04_matte_masks_and_survives_hide() {
+  # Matte source: the Captions text track from c01 sits above V1. Park at
+  # 1.2s: inside the matted first video part (0..1.50, end-exclusive, so
+  # parking ON 1.50 would show the next, unmatted part) and inside the Alpha
+  # cue (1.0..2.0) so the mask has content to read.
+  # Pre-flight: the prefix must have left the Captions lane and its cues
+  # behind. Without this guard a broken prefix fails here as a matte mystery.
+  snap | grep -q 'Hide Captions' || {
+    echo "e04: no Captions track (prefix state broken)" >&2
+    echo "e04 track census: $(snap | grep -E 'track|Captions|Alpha|Beta|Gamma' | head -30 | tr '\n' '|')" >&2
+    headers=$(evaln "Array.from(document.querySelectorAll('[data-testid^=track-header]')).map(e => e.dataset.testid).join(',')")
+    echo "e04 DOM headers: $headers" >&2
+    echo "e04 DOM cue text: $(evaln 'document.body.innerText.includes("Alpha")')" >&2
+    return 1
+  }
+  snap | grep -q 'Alpha' || { echo "e04: no caption cues (prefix state broken)" >&2; return 1; }
+  ab eval "document.activeElement && document.activeElement.blur()" >/dev/null 2>&1
+  ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
+  local i
+  for i in $(seq 1 36); do ab press ArrowRight >/dev/null 2>&1; done
+  if ! between "$(playhead_seconds)" 1.09 1.41; then
+    echo "e04: playhead missed 1.2s ($(playhead_seconds))" >&2; return 1
+  fi
+  # Parked seeks settle asynchronously: poll for a LIVE frame before
+  # sampling, so a slow seek reads as waiting, not as content. The floor is
+  # well above an unsettled (near-black) frame and far below the bright video
+  # parked here, so neither side passes vacuously.
+  local plain
+  plain=$(settled_sum "[data-testid=preview-canvas]")
+  [ -n "$plain" ] || { echo "e04: monitor never settled at 1.2s" >&2; return 1; }
+  [ "${plain:-0}" -gt 1000000 ] 2>/dev/null || { echo "e04: monitor dark at 1.2s ($plain)" >&2; return 1; }
+  insp '[aria-label="Add effect"]'
+  ab find role button click --name 'Add effect' >/dev/null 2>&1 || {
+    echo "e04: Add effect button missing" >&2; return 1; }
+  sleeps 0.4
+  ab press Escape >/dev/null 2>&1; sleeps 0.2
+  local opened=0
+  for i in $(seq 1 8); do
+    if snap | grep -q 'menuitem "Track matte"'; then
+      if ab find role menuitem click --name 'Track matte' >/dev/null 2>&1; then
+        opened=1
+        break
+      fi
+    fi
+    ab find role button click --name 'Add effect' >/dev/null 2>&1
+    sleeps 0.5
+  done
+  [ "$opened" = "1" ] || { echo "e04: Track matte menu item missing" >&2; return 1; }
+  # The submenu opens on hover, which can race shut mid-flight; retry the
+  # whole open-hover-select cycle a few times before giving up.
+  local attempt selected=0
+  for attempt in 1 2 3; do
+    # Ensure the main menu is open first (a retried attempt starts closed).
+    if ! snap | grep -q 'menuitem "Track matte"'; then
+      ab find role button click --name 'Add effect' >/dev/null 2>&1
+      sleeps 0.5
+    fi
+    # Hover the trigger and poll for the source item (a click alone can
+    # leave the submenu closed).
+    local found=0
+    for i in $(seq 1 10); do
+      if snap | grep -q 'menuitem "Captions"'; then found=1; break; fi
+      mt=$(firstref 'menuitem "Track matte"')
+      [ -n "$mt" ] && ab hover "@$mt" >/dev/null 2>&1
+      sleep 0.3
+    done
+    if [ "$found" = "1" ]; then
+      # Focus + Enter instead of a click: clicking travels the mouse, which
+      # can close the hover-opened submenu mid-flight and land on empty
+      # space (the menus then close with no entry and no toast).
+      cap=$(firstref 'menuitem "Captions"')
+      if [ -n "$cap" ]; then
+        ab focus "@$cap" >/dev/null 2>&1 && ab press Enter >/dev/null 2>&1
+        sleeps 0.6
+      fi
+    fi
+    if snap | grep -q 'Remove Track matte'; then selected=1; break; fi
+    ab press Escape >/dev/null 2>&1; sleeps 0.3
+  done
+  if [ "$selected" != "1" ]; then
+    echo "e04: the matte entry never landed" >&2
+    echo "e04 menuitems: $(snap | grep -oE 'menuitem "[^"]+"' | tr '\n' ';')" >&2
+    echo "e04 toasts: $(snap | grep -oiE '(refused|unknown|must be)[^\[]*' | tr '\n' ';')" >&2
+    echo "e04 clips: $(snap | grep -oE 'button "Clip [^"]+"' | tr '\n' ';')" >&2
+    echo "e04 tracks: $(snap | grep -oE '(Hide|Show) [^"]+' | tr '\n' ';')" >&2
+    echo "e04 inspector: $(snap | grep -oE '(Remove [A-Za-z ]+|No effects|Shutter angle|Similarity|Source track)' | sort -u | tr '\n' ';')" >&2
+    ab press Escape >/dev/null 2>&1
+    return 1
+  fi
+  local masked
+  masked=$(settled_sum "[data-testid=preview-canvas]")
+  [ -n "$masked" ] || { echo "e04: monitor never settled after matting" >&2; return 1; }
+  # The text mask keeps only glyph pixels: far less than the full picture.
+  awk -v a="${masked:-0}" -v b="${plain:-1}" 'BEGIN { exit !(a * 2 < b) }' || {
+    echo "e04: matte did not mask the picture ($masked vs $plain)" >&2; return 1; }
+  # Hiding the source track must NOT lift the mask (visibility affects the
+  # main composite only).
+  hide=$(firstref 'button "Hide Captions"')
+  ab scrollintoview "@$hide" >/dev/null 2>&1; sleeps 0.3
+  ab find role button click --name 'Hide Captions' >/dev/null 2>&1 || {
+    echo "e04: Captions eyeball missing" >&2; return 1; }
+  sleeps 0.6
+  local hidden
+  hidden=$(settled_sum "[data-testid=preview-canvas]")
+  [ -n "$hidden" ] || { echo "e04: monitor never settled while hidden" >&2; return 1; }
+  awk -v a="${hidden:-0}" -v b="${plain:-1}" 'BEGIN { exit !(a * 2 < b) }' || {
+    echo "e04: hiding the source lifted the mask ($hidden vs $plain)" >&2; return 1; }
+  [ "${hidden:-0}" -gt 0 ] 2>/dev/null || {
+    echo "e04: hiding the source erased the picture instead of masking ($hidden vs $plain)" >&2; return 1; }
+  show=$(firstref 'button "Show Captions"')
+  ab scrollintoview "@$show" >/dev/null 2>&1; sleeps 0.3
+  ab find role button click --name 'Show Captions' >/dev/null 2>&1 || {
+    echo "e04: Show Captions click failed" >&2; return 1; }
+  sleeps 0.4
+  # The three undos below assume the lane is visible again: stop here,
+  # undoing nothing, if the click missed or the lane stayed hidden.
+  snap | grep -q 'button "Hide Captions"' || {
+    echo "e04: Captions still hidden after Show" >&2; return 1; }
+  # Three history entries to unwind: the re-show, the hide, then the matte
+  # add itself. After all three the entry is gone and the lane is visible.
+  ab press Control+z >/dev/null; sleeps 0.4
+  ab press Control+z >/dev/null; sleeps 0.4
+  ab press Control+z >/dev/null; sleeps 0.5
+  ab press Escape >/dev/null 2>&1; sleeps 0.2
+  snap | grep -q 'Remove Track matte' && { echo "e04: undo did not remove the matte" >&2; return 1; }
+  return 0
+}
+
+e05_blur_accumulates() {
+  insp '[aria-label="Add effect"]'
+  # The picker menu can miss opening on a single click; poll and reopen.
+  local opened=0
+  for i in $(seq 1 6); do
+    if snap | grep -q 'menuitem "Motion blur"'; then
+      opened=1
+      break
+    fi
+    ab find role button click --name 'Add effect' >/dev/null 2>&1
+    sleeps 0.5
+  done
+  [ "$opened" = "1" ] || { echo "e05: Motion blur menu item missing" >&2; return 1; }
+  ab find role menuitem click --name 'Motion blur' >/dev/null 2>&1 || {
+    echo "e05: Motion blur menu item missing" >&2; return 1; }
+  sleeps 0.5
+  snap | grep -q 'Shutter angle' || { echo "e05: the blur entry never landed" >&2; return 1; }
+  local lit
+  lit=$(frame_sum "[data-testid=preview-canvas]")
+  [ "${lit:-0}" -gt 0 ] 2>/dev/null || { echo "e05: monitor dark with blur" >&2; return 1; }
+  ab press Control+z >/dev/null; sleeps 0.5
+  snap | grep -q 'Shutter angle' && { echo "e05: undo did not remove the blur" >&2; return 1; }
+  return 0
 }
 
 # ————— F5 audio —————
@@ -2691,6 +3009,12 @@ step "f04 text: T adds a text clip"                f04_text_add
 step "f04 text: content edited via Inspector"      f04_text_edit
 step "c01 captions: SRT import creates timed flagged clips" c01_captions_import
 step "c02 captions: SRT export downloads the cues in order" c02_captions_export
+step "e00 effects: Effect Controls hosts the effects section" e00_effects_tab
+step "e01 effects: crop adds through the picker and undoes" e01_crop_add_remove
+step "e02 effects: blend mode switches to Multiply and undoes" e02_blend_mode
+step "e03 effects: chroma key adds through the picker and undoes" e03_chroma_hex
+step "e04 effects: track matte masks and survives hiding the source" e04_matte_masks_and_survives_hide
+step "e05 effects: motion blur adds, renders, and undoes" e05_blur_accumulates
 step "f05 audio: mute + reduce-noise switches work" f05_mute
 step "f05 audio: gain slider reaches 200%"         f05_gain
 step "f05 reverse: picture-only rows + the mirrored curve" f05_reverse

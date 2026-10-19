@@ -81,6 +81,85 @@ export interface Transition {
 }
 
 /**
+ * Blend modes (0.8.6): the canvas-supported intersection of Premiere's set,
+ * stored as a fixed clip field (NOT a stack entry) beside `opacity`.
+ * Absent means 'normal'. The exotic remainder (Dissolve, Divide, Subtract,
+ * Vivid/Linear/Pin Light, Hard Mix) is a recorded non-goal: no canvas
+ * primitive exists for them.
+ */
+export type BlendMode =
+  | 'normal'
+  | 'multiply'
+  | 'screen'
+  | 'overlay'
+  | 'softLight'
+  | 'hardLight'
+  | 'darken'
+  | 'lighten'
+  | 'colorDodge'
+  | 'colorBurn'
+  | 'linearDodge'
+  | 'difference'
+  | 'exclusion'
+  | 'hue'
+  | 'saturation'
+  | 'color'
+  | 'luminosity'
+
+/** Per-effect keyframable property names (0.8.6). The flat `KeyframeProperty` enum is untouched. */
+export type EffectKeyframeProperty = 'left' | 'right' | 'top' | 'bottom' | 'feather' | 'shutter'
+
+/** Per-effect keyframe curves, keyed by the entry's own property names. */
+export type EffectKeyframeMap = Partial<Record<EffectKeyframeProperty, Keyframe[]>>
+
+export interface EffectBase {
+  id: string
+  type: 'crop' | 'chromaKey' | 'trackMatte' | 'motionBlur'
+  /** Per-effect bypass. Absent reads as enabled. */
+  enabled?: boolean
+  keyframes?: EffectKeyframeMap
+}
+
+/** Crop effect (0.8.6): four sides in percent plus feather and zoom refill. */
+export interface CropEffect extends EffectBase {
+  type: 'crop'
+  left?: number
+  right?: number
+  top?: number
+  bottom?: number
+  feather?: number
+  zoom?: boolean
+}
+
+/** Chroma key effect (0.8.6): Ultra-Key-lite, all static. */
+export interface ChromaKeyEffect extends EffectBase {
+  type: 'chromaKey'
+  key?: string
+  similarity?: number
+  blend?: number
+  clipBlack?: number
+  clipWhite?: number
+  despill?: number
+}
+
+/** Track matte effect (0.8.6): id reference into the owning sequence. All static. */
+export interface TrackMatteEffect extends EffectBase {
+  type: 'trackMatte'
+  trackId?: string
+  mode?: 'luma' | 'alpha'
+  reverse?: boolean
+}
+
+/** Motion blur effect (0.8.6): temporal accumulation over a shutter window. */
+export interface MotionBlurEffect extends EffectBase {
+  type: 'motionBlur'
+  shutter?: number
+}
+
+/** Ordered per-clip effect stack (0.8.6). Duplicates allowed; motion blur always evaluates last. */
+export type EffectEntry = CropEffect | ChromaKeyEffect | TrackMatteEffect | MotionBlurEffect
+
+/**
  * Interpolation of the segment that STARTS at a keyframe (the curve runs from
  * this keyframe to the next one). The named easings are Premiere's defaults;
  * see bezier.ts for their control points. Unknown values read as 'linear'.
@@ -232,6 +311,18 @@ export interface Clip {
   style?: TextStyle
   /** Caption cue (0.8.5). Set on text clips by SRT import; SRT export collects flagged clips. */
   isCaption?: boolean
+  /**
+   * Ordered per-clip effect stack (0.8.6). Absent means an empty stack, never
+   * null. Applies top-first with motion blur always evaluating last;
+   * clip Motion and Opacity apply after the whole stack.
+   */
+  effects?: EffectEntry[]
+  /**
+   * Blend mode with the backdrop (0.8.6), a fixed field beside `opacity`
+   * (Premiere keeps it under Opacity too). Absent means 'normal'. Applies
+   * before opacity multiplies at composite time.
+   */
+  blendMode?: BlendMode
   /** Cross-dissolve into the next clip on the same track. */
   transitionOut?: Transition
   /** Clip markers, `time` in source seconds (see {@link Marker}). */
@@ -280,6 +371,12 @@ export interface Track {
   name: string
   /** Mutes the whole track (audio only; video frames still render). */
   muted?: boolean
+  /**
+   * Track visibility eyeball (0.8.6): hidden tracks skip the video composite
+   * in preview and export. Absent means visible. Audio muting stays on
+   * `muted`; a hidden track still serves as a track-matte source.
+   */
+  visible?: boolean
   clips: Clip[]
 }
 

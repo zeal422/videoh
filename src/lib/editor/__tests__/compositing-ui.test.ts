@@ -544,3 +544,80 @@ describe('compound clips (0.8.1) static locks', () => {
     expect(panel).toMatch(/playbackRef\.current\?\.seek\(0\)/)
   })
 })
+
+describe('effects UI wiring (0.8.6)', () => {
+  const applied = read('src/components/editor/effect-controls/AppliedEffectsSection.tsx')
+  const inspector = read('src/components/editor/InspectorPanel.tsx')
+  const preview = read('src/components/editor/PreviewPanel.tsx')
+  const timeline = read('src/components/editor/timeline/TimelinePanel.tsx')
+
+  it('the picker offers the four stack effects with the matte track submenu', () => {
+    expect(applied).toMatch(/aria-label="Add effect"/)
+    expect(applied).toMatch(/onSelect=\{\(\) => add\('crop'\)\}/)
+    expect(applied).toMatch(/onSelect=\{\(\) => add\('chromaKey'\)\}/)
+    expect(applied).toMatch(/onSelect=\{\(\) => add\('motionBlur'\)\}/)
+    expect(applied).toMatch(/onSelect=\{\(\) => add\('trackMatte', t\.id\)\}/)
+    expect(applied).toMatch(/No track above this clip/)
+  })
+
+  it('entry cards dispatch enable, reset and remove with the entry id', () => {
+    expect(applied).toMatch(/type: 'setEffectEnabled'/)
+    expect(applied).toMatch(/type: 'resetEffect'/)
+    expect(applied).toMatch(/type: 'removeEffect'/)
+    expect(applied).toMatch(/data-testid=\{`effect-\$\{entry\.id\}`\}/)
+  })
+
+  it('keyframable rows carry diamonds scoped to the entry, statics use transient + commit', () => {
+    expect(applied).toMatch(/data-testid=\{`fx-kf-\$\{entry\.id\}-\$\{property\}`\}/)
+    expect(applied).toMatch(/type: 'setEffectKeyframes'/)
+    expect(applied).toMatch(/type: 'setEffectParams'/)
+    expect(applied).toMatch(/applyTransient\([\s\S]*?type: 'setEffectParams'/)
+  })
+
+  it('the blend dropdown lives under Opacity and clears to absent on Normal', () => {
+    expect(inspector).toMatch(/aria-label="Clip blend mode"/)
+    expect(inspector).toMatch(/blendMode: v === 'normal' \? null : v/)
+    expect(inspector).toMatch(/type: 'setClipBlendMode'/)
+  })
+
+  it('the eyedropper samples the monitor pixel into the entry key, then disarms', () => {
+    expect(applied).toMatch(
+      /setEyedropper\(isArmed \? null : \{ clipId: clip\.id, effectId: entry\.id \}\)/,
+    )
+    expect(preview).toMatch(/const armed = store\.eyedropper/)
+    expect(preview).toMatch(/getImageData\(px, py, 1, 1\)/)
+    expect(preview).toMatch(/canvas\.width - 1/)
+    expect(preview).toMatch(/canvas\.height - 1/)
+    expect(preview).toMatch(/params: \{ key: hex \}/)
+    expect(preview).toMatch(/store\.setEyedropper\(null\)/)
+    expect(preview).toMatch(/cursor-crosshair/)
+    // Escape disarms from the section too, so collapsing or disabling the
+    // card (which unmounts the card-level listener) cannot trap the armed
+    // state with only a monitor click left to escape it.
+    expect(applied.match(/window\.addEventListener\('keydown', onKey\)/g)).toHaveLength(2)
+  })
+
+  it('the track eyeball hides video/text lanes only and marks hidden headers', () => {
+    expect(timeline).toMatch(/type: 'setTrackVisible'/)
+    expect(timeline).toMatch(/track\.kind !== 'audio'/)
+    expect(timeline).toMatch(/data-visible=\{hidden \? 'false' : 'true'\}/)
+  })
+
+  it('crop slider bounds derive from the clamp source, not literals', () => {
+    expect(applied).toMatch(/min=\{EFFECT_KEYFRAME_BOUNDS\[p\]\.min\}/)
+    expect(applied).toMatch(/max=\{EFFECT_KEYFRAME_BOUNDS\[p\]\.max\}/)
+  })
+
+  it('every commit routes through tryApply (no bare apply into React)', () => {
+    const lines = applied.split('\n')
+    let commits = 0
+    lines.forEach((line, i) => {
+      if (/[^a-zA-Z]apply\(\{/.test(line)) {
+        commits++
+        const context = lines.slice(Math.max(0, i - 2), i + 1).join('\n')
+        expect(context).toMatch(/tryApply/)
+      }
+    })
+    expect(commits).toBeGreaterThan(0)
+  })
+})
