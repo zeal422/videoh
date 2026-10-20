@@ -12,6 +12,7 @@ import { MIN_CLIP_DURATION } from '@/lib/editor/constants'
 import { findSequence } from '@/lib/editor/factories'
 import { compareSrtCues, collectCaptionCues, parseSrt, serializeSrt } from '@/lib/editor/srt'
 import { useEditorStore } from '@/lib/editor/store'
+import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { commandsToAddCaptionCue } from '@/lib/editor/actions'
 import type { Clip, Doc } from '@/lib/editor/types'
 
@@ -90,8 +91,12 @@ export function CaptionsPanel() {
   const seekToCue = (start: number) => {
     const store = useEditorStore.getState()
     // Cue times are root-absolute while the timeline follows the open path.
+    // Order is load-bearing: the path reset parks the playhead (store-owned),
+    // the trailing write wins, and the explicit engine seek moves the monitor
+    // even when the path did not change (no mirror effect fires then).
     if (store.activeSequencePath.length > 0) store.setActiveSequencePath([])
     store.setPlayhead(start)
+    playbackRef.current?.seek(start)
   }
 
   /** Expected command refusals toast; programming errors rethrow. */
@@ -167,8 +172,12 @@ export function CaptionsPanel() {
         store.apply(commandsToAddCaptionCue(state, newCueAt))
       }
       // The path resets only after the stamp lands: a refusal must not
-      // strand the user at the root with no cue created.
+      // strand the user at the root with no cue created. The explicit seek
+      // lands the playhead on the new cue; the engine call is required for
+      // the already-at-root cue, where no path transition fires the mirror.
       if (!atRoot) store.setActiveSequencePath([])
+      store.setPlayhead(newCueAt)
+      playbackRef.current?.seek(newCueAt)
     } catch (error) {
       // Expected command refusals toast; programming errors rethrow (the
       // MenuBar dispatch pattern), so they surface instead of hiding.

@@ -541,7 +541,7 @@ describe('compound clips (0.8.1) static locks', () => {
     // playhead untouched; only a later change seeks.
     expect(panel).toMatch(/const prevPathKeyRef = useRef\(activePathKey\)/)
     expect(panel).toMatch(/if \(prevPathKeyRef\.current === activePathKey\) return/)
-    expect(panel).toMatch(/playbackRef\.current\?\.seek\(0\)/)
+    expect(panel).toMatch(/playbackRef\.current\?\.seek\(useEditorStore\.getState\(\)\.playhead\)/)
   })
 })
 

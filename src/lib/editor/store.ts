@@ -549,14 +549,20 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setActiveSequencePath: (path) => {
     const next = normalizeActivePath(get().doc, path)
+    const current = get().activeSequencePath
+    const changed = next.length !== current.length || next.some((id, i) => id !== current[i])
     // Opening or leaving a sequence scopes every editing surface, so a stale
     // selection, marker selection or lane posture from the old scope is cleared.
+    // A real path change also parks the playhead at the new sequence's start;
+    // a playhead written after this call wins, so same-tick explicit seeks
+    // survive. Same-path calls keep the playhead untouched.
     set({
       activeSequencePath: next,
       selections: [],
       selection: null,
       selectedMarker: null,
       untargetedTracks: [],
+      ...(changed ? { playhead: 0 } : null),
     })
   },
 

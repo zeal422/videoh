@@ -78,18 +78,20 @@ export function PreviewPanel() {
     }
   }, [doc.project.width, doc.project.height])
 
-  // Opening or leaving a sequence changes the timeline's coordinate space: park
-  // the playhead at the new sequence's start and redraw, so the monitor never
-  // keeps showing the previous sequence's frame until the next tick. The ref
-  // starts at the current key so the INITIAL render (panel mount) leaves the
-  // playhead untouched; only a later change acts.
+  // Opening or leaving a sequence changes the timeline's coordinate space: the store
+  // parks the playhead at the new sequence's start (see setActiveSequencePath),
+  // and this mirror moves the engine there and redraws, so the monitor never
+  // keeps showing the previous sequence's frame until the next tick. A playhead
+  // written after the path change wins in the store, and this reads it live,
+  // so explicit same-tick seeks survive. The ref starts at the current key so
+  // the INITIAL render (panel mount) leaves the engine untouched; only a later
+  // change acts.
   const activePathKey = activeSequencePath.join('/')
   const prevPathKeyRef = useRef(activePathKey)
   useEffect(() => {
     if (prevPathKeyRef.current === activePathKey) return
     prevPathKeyRef.current = activePathKey
-    useEditorStore.getState().setPlayhead(0)
-    playbackRef.current?.seek(0)
+    playbackRef.current?.seek(useEditorStore.getState().playhead)
   }, [activePathKey])
 
   const duration = activeSequenceDuration(doc, activeSequencePath)

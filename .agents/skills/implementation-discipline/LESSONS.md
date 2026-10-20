@@ -142,3 +142,13 @@ Would-have-caught: trigger 7 (prove the fix, not the wiring) applied per
 effect with settled frame sums, plus a review pass that re-derives render
 math instead of re-reading code shape.
 Action: kept as a note.
+
+## 2026-10-20 - Playhead effect-contract docs (wrong total source)
+What happened: new tests moved the suite to 1486 vitest tests, and the four
+doc claims were updated to 1486 from the vitest total. `bun run check` went
+red on docs-drift: the docs pin the DRIFT total (countCases regex, 1474),
+not the vitest total (it.each and friends expand past the regex count).
+Would-have-caught: trigger 6 read as "the count lock has its own counter".
+The drift failure message prints the actual total; copy that number, never
+the vitest headline.
+Action: kept as a note.

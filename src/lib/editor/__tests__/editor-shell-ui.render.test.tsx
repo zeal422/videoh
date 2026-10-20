@@ -9,8 +9,15 @@ import { CaptionsPanel, captionCueRootTime } from '@/components/editor/CaptionsP
 import { Toaster } from '@/components/ui/toaster'
 import { readFileSync } from 'node:fs'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
+import { playbackRef } from '../playback/engine-ref'
 import { isTransientActive, useEditorStore } from '../store'
-import { createClip, createMediaAsset, createTextClip, createTrack } from '../factories'
+import {
+  createClip,
+  createMediaAsset,
+  createTextClip,
+  createTrack,
+  docDuration,
+} from '../factories'
 import type { Doc } from '../types'
 import { CURRENT_VERSION } from '../../releases'
 
@@ -463,5 +470,192 @@ describe('EditorShell bottom-row wiring (static)', () => {
     // post-transition reconcile).
     expect(shell).not.toContain('onCollapse={')
     expect(shell).not.toContain('onExpand={')
+  })
+})
+
+describe('playhead effect-contract', () => {
+  /** Root doc plus one compound container (ends at 15) opening seq_1. */
+  function compoundDoc(): Doc {
+    const doc: Doc = structuredClone(useEditorStore.getState().doc)
+    const lane = doc.project.tracks.find((t) => t.kind === 'video')!
+    lane.clips.push({ id: 'box0', sequenceId: 'seq_1', start: 10, duration: 5, inPoint: 0 })
+    doc.project.sequences = [
+      { id: 'seq_1', name: 'Nested', tracks: [{ id: 'tn', kind: 'video', name: 'V1', clips: [] }] },
+    ]
+    useEditorStore.setState({ doc, playhead: 0, activeSequencePath: [] })
+    return doc
+  }
+
+  it('a real path change parks a nonzero playhead at 0', () => {
+    compoundDoc()
+    const store = useEditorStore.getState()
+    store.setPlayhead(12)
+    store.setActiveSequencePath(['seq_1'])
+    expect(useEditorStore.getState().activeSequencePath).toEqual(['seq_1'])
+    expect(useEditorStore.getState().playhead).toBe(0)
+  })
+
+  it('a same-path call leaves a nonzero playhead alone', () => {
+    compoundDoc()
+    const store = useEditorStore.getState()
+    store.setPlayhead(12)
+    store.setActiveSequencePath([])
+    expect(useEditorStore.getState().activeSequencePath).toEqual([])
+    expect(useEditorStore.getState().playhead).toBe(12)
+  })
+
+  it('a playhead written after the path change wins', () => {
+    compoundDoc()
+    const store = useEditorStore.getState()
+    store.setActiveSequencePath(['seq_1'])
+    store.setPlayhead(12)
+    expect(useEditorStore.getState().activeSequencePath).toEqual(['seq_1'])
+    expect(useEditorStore.getState().playhead).toBe(12)
+  })
+
+  it('openSequence drill-in parks a nonzero playhead at 0', () => {
+    compoundDoc()
+    const store = useEditorStore.getState()
+    store.setPlayhead(7)
+    store.openSequence('seq_1')
+    expect(useEditorStore.getState().activeSequencePath).toEqual(['seq_1'])
+    expect(useEditorStore.getState().playhead).toBe(0)
+  })
+
+  it('a negative playhead still clamps to 0', () => {
+    compoundDoc()
+    useEditorStore.getState().setPlayhead(-3)
+    expect(useEditorStore.getState().playhead).toBe(0)
+  })
+
+  it('deleting the compound container keeps a nonzero playhead through apply and undo', () => {
+    compoundDoc()
+    const store = useEditorStore.getState()
+    store.setActiveSequencePath(['seq_1'])
+    store.setPlayhead(2)
+    // The delete prunes orphan seq_1, so normalization shortens the path.
+    store.apply({ type: 'deleteClip', clipId: 'box0' })
+    expect(useEditorStore.getState().activeSequencePath).toEqual([])
+    expect(useEditorStore.getState().playhead).toBe(2)
+    store.undo()
+    expect(useEditorStore.getState().activeSequencePath).toEqual([])
+    expect(useEditorStore.getState().playhead).toBe(2)
+  })
+
+  it('with the panel mounted, a path change plus an explicit playhead lands on the playhead', () => {
+    const doc = compoundDoc()
+    // The mirror seeks the store playhead and the engine clamps to the scope,
+    // so the test time must sit inside the fixture duration.
+    expect(docDuration(doc)).toBeGreaterThan(12)
+    useEditorStore.getState().setActiveSequencePath(['seq_1'])
+    render(<EditorShell />)
+    // Spy calls through, so the engine still seeks and the state assertions
+    // below keep proving the store contract alongside the engine behavior.
+    const seek = vi.spyOn(playbackRef.current!, 'seek')
+    act(() => {
+      useEditorStore.getState().setActiveSequencePath([])
+      useEditorStore.getState().setPlayhead(12)
+    })
+    expect(useEditorStore.getState().activeSequencePath).toEqual([])
+    expect(useEditorStore.getState().playhead).toBe(12)
+    expect(seek).toHaveBeenCalledWith(12)
+  })
+
+  it('with the panel mounted, a lone path change still parks at 0', () => {
+    compoundDoc()
+    useEditorStore.getState().setPlayhead(9)
+    render(<EditorShell />)
+    act(() => {
+      useEditorStore.getState().setActiveSequencePath(['seq_1'])
+    })
+    expect(useEditorStore.getState().activeSequencePath).toEqual(['seq_1'])
+    expect(useEditorStore.getState().playhead).toBe(0)
+  })
+
+  it('with the panel mounted, an engine seek past the scope clamps into the store', () => {
+    const doc = compoundDoc()
+    render(<EditorShell />)
+    const limit = docDuration(doc)
+    act(() => {
+      playbackRef.current?.seek(limit + 100)
+    })
+    expect(useEditorStore.getState().playhead).toBe(limit)
+  })
+
+  /** Root doc plus compound container plus one root caption cue at 12 s. */
+  function compoundDocWithCue(): Doc {
+    const doc = compoundDoc()
+    const track = createTrack('text', 1, { id: 'track_cap', name: 'Captions' })
+    track.clips = [createTextClip({ id: 'cap_a', isCaption: true, start: 12, duration: 1 })]
+    doc.project.tracks.push(track)
+    useEditorStore.setState({ doc })
+    return doc
+  }
+
+  it('cue seek at the root moves the engine to the cue time', () => {
+    compoundDocWithCue()
+    // Already at the root, so no path transition fires the mirror effect: the
+    // only engine seek the spy can observe is the explicit one in seekToCue.
+    // EditorShell already mounts a Captions panel; a second render would duplicate
+    // its buttons.
+    render(<EditorShell />)
+    const seek = vi.spyOn(playbackRef.current!, 'seek')
+    fireEvent.click(screen.getByRole('button', { name: 'Seek to cue 1' }))
+    expect(useEditorStore.getState().activeSequencePath).toEqual([])
+    expect(useEditorStore.getState().playhead).toBe(12)
+    expect(seek).toHaveBeenCalledWith(12)
+  })
+
+  it('New Cue at the root moves the engine to the new cue', () => {
+    compoundDocWithCue()
+    // Same-path by construction (already at the root): the mirror never runs,
+    // so the spy observes only the explicit seek in addCue.
+    render(<EditorShell />)
+    // Inside act(): the click handler closes over render-time state, so the
+    // playhead set must commit before the click dispatches.
+    act(() => {
+      useEditorStore.getState().setPlayhead(4)
+    })
+    const seek = vi.spyOn(playbackRef.current!, 'seek')
+    fireEvent.click(screen.getByRole('button', { name: 'New Cue' }))
+    const caps = useEditorStore
+      .getState()
+      .doc.project.tracks.find((t) => t.id === 'track_cap')!.clips
+    expect(caps.some((c) => c.start === 4)).toBe(true)
+    expect(seek).toHaveBeenCalledWith(4)
+  })
+
+  it('a path change while playing keeps the live value instead of snapping to 0', async () => {
+    const doc = compoundDoc()
+    expect(docDuration(doc)).toBeGreaterThan(12)
+    // The post-change tick reads the child scope, so the child needs its own
+    // duration: an empty child ends playback at 0 on the first tick there.
+    const seq = doc.project.sequences!.find((s) => s.id === 'seq_1')!
+    seq.tracks[0]!.clips.push({ id: 'n1', start: 0, duration: 5, inPoint: 0 })
+    useEditorStore.setState({ doc })
+    render(<EditorShell />)
+    const store = () => useEditorStore.getState()
+    act(() => {
+      playbackRef.current?.play()
+    })
+    // play() prepares asynchronously and the controller is fire-and-forget:
+    // pumping before the playing flag lands finds an empty rAF queue.
+    await waitFor(() => expect(store().playing).toBe(true))
+    h.lastAudioContext().currentTime += 1
+    await act(async () => {
+      await h.pump.pump(1)
+    })
+    expect(store().playhead).toBeCloseTo(1, 5)
+    await act(async () => {
+      store().setActiveSequencePath(['seq_1'])
+      h.lastAudioContext().currentTime += 1
+      // No await: pump() runs the queued frame callback synchronously up to
+      // its first internal await, so the tick (and its onFrame store write)
+      // lands after the park and before the flush at act exit. Awaiting here
+      // would flush the pending mirror effect first, reading the parked 0.
+      void h.pump.pump(1)
+    })
+    expect(store().activeSequencePath).toEqual(['seq_1'])
+    expect(store().playhead).toBeCloseTo(2, 5)
   })
 })

@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.8.7',
+    date: '2026-10-20',
+    highlights: [
+      'Cue seeks and New Cue land the playhead on the cue, including from inside a compound sequence',
+      'A seek issued at the same moment as a path change now survives, so the playhead lands where you asked',
+      'Deleting a compound container or undoing keeps the playhead instead of parking it at zero',
+      'The program monitor follows every seek, so the frame shown always matches the playhead time',
+    ],
+  },
+  {
     version: '0.8.6',
     date: '2026-10-18',
     highlights: [

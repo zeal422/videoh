@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.7] - 2026-10-20
+
+### Fixed
+
+- **Playhead effect-contract.** Changing the active sequence path parks the playhead in the
+  store instead of a post-commit panel effect, so a playhead written in the same tick (cue
+  seek, New Cue) survives; same-path navigation leaves the playhead alone. Cue seeks and New
+  Cue now move the preview engine explicitly, including when already at the root, so the
+  monitor never keeps showing the previous frame while the playhead reads the cue time.
+- **Normalization keeps the playhead.** Deleting a compound container, or undoing past one,
+  shortens the path without parking at zero; the kept value is reinterpreted in the new
+  scope (a compound-local 2 s becomes root 2 s), capped at the engine clamp to the
+  scope duration.
+- Mid-playback navigation no longer snaps the transport to zero when a frame lands first;
+  it continues from the live value instead.
+
 ## [0.8.6] - 2026-10-18
 
 ### Added
