@@ -144,6 +144,7 @@ math instead of re-reading code shape.
 Action: kept as a note.
 
 ## 2026-10-20 - Playhead effect-contract docs (wrong total source)
+
 What happened: new tests moved the suite to 1486 vitest tests, and the four
 doc claims were updated to 1486 from the vitest total. `bun run check` went
 red on docs-drift: the docs pin the DRIFT total (countCases regex, 1474),
@@ -152,3 +153,31 @@ Would-have-caught: trigger 6 read as "the count lock has its own counter".
 The drift failure message prints the actual total; copy that number, never
 the vitest headline.
 Action: kept as a note.
+
+## 2026-10-20 - Motion-blur bypass tests (trailing windows sample before the frame)
+
+What happened: two export mocked-harness tests composited at the helper's
+frame 0 with a Motion ramp starting at local 0, so the trailing shutter
+windows sampled negative locals where the curve constant-extends flat and
+the "animated" fixture bypassed like a static one
+(`export-effects.mocked.test.ts` mixed-flag case). Fixed by compositing at
+frame 1 (direct `compositeFrame` + `planVideoFrame(d, 1)`, the wipe-test
+precedent), where the ramp covers the window.
+Would-have-caught: trigger 5 (the lock must fail for its stated reason):
+the mixed case passed for the wrong reason until the window placement was
+checked against the curve's range.
+Action: kept as a note; animated blur fixtures must cover the sampled
+window, not just contain keyframes.
+
+## 2026-10-20 - Plan edits on a disputed order (edit-permission failure)
+
+What happened: edited the plan file twice on an order the user later
+disputed ("readd the version rule ... DO IT NOW"), then had to revert both
+edits. Same session already carried a stale todo list, a recommendation-free
+question, and a release buried as a silent non-goal: a pattern of acting on
+ambiguous instructions instead of confirming first.
+Would-have-caught: AGENTS.md rule 10 (no edit without explicit go-ahead;
+vague approval is not permission). An all-caps "DO IT" attached to an
+ambiguous target is vague approval: confirm the exact action, then edit.
+Action: kept as a note; when the order and the target are in doubt, quote
+back the intended action and wait.

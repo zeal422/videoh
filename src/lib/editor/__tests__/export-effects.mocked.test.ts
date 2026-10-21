@@ -133,10 +133,28 @@ describe('export effect execution (0.8.6, mocked 2D context)', () => {
   it('accumulates blur samples additively at 1/N (exact mean with transparency)', () => {
     const blurred = textClip({
       id: 'blur',
+      keyframes: {
+        positionX: [
+          { time: 0, value: 0, interpolation: 'linear' },
+          { time: 4, value: 400, interpolation: 'linear' },
+        ],
+      },
       effects: [{ id: 'fx', type: 'motionBlur', shutter: 360 }],
     })
     resetScratchCalls()
-    composite(doc([{ kind: 'text', clips: [blurred] }]))
+    // Frame 1: the trailing window samples locals around 1, where the ramp
+    // runs (at the helper's frame 0 the window would sit on the flat head).
+    const ctx = createFake2DContext()
+    const d = doc([{ kind: 'text', clips: [blurred] }])
+    compositeFrame(
+      ctx as unknown as CanvasRenderingContext2D,
+      d,
+      planVideoFrame(d, 1),
+      new Map(),
+      1920,
+      1080,
+      new Map(),
+    )
     // Shutter 360 takes 8 samples: the accumulator must sum them at 1/8
     // under 'lighter', mirroring the preview (source-over would leave
     // transparent samples uncounted while counting their weight).
@@ -170,6 +188,70 @@ describe('export effect execution (0.8.6, mocked 2D context)', () => {
     // The collapsed image is untransformed, so Motion must still land via
     // the transformed blit (a bare 3-arg draw would silently drop positionX).
     expect(draws[0].args).toEqual([expect.any(HTMLCanvasElement), -960, -540, 1920, 1080])
+  })
+
+  it('a static multi-sample window skips the accumulator (static bypass)', () => {
+    const still = textClip({
+      id: 'still',
+      animStatics: { positionX: 100 },
+      effects: [{ id: 'fx', type: 'motionBlur', shutter: 360 }],
+    })
+    resetScratchCalls()
+    const calls = composite(doc([{ kind: 'text', clips: [still] }]))
+    // Static window: identical to the collapsed path, so the frame still
+    // composites once but no accumulator surface may run.
+    const draws = calls.filter((c) => c.op === 'drawImage')
+    expect(draws).toHaveLength(1)
+    const gcos = scratchOps()
+      .flat()
+      .filter((c) => c.op === 'set:globalCompositeOperation')
+      .map((c) => c.args[0])
+    expect(gcos).not.toContain('lighter')
+    // The bypassed image is untransformed, so Motion must still land via
+    // the transformed blit.
+    expect(draws[0].args).toEqual([expect.any(HTMLCanvasElement), -960, -540, 1920, 1080])
+  })
+
+  it('a static outer level over an animated inner level keeps the flag (raw composite)', () => {
+    const mixed = textClip({
+      id: 'mixed',
+      keyframes: {
+        positionX: [
+          { time: 0, value: 0, interpolation: 'linear' },
+          { time: 4, value: 400, interpolation: 'linear' },
+        ],
+      },
+      effects: [
+        { id: 'fx0', type: 'motionBlur', shutter: 90 },
+        { id: 'fx1', type: 'motionBlur', shutter: 360 },
+      ],
+    })
+    resetScratchCalls()
+    // Frame 1, not the helper's frame 0: the trailing windows sample local
+    // times around 1, where the ramp runs. At frame 0 the windows would
+    // reach negative locals where the curve constant-extends to 0.
+    const ctx = createFake2DContext()
+    const d = doc([{ kind: 'text', clips: [mixed] }])
+    compositeFrame(
+      ctx as unknown as CanvasRenderingContext2D,
+      d,
+      planVideoFrame(d, 1),
+      new Map(),
+      1920,
+      1080,
+      new Map(),
+    )
+    const calls = ctx.calls as { op: string; args: unknown[] }[]
+    // The animated inner level accumulates, so the flag stays true and the
+    // frame composites the baked accumulation raw (no Motion blit).
+    const draws = calls.filter((c) => c.op === 'drawImage')
+    expect(draws).toHaveLength(1)
+    const gcos = scratchOps()
+      .flat()
+      .filter((c) => c.op === 'set:globalCompositeOperation')
+      .map((c) => c.args[0])
+    expect(gcos).toContain('lighter')
+    expect(draws[0].args).toEqual([expect.any(HTMLCanvasElement), 0, 0])
   })
 
   it('a feathered wipe composites the incoming draw with its blend mode', () => {

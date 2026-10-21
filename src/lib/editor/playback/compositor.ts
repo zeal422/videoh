@@ -11,6 +11,7 @@ import type { TransitionGeometry } from '../transition'
 import { animatedValue } from '../keyframes'
 import { clipTransform } from '../export/offline'
 import {
+  areBlurSamplesIdentical,
   blendCompositeOperation,
   blurSampleTimes,
   cropFeatherPx,
@@ -464,6 +465,7 @@ function drawClip(
   if (effective <= 0) return
   const lut = findLut(doc.project.luts, clip.lutId)
   const blurs = stack.filter((e) => e.type === 'motionBlur')
+  const nonBlur = stack.filter((e) => e.type !== 'motionBlur')
   // "Blurred" means some level actually ran its accumulator (2+ samples):
   // single-sample levels collapse to the unblurred stack, whose image is
   // untransformed and still needs its Motion blit below. Aligned with the
@@ -471,8 +473,9 @@ function drawClip(
   const blurred =
     blurs.length > 0 &&
     blurs.some(
-      (e) =>
-        blurSampleTimes(t, effectKeyframeValue(e, 'shutter', local), doc.project.fps).length > 1,
+      (e, level) =>
+        blurSampleTimes(t, effectKeyframeValue(e, 'shutter', local), doc.project.fps).length > 1 &&
+        !areBlurSamplesIdentical(clip, nonBlur, blurs, level, t, local, doc.project.fps),
     )
   const image = renderEffectImage(doc, resolve, clip, t, local, width, height, depth, {
     filter: clipFilter(clip, local, lut),
@@ -846,6 +849,7 @@ function renderEffectImage(
   frozen: FrozenEffectParams,
 ): HTMLCanvasElement | null {
   const blurs = enabledEffects(clip).filter((e) => e.type === 'motionBlur')
+  const nonBlur = enabledEffects(clip).filter((e) => e.type !== 'motionBlur')
   // Matte masks build once at frame time and are reused by every sub-sample:
   // the mask inputs are frozen (source track rendered at frameLocal), so a
   // rebuild per sample would redo identical pixel work.
@@ -877,8 +881,13 @@ function renderEffectImage(
     const times = blurSampleTimes(tTimeline, shutter, doc.project.fps)
     // A single sample lands exactly at t (blurSampleTimes), so the
     // accumulator would copy the level below through one 'lighter' blit:
-    // collapse to the unblurred path and skip the surface entirely.
-    if (times.length <= 1) return renderLevel(level - 1, tTimeline)
+    // collapse to the unblurred path and skip the surface entirely. A static
+    // window collapses the same way: its samples are identical images.
+    if (
+      times.length <= 1 ||
+      areBlurSamplesIdentical(clip, nonBlur, blurs, level, tTimeline, frameLocal, doc.project.fps)
+    )
+      return renderLevel(level - 1, tTimeline)
     const acc = effectAccumSurface(depth, level, width, height)
     if (!acc) return renderLevel(level - 1, tTimeline)
     // Exact uniform mean via additive accumulation (the beginBlendPair

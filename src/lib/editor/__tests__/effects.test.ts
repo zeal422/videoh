@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  areBlurSamplesIdentical,
   blendCompositeOperation,
   blurSampleTimes,
   blurWindowSeconds,
@@ -152,6 +153,115 @@ describe('effectSamples / blur windows', () => {
     expect(times[3]).toBe(10)
     expect(times[0]).toBeCloseTo(10 - 180 / 360 / 30 + 180 / 360 / 30 / 4, 12)
     expect(blurSampleTimes(10, 0, 30)).toEqual([])
+  })
+})
+
+describe('areBlurSamplesIdentical', () => {
+  const blur = (over: Partial<Extract<EffectEntry, { type: 'motionBlur' }>> = {}) => ({
+    id: 'fx_blur',
+    type: 'motionBlur' as const,
+    ...over,
+  })
+  const lin = (time: number, value: number) => ({ time, value, interpolation: 'linear' as const })
+  const still = (over: Partial<Clip> = {}) =>
+    createClip({ id: 'c1', start: 0, duration: 4, ...over })
+
+  it('reads a static multi-sample window as identical', () => {
+    const clip = still({ effects: [blur({ shutter: 360 })] })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 0, 1, 1, 30)).toBe(true)
+  })
+
+  it('rejects a Motion ramp across the window', () => {
+    const clip = still({
+      keyframes: { positionX: [lin(0, 0), lin(4, 400)] },
+      effects: [blur({ shutter: 360 })],
+    })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 0, 1, 1, 30)).toBe(false)
+  })
+
+  it('rejects an animated crop', () => {
+    const entry = crop({ keyframes: { left: [lin(0, 0), lin(4, 50)] } })
+    const clip = still({ effects: [blur({ shutter: 360 })] })
+    expect(areBlurSamplesIdentical(clip, [entry], clip.effects ?? [], 0, 1, 1, 30)).toBe(false)
+  })
+
+  it('accepts a flat curve with interior keyframes (exact, not presence)', () => {
+    const clip = still({
+      keyframes: { positionX: [lin(0, 100), lin(2, 100)] },
+      effects: [blur({ shutter: 360 })],
+    })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 0, 1, 1, 30)).toBe(true)
+  })
+
+  it('ignores shutter-only animation (shutter is frozen per frame)', () => {
+    const clip = still({
+      effects: [blur({ shutter: 180, keyframes: { shutter: [lin(0, 30), lin(4, 360)] } })],
+    })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 0, 1, 1, 30)).toBe(true)
+  })
+
+  it('rejects an animated inner level at the outer check', () => {
+    const clip = still({
+      keyframes: { positionX: [lin(0, 0), lin(4, 400)] },
+      effects: [blur({ id: 'fx0', shutter: 90 }), blur({ id: 'fx1', shutter: 360 })],
+    })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 1, 1, 1, 30)).toBe(false)
+  })
+
+  it('rejects Motion that agrees at outer times but varies inside an inner window', () => {
+    // Outer sample times for shutter 360 at t=1: trailing over [t-1/30, t].
+    // The curve is flat 0 from the first outer sample on, but ramps just
+    // below it, inside the inner level's reach around the early samples.
+    const outer = blurSampleTimes(1, 360, 30)
+    const clip = still({
+      keyframes: { positionX: [lin(outer[0] - 0.01, 100), lin(outer[0], 0)] },
+      effects: [blur({ id: 'fx0', shutter: 90 }), blur({ id: 'fx1', shutter: 360 })],
+    })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 1, 1, 1, 30)).toBe(false)
+  })
+
+  it('reads the inner shutter at the frame local, not the invocation (B1)', () => {
+    // Inner shutter animates steeply inside the frame: 30 at local 0.98,
+    // 360 at local 1. At frameLocal 1 the renderer freezes 360 (8 samples
+    // over [0.9567, 0.99] around the invocation 0.99); a one-time variant
+    // would read 195 at the invocation (5 samples) or center on the frame
+    // time. The bump at 0.965 sits inside the true footprint only.
+    const clip = still({
+      keyframes: { positionX: [lin(0.964, 0), lin(0.965, 100), lin(0.966, 0)] },
+      effects: [blur({ shutter: 180, keyframes: { shutter: [lin(0.98, 30), lin(1, 360)] } })],
+    })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 0, 0.99, 1, 30)).toBe(false)
+  })
+
+  it('lets a zero-shutter inner level contribute its invocation time', () => {
+    const clip = still({
+      effects: [blur({ id: 'fx0', shutter: 0 }), blur({ id: 'fx1', shutter: 360 })],
+    })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 1, 1, 1, 30)).toBe(true)
+  })
+
+  it('reads a timeless footprint (non-finite fps) as the single frame time', () => {
+    const clip = still({ effects: [blur({ shutter: 360 })] })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 0, 1, 1, 0)).toBe(true)
+  })
+
+  it('fails closed on an unknown level', () => {
+    const clip = still({ effects: [blur({ shutter: 360 })] })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 5, 1, 1, 30)).toBe(false)
+  })
+
+  it('evaluates the footprint in clip-local time (nonzero clip start)', () => {
+    // Clip starting at 10, frame at 11: the footprint in timeline time sits
+    // around 11, but the Motion ramp lives in clip-local time around 1. The
+    // ramp varies across the window, so the verdict is false; reading the
+    // timeline times as clip-local would constant-extend past the last
+    // keyframe and wrongly report identical.
+    const clip = still({
+      start: 10,
+      keyframes: { positionX: [lin(0, 0), lin(4, 400)] },
+      effects: [blur({ shutter: 360 })],
+    })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 0, 11, 1, 30)).toBe(false)
   })
 })
 

@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.8] - 2026-10-20
+
+### Fixed
+
+- **Motion-blur static-window bypass.** A clip with no animated Motion or stack keyframes inside
+  a multi-sample shutter window rendered N identical stack images (up to 8x pixel cost, in
+  preview and export alike). Static windows now collapse to a single render through the
+  existing collapse path, decided per blur level by one shared helper both engines call, so
+  animated blur still accumulates and the two paths cannot drift. Bypass output is op-identical
+  to the accepted single-sample path; the residual rounding delta against the old accumulator
+  is accepted and unmeasured.
+
 ## [0.8.7] - 2026-10-20
 
 ### Fixed

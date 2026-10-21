@@ -812,7 +812,12 @@ describe('effect stack compositing (0.8.6, mocked 2D context)', () => {
         start: 0,
         duration: 4,
         inPoint: 0,
-        animStatics: { positionX: 100 },
+        keyframes: {
+          positionX: [
+            { time: 0, value: 0, interpolation: 'linear' },
+            { time: 4, value: 400, interpolation: 'linear' },
+          ],
+        },
         effects: [{ id: 'fx', type: 'motionBlur', shutter: 360 }],
       }),
     ]
@@ -835,7 +840,12 @@ describe('effect stack compositing (0.8.6, mocked 2D context)', () => {
         start: 0,
         duration: 4,
         inPoint: 0,
-        animStatics: { positionX: 100 },
+        keyframes: {
+          positionX: [
+            { time: 0, value: 0, interpolation: 'linear' },
+            { time: 4, value: 400, interpolation: 'linear' },
+          ],
+        },
         effects: [{ id: 'fx', type: 'motionBlur', shutter: 360 }],
       }),
     ]
@@ -906,6 +916,72 @@ describe('effect stack compositing (0.8.6, mocked 2D context)', () => {
     // the transformed blit (a bare 3-arg draw would silently drop positionX).
     const mains = drawOps(ctx, 'drawImage')
     expect(mains[0].args).toEqual([expect.any(HTMLCanvasElement), -960, -540, 1920, 1080])
+  })
+
+  it('a static multi-sample window skips the accumulator (static bypass)', () => {
+    const { doc, asset } = fxDoc()
+    doc.project.tracks[0].clips = [
+      createClip({
+        id: 'c1',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        animStatics: { positionX: 100 },
+        effects: [{ id: 'fx', type: 'motionBlur', shutter: 360 }],
+      }),
+    ]
+    resetScratchCalls()
+    const ctx = createFake2DContext()
+    drawFrame({ ctx, doc, time: 1, resolve: resolveEl(asset, videoEl()) })
+    // Static window: identical to the collapsed path, so the frame still
+    // composites once but no accumulator surface may run.
+    expect(drawOps(ctx, 'drawImage')).toHaveLength(1)
+    const gcos = scratchOps()
+      .flat()
+      .filter((c) => c.op === 'set:globalCompositeOperation')
+      .map((c) => c.args[0])
+    expect(gcos).not.toContain('lighter')
+    // The bypassed image is untransformed, so Motion must still land via
+    // the transformed blit (a bare 3-arg draw would silently drop positionX).
+    const mains = drawOps(ctx, 'drawImage')
+    expect(mains[0].args).toEqual([expect.any(HTMLCanvasElement), -960, -540, 1920, 1080])
+  })
+
+  it('a static outer level over an animated inner level keeps the flag (raw composite)', () => {
+    const { doc, asset } = fxDoc()
+    doc.project.tracks[0].clips = [
+      createClip({
+        id: 'c1',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        keyframes: {
+          positionX: [
+            { time: 0, value: 0, interpolation: 'linear' },
+            { time: 4, value: 400, interpolation: 'linear' },
+          ],
+        },
+        effects: [
+          { id: 'fx0', type: 'motionBlur', shutter: 90 },
+          { id: 'fx1', type: 'motionBlur', shutter: 360 },
+        ],
+      }),
+    ]
+    resetScratchCalls()
+    const ctx = createFake2DContext()
+    drawFrame({ ctx, doc, time: 1, resolve: resolveEl(asset, videoEl()) })
+    // The animated inner level accumulates, so the flag stays true and the
+    // frame composites the baked accumulation raw (no Motion blit).
+    expect(drawOps(ctx, 'drawImage')).toHaveLength(1)
+    const gcos = scratchOps()
+      .flat()
+      .filter((c) => c.op === 'set:globalCompositeOperation')
+      .map((c) => c.args[0])
+    expect(gcos).toContain('lighter')
+    const mains = drawOps(ctx, 'drawImage')
+    expect(mains[0].args).toEqual([expect.any(HTMLCanvasElement), 0, 0])
   })
 
   it('a feathered wipe composites the incoming clip with its blend mode', () => {

@@ -39,6 +39,7 @@ import {
 import { denoiseFilters } from '../playback/denoise'
 import { applyChromaKeyToRgba, buildMatteMask, parseKeyColor } from '../chroma-key'
 import {
+  areBlurSamplesIdentical,
   blendCompositeOperation,
   blurSampleTimes,
   cropFeatherPx,
@@ -364,15 +365,25 @@ function paintExportDraw(
   // opacity, stack before Motion), then one composite carries blend mode,
   // alpha and the Motion transform together.
   const blurs = draw.effects.filter((e) => e.type === 'motionBlur')
+  const nonBlur = draw.effects.filter((e) => e.type !== 'motionBlur')
   // "Blurred" means some level actually ran its accumulator (2+ samples):
   // single-sample levels collapse to the unblurred stack, whose image is
   // untransformed and still needs its Motion blit below.
   const blurred =
     blurs.length > 0 &&
     blurs.some(
-      (e) =>
+      (e, level) =>
         blurSampleTimes(frameTime, effectKeyframeValue(e, 'shutter', frameLocal), doc.project.fps)
-          .length > 1,
+          .length > 1 &&
+        !areBlurSamplesIdentical(
+          draw.clip,
+          nonBlur,
+          blurs,
+          level,
+          frameTime,
+          frameLocal,
+          doc.project.fps,
+        ),
     )
   const image = renderExportEffectImage(doc, draw, frameTime, frames, width, height, blends, depth)
   if (!image) return
@@ -706,6 +717,7 @@ function renderExportEffectImage(
 ): HTMLCanvasElement | null {
   const frameLocal = frameTime - draw.clip.start
   const blurs = draw.effects.filter((e) => e.type === 'motionBlur')
+  const nonBlur = draw.effects.filter((e) => e.type !== 'motionBlur')
   // Matte masks build once at frame time and are reused by every sub-sample.
   const masks = new Map<string, HTMLCanvasElement | null>()
   let matteSlot = 0
@@ -746,7 +758,20 @@ function renderExportEffectImage(
     const times = blurSampleTimes(tTimeline, shutter, doc.project.fps)
     // A single sample lands exactly at t, so the accumulator would copy the
     // level below through one blit: collapse to the unblurred path instead.
-    if (times.length <= 1) return renderLevel(level - 1, tTimeline)
+    // A static window collapses the same way: its samples are identical.
+    if (
+      times.length <= 1 ||
+      areBlurSamplesIdentical(
+        draw.clip,
+        nonBlur,
+        blurs,
+        level,
+        tTimeline,
+        frameLocal,
+        doc.project.fps,
+      )
+    )
+      return renderLevel(level - 1, tTimeline)
     const acc = exportEffectAccumSurface(depth, level, width, height)
     if (!acc) return renderLevel(level - 1, tTimeline)
     // Exact uniform mean via additive accumulation (same as the preview):

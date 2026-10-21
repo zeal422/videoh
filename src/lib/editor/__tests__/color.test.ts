@@ -327,6 +327,35 @@ describe('color flow: one builder for both render paths', () => {
     expect(compositor).toMatch(/if \(entry\.type === 'motionBlur'\) continue/)
     expect(mp4).toMatch(/if \(entry\.type === 'motionBlur'\) continue/)
   })
+
+  it('static-window bypass decides through the shared helper in both paths (static lock)', () => {
+    const compositor = read('src/lib/editor/playback/compositor.ts')
+    const mp4 = read('src/lib/editor/export/mp4.ts')
+    // The collapse decision (flag + recursion) calls the shared helper in
+    // each engine, so the footprint expansion cannot drift between preview
+    // and export. Two call sites per engine: the blurred flag and the level
+    // recursion (the import line has no paren, so only calls match).
+    for (const [name, src] of [
+      ['compositor', compositor],
+      ['mp4', mp4],
+    ] as const) {
+      expect(src).toContain('areBlurSamplesIdentical')
+      expect(src.match(/areBlurSamplesIdentical\(/g) ?? []).toHaveLength(2)
+      // The bypass shares the collapse branch's exact return: the merged
+      // condition (single-sample OR static) flows into the one collapse
+      // return. A bare toContain on the return line would also match the
+      // pre-change !acc/!clear fallbacks, so the lock ties the condition,
+      // the helper call and the return together. Pre-change files contain
+      // no areBlurSamplesIdentical at all, so this cannot pass there.
+      expect(src).toMatch(
+        /times\.length <= 1 \|\|[\s\S]{0,240}areBlurSamplesIdentical\([\s\S]{0,240}\)\s*\)\s*return renderLevel\(level - 1, tTimeline\)/,
+      )
+    }
+    expect(compositor).toMatch(/areBlurSamplesIdentical\(clip, nonBlur, blurs, level, t,/)
+    expect(mp4).toMatch(
+      /areBlurSamplesIdentical\(\s*draw\.clip,\s*nonBlur,\s*blurs,\s*level,\s*frameTime,/,
+    )
+  })
 })
 
 describe('scope samplers', () => {

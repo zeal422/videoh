@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.8.8',
+    date: '2026-10-20',
+    highlights: [
+      'Static motion-blur clips preview and export much faster: static windows render once instead of up to 8 times',
+      'Animated blur is untouched, moving clips still accumulate the full shutter window',
+      'Bypass output matches the existing single-sample path; residual rounding differences are accepted and unmeasured',
+      'Preview and export decide through one shared helper, so the two paths cannot drift apart',
+    ],
+  },
+  {
     version: '0.8.7',
     date: '2026-10-20',
     highlights: [

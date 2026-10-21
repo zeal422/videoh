@@ -25,7 +25,12 @@ import {
   MAX_BLUR_SAMPLES,
 } from './constants'
 import { findClip, findTrackIn, sequenceTracks, uid } from './factories'
-import { evaluateKeyframes, isKeyframeInterpolation, splitKeyframeMap } from './keyframes'
+import {
+  animatedValue,
+  evaluateKeyframes,
+  isKeyframeInterpolation,
+  splitKeyframeMap,
+} from './keyframes'
 import type {
   BlendMode,
   Clip,
@@ -238,6 +243,83 @@ export function splitEffectKeyframes(
     left as unknown as EffectKeyframeMap | undefined,
     right as unknown as EffectKeyframeMap | undefined,
   ]
+}
+
+/**
+ * Whether every sub-render a blur level can produce over its nested
+ * footprint is identical, so the level may collapse to the level below.
+ * Compares the Motion transform (positionX/Y/scale) and every crop entry's
+ * params at each footprint point; finite-point comparison is exact because
+ * the renderer evaluates inputs only at sample points. Fail-closed: an
+ * unknown level reads as not identical.
+ */
+export function areBlurSamplesIdentical(
+  clip: Clip,
+  entries: EffectEntry[],
+  blurs: EffectEntry[],
+  level: number,
+  tInvocation: number,
+  frameLocal: number,
+  fps: number,
+): boolean {
+  if (!blurs[level]) return false
+  // Footprint times are timeline times; keyframe evaluation is clip-local,
+  // so convert exactly as the renderer does (motionLocal, clipTransform).
+  // Every fixture with clip start 0 passes either way, which is why the
+  // A-suite never caught the missing subtraction.
+  const points = footprintTimes(blurs, level, tInvocation, frameLocal, fps).map(
+    (t) => t - clip.start,
+  )
+  const first = points[0]
+  if (first === undefined) return false
+  const reference = sampleInputs(clip, entries, first)
+  return points.every((local) => inputsEqual(reference, sampleInputs(clip, entries, local)))
+}
+
+/**
+ * The clip-local times a blur level's subtree can read: the union, over
+ * each of the level's sample times, of the level below's footprint. A level
+ * with at most one sample contributes its invocation time, matching the
+ * renderer's fall-through to the level below at the current time.
+ */
+function footprintTimes(
+  blurs: EffectEntry[],
+  level: number,
+  tInvocation: number,
+  frameLocal: number,
+  fps: number,
+): number[] {
+  if (level < 0) return [tInvocation]
+  const entry = blurs[level]
+  if (!entry) return [tInvocation]
+  const shutter = effectKeyframeValue(entry, 'shutter', frameLocal)
+  const times = blurSampleTimes(tInvocation, shutter, fps)
+  if (times.length <= 1) return [tInvocation]
+  const out: number[] = []
+  for (const tau of times) out.push(...footprintTimes(blurs, level - 1, tau, frameLocal, fps))
+  return out
+}
+
+/** Crop params evaluated per sample (the only stack curves with a time input). */
+const CROP_SAMPLE_PROPS: EffectKeyframeProperty[] = ['left', 'right', 'top', 'bottom', 'feather']
+
+/** The per-sample inputs at one clip-local time: Motion triple plus crop params. */
+function sampleInputs(clip: Clip, entries: EffectEntry[], local: number): number[] {
+  const out = [
+    animatedValue(clip, 'positionX', local),
+    animatedValue(clip, 'positionY', local),
+    animatedValue(clip, 'scale', local),
+  ]
+  for (const entry of entries) {
+    if (entry.type !== 'crop') continue
+    for (const property of CROP_SAMPLE_PROPS) out.push(effectKeyframeValue(entry, property, local))
+  }
+  return out
+}
+
+/** Exact float equality: same inputs through the same pure evaluation are bit-identical. */
+function inputsEqual(a: number[], b: number[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i])
 }
 
 /**
