@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.8.9',
+    date: '2026-10-21',
+    highlights: [
+      'Captions download as WebVTT as well as SRT: a Download VTT button writes the same cue list with proper headers and timestamps',
+      'The same collector, ordering, and range checks feed both formats, so the two files cannot disagree',
+      'Out-of-range captions refuse with a format-neutral message on either download path',
+      'The battery downloads and checks both formats, in the dev run and against the shipped build',
+    ],
+  },
+  {
     version: '0.8.8',
     date: '2026-10-20',
     highlights: [

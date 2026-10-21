@@ -219,7 +219,9 @@ export function collectCaptionCues(doc: Doc): SrtCue[] {
       // -0 < 0 is false, so the millisecond check alone passes a negative
       // sub-millisecond start (matching importCaptions' cue.start < 0).
       if (clip.start < 0 || startMs < 0 || startMs > MAX_MS || endMs > MAX_MS) {
-        throw new SrtRangeError(`Caption "${text.slice(0, 40)}" falls past the supported SRT range`)
+        throw new SrtRangeError(
+          `Caption "${text.slice(0, 40)}" falls past the supported export range`,
+        )
       }
       cues.push({ startMs, endMs, text })
     }

@@ -18,7 +18,7 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/
 - **Source monitor + three-point editing**. Clicking an asset in the media bin loads it into the **Source Monitor** panel (toggleable from the Window menu as one of the six workspace panels; a still shows the still itself), where you can play it and scrub it, then mark **In / Out** with `I` / `O` and place that marked span at the sequence playhead with `,` (insert) or `.` (overwrite), independent of the sticky placement-mode toggle above. One-sided marks leave the other end open, marks clamp to the asset, an inverted or sub-floor range refuses with one toast and places nothing, and images have no source window (their controls disable and they place 4 s). Source selection and marks are session state: they clear when a different asset is selected and when the project is replaced. The source time has one owner (the preview element's own callbacks write `sourcePlayhead`), so the readout, the marks and the placed range cannot disagree.
 - **Transitions** — per-clip `transitionOut` with real overlap, picked per transition as cross-dissolve or dip to black in the Inspector; the compositor and audio mixer both ramp.
 - **Text overlays** — text tracks and clips with font size, color, family, bold/italic, alignment, position, and shadow. **Drag the text directly in the program monitor** to reposition it (a dashed outline shows the box; one drag = one undo step; precise control stays in the Inspector's Position X/Y sliders).
-- **Subtitles / captions** — import an SRT file to create timed caption cues on their own Captions track (malformed cues skip with a count, an empty file refuses). The **Captions** panel beside the timeline lists every cue with editable text and timing, click-to-seek, one-click creation at the playhead, and SRT download in start order. Captions burn into the MP4 exactly as the monitor shows.
+- **Subtitles / captions** — import an SRT file to create timed caption cues on their own Captions track (malformed cues skip with a count, an empty file refuses). The **Captions** panel beside the timeline lists every cue with editable text and timing, click-to-seek, one-click creation at the playhead, and SRT/VTT download in start order. Captions burn into the MP4 exactly as the monitor shows.
 - **Layer compositing** — per-clip **opacity** (0–100 %) that stacks with crossfade alphas: put a clip on a higher track, lower its opacity, and the track below shows through — the same model as Photoshop/Premiere layering.
 - **Effects beyond opacity** — every clip carries an ordered effect stack edited in Effect Controls: **crop** (four sides, feather, zoom refill, keyframable), sixteen **blend modes** under Opacity, an eyedropper **chroma keyer** with despill, **track mattes** from any higher lane (luma/alpha, reversible), and **motion blur** that accumulates animated moves. A track eyeball hides video/text lanes from the composite. Preview and export render every effect identically.
 - **Keyframes + Effect Controls**: animate opacity, position, scale, volume and the color set (exposure, contrast, saturation, brightness, hue) per clip. The Inspector has a Clip / Effect Controls tab split: a value slider, a keyframe diamond that adds/removes at the playhead, and a light graph whose dots drag in time. Each segment eases with its outgoing keyframe's interpolation (linear, ease in, ease out, ease in/out, Premiere's curves, picked from a segmented control that always sits under the property and edits the visible segment's start keyframe), the graph draws every segment's real bezier shape with the active segment's two handles draggable (a straight segment eases by dragging it), with a per-property default easing for newly authored keyframes, that same easing drives the exported gain schedule (an eased volume segment is sampled into short linear ramps, since the Web Audio API has no easing primitive), keyframe times are clip-local, splitting a clip redistributes its curves (every segment subdivides exactly at the cut, eased segments included, so both halves re-time the original), and every keyframe drag is one undo step.
@@ -179,7 +179,7 @@ The entire edit is one serializable document (`Doc = { project, media }`). All t
             "text": "Your text here", // text clips only
             "style": { "fontSize": 64, "color": "#ffffff", "…": "…" },
             "transitionOut": { "type": "crossfade", "duration": 1 },
-            "isCaption": true, // caption cue flag for SRT export, optional (0.8.5)
+            "isCaption": true, // caption cue flag for SRT/VTT export, optional (0.8.5)
             "temperature": 40, // -100..100 white balance, optional (0.6.0)
             "tint": -20, // -100..100 green/magenta, optional (0.6.0)
             "lutId": "lut_…", // reference into the project's LUT library, optional (0.7.0)
@@ -343,7 +343,7 @@ bun run battery        # scripted UI battery (reuses a server already on :3000, 
 
 The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions, effects), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **1493 tests across 68 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **1521 tests across 69 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -423,7 +423,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 68 test files (1493 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
+│   └── __tests__/               # 69 test files (1521 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs

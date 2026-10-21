@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.9] - 2026-10-21
+
+### Added
+
+- **VTT export.** A Download VTT button beside Download SRT writes the same cue list
+  as a valid WebVTT document (`WEBVTT` header, dot timestamps, no sequence numbers),
+  reusing the shared cue collector, ordering, and range checks. The collector's range
+  refusal is reworded format-neutral so both download toasts read correctly, the c02
+  battery step downloads and checks both formats, and files stay at v4 with old
+  projects opening unchanged.
+
+### Fixed
+
+- **Battery e06 abort.** The motion-blur export step exited the whole battery on a dirty timeline, turning one effects flake into an INCOMPLETE run that proved nothing about the remaining steps. It now records FAIL and lets the run continue to a full verdict.
+
 ## [0.8.8] - 2026-10-20
 
 ### Fixed

@@ -46,7 +46,27 @@ function realTestFiles(): string[] {
 /** Count the it/test declarations in one test file (line-anchored, comments excluded). */
 function countCases(file: string): number {
   const src = readFileSync(file, 'utf8')
-  return (src.match(/^\s*(?:it|test)\s*\(/gm) ?? []).length
+  return (src.match(/^\s*(?:it|test)\s*\(/gm) ?? []).length + countEachRows(src)
+}
+
+/**
+ * Count `it.each`/`test.each` table rows: each subsequent single-line array
+ * element is one case, up to the closing bracket line. Multi-line rows do
+ * not exist in this repo; if one appears it is missed and the drift gate
+ * fails loudly in the undercount direction, never silently.
+ */
+function countEachRows(src: string): number {
+  const lines = src.split('\n')
+  let rows = 0
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^\s*(?:it|test)\.each\(\[\s*$/.test(lines[i] ?? '')) continue
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j] ?? ''
+      if (/^\s*\]/.test(line)) break
+      if (/^\s*\[.*\],?\s*$/.test(line)) rows += 1
+    }
+  }
+  return rows
 }
 
 /**
@@ -106,11 +126,7 @@ function checkScoped(doc: string, files: string[], total: number): string | null
   // Count the directory from disk so the claim cannot drift.
   const dir = join(ROOT, 'src', 'lib', 'editor', '__tests__')
   const dirFiles = readdirSync(dir).filter((f) => /\.test\.tsx?$/.test(f))
-  const dirTests = dirFiles.reduce(
-    (sum, f) =>
-      sum + (readFileSync(join(dir, f), 'utf8').match(/^\s*(?:it|test)\s*\(/gm) ?? []).length,
-    0,
-  )
+  const dirTests = dirFiles.reduce((sum, f) => sum + countCases(join(dir, f)), 0)
   if (text.includes('gate.test.ts')) {
     // Claims of the form "N test files (M tests) + gate.test.ts": N and M must
     // equal the directory totals, and the combined claim must be <= repo total.

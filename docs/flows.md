@@ -271,13 +271,17 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
 - **SRT export.** Download SRT writes the flagged root clips in export order
   (overlaps kept, blank and sub-floor cues skipped). Zero cues, or a clip
   past the supported range, refuses with one toast and downloads nothing.
+- **VTT export.** Download VTT writes the same cue list as WebVTT (header,
+  dot timestamps, no sequence numbers), through the same collector and
+  the same refusal path. The anchor-click download itself is proven by the
+  battery, not unit tests: jsdom cannot run `URL.createObjectURL`.
 - Captions are text clips: they render in the monitor and burn into the MP4
   through the shared text draw, with no visibility toggle in this release.
   Desktop-only: below 768 px the shell mounts a fixed compact layout with
   no workspace panel system (the menu bar, toolbar, export dialog and status
   bar still render, but the Source and Captions panels are not mounted and
-  the Window visibility toggles render disabled), so SRT import, SRT export
-  and New Cue live only in the desktop Captions panel.
+  the Window visibility toggles render disabled), so SRT import, SRT/VTT
+  export and New Cue live only in the desktop Captions panel.
 
 ## Layers, opacity, and playback
 

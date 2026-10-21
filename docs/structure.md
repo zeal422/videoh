@@ -58,7 +58,7 @@ src/components/
 │   ├── SourcePanel.tsx           #   source monitor: preview, transport, mark In/Out
 │   ├── PreviewPanel.tsx          #   program monitor + transport + text drag
 │   ├── InspectorPanel.tsx        #   clip properties / project settings
-│   ├── CaptionsPanel.tsx         #   captions: cue list, SRT import/export, New Cue
+│   ├── CaptionsPanel.tsx         #   captions: cue list, SRT import/export, VTT export, New Cue
 │   ├── StatusBar.tsx             #   pinned footer
 │   ├── ExportDialog.tsx          #   export: quality, progress, preview, download
 │   └── timeline/
@@ -117,6 +117,7 @@ src/lib/editor/
 ├── trim.ts               # pure trim/split math: source-fitting bisection, timeScale curve rebases
 ├── snap.ts               # snap-point computation and application
 ├── srt.ts                # SRT parse/serialize + the caption cue collector (pure)
+├── vtt.ts                # WebVTT serialize (escape, timestamps, document) over shared SrtCue (pure)
 ├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
 ├── sequence-ops.ts       # insert/overwrite placement planner + source in/out range helpers (pure)
 ├── marquee.ts            # marquee (box) selection: lane-space rect math + group resolution (pure)
@@ -161,7 +162,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 67 test files (1469 tests) + src/lib/gate.test.ts: see testing.md
+└── __tests__/            # 68 test files (1497 tests) + src/lib/gate.test.ts: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

@@ -115,11 +115,16 @@ PROJECT_CAPTURE=''
 # Like the capture it is removed on every exit path, by VARIABLE, never a glob,
 # so a parallel A/B run's fixture is never deleted.
 LUT_FIXTURE=''
+# The captions downloads (c02_captions_export) live at unique mktemp paths and
+# are removed on every in-function exit path. A killed run still needs the
+# trap below to clean them, by VARIABLE like the two above, never a glob:
+# /tmp/battery-captions.* is shared with parallel A/B runs.
+CAPTIONS_TMPS=''
 # The pasted copy's label time, recorded by f02_copy_paste and consumed by
 # f08_ripple_delete: it depends on the clip layout the earlier steps leave, so
 # it is read back live instead of hardcoded.
 PASTED_START=''
-trap '[ -n "$PROJECT_CAPTURE" ] && rm -f "$PROJECT_CAPTURE"; [ -n "$LUT_FIXTURE" ] && rm -f "$LUT_FIXTURE"' INT TERM EXIT
+trap '[ -n "$PROJECT_CAPTURE" ] && rm -f "$PROJECT_CAPTURE"; [ -n "$LUT_FIXTURE" ] && rm -f "$LUT_FIXTURE"; [ -n "$CAPTIONS_TMPS" ] && rm -f $CAPTIONS_TMPS' INT TERM EXIT
 
 ab() { agent-browser --session "$SESSION" "$@"; }
 snap() { ab snapshot -i -c 2>/dev/null; }
@@ -1109,6 +1114,7 @@ c02_captions_export() {
   ab scrollintoview '[data-testid=captions-download]' >/dev/null 2>&1
   sleeps 0.3
   local out; out=$(mktemp /tmp/battery-captions.XXXXXX.srt)
+  CAPTIONS_TMPS="$CAPTIONS_TMPS $out"
   ab download '[data-testid=captions-download]' "$out" >/dev/null 2>&1 || {
     echo "c02: the SRT download failed" >&2
     rm -f "$out"
@@ -1129,6 +1135,43 @@ c02_captions_export() {
     echo "c02: expected 3 arrow lines, got $arrows" >&2; return 1; }
   [ "$al" -lt "$be" ] && [ "$be" -lt "$ga" ] || {
     echo "c02: cue order wrong ($al,$be,$ga)" >&2; return 1; }
+  # The VTT button exports the same cue list as WebVTT: header first, the
+  # three cues in the same order, dot-shaped arrow lines, no sequence
+  # numbers. Same single-result-line discipline as the SRT body above.
+  ab scrollintoview '[data-testid=captions-download-vtt]' >/dev/null 2>&1
+  sleeps 0.3
+  local vtt; vtt=$(mktemp /tmp/battery-captions.XXXXXX.vtt)
+  CAPTIONS_TMPS="$CAPTIONS_TMPS $vtt"
+  ab download '[data-testid=captions-download-vtt]' "$vtt" >/dev/null 2>&1 || {
+    echo "c02: the VTT download failed" >&2
+    rm -f "$vtt"
+    return 1
+  }
+  [ -s "$vtt" ] || { echo "c02: the downloaded VTT is empty" >&2; rm -f "$vtt"; return 1; }
+  local val vbe vga varrows vshaped
+  head -1 "$vtt" | grep -q '^WEBVTT$' || {
+    echo "c02: the VTT header is missing" >&2; rm -f "$vtt"; return 1; }
+  # A bare number is only a sequence id when an arrow line follows it
+  # directly; a numeric cue text is followed by a blank line, never an
+  # arrow line. (A numeric VTT cue *identifier* would match this shape too,
+  # but the serializer emits no identifiers, so any hit here is a violation
+  # of our output contract.)
+  grep -A1 -E '^[0-9]+$' "$vtt" | grep -E -- '-->' && {
+    echo "c02: the VTT has sequence numbers" >&2; rm -f "$vtt"; return 1; }
+  val=$(grep -n '^Alpha$' "$vtt" | cut -d: -f1)
+  vbe=$(grep -n '^Beta$' "$vtt" | cut -d: -f1)
+  vga=$(grep -n '^Gamma$' "$vtt" | cut -d: -f1)
+  varrows=$(grep -c -- '-->' "$vtt")
+  vshaped=$(grep -cE '^[0-9]{2,}:[0-9]{2}:[0-9]{2}\.[0-9]{3} --> [0-9]{2,}:[0-9]{2}:[0-9]{2}\.[0-9]{3}$' "$vtt")
+  [ "$varrows" -eq 3 ] || {
+    echo "c02: expected exactly 3 VTT arrow lines, got $varrows" >&2; rm -f "$vtt"; return 1; }
+  [ "$vshaped" -eq 3 ] || {
+    echo "c02: VTT arrow lines are not all dot-shaped timestamps" >&2; rm -f "$vtt"; return 1; }
+  rm -f "$vtt"
+  [ -n "$val" ] && [ -n "$vbe" ] && [ -n "$vga" ] || {
+    echo "c02: a cue text is missing from the VTT" >&2; return 1; }
+  [ "$val" -lt "$vbe" ] && [ "$vbe" -lt "$vga" ] || {
+    echo "c02: VTT cue order wrong ($val,$vbe,$vga)" >&2; return 1; }
 }
 
 # ————— E effects (0.8.6) —————
@@ -1448,14 +1491,18 @@ e06_cleanup() {
 
 e06_effects_export() {
   # Precondition: start clean. e05 does not restore on every failure path,
-  # so stacking onto a dirty timeline would desync the undo below.
+  # so stacking onto a dirty timeline would desync the undo below. A dirty
+  # timeline records FAIL and lets the run continue: later steps may
+  # cascade-fail honestly on the dirty state, but the verdict still goes
+  # red and no step is hidden. A hard exit here turned one effects flake
+  # into an INCOMPLETE run that proved nothing about the remaining steps.
   select_named 'sample-video' || { echo "e06: video clip not found" >&2; return 1; }
   ab eval 'document.querySelector("[data-testid=inspector-tab-effects]").click()' >/dev/null 2>&1
   sleeps 0.4
   # The empty-state paragraph has no ARIA role, so `snap` omits it: read
   # the DOM section directly (a missing section also fails into the abort).
   [ "$(evaln 'document.querySelector("[data-testid=applied-effects]")?.innerText.includes("No effects")')" = "true" ] || {
-    echo "e06: effects already present (dirty timeline)" >&2; exit 1; }
+    echo "e06: effects already present (dirty timeline)" >&2; return 1; }
   insp '[aria-label="Add effect"]'
   # The picker menu can miss opening on a single click; poll and reopen.
   local opened=0
@@ -1473,7 +1520,7 @@ e06_effects_export() {
   sleeps 0.5
   snap | grep -q 'Shutter angle' || {
     echo "e06: the blur entry never landed" >&2
-    e06_cleanup || exit 1
+    e06_cleanup || true  # failure already messaged; the step records FAIL below
     return 1
   }
   ab find role button click --name 'Export' >/dev/null && sleep 0.8
@@ -1490,7 +1537,7 @@ e06_effects_export() {
   done
   if [ "$done" != "1" ]; then
     echo "e06: no export-complete signal within 120s" >&2
-    e06_cleanup || exit 1
+    e06_cleanup || true  # failure already messaged; the step records FAIL below
     return 1
   fi
   local rgb r
@@ -1498,19 +1545,19 @@ e06_effects_export() {
   r=${rgb%% *}
   [ -n "$r" ] && [ "$r" -gt 0 ] 2>/dev/null || {
     echo "e06: exported frame is empty ($rgb)" >&2
-    e06_cleanup || exit 1
+    e06_cleanup || true  # failure already messaged; the step records FAIL below
     return 1
   }
   ab find role button click --name 'Close' >/dev/null 2>&1 && sleeps 0.5
   snap | grep -q 'Export video' && {
     echo "e06: export dialog did not close" >&2
-    e06_cleanup || exit 1
+    e06_cleanup || true  # failure already messaged; the step records FAIL below
     return 1
   }
   ab press Control+z >/dev/null; sleeps 0.5
   snap | grep -q 'Shutter angle' && {
     echo "e06: undo did not remove the blur" >&2
-    e06_cleanup || exit 1
+    e06_cleanup || true  # failure already messaged; the step records FAIL below
     return 1
   }
   return 0
@@ -3097,7 +3144,7 @@ step "t02 slide+push: each type applies without errors" t02_slide_push
 step "f04 text: T adds a text clip"                f04_text_add
 step "f04 text: content edited via Inspector"      f04_text_edit
 step "c01 captions: SRT import creates timed flagged clips" c01_captions_import
-step "c02 captions: SRT export downloads the cues in order" c02_captions_export
+step "c02 captions: SRT and VTT export download the cues in order" c02_captions_export
 step "e00 effects: Effect Controls hosts the effects section" e00_effects_tab
 step "e01 effects: crop adds through the picker and undoes" e01_crop_add_remove
 step "e02 effects: blend mode switches to Multiply and undoes" e02_blend_mode

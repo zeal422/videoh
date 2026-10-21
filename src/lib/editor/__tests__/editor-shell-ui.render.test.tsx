@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { playbackRef } from '../playback/engine-ref'
 import { isTransientActive, useEditorStore } from '../store'
+import { downloadBlob } from '../export/mp4'
 import {
   createClip,
   createMediaAsset,
@@ -20,6 +21,11 @@ import {
 } from '../factories'
 import type { Doc } from '../types'
 import { CURRENT_VERSION } from '../../releases'
+
+vi.mock('../export/mp4', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../export/mp4')>()
+  return { ...actual, downloadBlob: vi.fn() }
+})
 
 /**
  * jsdom render tests for the editor shell's dangling-gesture safety net: a
@@ -421,6 +427,61 @@ describe('CaptionsPanel (0.8.5)', () => {
     )
     fireEvent.click(screen.getByTestId('captions-download'))
     expect(await screen.findByText('No captions to export')).toBeInTheDocument()
+  })
+
+  it('Download VTT button is present beside Download SRT', () => {
+    render(<CaptionsPanel />)
+    expect(screen.getByTestId('captions-download-vtt')).toBeInTheDocument()
+  })
+
+  it('Download VTT downloads the cues as a WebVTT document', async () => {
+    const doc = captionsDoc()
+    render(
+      <>
+        <Toaster />
+        <CaptionsPanel />
+      </>,
+    )
+    fireEvent.click(screen.getByTestId('captions-download-vtt'))
+    const mocked = vi.mocked(downloadBlob)
+    expect(mocked).toHaveBeenCalledTimes(1)
+    const [blob, filename] = mocked.mock.calls[0] as [Blob, string]
+    expect(filename).toBe(`${doc.project.name}.vtt`)
+    expect(blob.type).toBe('text/vtt;charset=utf-8')
+    const text = await blob.text()
+    expect(text).toBe(
+      'WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nFirst\n\n00:00:04.000 --> 00:00:05.000\nSecond\n\n',
+    )
+    // No error toast on the success path. Scoped to VTT-specific texts:
+    // the toast store is module-level memory, so the SRT zero-cue test's
+    // "No captions to export" toast replays in any later Toaster and cannot
+    // be asserted absent here.
+    expect(screen.queryByText(/Could not build|supported export/)).not.toBeInTheDocument()
+  })
+
+  it('Download VTT with an out-of-range cue shows the range refusal', async () => {
+    const doc: Doc = structuredClone(useEditorStore.getState().doc)
+    const track = createTrack('text', 1, { id: 'track_cap', name: 'Captions' })
+    track.clips = [
+      createTextClip({
+        id: 'cap_far',
+        isCaption: true,
+        start: 2000000001,
+        duration: 1,
+        text: 'Far',
+      }),
+    ]
+    doc.project.tracks.push(track)
+    useEditorStore.setState({ doc, playhead: 0, activeSequencePath: [] })
+    render(
+      <>
+        <Toaster />
+        <CaptionsPanel />
+      </>,
+    )
+    fireEvent.click(screen.getByTestId('captions-download-vtt'))
+    expect(await screen.findByText(/supported export range/)).toBeInTheDocument()
+    expect(vi.mocked(downloadBlob)).not.toHaveBeenCalled()
   })
 
   it('choosing an SRT file imports timed flagged clips', async () => {

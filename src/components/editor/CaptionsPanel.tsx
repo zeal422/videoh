@@ -11,6 +11,7 @@ import { EditorCommandError, type EditorCommand } from '@/lib/editor/commands'
 import { MIN_CLIP_DURATION } from '@/lib/editor/constants'
 import { findSequence } from '@/lib/editor/factories'
 import { compareSrtCues, collectCaptionCues, parseSrt, serializeSrt } from '@/lib/editor/srt'
+import { serializeVtt } from '@/lib/editor/vtt'
 import { useEditorStore } from '@/lib/editor/store'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { commandsToAddCaptionCue } from '@/lib/editor/actions'
@@ -224,14 +225,19 @@ export function CaptionsPanel() {
     }
   }
 
-  const downloadFile = () => {
+  const downloadCaptions = (format: 'srt' | 'vtt') => {
     const state = useEditorStore.getState().doc
     let cues
     try {
       cues = collectCaptionCues(state)
     } catch (error) {
       toast({
-        title: error instanceof Error ? error.message : 'Could not build the SRT file',
+        title:
+          error instanceof Error
+            ? error.message
+            : format === 'srt'
+              ? 'Could not build the SRT file'
+              : 'Could not build the VTT file',
         variant: 'destructive',
       })
       return
@@ -240,11 +246,22 @@ export function CaptionsPanel() {
       toast({ title: 'No captions to export', variant: 'destructive' })
       return
     }
-    downloadBlob(
-      new Blob([serializeSrt(cues)], { type: 'text/srt;charset=utf-8' }),
-      `${state.project.name}.srt`,
-    )
+    if (format === 'srt') {
+      downloadBlob(
+        new Blob([serializeSrt(cues)], { type: 'text/srt;charset=utf-8' }),
+        `${state.project.name}.srt`,
+      )
+    } else {
+      downloadBlob(
+        new Blob([serializeVtt(cues)], { type: 'text/vtt;charset=utf-8' }),
+        `${state.project.name}.vtt`,
+      )
+    }
   }
+
+  const downloadFile = () => downloadCaptions('srt')
+
+  const downloadVttFile = () => downloadCaptions('vtt')
 
   return (
     <div data-testid="captions-panel" className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -274,6 +291,15 @@ export function CaptionsPanel() {
           onClick={downloadFile}
         >
           Download SRT
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 px-2 text-xs"
+          data-testid="captions-download-vtt"
+          onClick={downloadVttFile}
+        >
+          Download VTT
         </Button>
         <input
           ref={fileRef}

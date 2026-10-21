@@ -14,6 +14,9 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    // Pinned, not the framework default: mock history must not leak
+    // between tests in one file (the render suite asserts absence).
+    clearMocks: true,
     // React component tests opt into jsdom with a per-file
     // `// @vitest-environment jsdom` comment (environmentMatchGlobs was
     // removed in vitest 4).
@@ -36,6 +39,7 @@ export default defineConfig({
         'src/lib/editor/factories.ts',
         'src/lib/editor/snap.ts',
         'src/lib/editor/srt.ts',
+        'src/lib/editor/vtt.ts',
         'src/lib/editor/time.ts',
         'src/lib/editor/transition.ts',
         'src/lib/editor/tracks.ts',

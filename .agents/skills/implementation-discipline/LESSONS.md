@@ -181,3 +181,21 @@ vague approval is not permission). An all-caps "DO IT" attached to an
 ambiguous target is vague approval: confirm the exact action, then edit.
 Action: kept as a note; when the order and the target are in doubt, quote
 back the intended action and wait.
+
+## 2026-10-21 - VTT implementation: two self-caught edit mistakes
+
+What happened: (1) wrote a render-test assertion with the wrong cue end time (assumed the captionsDoc fixture's First cue ends at 2.0; it is start 1 plus duration 2, so 3.0); the new test itself caught it on its first green run. (2) an edit whose oldString was a table-row prefix fused the new architecture.md vtt row into the srt row; reading the merged lines back caught it before anything else ran.
+Would-have-caught: the plan-implementer rung order (affected tests before the suite) for (1); read-after-write for (2).
+Action: kept as a note; fixture numbers come from the fixture, not memory, and row-prefix edits get a read-back before continuing.
+
+## 2026-10-21 - VTT review round: toast-dismiss broke the render file
+
+What happened: added toast.dismiss() to a test file's beforeEach to isolate toast assertions, without checking the export shape; toast is a factory, dismiss lives on the useToast() hook return, so all 40 tests in the file failed with "toast.dismiss is not a function".
+Would-have-caught: reading the export (one grep) before editing; the green trio run immediately after.
+Action: kept as a note; verify the export shape before calling it, and prefer narrowing the assertion to texts the test itself can produce over harness surgery.
+
+## 2026-10-21 - Battery e06 hard exit hid a flake as INCOMPLETE
+
+What happened: a full dev battery stopped at 38/63 results with INCOMPLETE after an e04 pixel flake. The step framework records FAIL and continues, but e06's dirty-timeline precondition called exit 1, killing the script. Fixed to return 1 with the tradeoff documented (later steps may cascade-fail honestly; verdict still red, nothing hidden), then proved with fault injection: forced e04 failure and forced e06 trip each produced full 63-result red verdicts instead of INCOMPLETE.
+Would-have-caught: grepping step functions for bare exit (awk BEGIN exits are subshell-local and fine; only e06 had one).
+Action: kept as a note; a step function that calls exit aborts the verdict, a step that returns 1 records it.

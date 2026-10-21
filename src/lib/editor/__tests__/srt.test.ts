@@ -295,6 +295,21 @@ describe('collectCaptionCues', () => {
     const doc = captionDoc([{ start: 999999999.8505, duration: 0.1495, text: 'Edge' }])
     expect(() => collectCaptionCues(doc)).toThrow(SrtRangeError)
   })
+
+  it('names no format in the range refusal', () => {
+    // The message surfaces verbatim in both download toasts, so it must
+    // read correctly on the VTT path too.
+    const doc = captionDoc([{ start: 2000000001, duration: 1, text: 'Far' }])
+    expect(() => collectCaptionCues(doc)).toThrow(/supported export range/)
+    expect(() => collectCaptionCues(doc)).toThrow(SrtRangeError)
+    let message = ''
+    try {
+      collectCaptionCues(doc)
+    } catch (error) {
+      message = (error as Error).message
+    }
+    expect(message).not.toMatch(/SRT/)
+  })
 })
 
 describe('SRT round trip', () => {
