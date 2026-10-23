@@ -406,7 +406,7 @@ src/
 │   ├── tracks.ts                # removes the tracks an edit leaves empty (prune)
 │   ├── timeline-scroll.ts       # drag edge auto-scroll geometry (pure)
 │   ├── store.ts                 # zustand store: history, transients, selection, playhead
-│   ├── serialization.ts         # .veproj.json (v3, v1/v2 load): serialize/parse/hydrate
+│   ├── serialization.ts         # .veproj.json (v4, v1..v3 load): serialize/parse/hydrate
 │   ├── persistence.ts           # debounced localStorage autosave + restore
 │   ├── media/
 │   │   ├── probe.ts             # importFile: probe, thumbnail, waveform peaks, hasAudio
@@ -476,8 +476,7 @@ Limitations, all observable in the current code:
 Roadmap candidates, roughly in order of impact (the full gap analysis against Premiere, with what
 each release already closed, is in [`ROADMAP.md`](ROADMAP.md)):
 
-1. More transitions: dip-to-black fits the existing span/alpha model in `transition.ts`; wipes, slides and pushes additionally need a spatial parameter (a mask or a position offset).
-2. Track grouping.
+1. Track grouping.
 
 ---
 

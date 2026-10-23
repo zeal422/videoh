@@ -199,3 +199,15 @@ Action: kept as a note; verify the export shape before calling it, and prefer na
 What happened: a full dev battery stopped at 38/63 results with INCOMPLETE after an e04 pixel flake. The step framework records FAIL and continues, but e06's dirty-timeline precondition called exit 1, killing the script. Fixed to return 1 with the tradeoff documented (later steps may cascade-fail honestly; verdict still red, nothing hidden), then proved with fault injection: forced e04 failure and forced e06 trip each produced full 63-result red verdicts instead of INCOMPLETE.
 Would-have-caught: grepping step functions for bare exit (awk BEGIN exits are subshell-local and fine; only e06 had one).
 Action: kept as a note; a step function that calls exit aborts the verdict, a step that returns 1 records it.
+
+## 2026-10-22 - Rebuilding under a running artifact server breaks it
+
+What happened: ran `bun run build` while the standalone artifact server from the previous build still served, then killed only the `bun run start` wrapper pid; the child server.js kept the port, the new server died with EADDRINUSE, and the battery ran against a stale server whose .next files had been replaced mid-run (mass FAILs from the gate step onward on the untouched tree).
+Would-have-caught: killing the actual server process (server.js pid, not the wrapper) and verifying the port is free before starting its replacement.
+Action: kept as a note; stop the server process itself, confirm the port is free, then rebuild and serve; never rebuild under a live server.
+
+## 2026-10-22 - Same-task DOM reads race React renders in battery evals
+
+What happened: the in-page frame-step dispatch read the transport text synchronously after dispatching; delivery and handling both passed, but the playhead read 0.000 because React batches store updates and the DOM had not re-rendered yet, failing every converted step from f10 onward on the first post-change run.
+Would-have-caught: remembering that in-page evals observe pre-commit DOM unless they yield; the settled_sum pattern in the same file already polls for exactly this reason.
+Action: kept as a note; any in-page state change followed by a DOM read must poll (async IIFE, which ab eval awaits), never read synchronously after the mutation.

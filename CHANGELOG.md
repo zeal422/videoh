@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-10-22
+
+### Changed
+
+- **Battery speedup.** The 63-step UI battery polls for readiness instead of sleeping fixed seconds: export completion polls every 0.25s under the same 120s elapsed-time deadline, export frame reads wait for the presented video frame, frame-stepping loops dispatch in-page with a delivery lock that fails closed on a missed keypress, and the slowest project waits poll their own predicates. Step count and assertions unchanged; a single run drops the artifact leg to ~7m15s (497.6s to 435.9s medians) and the dev leg to ~8m18s (591s to 498.3s). Only the dev baseline started near 9m50s. No editor behavior changed, only the What's new entry in releases.ts.
+
 ## [0.8.9] - 2026-10-21
 
 ### Added

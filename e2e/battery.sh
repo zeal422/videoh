@@ -147,6 +147,60 @@ clipcount() {
   }).length' 2>/dev/null
 }
 sleeps() { sleep "${1:-0.4}"; }
+# In-page ArrowRight stepping with a delivery lock (battery speedup item 4).
+# Dispatches N real KeyboardEvents on the focused element (the input guard in
+# useEditorKeyboard.ts still applies) and fails closed unless every event
+# reached window's bubble listener AND was handled (defaultPrevented, which
+# the editor's ArrowRight branch sets; the guard-swallow paths never do).
+# A tenths-text gross check backstops it: no move or a materially different
+# count fails, since adjacent counts alias at 0.1s resolution. Async IIFE:
+# the dispatches update the store synchronously but React re-renders async,
+# so a same-task DOM read would see the pre-dispatch text; the readout is
+# polled in-page instead (ab eval awaits the promise).
+step_frames() { # step_frames <n>
+  local n="$1"
+  case "$n" in '' | *[!0-9]*) echo "step_frames: bad count ($n)" >&2; return 1 ;; esac
+  local res
+  res=$(evaln "(async () => {
+    const N = Number(\"$n\");
+    const el = document.activeElement || document.body;
+    const tag = ((el && el.tagName) || \"BODY\").toUpperCase();
+    if (tag === \"INPUT\" || tag === \"TEXTAREA\" || tag === \"SELECT\" || (el && el.isContentEditable)) return \"ineligible-target\";
+    const read = () => {
+      const t = ((document.querySelector(\"[data-testid=time-display]\") || {}).innerText || \"\").split(\"/\")[0].trim();
+      const m = /(\d+):(\d+\.\d+)/.exec(t);
+      return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+    };
+    const t0 = read();
+    if (t0 === null) return \"no-t0\";
+    let got = 0, handled = 0;
+    const h = (e) => { got += 1; if (e.defaultPrevented) handled += 1; };
+    window.addEventListener(\"keydown\", h);
+    try {
+      for (let i = 0; i < N; i++) {
+        el.dispatchEvent(new KeyboardEvent(\"keydown\", { key: \"ArrowRight\", shiftKey: false, bubbles: true, cancelable: true }));
+      }
+    } finally {
+      window.removeEventListener(\"keydown\", h);
+    }
+    if (got !== N || handled !== N) return \"delivery:\" + got + \"/\" + handled + \"/\" + N;
+    const want = N / 30;
+    const deadline = Date.now() + 3000;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 50));
+      const t1 = read();
+      if (t1 !== null && Math.abs(t1 - t0 - want) <= 0.11) return \"ok\";
+      if (Date.now() > deadline) return \"gross:\" + t0 + \">\" + (t1 === null ? \"none\" : t1);
+    }
+  })()")
+  case "$res" in
+    ok) return 0 ;;
+    *)
+      echo "step_frames: in-page dispatch failed ($res, n=$n)" >&2
+      return 1
+      ;;
+  esac
+}
 step() {
   local name="$1"; shift
   if "$@" >>"$OUT" 2>&1; then echo "PASS $name" >>"$OUT"; else echo "FAIL $name" >>"$OUT"; fi
@@ -197,6 +251,7 @@ click_clip() { # click_clip <name-regex>
 dismiss_greeting() {
   local n
   n=$(evaln 'document.querySelectorAll("[data-testid=release-notes-modal]").length')
+  [ -n "$n" ] || { sleep 0.5; n=$(evaln 'document.querySelectorAll("[data-testid=release-notes-modal]").length'); }
   [ -n "$n" ] || { echo "dismiss_greeting: eval failed, refusing to guess" >&2; return 1; }
   if [ "$n" = "1" ]; then
     ab press Escape >/dev/null 2>&1
@@ -484,7 +539,7 @@ playhead_seconds() {
 f10_markers_sequence() {
   ab press Control+Shift+a >/dev/null 2>&1   # no live clip selection -> M targets the timeline
   ab find role button click --name 'Go to start (Home)' >/dev/null && sleep 0.4
-  for i in $(seq 1 30); do ab press ArrowRight >/dev/null 2>&1; done # 30 frames = 1.0s
+  step_frames 30 || return 1 # 30 frames = 1.0s, in-page with delivery lock
   sleeps 0.3
   ab press m >/dev/null 2>&1 && sleeps 0.5
   local n tm
@@ -555,7 +610,7 @@ f10_markers_sequence() {
 f10_markers_clip() {
   click_clip 'sample-video' || { echo "f10: video clip not found" >&2; return 1; }
   ab find role button click --name 'Go to start (Home)' >/dev/null && sleep 0.4
-  for i in $(seq 1 30); do ab press ArrowRight >/dev/null 2>&1; done # 1.0s inside the clip
+  step_frames 30 || return 1 # 1.0s inside the clip, in-page with delivery lock
   sleeps 0.3
   ab press m >/dev/null 2>&1 && sleeps 0.5
   local n tm rect x y
@@ -850,7 +905,7 @@ f06_lut() {
   # Park on the 0.60s frame again and require content before touching the LUT.
   ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
   local i
-  for i in $(seq 1 18); do ab press ArrowRight >/dev/null 2>&1; done
+  step_frames 18 || return 1
   sleeps 0.6
   # The FIRST video part covers the parked time (the split put it at 0.00).
   click_clip 'sample-video.mp4 from 0.00 to' || {
@@ -956,8 +1011,7 @@ f06_canvas() {
   # where the video clip is live. f07_export decodes the same time out of the
   # produced MP4, so both samples cover the same content.
   ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
-  local i
-  for i in $(seq 1 18); do ab press ArrowRight >/dev/null 2>&1; done
+  step_frames 18 || return 1
   sleeps 0.6
   local neutral graded
   neutral=$(canvas_ratio "[data-testid=preview-canvas]")
@@ -982,7 +1036,7 @@ f06_canvas() {
 f02_split() {
   click_clip 'sample-video' || return 1
   ab find role button click --name 'Go to start (Home)' >/dev/null && sleep 0.4
-  for i in $(seq 1 60); do ab press ArrowRight >/dev/null 2>&1; done # 60 frames = 2.0s
+  step_frames 60 || return 1 # 60 frames = 2.0s, in-page with delivery lock
   sleep 0.3
   local before after
   before=$(clipcount)
@@ -1274,8 +1328,7 @@ e03_chroma_hex() {
   # e04: 1.2s is safely inside), polling for a live frame before sampling.
   ab eval "document.activeElement && document.activeElement.blur()" >/dev/null 2>&1
   ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
-  local i
-  for i in $(seq 1 36); do ab press ArrowRight >/dev/null 2>&1; done
+  step_frames 36 || return 1
   if ! between "$(playhead_seconds)" 1.09 1.41; then
     echo "e03: playhead missed 1.2s ($(playhead_seconds))" >&2; return 1
   fi
@@ -1336,7 +1389,7 @@ e04_matte_masks_and_survives_hide() {
   ab eval "document.activeElement && document.activeElement.blur()" >/dev/null 2>&1
   ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
   local i
-  for i in $(seq 1 36); do ab press ArrowRight >/dev/null 2>&1; done
+  step_frames 36 || return 1
   if ! between "$(playhead_seconds)" 1.09 1.41; then
     echo "e04: playhead missed 1.2s ($(playhead_seconds))" >&2; return 1
   fi
@@ -1527,16 +1580,20 @@ e06_effects_export() {
   ab find role button click --name 'Start export' >/dev/null && sleep 1
   # Local completion poll (export_done is local to f07_export): the
   # completion toast lives ~1s, so accept the persistent result view too.
-  local i done=0
-  for i in $(seq 1 120); do
+  # Elapsed-time deadline (not a count): the deadline is approximate (whole-
+  # second SECONDS plus blocking calls), overshoot bounded by one poll
+  # period plus one eval.
+  local poll_s=120 done=0
+  local deadline=$((SECONDS + poll_s))
+  while [ "$SECONDS" -lt "$deadline" ]; do
     if [ "$(evaln 'document.body.innerText.includes("Export complete") || !!document.querySelector("[data-testid=export-result-video]")')" = "true" ]; then
       done=1
       break
     fi
-    sleep 1
+    sleep 0.25
   done
   if [ "$done" != "1" ]; then
-    echo "e06: no export-complete signal within 120s" >&2
+    echo "e06: no export-complete signal within ${poll_s}s" >&2
     e06_cleanup || true  # failure already messaged; the step records FAIL below
     return 1
   fi
@@ -1966,8 +2023,7 @@ f05_reverse_frame() {
   # Park on the timeline frame at 0.60s and sample the monitor.
   local before
   ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1 && sleeps 0.4
-  local i
-  for i in $(seq 1 18); do ab press ArrowRight >/dev/null 2>&1; done # 18 frames = 0.60s
+  step_frames 18 || return 1 # 18 frames = 0.60s, in-page with delivery lock
   sleeps 0.6
   before=$(frame_sum "[data-testid=preview-canvas]")
   [ "${before:-0}" -gt 0 ] 2>/dev/null || {
@@ -2003,7 +2059,7 @@ f05_reverse_frame() {
   # Re-park on the SAME timeline time (0.60s is inside the kept span) and sample
   # again: keeping a local frame must keep the source frame it showed.
   ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1 && sleeps 0.4
-  for i in $(seq 1 18); do ab press ArrowRight >/dev/null 2>&1; done # 18 frames = 0.60s
+  step_frames 18 || return 1 # 18 frames = 0.60s, in-page with delivery lock
   sleeps 0.6
   local after
   after=$(frame_sum "[data-testid=preview-canvas]")
@@ -2060,8 +2116,7 @@ f05b_curve_handles() {
     echo "f05b: the diamond did not seed an opacity keyframe" >&2
     return 1
   }
-  local i
-  for i in $(seq 1 15); do ab press ArrowRight >/dev/null 2>&1; done # 15 frames = 0.50s
+  step_frames 15 || return 1 # 15 frames = 0.50s, in-page with delivery lock
   sleeps 0.4
   ab find role slider click --name 'Opacity value' >/dev/null 2>&1 || {
     echo "f05b: the opacity slider is missing" >&2
@@ -2447,12 +2502,43 @@ panels_expand_after_reset() {
 
 # ————— F8 autosave + save —————
 f08_autosave() {
-  sleep 1.5
-  ab reload >/dev/null && sleep 2.5
+  # Autosave-settle poll (item 3): the debounced write (800ms, status set
+  # synchronously on edit) is done when no "Autosaving" text remains. The
+  # deadline is generous on purpose: it only binds on failure, and a slow
+  # flush must read as waiting, never as a pass.
+  local settle_s=30
+  local deadline=$((SECONDS + settle_s))
+  while [ "$(evaln 'document.body.innerText.includes("Autosaving") ? "pending" : "settled"')" = "pending" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.25; done
+  [ "$(evaln 'document.body.innerText.includes("Autosaving") ? "pending" : "settled"')" = "settled" ] || { echo "no autosave settle within ${settle_s}s" >&2; return 1; }
+  ab reload >/dev/null
+  # Boot poll: the greeting check below needs a mounted page, so wait for the
+  # editor chrome instead of assuming the reload has settled. A DOM query, not
+  # the a11y snapshot: an open welcome modal hides the chrome from snap while
+  # the page is fine, and the modal is exactly dismiss_greeting's case.
+  local boot=0
+  deadline=$((SECONDS + settle_s))
+  while [ "$boot" != "1" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    boot=$(evaln '(() => { const d = document; return (d.body.innerText.includes("Collapse Media panel") || d.querySelector("[data-testid=release-notes-modal]")) ? "1" : "0"; })()')
+    [ "$boot" = "1" ] || { boot=0; sleep 0.25; }
+  done
+  [ "$boot" = "1" ] || { echo "no editor boot after reload" >&2; return 1; }
   dismiss_greeting || return 1
-  snap | grep -q '"Restore"' || { echo "no restore banner" >&2; return 1; }
-  ab find role button click --name 'Restore' >/dev/null && sleep 1.5
-  [ "$(clipcount)" -ge 4 ]
+  # Restore-banner poll (item 3): the banner renders after boot.
+  local banner=0
+  deadline=$((SECONDS + 10))
+  while [ "$banner" = "0" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    snap | grep -q '"Restore"' && banner=1
+    [ "$banner" = "0" ] && sleep 0.25
+  done
+  [ "$banner" = "1" ] || { echo "no restore banner" >&2; return 1; }
+  ab find role button click --name 'Restore' >/dev/null
+  local n=0
+  deadline=$((SECONDS + 6))
+  while [ "$n" -lt 4 ] && [ "$SECONDS" -lt "$deadline" ]; do
+    n=$(clipcount)
+    [ "$n" -lt 4 ] && sleep 0.25
+  done
+  [ "$n" -ge 4 ]
 }
 f08_capture_project() {
   # Capture the toolbar's Save download to a UNIQUE temp path (mktemp), so a
@@ -2687,11 +2773,13 @@ f07_export() {
   # too slowly and raced it (three consecutive hangs here), so poll fast and
   # also accept the result view itself, which persists in the done phase.
   export_done() {
-    for _ in $(seq 1 120); do
+    local poll_s=120
+    local deadline=$((SECONDS + poll_s))
+    while [ "$SECONDS" -lt "$deadline" ]; do
       [ "$(evaln 'document.body.innerText.includes("Export complete") || !!document.querySelector("[data-testid=export-result-video]")')" = "true" ] && return 0
-      sleep 1
+      sleep 0.25
     done
-    echo "f07: no export-complete signal within 120s" >&2
+    echo "f07: no export-complete signal within ${poll_s}s" >&2
     return 1
   }
   export_done || return 1
@@ -2858,12 +2946,64 @@ f07_close_dialog() {
 # The per-channel sums ("r g b") of the export dialog's decoded output at
 # 0.60s (the doc time f06 sampled). Every read seeks the same way, so the
 # differentials stay valid even if the element never seeks. "" on failure.
+# The 0.6001 seek (a hair inside frame 18, the source helper's convention)
+# plus a mediaTime check against frame PTS 0.6 proves the requested frame
+# was presented; every timeout path fails closed to "" and cancels the pending
+# frame callback on the way out.
 export_rgb_sums() {
   ab eval '(() => {
     const v = document.querySelector("[data-testid=export-result-video]");
-    if (v) { v.pause(); v.currentTime = 0.6; }
+    window.__erg = "wait";
+    if (!v) { window.__erg = "no-video"; return "kick"; }
+    const T = 0.6001, PTS = 0.6, EPS = 0.017;
+    const finish = (s) => { window.__erg = s; };
+    const watch = () => {
+      try {
+        if (typeof v.requestVideoFrameCallback !== "function") { finish("no-rvfc"); return; }
+        const id = v.requestVideoFrameCallback((t, md) => {
+          if (md && typeof md.mediaTime === "number" && Math.abs(md.mediaTime - PTS) <= EPS) finish("ready");
+          else watch();
+        });
+        window.__erg_id = id;
+      } catch (e) { finish("rvc-fail"); return; }
+    };
+    const go = () => {
+      try { v.pause(); } catch (e) {}
+      const cur = v.currentTime;
+      if (typeof cur !== "number") { finish("no-time"); return; }
+      watch();
+      if (Math.abs(cur - T) < 0.00005) {
+        try { v.currentTime = 0; } catch (e) { finish("seek-fail"); return; }
+      }
+      try { v.currentTime = T; } catch (e) { finish("seek-fail"); return; }
+    };
+    if (v.readyState >= 2) { go(); return "kick"; }
+    let waited = false;
+    const ready = () => { if (!waited) { waited = true; go(); } };
+    v.addEventListener("loadeddata", ready, { once: true });
+    v.addEventListener("canplay", ready, { once: true });
+    setTimeout(() => { if (!waited) { waited = true; finish("no-data"); } }, 8000);
+    return "kick";
   })()' >/dev/null 2>&1
-  sleeps 1.5
+  local deadline=$((SECONDS + 14)) state="wait"
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    state=$(evaln "window.__erg || \"wait\"")
+    case "$state" in
+      ready) break ;;
+      wait) sleep 0.25 ;;
+      *) state="fail"; break ;;
+    esac
+  done
+  case "$state" in
+    ready) ;;
+    *)
+      # Cancel the pending frame callback (if any) so a timed-out wait leaves
+      # no registration behind on the paused video. Still fails closed to "".
+      ab eval '(() => { try { const v = document.querySelector("[data-testid=export-result-video]"); const id = window.__erg_id; if (v && typeof id === "number" && typeof v.cancelVideoFrameCallback === "function") v.cancelVideoFrameCallback(id); } catch (e) {} window.__erg_id = 0; return "ok"; })()' >/dev/null 2>&1
+      echo ""
+      return 0
+      ;;
+  esac
   local out r g b
   out=$(evaln '(() => {
     const v = document.querySelector("[data-testid=export-result-video]");
@@ -2943,21 +3083,29 @@ f02_ratestretch_relinked() {
     clean_relink
     return 1
   }
-  sleeps 2.5
-  local item
-  item=$(evaln '(() => {
-    const el = [...document.querySelectorAll("[data-testid^=media-item-]")]
-      .find((e) => e.textContent.includes("battery-long-"));
-    return el ? el.getAttribute("data-testid") : "none";
-  })()')
+  # Probe poll (item 3): the bin row lands asynchronously; poll the same
+  # read the assert below uses instead of sleeping a fixed 2.5s.
+  local item="none" deadline=$((SECONDS + 8))
+  while [ "$item" = "none" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    item=$(evaln '(() => {
+      const el = [...document.querySelectorAll("[data-testid^=media-item-]")]
+        .find((e) => e.textContent.includes("battery-long-"));
+      return el ? el.getAttribute("data-testid") : "none";
+    })()')
+    [ "$item" = "none" ] && sleep 0.25
+  done
   [ "$item" != "none" ] || {
     echo "f02_ratestretch_relinked: the 2s WAV did not appear in the bin" >&2
     clean_relink
     return 1
   }
   ab click "[data-testid=$item] button[aria-label=\"Add to timeline\"]" >/dev/null 2>&1
-  sleeps 0.8
-  [ "$(clipcount)" -ge 1 ] || {
+  local n=0 deadline=$((SECONDS + 5))
+  while [ "$n" -lt 1 ] && [ "$SECONDS" -lt "$deadline" ]; do
+    n=$(clipcount)
+    [ "$n" -lt 1 ] && sleep 0.25
+  done
+  [ "$n" -ge 1 ] || {
     echo "f02_ratestretch_relinked: quick-add produced no clip" >&2
     clean_relink
     return 1
@@ -2988,17 +3136,20 @@ f02_ratestretch_relinked() {
     clean_relink
     return 1
   }
-  sleeps 2.5
-
+  # Reopen poll (item 3): the offline relink button renders asynchronously.
+  item="none" deadline=$((SECONDS + 8))
+  while [ "$item" = "none" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    item=$(evaln '(() => {
+      const el = [...document.querySelectorAll("[data-testid^=media-item-]")]
+        .find((e) => e.textContent.includes("battery-long-"));
+      return el && el.querySelector("button[aria-label=\"Relink media file\"]")
+        ? el.getAttribute("data-testid")
+        : "none";
+    })()')
+    [ "$item" = "none" ] && sleep 0.25
+  done
   # The reopened asset must be offline with a relink button, and the clip must
   # still hold its 2s window (the relink leaves clips untouched).
-  item=$(evaln '(() => {
-    const el = [...document.querySelectorAll("[data-testid^=media-item-]")]
-      .find((e) => e.textContent.includes("battery-long-"));
-    return el && el.querySelector("button[aria-label=\"Relink media file\"]")
-      ? el.getAttribute("data-testid")
-      : "none";
-  })()')
   [ "$item" != "none" ] || {
     echo "f02_ratestretch_relinked: the reopened WAV is not offline with a relink button" >&2
     clean_relink
@@ -3022,13 +3173,17 @@ f02_ratestretch_relinked() {
     clean_relink
     return 1
   }
-  sleeps 1.5
-  local shown
-  shown=$(evaln '(() => {
-    const el = [...document.querySelectorAll("[data-testid^=media-item-]")]
-      .find((e) => e.textContent.includes("battery-long-"));
-    return el ? el.textContent.replace(/\s+/g, " ") : "none";
-  })()')
+  # Relink poll (item 3): the asset duration updates asynchronously.
+  local shown="none" deadline=$((SECONDS + 6))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    shown=$(evaln '(() => {
+      const el = [...document.querySelectorAll("[data-testid^=media-item-]")]
+        .find((e) => e.textContent.includes("battery-long-"));
+      return el ? el.textContent.replace(/\s+/g, " ") : "none";
+    })()')
+    case "$shown" in *1.0s*) break ;; esac
+    sleep 0.25
+  done
   case "$shown" in
     *1.0s*) ;;
     *)
@@ -3073,21 +3228,24 @@ f02_ratestretch_relinked() {
     clean_relink
     return 1
   }
-  sleeps 0.5
-
+  # Post-drag poll (item 3): the re-timed clip and badge render asynchronously.
+  local d1="none" badge="none" deadline=$((SECONDS + 4))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    d1=$(evaln '(() => {
+      const c = document.querySelector("[data-testid^=clip-][aria-label^=\"Clip battery-long-\"]");
+      const m = /from ([\d.]+) to ([\d.]+) seconds/.exec(c ? c.getAttribute("aria-label") : "");
+      return m ? (Number(m[2]) - Number(m[1])).toFixed(2) : "none";
+    })()')
+    badge=$(evaln '(() => {
+      const c = document.querySelector("[data-testid^=clip-][aria-label^=\"Clip battery-long-\"]");
+      const b = c ? c.querySelector("[data-testid=clip-speed-badge]") : null;
+      return b ? b.textContent.replace("×", "") : "none";
+    })()')
+    if [ "$d1" != "none" ] && [ "$badge" != "none" ]; then break; fi
+    sleep 0.25
+  done
   # The drag must have re-timed the clip, and with the CLAMPED span: the badge
   # rate is 1/duration, not the 2x that holding the old 2s span would read.
-  local d1 badge
-  d1=$(evaln '(() => {
-    const c = document.querySelector("[data-testid^=clip-][aria-label^=\"Clip battery-long-\"]");
-    const m = /from ([\d.]+) to ([\d.]+) seconds/.exec(c ? c.getAttribute("aria-label") : "");
-    return m ? (Number(m[2]) - Number(m[1])).toFixed(2) : "none";
-  })()')
-  badge=$(evaln '(() => {
-    const c = document.querySelector("[data-testid^=clip-][aria-label^=\"Clip battery-long-\"]");
-    const b = c ? c.querySelector("[data-testid=clip-speed-badge]") : null;
-    return b ? b.textContent.replace("×", "") : "none";
-  })()')
   if [ "$d1" = "none" ] || [ "$badge" = "none" ]; then
     echo "f02_ratestretch_relinked: no re-timed clip with a speed badge (duration=$d1 badge=$badge)" >&2
     clean_relink

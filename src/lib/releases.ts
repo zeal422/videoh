@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.9.0',
+    date: '2026-10-22',
+    highlights: [
+      'The 63-step battery polls for readiness instead of sleeping: an artifact-leg run takes about 7 minutes instead of about 8, a dev-leg run about 8 instead of about 10',
+      'Export completion polls every 0.25s under the same 120-second deadline, and frame reads wait for the presented video frame',
+      'Frame stepping dispatches in-page with a delivery lock, so a missed keypress fails its step instead of testing the wrong frame',
+      'Same steps with the same assertions, verified green on the dev server and the shipped build',
+    ],
+  },
+  {
     version: '0.8.9',
     date: '2026-10-21',
     highlights: [

@@ -226,7 +226,7 @@ bun run build && bun run start   # standalone server on :3000 (production needs 
 bun run battery                  # reuses the server above and starts nothing
 ```
 
-Recorded at 0.8.9 on 2026-10-21: 63 passed, 0 failed on the dev server and again against the standalone artifact build. The gate is live in this mode
+Recorded at 0.9.0 on 2026-10-22: 63 passed, 0 failed on the dev server and again against the standalone artifact build. The gate is live in this mode
 too (`/` answers 307 to `/gate`, and the battery's `g0` step logs in with the same `.env.local`).
 
 ### Two trees (A/B)
