@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] - 2026-10-23
+
+### Added
+
+- **Sequence Settings dialog.** Sequence > Sequence Settings now opens a Premiere-style modal (name, width, height, frame rate) instead of silently revealing the Inspector. OK commits one undoable change, Cancel discards.
+
+### Fixed
+
+- **Menu label alignment.** Checkbox rows (Clip > Mute, View toggles, Window toggles) no longer indent; every menu is flush left, with the checked state shown as a glyph after the label.
+- **Menu toggle semantics for assistive tech.** The flush-left toggle rows expose `role="menuitemcheckbox"` with live `aria-checked` again, so screen readers announce Mute, snapping, and panel visibility state.
+- **Battery boot-check fix.** The post-reload readiness check queried innerText for a collapse-button label that lives only in aria-label/title attributes, so it could never match; every reload timed out, the restore was skipped, and f06/f07/f08 failed downstream on the empty timeline. It now queries the mounted menubar.
+- **Battery failure diagnostics and retries.** The f06 clip select retries, the f07 reopen polls the clip count instead of a fixed sleep, the export watchdog moved to 240 seconds with dialog-state output, and each failure prints the evidence it used to lack.
+
 ## [0.9.0] - 2026-10-22
 
 ### Changed

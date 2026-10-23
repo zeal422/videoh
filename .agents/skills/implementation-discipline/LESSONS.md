@@ -132,6 +132,7 @@ Action: kept as a note; browser proofs start from a known-fresh server, and a
 result that contradicts the code on disk triggers a freshness check first.
 
 ## 2026-10-18 - 0.8.6 effects implementation (late-found render defects)
+
 What happened: two render defects survived unit tests and were caught only by
 live pixel proof: the matte mask loop keyed on its own written white (every
 mask fully opaque), and motion-blur accumulation with fixed 1/N alpha
@@ -211,3 +212,27 @@ Action: kept as a note; stop the server process itself, confirm the port is free
 What happened: the in-page frame-step dispatch read the transport text synchronously after dispatching; delivery and handling both passed, but the playhead read 0.000 because React batches store updates and the DOM had not re-rendered yet, failing every converted step from f10 onward on the first post-change run.
 Would-have-caught: remembering that in-page evals observe pre-commit DOM unless they yield; the settled_sum pattern in the same file already polls for exactly this reason.
 Action: kept as a note; any in-page state change followed by a DOM read must poll (async IIFE, which ab eval awaits), never read synchronously after the mutation.
+
+## 2026-10-23 - Radix data-inset={false} still matches data-[inset]:pl-8
+
+What happened: passed inset={hasCheckbox} to MenubarItem; pure-item menus rendered data-inset="false", and Tailwind's data-[inset] variant matches attribute presence, so File and other pure menus widened to pl-8. Live DOM measurement caught it after lint and typecheck were green.
+Would-have-caught: remembering data-* attributes render the string "false", which still satisfies presence-based variants; conditional props need || undefined.
+Action: kept as a note; pass inset={cond || undefined} so the attribute is absent when false.
+
+## 2026-10-23 - Prettier vs docs-drift on testing.md inventory rows
+
+What happened: lengthening the menubar.test.tsx inventory row, then running prettier --write, appended a stray empty table cell that docs-drift counted as broken; removing the cell made prettier --check fail until the row was rewritten and both tools re-run.
+Would-have-caught: the AGENTS.md note that Prettier glues markdown table rows, which docs-drift then counts.
+Action: kept as a note; after editing testing.md, run prettier --check and the drift suite separately and reconcile by hand until both pass.
+
+## 2026-10-23 - Attribute battery reds with a pristine-tree run before touching code
+
+What happened: the dev-leg battery failed the same 4 steps (f06 LUT, f07 export, f07 roundtrip, f08 autosave) twice on the changed tree; instead of guessing from the diff, stashed all 11 changed files and re-ran the leg on the pristine tree, which failed identically, exonerating the changes as a pre-existing issue.
+Would-have-caught: the trigger audit habit of verifying against the untouched tree, applied to the battery rather than only the unit suite.
+Action: kept as a note; when a full-battery red survives one repeat, the next step is a stash-and-rerun attribution leg, not code edits.
+
+## 2026-10-23 - Boot predicate queried innerText for an aria-label
+
+What happened: the battery's post-reload boot check waited on innerText containing "Collapse Media panel", but that string lives only in an aria-label and a title attribute on an icon button, so it can never appear in innerText; when the welcome modal was also absent, boot failed every run, the restore was never clicked, and f07/f06/export all failed downstream on the empty timeline. Four deterministic reds, one dead predicate arm.
+Would-have-caught: reading the component that renders the awaited text (PanelShell renders the label into aria-label/title, not into text) instead of trusting the step comment.
+Action: kept as a note; readiness predicates must query mounted structure (roles, testids), never the visible-text rendering of a control's accessible name.

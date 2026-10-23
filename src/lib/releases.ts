@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.9.1',
+    date: '2026-10-23',
+    highlights: [
+      'Sequence Settings opens a real dialog with the project name, frame size, and frame rate',
+      'OK applies everything as one undo step, Cancel discards the draft',
+      'All menus align flush left, including Mute and the View and Window toggles',
+      'Toggle rows announce their state to screen readers again',
+    ],
+  },
+  {
     version: '0.9.0',
     date: '2026-10-22',
     highlights: [

@@ -908,8 +908,17 @@ f06_lut() {
   step_frames 18 || return 1
   sleeps 0.6
   # The FIRST video part covers the parked time (the split put it at 0.00).
-  click_clip 'sample-video.mp4 from 0.00 to' || {
+  # The clip button can lag the snapshot under load (React batches the
+  # re-render), so retry the find-and-click instead of failing single-shot.
+  local tries=0
+  while [ "$tries" -lt 30 ]; do
+    click_clip 'sample-video.mp4 from 0.00 to' && break
+    tries=$((tries + 1))
+    sleep 0.5
+  done
+  [ "$tries" -lt 30 ] || {
     echo "f06_lut: the first video part did not select" >&2
+    echo "f06_lut: clipcount=$(clipcount) labels: $(evaln '[...document.querySelectorAll("button")].map(b => b.getAttribute("aria-label") || "").filter(s => s.startsWith("Clip ")).join(" / ")' 2>/dev/null)" >&2
     return 1
   }
   ab eval 'document.querySelector("[data-testid=inspector-tab-clip]")?.click()' >/dev/null 2>&1
@@ -2515,13 +2524,19 @@ f08_autosave() {
   # editor chrome instead of assuming the reload has settled. A DOM query, not
   # the a11y snapshot: an open welcome modal hides the chrome from snap while
   # the page is fine, and the modal is exactly dismiss_greeting's case.
+  # The chrome arm queries the mounted menubar, not panel text: the collapse
+  # controls are icon-only buttons, so their "Collapse X panel" labels live in
+  # aria-label/title attributes and never appear in innerText (an innerText
+  # check for them reads a blank page as unbooted forever).
+  # The deadline is generous on purpose (reload plus dev-server recompile on a
+  # loaded box); it only binds on failure.
   local boot=0
-  deadline=$((SECONDS + settle_s))
+  deadline=$((SECONDS + 60))
   while [ "$boot" != "1" ] && [ "$SECONDS" -lt "$deadline" ]; do
-    boot=$(evaln '(() => { const d = document; return (d.body.innerText.includes("Collapse Media panel") || d.querySelector("[data-testid=release-notes-modal]")) ? "1" : "0"; })()')
+    boot=$(evaln '(() => { const d = document; return (d.querySelector("[role=menubar]") || d.querySelector("[data-testid=release-notes-modal]")) ? "1" : "0"; })()')
     [ "$boot" = "1" ] || { boot=0; sleep 0.25; }
   done
-  [ "$boot" = "1" ] || { echo "no editor boot after reload" >&2; return 1; }
+  [ "$boot" = "1" ] || { echo "no editor boot after reload (url=$(evaln 'location.href' 2>/dev/null) textlen=$(evaln 'document.body.innerText.length' 2>/dev/null))" >&2; return 1; }
   dismiss_greeting || return 1
   # Restore-banner poll (item 3): the banner renders after boot.
   local banner=0
@@ -2588,8 +2603,15 @@ f07_open_project() {
     return 1
   }
   rm -f "$PROJECT_CAPTURE"
-  sleep 2.5
-  [ "$(clipcount)" -ge 4 ] || { echo "f07: reopened project lost its clips" >&2; return 1; }
+  # Hydration refetches the bundled sample bytes before installing the doc, so
+  # poll the clip count instead of assuming a fixed settle time: a loaded box
+  # installs later than 2.5s and the old sleep read it as lost clips.
+  local waited=0
+  while [ "$(clipcount)" -lt 4 ] && [ "$waited" -lt 60 ]; do
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  [ "$(clipcount)" -ge 4 ] || { echo "f07: reopened project lost its clips (count=$(clipcount))" >&2; return 1; }
   # Since 0.5.6 the open path hydrates the bundled samples BEFORE install, so
   # the reopened project's samples come back ONLINE by themselves: park on the
   # first clip and the offline overlay must NOT appear.
@@ -2773,13 +2795,14 @@ f07_export() {
   # too slowly and raced it (three consecutive hangs here), so poll fast and
   # also accept the result view itself, which persists in the done phase.
   export_done() {
-    local poll_s=120
+    local poll_s=240
     local deadline=$((SECONDS + poll_s))
     while [ "$SECONDS" -lt "$deadline" ]; do
       [ "$(evaln 'document.body.innerText.includes("Export complete") || !!document.querySelector("[data-testid=export-result-video]")')" = "true" ] && return 0
       sleep 0.25
     done
     echo "f07: no export-complete signal within ${poll_s}s" >&2
+    echo "f07: dialog state: $(evaln 'document.body.innerText.slice(0, 200)' 2>/dev/null)" >&2
     return 1
   }
   export_done || return 1

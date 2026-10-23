@@ -3,12 +3,14 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 import { MenuBar } from '@/components/editor/MenuBar'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { useEditorStore } from '../store'
 import { CURRENT_VERSION } from '../../releases'
+import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 
 /**
  * Menu-bar regression locks: the scrollbar fix and the version label.
@@ -76,5 +78,140 @@ describe('menubar version label', () => {
     expect(label.className).toContain('text-muted-foreground')
     // Static: a plain span, not a button or a menu item.
     expect(label.tagName).toBe('SPAN')
+  })
+})
+
+/**
+ * Checkbox-row semantics: toggle rows render as plain items for flush-left
+ * alignment, so the checked state must be carried by role + aria-checked
+ * instead of the checkbox primitive. Mute is the Clip-menu instance.
+ */
+describe('menubar checkbox semantics', () => {
+  let h: MockHarness
+
+  beforeEach(() => {
+    h = installBrowserMocks()
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }))
+    useEditorStore.setState(useEditorStore.getInitialState())
+  })
+
+  afterEach(() => {
+    cleanup()
+    h.uninstall()
+  })
+
+  function audioDoc(muted: boolean) {
+    const asset = createMediaAsset({ kind: 'audio', name: 'voice.mp3' })
+    const clip = createClip({ mediaId: asset.id, muted })
+    const track = createTrack('audio', 1, { clips: [clip] })
+    const doc = createDoc()
+    doc.media = [asset]
+    doc.project.tracks = [track]
+    return { doc, clip }
+  }
+
+  function renderBar() {
+    render(
+      <MenuBar onOpenExport={() => {}} onResetLayout={() => {}} onOpenReleaseNotes={() => {}} />,
+    )
+  }
+
+  it('exposes Mute as a menuitemcheckbox reflecting the unmuted state', async () => {
+    const { doc, clip } = audioDoc(false)
+    useEditorStore.setState({ doc, selections: [clip.id], selection: clip.id })
+    renderBar()
+    await userEvent.setup().click(screen.getByText('Clip'))
+    expect(screen.getByRole('menuitemcheckbox', { name: /Mute/ })).toHaveAttribute(
+      'aria-checked',
+      'false',
+    )
+  })
+
+  it('reports aria-checked true when the selected audio is muted', async () => {
+    const { doc, clip } = audioDoc(true)
+    useEditorStore.setState({ doc, selections: [clip.id], selection: clip.id })
+    renderBar()
+    await userEvent.setup().click(screen.getByText('Clip'))
+    expect(screen.getByRole('menuitemcheckbox', { name: /Mute/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+  })
+})
+
+/** Sequence > Sequence Settings opens a modal over the project settings. */
+describe('sequence settings dialog', () => {
+  let h: MockHarness
+
+  beforeEach(() => {
+    h = installBrowserMocks()
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }))
+    useEditorStore.setState(useEditorStore.getInitialState())
+  })
+
+  afterEach(() => {
+    cleanup()
+    h.uninstall()
+  })
+
+  function renderBar() {
+    render(
+      <MenuBar onOpenExport={() => {}} onResetLayout={() => {}} onOpenReleaseNotes={() => {}} />,
+    )
+  }
+
+  async function openSettings() {
+    await userEvent.setup().click(screen.getByText('Sequence'))
+    await userEvent.setup().click(screen.getByText(/Sequence Settings/))
+  }
+
+  it('opens prefilled with the current project values', async () => {
+    renderBar()
+    await openSettings()
+    expect(screen.getByRole('dialog', { name: 'Sequence Settings' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Name')).toHaveValue('Untitled Project')
+    expect(screen.getByLabelText('Width (px)')).toHaveValue(1920)
+    expect(screen.getByLabelText('Height (px)')).toHaveValue(1080)
+    expect(screen.getByLabelText('Frame rate (fps)')).toHaveValue(30)
+  })
+
+  it('OK commits the change as a single undo step', async () => {
+    renderBar()
+    await openSettings()
+    fireEvent.change(screen.getByLabelText('Width (px)'), { target: { value: '1280' } })
+    await userEvent.setup().click(screen.getByText('OK'))
+    const state = useEditorStore.getState()
+    expect(state.doc.project.width).toBe(1280)
+    expect(state.past).toHaveLength(1)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('Cancel discards the draft', async () => {
+    renderBar()
+    await openSettings()
+    fireEvent.change(screen.getByLabelText('Height (px)'), { target: { value: '720' } })
+    await userEvent.setup().click(screen.getByText('Cancel'))
+    const state = useEditorStore.getState()
+    expect(state.doc.project.height).toBe(1080)
+    expect(state.past).toHaveLength(0)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

@@ -6,6 +6,9 @@ import { useIsMobile } from '@/hooks/use-mobile'
 
 import { NamedSlider } from '@/components/editor/NamedSlider'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { CheckIcon } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -16,7 +19,6 @@ import {
 } from '@/components/ui/dialog'
 import {
   Menubar,
-  MenubarCheckboxItem,
   MenubarContent,
   MenubarItem,
   MenubarMenu,
@@ -73,7 +75,7 @@ import {
   pickFiles,
   bumpProjectGeneration,
 } from '@/lib/editor/project-io'
-import { PANEL_BOUNDS, PANEL_IDS, type PanelId } from '@/lib/editor/workspace'
+import { PANEL_BOUNDS, PANEL_IDS } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
 import { useEditorStore } from '@/lib/editor/store'
 
@@ -120,12 +122,13 @@ export function MenuBar({
   const collapsed = useWorkspaceStore((s) => s.collapsed)
   const sizes = useWorkspaceStore((s) => s.sizes)
   const toggleHidden = useWorkspaceStore((s) => s.toggleHidden)
-  const setHidden = useWorkspaceStore((s) => s.setHidden)
 
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
   const [gainOpen, setGainOpen] = useState(false)
   const [gainValue, setGainValue] = useState(1)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsDraft, setSettingsDraft] = useState({ name: '', width: '', height: '', fps: '' })
 
   const selectedClip = useMemo(
     () => (selections[0] ? findClip(doc, selections[0])?.clip : undefined),
@@ -206,6 +209,43 @@ export function MenuBar({
     window.addEventListener('editor:audio-gain', openGainDialog)
     return () => window.removeEventListener('editor:audio-gain', openGainDialog)
   }, [openGainDialog])
+
+  // Sequence > Sequence Settings: Premiere-style dialog over the shared
+  // project settings (sequences carry no settings of their own). Draft lives
+  // in local state; OK commits one undoable command, Cancel discards.
+  const openSettingsDialog = useCallback(() => {
+    const { doc } = useEditorStore.getState()
+    setSettingsDraft({
+      name: doc.project.name,
+      width: String(doc.project.width),
+      height: String(doc.project.height),
+      fps: String(doc.project.fps),
+    })
+    setSettingsOpen(true)
+  }, [])
+
+  const saveSettingsDialog = useCallback(() => {
+    const store = useEditorStore.getState()
+    const current = store.doc.project
+    const patch: Partial<Pick<typeof current, 'name' | 'width' | 'height' | 'fps'>> = {}
+    const name = settingsDraft.name.trim()
+    if (name && name !== current.name) patch.name = name
+    const widthRaw = settingsDraft.width.trim()
+    const width = Number(widthRaw)
+    if (widthRaw !== '' && Number.isFinite(width) && Math.round(width) !== current.width)
+      patch.width = width
+    const heightRaw = settingsDraft.height.trim()
+    const height = Number(heightRaw)
+    if (heightRaw !== '' && Number.isFinite(height) && Math.round(height) !== current.height)
+      patch.height = height
+    const fpsRaw = settingsDraft.fps.trim()
+    const fps = Number(fpsRaw)
+    if (fpsRaw !== '' && Number.isFinite(fps) && Math.round(fps) !== current.fps) patch.fps = fps
+    setSettingsOpen(false)
+    if (Object.keys(patch).length === 0) return
+    store.apply({ type: 'setProjectSettings', patch })
+    toast({ title: 'Sequence settings updated' })
+  }, [settingsDraft])
 
   const execute = useCallback(
     (action: MenuActionId) => {
@@ -394,13 +434,9 @@ export function MenuBar({
             store.apply(commands)
             break
           }
-          case 'sequence.settings': {
-            // Premiere opens a modal; the MVP keeps settings in the Inspector,
-            // so surface the Inspector and deselect to reveal project settings.
-            store.deselectAll()
-            setHidden('inspector' satisfies PanelId, false)
+          case 'sequence.settings':
+            openSettingsDialog()
             break
-          }
 
           case 'marker.add': {
             const markerCommands = commandsToAddMarker(
@@ -517,7 +553,7 @@ export function MenuBar({
       onOpenReleaseNotes,
       onResetLayout,
       openGainDialog,
-      setHidden,
+      openSettingsDialog,
       showError,
       toggleHidden,
     ],
@@ -541,19 +577,20 @@ export function MenuBar({
                 item.spec.kind === 'separator' ? (
                   <MenubarSeparator key={item.spec.id} />
                 ) : item.spec.kind === 'checkbox' ? (
-                  <MenubarCheckboxItem
+                  // Checkbox rows render as plain rows so every menu stays
+                  // flush left: the checked state shows as a glyph after the
+                  // label instead of a reserved tick slot that indents Mute.
+                  <MenubarItem
                     key={item.spec.id}
-                    checked={item.checked}
+                    role="menuitemcheckbox"
+                    aria-checked={item.checked}
                     disabled={!item.enabled}
                     onSelect={() => item.spec.action && execute(item.spec.action)}
                   >
                     {item.spec.label}
-                    {item.spec.shortcut && (
-                      <MenubarShortcut className="ml-auto pl-4">
-                        {item.spec.shortcut}
-                      </MenubarShortcut>
-                    )}
-                  </MenubarCheckboxItem>
+                    {item.checked && <CheckIcon className="text-muted-foreground size-4" />}
+                    {item.spec.shortcut && <MenubarShortcut>{item.spec.shortcut}</MenubarShortcut>}
+                  </MenubarItem>
                 ) : (
                   <MenubarItem
                     key={item.spec.id}
@@ -595,6 +632,13 @@ export function MenuBar({
         onOpenChange={setGainOpen}
         value={gainValue}
         onValueChange={setGainValue}
+      />
+      <SequenceSettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        draft={settingsDraft}
+        onDraftChange={setSettingsDraft}
+        onSave={saveSettingsDialog}
       />
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
@@ -652,6 +696,108 @@ function AudioGainDialog({
             Close
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Sequence > Sequence Settings… — Premiere-style modal over the shared
+ * project settings (frame size, frame rate, name). Draft edits stay local;
+ * OK commits a single undoable `setProjectSettings`, Cancel discards. */
+function SequenceSettingsDialog({
+  open,
+  onOpenChange,
+  draft,
+  onDraftChange,
+  onSave,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  draft: { name: string; width: string; height: string; fps: string }
+  onDraftChange: (draft: { name: string; width: string; height: string; fps: string }) => void
+  onSave: () => void
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Sequence Settings</DialogTitle>
+          <DialogDescription>
+            Frame size and frame rate apply to the whole project.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="space-y-3 py-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            onSave()
+          }}
+        >
+          <div>
+            <Label className="text-xs" htmlFor="sequence-settings-name">
+              Name
+            </Label>
+            <Input
+              id="sequence-settings-name"
+              className="mt-1 h-8 text-xs"
+              value={draft.name}
+              onChange={(e) => onDraftChange({ ...draft, name: e.target.value })}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs" htmlFor="sequence-settings-width">
+                Width (px)
+              </Label>
+              <Input
+                id="sequence-settings-width"
+                type="number"
+                className="mt-1 h-8 text-xs"
+                value={draft.width}
+                min={64}
+                max={3840}
+                step={2}
+                onChange={(e) => onDraftChange({ ...draft, width: e.target.value })}
+              />
+            </div>
+            <div>
+              <Label className="text-xs" htmlFor="sequence-settings-height">
+                Height (px)
+              </Label>
+              <Input
+                id="sequence-settings-height"
+                type="number"
+                className="mt-1 h-8 text-xs"
+                value={draft.height}
+                min={64}
+                max={2160}
+                step={2}
+                onChange={(e) => onDraftChange({ ...draft, height: e.target.value })}
+              />
+            </div>
+          </div>
+          <div>
+            <Label className="text-xs" htmlFor="sequence-settings-fps">
+              Frame rate (fps)
+            </Label>
+            <Input
+              id="sequence-settings-fps"
+              type="number"
+              className="mt-1 h-8 text-xs tabular-nums"
+              value={draft.fps}
+              min={1}
+              max={60}
+              step={1}
+              onChange={(e) => onDraftChange({ ...draft, fps: e.target.value })}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="secondary" type="button" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit">OK</Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )
