@@ -52,6 +52,7 @@ export default defineConfig({
         'src/lib/editor/store.ts',
         'src/lib/editor/persistence.ts',
         'src/lib/editor/workspace.ts',
+        'src/lib/editor/theme.ts',
         'src/lib/editor/menus.ts',
         'src/lib/releases.ts',
       ],

@@ -288,3 +288,23 @@ Action: kept as a note; any test using vi.resetModules must import the renderer 
 What happened: a review found the keyframes/@property/hue tests pinned only a subset of what the plan's lock paragraph claimed (missing 0/25/100 stops, the --b peak, syntax/initial-value, and any hue-duration or wrapper assertion). The suite was green while the plan promised more.
 Would-have-caught: diffing the lock paragraph against the test file line by line when the plan was written, not after review.
 Action: kept as a note; new lock paragraphs get a symbol-by-symbol check against the test file before the plan ships.
+
+## 2026-10-24 - React set-state-in-effect on a dialog open read
+What happened: the appearance dialog's `open` effect called `setSelected(readTheme(...))`; `bun run lint` rejected it with `react-hooks/set-state-in-effect`.
+Would-have-caught: checking the React Compiler lint rules before choosing an effect to re-read storage on open.
+Action: kept as a note; mount the dialog only while open, read storage in the state initializer, and keep the effect for the external DOM sync only.
+
+## 2026-10-24 - failing RTL assertion leaked the mounted preloader
+What happened: `home.test.tsx`'s new boot test failed before its inline `rtl.cleanup()`, leaving a mounted preloader whose pending 3.2s timer failed the next three tests.
+Would-have-caught: a failure-safe `afterEach` cleanup in any suite that renders a long-lived component with timers.
+Action: kept as a note; register the RTL cleanup in the suite's `afterEach`, not only at the end of each test.
+
+## 2026-10-24 - storage getter throws before the method guard
+What happened: a review found `window.localStorage` was evaluated at the Home effect and both AppearanceDialog call sites, so a blocked getter escaped before `readTheme`/`writeTheme` could catch the method error. The boot could crash instead of using Default.
+Would-have-caught: treating the property access as part of the storage trust boundary, not only the `getItem`/`setItem` calls.
+Action: kept as a note; browser storage access goes through `themeStorage`, which returns `null` on a throwing getter, and callers pass that result to the pure helpers.
+
+## 2026-10-24 - a Map hid duplicate declarations from the token-set lock
+What happened: the palette token-set test read CSS declarations into a Map, so a duplicate allowed token collapsed and the "exactly 17" contract was not enforced. Borders and inputs were skipped by the contrast loop and never asserted.
+Would-have-caught: using the declaration list for count/duplicate contracts, and giving every intentionally skipped value its own assertion.
+Action: kept as a note; count locks read declarations, not key sets, and skipped values get explicit locks.

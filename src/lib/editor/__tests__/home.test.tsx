@@ -19,11 +19,16 @@ const SHELL_READY = 'shell-ready'
 
 type Rtl = typeof import('@testing-library/react')
 
+let cleanupRtl: (() => void) | null = null
+
 async function setup(mockEditorShell: () => { default: unknown }) {
   vi.resetModules()
   vi.doMock('@/components/editor/EditorShell', mockEditorShell)
   const rtl: Rtl = await import('@testing-library/react')
   const Home = (await import('@/app/page')).default
+  // Unmount even when an assertion fails, so a failed case cannot leave a
+  // mounted preloader and its pending timer behind for the next test.
+  cleanupRtl = rtl.cleanup
   return { Home, rtl }
 }
 
@@ -36,7 +41,11 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  cleanupRtl?.()
+  cleanupRtl = null
   vi.useRealTimers()
+  window.localStorage.clear()
+  delete document.documentElement.dataset.palette
 })
 
 describe('home boot', () => {
@@ -58,6 +67,16 @@ describe('home boot', () => {
     })
     expect(rtl.screen.queryByTestId(SHELL_READY)).not.toBeNull()
     expect(document.querySelector('[data-testid="preloader-grid"]')).toBeNull()
+    rtl.cleanup()
+  })
+
+  it('applies a stored palette on boot', async () => {
+    const { Home, rtl } = await setup(stubShell)
+    const { THEME_STORAGE_KEY } = await import('@/lib/editor/theme')
+    window.localStorage.setItem(THEME_STORAGE_KEY, 'midnight')
+    rtl.render(<Home />)
+    await rtl.act(async () => {})
+    expect(document.documentElement.dataset.palette).toBe('midnight')
     rtl.cleanup()
   })
 

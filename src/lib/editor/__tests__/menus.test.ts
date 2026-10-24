@@ -218,6 +218,12 @@ describe('menu structure (Premiere Pro–style)', () => {
     )
     expect(actions).toEqual(expected)
   })
+
+  it('exposes Appearance in the View menu without a shortcut', () => {
+    const item = itemOf('View', 'view.appearance')
+    expect(item.label).toBe('Appearance…')
+    expect(item.shortcut).toBeUndefined()
+  })
 })
 
 describe('menu state resolution (buildMenus)', () => {

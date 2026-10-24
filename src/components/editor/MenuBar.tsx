@@ -5,6 +5,7 @@ import { toast } from '@/hooks/use-toast'
 import { useIsMobile } from '@/hooks/use-mobile'
 
 import { NamedSlider } from '@/components/editor/NamedSlider'
+import { AppearanceDialog } from '@/components/editor/AppearanceDialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -128,6 +129,7 @@ export function MenuBar({
   const [gainOpen, setGainOpen] = useState(false)
   const [gainValue, setGainValue] = useState(1)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [appearanceOpen, setAppearanceOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState({ name: '', width: '', height: '', fps: '' })
 
   const selectedClip = useMemo(
@@ -506,6 +508,9 @@ export function MenuBar({
           case 'view.useProxies':
             store.setProxiesEnabled(!store.proxiesEnabled)
             break
+          case 'view.appearance':
+            setAppearanceOpen(true)
+            break
 
           case 'window.toggleMedia':
             toggleHidden('media')
@@ -539,6 +544,12 @@ export function MenuBar({
           case 'help.about':
             setAboutOpen(true)
             break
+          default: {
+            // Exhaustiveness guard: a new MenuActionId without a case is a
+            // typecheck failure here instead of a silent no-op.
+            const exhaustive: never = action
+            throw new Error(`Unhandled menu action: ${String(exhaustive)}`)
+          }
         }
       } catch (error) {
         if (error instanceof EditorCommandError) {
@@ -642,6 +653,7 @@ export function MenuBar({
       />
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
+      {appearanceOpen && <AppearanceDialog open onOpenChange={setAppearanceOpen} />}
     </>
   )
 }

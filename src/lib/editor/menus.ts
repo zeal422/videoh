@@ -58,6 +58,7 @@ export type MenuActionId =
   | 'view.zoomFit'
   | 'view.toggleSnap'
   | 'view.useProxies'
+  | 'view.appearance'
   | 'window.toggleMedia'
   | 'window.togglePreview'
   | 'window.toggleSource'
@@ -462,6 +463,13 @@ export const MENU_SPECS: MenuSpec[] = [
         label: 'Use Proxies',
         action: 'view.useProxies',
         checked: (ctx) => ctx.proxiesEnabled,
+      },
+      { id: 'view.sep2', kind: 'separator' },
+      {
+        id: 'view.appearance',
+        kind: 'item',
+        label: 'Appearance…',
+        action: 'view.appearance',
       },
     ],
   },

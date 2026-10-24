@@ -51,6 +51,8 @@ src/components/
 ├── editor/                       # editor UI (see architecture.md for responsibilities)
 │   ├── EditorShell.tsx           #   panel workspace layout + autosave/restore + gesture safety net + release-notes auto-open
 │   ├── MenuBar.tsx               #   Premiere-style menu bar + dialogs + right-edge version label
+│   ├── AppearanceDialog.tsx      #   View > Appearance palette picker, applies and persists immediately
+│   ├── apply-theme.ts            #   writes/removes `data-palette` on `<html>`
 │   ├── ReleaseNotesModal.tsx     #   welcome modal: last five versions, Help > What is new
 │   ├── PanelShell.tsx            #   resizable/collapsible panel frame
 │   ├── Toolbar.tsx               #   tools, history, tracks, save/open, export
@@ -141,6 +143,7 @@ src/lib/editor/
 ├── persistence.ts        # debounced localStorage autosave + restore
 ├── workspace.ts          # panel layout state (pure)
 ├── workspace-store.ts    # zustand wrapper over workspace.ts
+├── theme.ts              # appearance palette ids/labels + preference read/write (pure)
 ├── menus.ts              # menu bar model (pure)
 ├── project-io.ts         # save / open / import-media / sample browser helpers
 ├── sample-media.ts       # bundled sample list + load plan (fresh adds, offline relinks)
@@ -162,7 +165,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 70 test files (1519 tests) in `__tests__/` plus `src/lib/gate.test.ts`: see testing.md
+└── __tests__/            # 71 test files (1539 tests) in `__tests__/` plus `src/lib/gate.test.ts`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

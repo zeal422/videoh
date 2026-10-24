@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.10.0',
+    date: '2026-10-24',
+    highlights: [
+      'View > Appearance offers curated dark palettes: Default, Midnight, Forest, and Plum',
+      'A selection applies immediately through the CSS token layer and persists per browser',
+      'The palette lives under its own storage key, so Reset Workspace Layout cannot change it',
+      'Clip kinds, markers, the monitor, scopes, and the boot splash keep their fixed colours',
+      'Destructive toast text now uses a declared foreground token instead of inheriting the page text colour',
+    ],
+  },
+  {
     version: '0.9.2',
     date: '2026-10-23',
     highlights: [

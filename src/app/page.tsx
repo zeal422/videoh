@@ -4,7 +4,9 @@ import { useEffect, useState } from 'react'
 import type { ComponentType } from 'react'
 
 import { Preloader } from '@/components/editor/Preloader'
+import { applyTheme, themeStorage } from '@/components/editor/apply-theme'
 import { Button } from '@/components/ui/button'
+import { readTheme } from '@/lib/editor/theme'
 
 /**
  * Web Video Editor, a single-page editor.
@@ -28,6 +30,9 @@ export default function Home() {
   const [Shell, setShell] = useState<ComponentType | null>(null)
   const [failed, setFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)
+  useEffect(() => {
+    applyTheme(readTheme(themeStorage()))
+  }, [])
   useEffect(() => {
     let cancelled = false
     setFailed(false)

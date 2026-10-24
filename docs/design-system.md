@@ -6,17 +6,45 @@ Tokens, theming, layout, and UI conventions. Sibling docs: [docs index](README.m
 
 ## Theming
 
-- **Dark-only.** `src/app/layout.tsx` renders `<html lang="en" className="dark">` — the theme lives on
-  `<html>` so every Radix portal (menu, select, dialog, tooltip, toast), which mounts at `document.body`
-  outside any component tree, resolves the dark tokens. Do not add a `dark` wrapper inside the shell.
-- **Tokens live in CSS.** `src/app/globals.css` declares `:root` (light reference) and `.dark` (the
-  applied theme). A `@theme inline` block maps each CSS variable to a Tailwind utility
-  (`--color-background` → `bg-background`, etc.), and `@custom-variant dark (&:is(.dark *))` wires the
-  `dark:` variant. This is Tailwind 4's CSS-first configuration; there is no `tailwind.config.ts`.
+- **Dark base, curated palettes.** `src/app/layout.tsx` puts `className="dark"` on `<html>`, so every
+  Radix portal (menu, select, dialog, tooltip, toast), which mounts at `document.body` outside any
+  component tree, resolves the dark tokens. Do not add a `dark` wrapper inside the shell.
+- **Tokens live in CSS.** `src/app/globals.css` declares `:root` (light reference plus the shared
+  `--radius`) and `.dark` (the default applied theme). A `@theme inline` block maps each CSS variable
+  to a Tailwind utility (`--color-background` → `bg-background`, etc.), and `@custom-variant dark
+(&:is(.dark *))` wires the `dark:` variant. This is Tailwind 4's CSS-first configuration; there is
+  no `tailwind.config.ts`.
 - **Native widgets follow the theme.** `.dark` sets `color-scheme: dark` so number-input spinners,
   scrollbars, and checkboxes render dark chrome instead of flashing white.
-- **There is no theming dependency.** No `next-themes` (or any other theme library) is installed and
-  no switcher is rendered — dark is the application's only theme.
+- **Palettes layer on top.** View > Appearance stores an allowlisted id under
+  `web-video-editor:theme:v1` and sets `data-palette` on `<html>`. The boot effect in
+  `src/app/page.tsx` applies it behind the opaque preloader. The `:root[data-palette='<id>']` blocks
+  override only the 17 chrome tokens below. Default is the absence of the attribute, so no
+  `data-palette="default"` block exists.
+- **No theming dependency.** No `next-themes` or other theme library is installed; the switch is CSS
+  custom properties plus `localStorage`.
+
+## Palettes
+
+The curated palettes (Midnight, Forest, Plum) change the app chrome only. Every block declares the
+same 17 tokens:
+
+`--background`, `--foreground`, `--card`, `--card-foreground`, `--popover`, `--popover-foreground`,
+`--primary`, `--primary-foreground`, `--secondary`, `--secondary-foreground`, `--muted`,
+`--muted-foreground`, `--accent`, `--accent-foreground`, `--border`, `--input`, `--ring`.
+
+They leave the fixed chrome alone: clip kind colours, playhead and selection rose, snap amber,
+marker swatches, the monitor and scopes zinc, the boot splash, `--destructive`, and the
+chart/sidebar/radius tokens. The release-notes emerald accents stay fixed too.
+
+`theme.test.ts` locks the block set, the exact token set per block, and the contrast floors: 4.5:1
+for foreground, muted foreground, primary text, and destructive text, and 3:1 for the focus ring.
+The destructive text pair is declared explicitly (`--destructive-foreground`), so warning text does
+not inherit a tinted `--foreground`. Palette borders and inputs stay at the fixed 10% and 15% alpha
+whites, which the token test also locks.
+
+The boot splash stays pure black with the violet ripple. A tinted palette contrasts with it at
+reveal; that is accepted, not a defect.
 
 ## Tokens
 
@@ -43,7 +71,9 @@ All colours are authored in `oklch()`. Use the semantic utilities (`bg-backgroun
 
 ## Editor chrome (deliberate exceptions)
 
-The video surfaces stay dark regardless of the token theme, the way an NLE's monitor does:
+The video surfaces stay dark regardless of the palette, the way an NLE's monitor does. The appearance
+palettes change only the 17 chrome tokens above; these surfaces and semantic accents do not follow
+them:
 
 - The program monitor and transport bar use fixed zinc (`bg-zinc-950`, `border-zinc-800`,
   `text-zinc-300`) so the preview canvas reads as a monitor, not a page.

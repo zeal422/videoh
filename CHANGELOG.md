@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] - 2026-10-24
+
+### Added
+
+- **Appearance palettes.** View > Appearance offers Default, Midnight, Forest, and Plum. A selection applies immediately through the CSS token layer and persists per browser under its own key, independent of the workspace layout. Only the 17 chrome tokens change; clip kinds, markers, the monitor, scopes, and the boot splash stay fixed. Token-set, block-inventory, and OKLCH contrast tests lock the palettes.
+
+### Changed
+
+- **Destructive toast text.** `--destructive-foreground` is now declared and mapped, so warning text no longer inherits `--foreground`. The dark pair measures 6.19:1 after the sRGB gamut mapping; the inherited near-white measured 2.77:1.
+- **Blocked storage access.** The palette preference obtains `localStorage` through a guard, so a browser that throws on the getter falls back to Default instead of failing the boot or the dialog.
+
 ## [0.9.2] - 2026-10-23
 
 ### Added

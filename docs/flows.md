@@ -492,3 +492,17 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
 - The menu bar mirrors Premiere Pro's menus with **no dead items** and **no fake shortcuts**: item
   enablement is computed from editor context, and the shortcut column only lists wired keys.
 - Below 768 px the workspace falls back to a fixed stacked layout.
+
+## Change appearance
+
+- View > Appearance opens the palette picker: Default, Midnight, Forest, and Plum. The dialog is
+  hosted by `MenuBar.tsx`, and the list is `THEMES` in `src/lib/editor/theme.ts`.
+- Selection applies immediately and writes the id under `web-video-editor:theme:v1`, separate from
+  the workspace layout key. Choosing Default removes the key and the `data-palette` attribute, so
+  the base `.dark` tokens are the default.
+- The boot effect in `src/app/page.tsx` applies the stored palette behind the preloader. The dialog
+  mounts only while it is open, so every open reads the stored value and applies it.
+- Palettes override only the 17 chrome tokens. Clip kinds, markers, the monitor, scopes, the splash,
+  and `--destructive` stay fixed, and the monitor and scopes keep their neutral NLE surfaces.
+- If the browser blocks `localStorage` at the getter, the app falls back to Default instead of
+  failing the boot or the dialog; a selection still applies for that session but cannot persist.

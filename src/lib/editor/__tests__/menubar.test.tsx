@@ -10,6 +10,7 @@ import { MenuBar } from '@/components/editor/MenuBar'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { useEditorStore } from '../store'
 import { CURRENT_VERSION } from '../../releases'
+import { THEME_STORAGE_KEY } from '../theme'
 import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 
 /**
@@ -213,5 +214,44 @@ describe('sequence settings dialog', () => {
     expect(state.doc.project.height).toBe(1080)
     expect(state.past).toHaveLength(0)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+})
+
+/** View > Appearance opens the palette dialog and applies a selection at once. */
+describe('appearance dialog', () => {
+  let h: MockHarness
+
+  beforeEach(() => {
+    h = installBrowserMocks()
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }))
+    useEditorStore.setState(useEditorStore.getInitialState())
+  })
+
+  afterEach(() => {
+    cleanup()
+    h.uninstall()
+    window.localStorage.clear()
+    delete document.documentElement.dataset.palette
+  })
+
+  it('opens from View and applies the selected palette', async () => {
+    render(
+      <MenuBar onOpenExport={() => {}} onResetLayout={() => {}} onOpenReleaseNotes={() => {}} />,
+    )
+    await userEvent.setup().click(screen.getByText('View'))
+    await userEvent.setup().click(screen.getByText('Appearance…'))
+    expect(screen.getByRole('dialog', { name: 'Appearance' })).toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('radio', { name: 'Midnight' }))
+    expect(document.documentElement.dataset.palette).toBe('midnight')
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('midnight')
   })
 })
