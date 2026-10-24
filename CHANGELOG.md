@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.2] - 2026-10-23
+
+### Added
+
+- **Ripple preloader.** The boot loading fallback is a 10x10 ripple grid: one seamless center-out wave per 1.6s cycle with no mid-show restarts. Reduced motion keeps a static dim grid, and screen readers get the same plain "Loading editor" label as before. A failed load shows a retry instead of hanging.
+
 ## [0.9.1] - 2026-10-23
 
 ### Added

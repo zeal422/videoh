@@ -236,3 +236,55 @@ Action: kept as a note; when a full-battery red survives one repeat, the next st
 What happened: the battery's post-reload boot check waited on innerText containing "Collapse Media panel", but that string lives only in an aria-label and a title attribute on an icon button, so it can never appear in innerText; when the welcome modal was also absent, boot failed every run, the restore was never clicked, and f07/f06/export all failed downstream on the empty timeline. Four deterministic reds, one dead predicate arm.
 Would-have-caught: reading the component that renders the awaited text (PanelShell renders the label into aria-label/title, not into text) instead of trusting the step comment.
 Action: kept as a note; readiness predicates must query mounted structure (roles, testids), never the visible-text rendering of a control's accessible name.
+
+## 2026-10-23 - Green jsdom suite hid a dead CSS cascade
+
+What happened: the 10-cell preloader suite passed (100 cells, delays, statics) while the rendered grid sat frozen dim in a real browser. The opacity calc lived in a Tailwind utility but an inline opacity: 0.25 overrode it: CSS animations override inline styles only for the properties they animate (--bo/--bi), not for downstream properties computed from them. Unit tests cannot see cascade precedence.
+Would-have-caught: the manual browser proof rung, which ran before the gate was final and moved the calc inline where the animated variables resolve.
+Action: kept as a note; when animation-adjacent presentation splits across utilities and inline styles, verify the winning declaration in a real browser before calling the suite green.
+
+## 2026-10-23 - Stale Turbopack CSS survived a dev-server restart
+
+What happened: after changing keyframes in globals.css, the browser ran the OLD percentages (resolved offsets 0/0.1875/0.375/1 instead of 0/0.125/0.25/1) even though the dev server had been restarted after the edit and the file on disk was correct. Only wiping .next forced a fresh compile. Manual timing probes caught it because measured peaks disagreed with the plan math.
+Would-have-caught: asserting the resolved keyframes in-browser (getKeyframes offsets) as part of any CSS-animation proof, instead of assuming restart picks up stylesheet edits.
+Action: kept as a note; when a browser-measured animation disagrees with source, check getKeyframes before doubting the math, and wipe .next when they differ.
+
+## 2026-10-24 - Preloader double-start was the dynamic boundary, not the component
+What happened: the boot grid visibly restarted ~245ms after mount in dev and production. Two suspects were cleared first (StrictMode off still remounted; render made fully deterministic with identical SSR bytes, still remounted), and a mount fade was shipped to mask it. A static route rendering the same component showed zero remounts, proving the cause was next/dynamic's loading boundary replacing its fallback after hydration; the fix was loading the shell chunk in an effect with no dynamic boundary, plus deleting the component's own 1.6s key-change loop cut, which was a second restart by design.
+Would-have-caught: trigger 2 (read before you climb) applied to the framework piece: isolate the component from its boundary with a static route before theorizing about hydration or masking with a fade.
+Action: kept as a note; a mount-time visual restart gets a boundary-vs-component isolation probe before any masking animation.
+
+## 2026-10-24 - Zone map read of the reference clip was wrong
+What happened: the plan's frame-by-frame analysis claimed a four-stage chase (corners, center, middle, outer); on a real screen it played as discrete blocks, not a ripple, and corners-first looked broken. Replaced with the continuous center-out wave the pattern name implies (delay proportional to Euclidean distance, sub-0.2s adjacent steps), with a smoothness lock that fails on any stepped map (proven red against the old zone logic).
+Would-have-caught: trigger 7 (prove the fix, not the wiring): the zone read was settled by stills, never by watching the wave move on a screen early.
+Action: kept as a note; motion reads get a live screen check before the plan locks them.
+
+## 2026-10-24 - Computed-style-right mask still looked square
+What happened: the first radial feather (opaque to 50%, gone at 100% of the corner radius) resolved correctly in getComputedStyle but screenshots still showed a hard square: at 50-100% the edge midpoints kept 42% of their light, so the resting grid and the arriving wavefront both held a visible edge. Tightening to 40-85% plus dropping the resting base 0.12 to 0.07 produced the round melt.
+Would-have-caught: trigger 7 (prove the look, not the wiring): a mask is a visual value, so the verdict is the screenshot, never the computed style.
+Action: kept as a note.
+
+## 2026-10-24 - Designed hold vs fixed harness sleeps (battery 26/63)
+What happened: the first battery on the preloader tree went 26/63 with g0 failing first. The cause was the 3.2s min-show hold outlasting the harness's fixed 2.5s post-navigation sleeps: g0/s02/f11-once asserted inside the preloader window, f01's click then raced the reveal, and every media-dependent step cascaded. Fixed harness-side with a menubar boot poll (60s deadline) at the three navigation points; step count unchanged at 63.
+Would-have-caught: trigger 2 (read before you climb) applied to the failing step itself: g0's sleep-vs-hold mismatch was visible in two files before any rerun.
+Action: kept as a note; when a feature adds a designed load hold, the harness's fixed post-navigation sleeps must become boot polls in the same change.
+
+## 2026-10-24 - Review findings need per-line verification, not trust
+What happened: three pasted review findings (harness wait placement, page import rejection, opacity var fallback) all checked out against the current code, including two the implementer had deferred or never considered; the opacity one (unregistered var invalidates the whole calc) would have shipped a bright grid to exactly the oldest browsers. No finding was followed blindly: each was re-read in its file, two needed new tests, one needed only a move.
+Would-have-caught: the standing rule to verify review text as untrusted data before editing.
+Action: kept as a note; a pasted finding still gets its evidence line opened and its red run captured before the fix counts.
+
+## 2026-10-24 - Assert nothing, attach the run that proves it
+What happened: three review findings survived a "clean" verdict because each rested on an untested assumption (gate always shows, chunk never fails, unknown var reads as 0). The claims were asserted from reasoning, never from a run down that path.
+Would-have-caught: trigger 7 applied to negative space: for every claim, name the run that exercised the failure path, not just the happy path. A verdict with no attached failing-then-passing run is a draft, not a result.
+Action: promoted into the working order: every "verified" statement in a report names its evidence (log line, probe output, red/green run). No evidence, no claim.
+
+## 2026-10-24 - resetModules duplicates React for dynamic imports
+What happened: a review claimed home.test.tsx paired two React copies (static renderer vs post-reset dynamic page import). An identity probe confirmed it: pre-reset and post-reset dynamic imports of react are different objects. The tests passed anyway, but only by accident of shared internals.
+Would-have-caught: probing module identity instead of assuming externalized deps are singletons.
+Action: kept as a note; any test using vi.resetModules must import the renderer from the same post-reset registry as the unit under test, and an identity probe settles singleton claims.
+
+## 2026-10-24 - Plan locks weaker than the plan text
+What happened: a review found the keyframes/@property/hue tests pinned only a subset of what the plan's lock paragraph claimed (missing 0/25/100 stops, the --b peak, syntax/initial-value, and any hue-duration or wrapper assertion). The suite was green while the plan promised more.
+Would-have-caught: diffing the lock paragraph against the test file line by line when the plan was written, not after review.
+Action: kept as a note; new lock paragraphs get a symbol-by-symbol check against the test file before the plan ships.

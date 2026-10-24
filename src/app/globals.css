@@ -157,6 +157,58 @@
   -webkit-user-select: none;
 }
 
+/* ----- Boot preloader (10x10 ripple) -----
+   One registered number property carries the per-cell flash brightness.
+   The lobe is a flat-top 0.4s flash inside the shared 1.6s cycle:
+   0, full at 6.25% (0.1s), hold to 18.75% (0.3s), back to 0 at 25%
+   (0.4s), quiet the rest of the cycle. The delay rides inline per cell
+   (see Preloader.tsx). The hue loop is exactly three pulse cycles
+   (4.8s). Browsers without @property support ignore the registration, so
+   the wave steps discretely instead of rippling smoothly.
+   `motion-safe:` keeps reduced-motion users on the static dim grid. */
+@property --b {
+  syntax: '<number>';
+  inherits: false;
+  initial-value: 0;
+}
+@keyframes ripple {
+  0% {
+    --b: 0;
+  }
+  6.25%,
+  18.75% {
+    --b: 1;
+  }
+  25%,
+  100% {
+    --b: 0;
+  }
+}
+@keyframes hue-travel {
+  from {
+    filter: hue-rotate(0deg);
+  }
+  to {
+    filter: hue-rotate(360deg);
+  }
+}
+@utility ripple-cell {
+  animation: ripple 1.6s linear infinite backwards;
+}
+/* Feather: a radial mask melts the grid edges to transparent, so the boot
+   splash reads as a round glow instead of a hard square. Fully lit inside
+   40% of the corner radius, gone by 85%: edge midpoints hold a third of
+   their light, corners dissolve completely, and the wave visibly melts as
+   it travels out. Not motion-safe gated: the static reduced-motion grid
+   gets the same soft edge. */
+@utility ripple-feather {
+  -webkit-mask-image: radial-gradient(circle at center, black 40%, transparent 85%);
+  mask-image: radial-gradient(circle at center, black 40%, transparent 85%);
+}
+@utility hue-travel {
+  animation: hue-travel 4.8s linear infinite;
+}
+
 /* A clip dragged over a lane that cannot host it (kind mismatch): mark the
    lane as blocked instead of silently ignoring the drop. Set/cleared by
    ClipView for the duration of the drag. */

@@ -277,6 +277,21 @@ fill_timing() { # fill_timing <start> <duration> — Timing spinbuttons of a sel
 # ————— 0. boot —————
 s01_boot() { ab open "$BASE_URL" >/dev/null && sleep 2.5; }
 
+# Boot poll: after any navigation the 3.2s preloader hold (plus dev-server
+# compile on a cold box) means a fixed sleep cannot land past the reveal.
+# Poll the mounted menubar with a 60s deadline instead; the deadline only
+# binds on failure. A DOM query, not the a11y snapshot: an open welcome
+# modal hides the chrome from snap while the page is fine.
+wait_boot() {
+  local boot=0
+  local deadline=$((SECONDS + 60))
+  while [ "$boot" != "1" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    boot=$(evaln '(() => { const d = document; return (d.querySelector("[role=menubar]") || d.querySelector("[data-testid=release-notes-modal]")) ? "1" : "0"; })()')
+    [ "$boot" = "1" ] || { boot=0; sleep 0.25; }
+  done
+  [ "$boot" = "1" ] || { echo "no editor boot after navigation (url=$(evaln 'location.href' 2>/dev/null))" >&2; return 1; }
+}
+
 # g0 gate login — the app sits behind a password gate (src/proxy.ts). With
 # GATE_PASSWORD unset (gate open) this is a no-op; with it set, the first
 # navigation lands on /gate and every later step needs the session cookie.
@@ -284,15 +299,16 @@ g0_login() {
   if snap | grep -q 'This editor is private'; then
     ab fill 'input[type=password]' "${GATE_PASSWORD:?GATE_PASSWORD must match the server}" >/dev/null
     ab press Enter >/dev/null
-    sleep 2.5
   fi
+  wait_boot || return 1
   dismiss_greeting || return 1 # fresh visitor: the welcome modal hides the app until closed
   snap | grep -q 'Load sample media'
 }
 
 s02_fresh() {
   ab eval 'localStorage.clear()' >/dev/null
-  ab reload >/dev/null && sleep 2.5
+  ab reload >/dev/null
+  wait_boot || return 1
   dismiss_greeting || return 1
   snap | grep -q 'Load sample media'
 }
@@ -315,7 +331,8 @@ f11_whatsnew_once() {
   # must NOT greet again. The reload surfaces the autosave restore banner
   # (edits happened); the banner must not bring the greeting back, and the
   # session must continue on the RESTORED doc for the steps that follow.
-  ab reload >/dev/null && sleep 2.5
+  ab reload >/dev/null
+  wait_boot || return 1
   local n
   n=$(evaln 'document.querySelectorAll("[data-testid=release-notes-modal]").length')
   [ "$n" = "0" ] || return 1

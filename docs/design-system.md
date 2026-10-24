@@ -55,7 +55,11 @@ The video surfaces stay dark regardless of the token theme, the way an NLE's mon
   `markers.ts`, Tailwind 500-family values) applied as an inline `backgroundColor`. They are content
   data (the colour the user picked) and stay fixed across themes.
 - The kind colours and the marker swatch palette are the only places non-token palette values are
-  expected; surfaces, text, and controls still use tokens.
+  expected, plus the boot splash below; surfaces, text, and controls still use tokens.
+- **The boot splash** is a fullscreen exception in the monitor's spirit: a pure black field
+  (`bg-black`) matching the pitch-black reference, with a violet cell base (`hsl(270, 100%, 50%)`,
+  the reference's start hue) that the wrapper hue-rotates through the full wheel. No token can
+  express a full-hue cycle, so the base stays a literal, the way the monitor stays zinc.
 
 ## Layout conventions
 

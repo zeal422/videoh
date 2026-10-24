@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.9.2',
+    date: '2026-10-23',
+    highlights: [
+      'The boot screen is a 10x10 ripple grid: one seamless center-out wave per 1.6s cycle, no restarts, with the lit color traveling the full hue wheel',
+      'The lit color travels the full hue wheel every three pulses',
+      'Reduced motion keeps a static dim grid instead of the animation',
+      'A failed chunk load shows a retry instead of hanging on the splash',
+      'No progress bar: the boot import reports no progress, so a counter would be theater',
+    ],
+  },
+  {
     version: '0.9.1',
     date: '2026-10-23',
     highlights: [
