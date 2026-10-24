@@ -10,9 +10,19 @@ export const THEME_STORAGE_KEY = 'web-video-editor:theme:v1'
 
 export const THEMES = [
   { id: 'default', label: 'Default' },
-  { id: 'midnight', label: 'Midnight' },
+  { id: 'garnet', label: 'Garnet' },
+  { id: 'blush', label: 'Blush' },
+  { id: 'ember', label: 'Ember' },
+  { id: 'honey', label: 'Honey' },
+  { id: 'olive', label: 'Olive' },
   { id: 'forest', label: 'Forest' },
+  { id: 'lagoon', label: 'Lagoon' },
+  { id: 'ocean', label: 'Ocean' },
+  { id: 'steel', label: 'Steel' },
+  { id: 'midnight', label: 'Midnight' },
+  { id: 'indigo', label: 'Indigo' },
   { id: 'plum', label: 'Plum' },
+  { id: 'orchid', label: 'Orchid' },
 ] as const satisfies readonly { id: string; label: string }[]
 
 export type ThemeId = (typeof THEMES)[number]['id']

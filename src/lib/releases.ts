@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.10.1',
+    date: '2026-10-24',
+    highlights: [
+      'View > Appearance adds ten palettes: Garnet, Blush, Ember, Honey, Olive, Lagoon, Ocean, Steel, Indigo, and Orchid',
+      'The picker is a two-column grid in a scrollable dialog, so all fourteen choices fit short windows',
+      'Every palette still changes only the 17 chrome tokens; clip kinds, markers, the monitor, scopes, and the splash stay fixed',
+      'Existing palettes and saved choices keep working, and the same contrast and token locks cover every block',
+    ],
+  },
+  {
     version: '0.10.0',
     date: '2026-10-24',
     highlights: [

@@ -167,6 +167,11 @@ describe('theme wiring', () => {
 })
 
 describe('theme preference', () => {
+  it('keeps theme ids and labels unique', () => {
+    expect(new Set(THEMES.map((theme) => theme.id)).size).toBe(THEMES.length)
+    expect(new Set(THEMES.map((theme) => theme.label)).size).toBe(THEMES.length)
+  })
+
   it('accepts only the listed ids and falls back to the default', () => {
     for (const theme of THEMES) {
       expect(readTheme(storageOf(theme.id)), theme.id).toBe(theme.id)

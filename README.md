@@ -33,7 +33,7 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/
 - **Autosave/restore** — debounced localStorage writes with a restore-or-discard banner on the next visit.
 - **Premiere-style menu bar** — File · Edit · Clip · Sequence · Marker · Graphics · View · Window · Help, driven by a pure, unit-tested menu model; items whose preconditions are unmet render disabled (no dead entries).
 - **Resizable workspace**. Every panel (Media, Source Monitor, Program Monitor, Inspector, Timeline, Captions) is user-resizable and collapsible; sizes, collapsed strips, and panel visibility persist across sessions. Window menu toggles panels, double-click a resize handle to reset its neighbor, and small screens fall back to a fixed stacked layout.
-- **Appearance palettes**. View > Appearance offers Default, Midnight, Forest, and Plum. A selection applies immediately through the CSS token layer and persists per browser under its own storage key, so Reset Workspace Layout cannot change it. Clip kinds, markers, the monitor, scopes, and the boot splash keep their fixed colours.
+- **Appearance palettes**. View > Appearance offers Default plus thirteen tinted dark palettes, ordered by hue from Garnet to Orchid, in a two-column picker that scrolls on short windows. A selection applies immediately through the CSS token layer and persists per browser under its own storage key, so Reset Workspace Layout cannot change it. Clip kinds, markers, the monitor, scopes, and the boot splash keep their fixed colours.
 
 ## Quick start
 
@@ -344,7 +344,7 @@ bun run battery        # scripted UI battery (reuses a server already on :3000, 
 
 The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions, effects), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **1563 tests across 72 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **1565 tests across 72 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -424,7 +424,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 72 test files (1563 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
+│   └── __tests__/               # 72 test files (1565 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs

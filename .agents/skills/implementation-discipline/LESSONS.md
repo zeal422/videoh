@@ -308,3 +308,13 @@ Action: kept as a note; browser storage access goes through `themeStorage`, whic
 What happened: the palette token-set test read CSS declarations into a Map, so a duplicate allowed token collapsed and the "exactly 17" contract was not enforced. Borders and inputs were skipped by the contrast loop and never asserted.
 Would-have-caught: using the declaration list for count/duplicate contracts, and giving every intentionally skipped value its own assertion.
 Action: kept as a note; count locks read declarations, not key sets, and skipped values get explicit locks.
+
+## 2026-10-24 - dev server served a stale palette CSS chunk
+What happened: after adding the 0.10.1 palette blocks, the restarted dev server served a stylesheet with only the three 0.10.0 blocks. The picker set data-palette and storage, but the page stayed default; the production build had all 13, so the source was correct.
+Would-have-caught: comparing the served stylesheet with the source before treating a browser result as a code failure, and starting the dev server from a clean .next after a CSS-only change.
+Action: kept as a note; when a CSS change is not visible in dev, clear .next and recheck the served stylesheet before changing code.
+
+## 2026-10-24 - a capped list did not cap its dialog
+What happened: the 0.10.1 picker capped the radio list at 60vh and scrolled it, but the dialog added its header, gap, and padding on top. At a 250px viewport the shipped dialog measured -6 to 256 and clipped.
+Would-have-caught: measuring the whole dialog box, not only the list, at a short viewport; a viewport-relative cap belongs on the scroll container that owns the full content.
+Action: kept as a note; cap the dialog itself at calc(100vh - 2rem), let it own the scroll, and keep the radio grid unconstrained inside it.

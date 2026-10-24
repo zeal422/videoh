@@ -45,6 +45,16 @@ describe('theme storage access', () => {
 })
 
 describe('appearance dialog', () => {
+  it('caps the dialog at the viewport and lays the palette list out in two columns', () => {
+    openDialog()
+    const dialogClasses = screen.getByRole('dialog').className.split(/\s+/)
+    expect(dialogClasses.some((name) => name.startsWith('max-h-'))).toBe(true)
+    expect(dialogClasses).toContain('overflow-y-auto')
+    const listClasses = screen.getByRole('radiogroup').className.split(/\s+/)
+    expect(listClasses).toContain('grid')
+    expect(listClasses).toContain('grid-cols-2')
+  })
+
   it('renders one radio per theme and checks the stored one', () => {
     window.localStorage.setItem(THEME_STORAGE_KEY, 'forest')
     openDialog()

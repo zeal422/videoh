@@ -129,8 +129,8 @@ e2e/battery.sh e2e/run-battery.sh`. If the user started the dev server, leave
 14. **A version bump is one atomic change, never `package.json` alone.** In the SAME change edit every
     place the version lives: `package.json` (`version`); `src/lib/releases.ts` (a new head entry with its
     ISO `date` and four or more highlights, `CURRENT_VERSION` derives from `releases[0]`); `CHANGELOG.md`
-    (a new `## [x.y.z] - <date>` entry, required); the roadmap, while the repo still keeps one; and each
-    doc that records the running version (`docs/deployment.md`, `docs/testing.md`). Update `README.md`,
+    (a new `## [x.y.z] - <date>` entry, required); the roadmap, while the repo still keeps one; and any
+    doc that records the running version. Update `README.md`,
     `docs/architecture.md`, `docs/flows.md` and `docs/design-system.md` when the release changes what
     they describe. `releases.test.ts` fails `bun run check` when `releases[0]` or `CURRENT_VERSION` lags
     `package.json`, but it does not check the changelog or the roadmap, so those are on you.

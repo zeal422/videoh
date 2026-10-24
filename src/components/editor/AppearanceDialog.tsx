@@ -40,12 +40,12 @@ export function AppearanceDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-sm max-h-[calc(100vh_-_2rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Appearance</DialogTitle>
           <DialogDescription>Choose a palette. It applies right away.</DialogDescription>
         </DialogHeader>
-        <div role="radiogroup" aria-label="Palette" className="flex flex-col gap-1 py-2">
+        <div role="radiogroup" aria-label="Palette" className="grid grid-cols-2 gap-1 py-2">
           {THEMES.map((theme) => (
             <label
               key={theme.id}

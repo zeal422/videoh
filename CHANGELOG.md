@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.1] - 2026-10-24
+
+### Added
+
+- **Ten more appearance palettes.** View > Appearance now offers Default plus thirteen tinted palettes, ordered by hue from Garnet through Orchid. Garnet, Blush, Ember, Honey, Olive, Lagoon, Ocean, Steel, Indigo, and Orchid join Midnight, Forest, and Plum. Every block uses the same 17 chrome tokens, the fixed 10%/15% border and input alpha whites, and the same contrast floors. The picker becomes a two-column grid in a height-capped, scrollable dialog so the fourteen entries fit short windows; native radios and immediate apply are unchanged. Existing ids and stored choices need no migration.
+
 ## [0.10.0] - 2026-10-24
 
 ### Added

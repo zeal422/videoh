@@ -26,8 +26,10 @@ Tokens, theming, layout, and UI conventions. Sibling docs: [docs index](README.m
 
 ## Palettes
 
-The curated palettes (Midnight, Forest, Plum) change the app chrome only. Every block declares the
-same 17 tokens:
+The curated set is Default plus thirteen tinted palettes, ordered by hue from Garnet 350, Blush 15,
+Ember 45, Honey 75, Olive 105, Forest 150, Lagoon 180, Ocean 210, Steel 230, Midnight 255, Indigo 275,
+Plum 305, and Orchid 330. The full ids and labels live in `THEMES`. Every block declares the same 17
+tokens:
 
 `--background`, `--foreground`, `--card`, `--card-foreground`, `--popover`, `--popover-foreground`,
 `--primary`, `--primary-foreground`, `--secondary`, `--secondary-foreground`, `--muted`,
@@ -37,11 +39,13 @@ They leave the fixed chrome alone: clip kind colours, playhead and selection ros
 marker swatches, the monitor and scopes zinc, the boot splash, `--destructive`, and the
 chart/sidebar/radius tokens. The release-notes emerald accents stay fixed too.
 
-`theme.test.ts` locks the block set, the exact token set per block, and the contrast floors: 4.5:1
-for foreground, muted foreground, primary text, and destructive text, and 3:1 for the focus ring.
+`theme.test.ts` locks the unique ids and labels, the block set, the exact token set per block, and the
+contrast floors: 4.5:1 for foreground, muted foreground, primary text, and destructive text, and 3:1
+for the focus ring.
 The destructive text pair is declared explicitly (`--destructive-foreground`), so warning text does
 not inherit a tinted `--foreground`. Palette borders and inputs stay at the fixed 10% and 15% alpha
-whites, which the token test also locks.
+whites, which the token test also locks. The dialog caps itself at `calc(100vh - 2rem)` and scrolls,
+so short windows never clip; the list is a two-column grid and native radios keep arrow-key order.
 
 The boot splash stays pure black with the violet ripple. A tinted palette contrasts with it at
 reveal; that is accepted, not a defect.

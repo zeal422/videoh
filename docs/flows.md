@@ -495,8 +495,9 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
 
 ## Change appearance
 
-- View > Appearance opens the palette picker: Default, Midnight, Forest, and Plum. The dialog is
-  hosted by `MenuBar.tsx`, and the list is `THEMES` in `src/lib/editor/theme.ts`.
+- View > Appearance opens the palette picker: Default plus thirteen tinted palettes, ordered by hue
+  from Garnet to Orchid. The dialog is hosted by `MenuBar.tsx`, the list is `THEMES` in
+  `src/lib/editor/theme.ts`, and the dialog caps its height and scrolls when the window is short.
 - Selection applies immediately and writes the id under `web-video-editor:theme:v1`, separate from
   the workspace layout key. Choosing Default removes the key and the `data-palette` attribute, so
   the base `.dark` tokens are the default.
