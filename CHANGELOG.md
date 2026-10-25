@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.2] - 2026-10-24
+
+### Added
+
+- **Full screen control.** The menu bar adds a compact **Full screen** button beside the version label. It enters and exits the browser Fullscreen API, swaps to **Exit full screen** with a minimize icon, follows `fullscreenchange` so Escape and external exits update the label, and reports rejected or unavailable requests through the existing `Action failed` toast. A pending guard ignores a second click while the first request is in flight.
+
+### Changed
+
+- **Menu-bar right edge.** The fullscreen button and version label now sit in a fixed right group outside `role="menubar"`, so the button keeps native button semantics while the menu root scrolls independently. The bar stays 32px and the bottom border runs edge to edge.
+
+### Fixed
+
+- **Space on focused buttons.** A focused button now owns Space and activates natively instead of toggling playback. Space on the body still controls play and pause.
+
 ## [0.10.1] - 2026-10-24
 
 ### Added

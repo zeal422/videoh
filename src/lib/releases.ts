@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.10.2',
+    date: '2026-10-24',
+    highlights: [
+      'The menu bar adds a compact Full screen button beside the version label',
+      'The button enters and exits browser fullscreen and follows Escape or any external exit',
+      'Focused buttons own Space, so the fullscreen button activates natively instead of toggling playback',
+      'Rejected requests and missing APIs report through the existing Action failed toast',
+    ],
+  },
+  {
     version: '0.10.1',
     date: '2026-10-24',
     highlights: [

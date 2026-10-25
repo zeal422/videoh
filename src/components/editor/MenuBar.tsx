@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { toast } from '@/hooks/use-toast'
 import { useIsMobile } from '@/hooks/use-mobile'
 
@@ -9,7 +9,7 @@ import { AppearanceDialog } from '@/components/editor/AppearanceDialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { CheckIcon } from 'lucide-react'
+import { CheckIcon, Maximize2, Minimize2 } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -94,6 +94,20 @@ function activeSequenceField(path: readonly string[]): { sequenceId?: string } {
   return id ? { sequenceId: id } : {}
 }
 
+/** Page fullscreen is a browser API, not editor state; the event is the truth. */
+function subscribeFullscreen(onChange: () => void) {
+  document.addEventListener('fullscreenchange', onChange)
+  return () => document.removeEventListener('fullscreenchange', onChange)
+}
+
+function getFullscreenSnapshot() {
+  return Boolean(document.fullscreenElement)
+}
+
+function getServerFullscreenSnapshot() {
+  return false
+}
+
 export function MenuBar({
   onOpenExport,
   onResetLayout,
@@ -131,6 +145,13 @@ export function MenuBar({
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
   const [settingsDraft, setSettingsDraft] = useState({ name: '', width: '', height: '', fps: '' })
+
+  const isFullscreen = useSyncExternalStore(
+    subscribeFullscreen,
+    getFullscreenSnapshot,
+    getServerFullscreenSnapshot,
+  )
+  const pendingRef = useRef(false)
 
   const selectedClip = useMemo(
     () => (selections[0] ? findClip(doc, selections[0])?.clip : undefined),
@@ -193,6 +214,28 @@ export function MenuBar({
       variant: 'destructive',
     })
   }, [])
+
+  const toggleFullscreen = async () => {
+    if (pendingRef.current) return
+    pendingRef.current = true
+    try {
+      if (document.fullscreenElement) {
+        if (typeof document.exitFullscreen !== 'function') {
+          throw new Error('Exit full screen is not available in this browser.')
+        }
+        await document.exitFullscreen()
+      } else {
+        if (typeof document.documentElement.requestFullscreen !== 'function') {
+          throw new Error('Full screen is not available in this browser.')
+        }
+        await document.documentElement.requestFullscreen()
+      }
+    } catch (error) {
+      showError(error)
+    } finally {
+      pendingRef.current = false
+    }
+  }
 
   const openGainDialog = useCallback(() => {
     const state = useEditorStore.getState()
@@ -573,70 +616,98 @@ export function MenuBar({
   const menus = buildMenus(ctx)
   return (
     <>
-      <Menubar
-        role="menubar"
-        aria-label="Application menu"
-        className="bg-card h-8 w-full max-w-full overflow-x-auto overflow-y-hidden rounded-none border-x-0 border-t-0 px-1 py-0 shadow-none"
-      >
-        {menus.map((menu) => (
-          <MenubarMenu key={menu.spec.id}>
-            <MenubarTrigger className="h-7 shrink-0 px-2.5 text-[13px]">
-              {menu.spec.label}
-            </MenubarTrigger>
-            <MenubarContent>
-              {menu.items.map((item) =>
-                item.spec.kind === 'separator' ? (
-                  <MenubarSeparator key={item.spec.id} />
-                ) : item.spec.kind === 'checkbox' ? (
-                  // Checkbox rows render as plain rows so every menu stays
-                  // flush left: the checked state shows as a glyph after the
-                  // label instead of a reserved tick slot that indents Mute.
-                  <MenubarItem
-                    key={item.spec.id}
-                    role="menuitemcheckbox"
-                    aria-checked={item.checked}
-                    disabled={!item.enabled}
-                    onSelect={() => item.spec.action && execute(item.spec.action)}
-                  >
-                    {item.spec.label}
-                    {item.checked && <CheckIcon className="text-muted-foreground size-4" />}
-                    {item.spec.shortcut && <MenubarShortcut>{item.spec.shortcut}</MenubarShortcut>}
-                  </MenubarItem>
-                ) : (
-                  <MenubarItem
-                    key={item.spec.id}
-                    disabled={!item.enabled}
-                    onSelect={() => item.spec.action && execute(item.spec.action)}
-                    className={cn(
-                      item.spec.tinted &&
-                        // Release-notes row: light emerald at rest, deeper when
-                        // highlighted. The /focus classes also override the
-                        // primitive's focus:bg-accent via tailwind-merge, so the
-                        // highlight stays green instead of switching to the
-                        // neutral accent.
-                        'bg-emerald-500/15 focus:bg-emerald-500/25 focus:text-emerald-50',
-                    )}
-                  >
-                    {item.spec.label}
-                    {item.spec.shortcut && <MenubarShortcut>{item.spec.shortcut}</MenubarShortcut>}
-                  </MenubarItem>
-                ),
-              )}
-            </MenubarContent>
-          </MenubarMenu>
-        ))}
-
-        {/* Running version, static muted label at the right edge: the space
-            the stray scrollbar used to occupy. The value comes from
-            releases.ts, the same gate-locked source as the welcome modal, so
-            it cannot drift from package.json. */}
-        <span
-          data-testid="menubar-version"
-          className="text-muted-foreground ml-auto shrink-0 pr-2 text-[11px] tabular-nums"
+      <div className="bg-card flex h-8 w-full max-w-full items-center">
+        <Menubar
+          role="menubar"
+          aria-label="Application menu"
+          className="h-8 min-w-0 flex-1 overflow-x-auto overflow-y-hidden rounded-none border-b border-x-0 border-t-0 bg-transparent px-1 py-0 shadow-none"
         >
-          v{CURRENT_VERSION}
-        </span>
-      </Menubar>
+          {menus.map((menu) => (
+            <MenubarMenu key={menu.spec.id}>
+              <MenubarTrigger className="h-7 shrink-0 px-2.5 text-[13px]">
+                {menu.spec.label}
+              </MenubarTrigger>
+              <MenubarContent>
+                {menu.items.map((item) =>
+                  item.spec.kind === 'separator' ? (
+                    <MenubarSeparator key={item.spec.id} />
+                  ) : item.spec.kind === 'checkbox' ? (
+                    // Checkbox rows render as plain rows so every menu stays
+                    // flush left: the checked state shows as a glyph after the
+                    // label instead of a reserved tick slot that indents Mute.
+                    <MenubarItem
+                      key={item.spec.id}
+                      role="menuitemcheckbox"
+                      aria-checked={item.checked}
+                      disabled={!item.enabled}
+                      onSelect={() => item.spec.action && execute(item.spec.action)}
+                    >
+                      {item.spec.label}
+                      {item.checked && <CheckIcon className="text-muted-foreground size-4" />}
+                      {item.spec.shortcut && (
+                        <MenubarShortcut>{item.spec.shortcut}</MenubarShortcut>
+                      )}
+                    </MenubarItem>
+                  ) : (
+                    <MenubarItem
+                      key={item.spec.id}
+                      disabled={!item.enabled}
+                      onSelect={() => item.spec.action && execute(item.spec.action)}
+                      className={cn(
+                        item.spec.tinted &&
+                          // Release-notes row: light emerald at rest, deeper when
+                          // highlighted. The /focus classes also override the
+                          // primitive's focus:bg-accent via tailwind-merge, so the
+                          // highlight stays green instead of switching to the
+                          // neutral accent.
+                          'bg-emerald-500/15 focus:bg-emerald-500/25 focus:text-emerald-50',
+                      )}
+                    >
+                      {item.spec.label}
+                      {item.spec.shortcut && (
+                        <MenubarShortcut>{item.spec.shortcut}</MenubarShortcut>
+                      )}
+                    </MenubarItem>
+                  ),
+                )}
+              </MenubarContent>
+            </MenubarMenu>
+          ))}
+        </Menubar>
+
+        <div
+          data-testid="menubar-right"
+          className="flex h-8 shrink-0 items-center gap-2 border-b pr-3"
+        >
+          <Button
+            type="button"
+            size="sm"
+            className="h-5 gap-1 px-2 text-[10px] leading-none focus-visible:ring-2 has-[>svg]:px-2"
+            data-testid="menubar-fullscreen"
+            onClick={() => void toggleFullscreen()}
+          >
+            {isFullscreen ? (
+              <Minimize2 className="size-3" data-testid="fullscreen-exit-icon" aria-hidden="true" />
+            ) : (
+              <Maximize2
+                className="size-3"
+                data-testid="fullscreen-enter-icon"
+                aria-hidden="true"
+              />
+            )}
+            {isFullscreen ? 'Exit full screen' : 'Full screen'}
+          </Button>
+          {/* Running version, static muted label at the right edge. The value
+              comes from releases.ts, the same gate-locked source as the
+              welcome modal, so it cannot drift from package.json. */}
+          <span
+            data-testid="menubar-version"
+            className="text-muted-foreground text-[11px] tabular-nums"
+          >
+            v{CURRENT_VERSION}
+          </span>
+        </div>
+      </div>
 
       <AudioGainDialog
         open={gainOpen}

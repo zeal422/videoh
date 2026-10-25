@@ -50,7 +50,7 @@ src/app/
 src/components/
 ├── editor/                       # editor UI (see architecture.md for responsibilities)
 │   ├── EditorShell.tsx           #   panel workspace layout + autosave/restore + gesture safety net + release-notes auto-open
-│   ├── MenuBar.tsx               #   Premiere-style menu bar + dialogs + right-edge version label
+│   ├── MenuBar.tsx               #   Premiere-style menu bar + dialogs + right-edge fullscreen toggle + version label
 │   ├── AppearanceDialog.tsx      #   View > Appearance palette picker, applies and persists immediately
 │   ├── apply-theme.ts            #   writes/removes `data-palette` on `<html>`
 │   ├── ReleaseNotesModal.tsx     #   welcome modal: last five versions, Help > What is new
@@ -165,7 +165,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 71 test files (1541 tests) in `__tests__/` plus `src/lib/gate.test.ts`: see testing.md
+└── __tests__/            # 71 test files (1551 tests) in `__tests__/` plus `src/lib/gate.test.ts`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

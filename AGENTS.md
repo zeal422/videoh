@@ -134,6 +134,9 @@ e2e/battery.sh e2e/run-battery.sh`. If the user started the dev server, leave
     `docs/architecture.md`, `docs/flows.md` and `docs/design-system.md` when the release changes what
     they describe. `releases.test.ts` fails `bun run check` when `releases[0]` or `CURRENT_VERSION` lags
     `package.json`, but it does not check the changelog or the roadmap, so those are on you.
+15. **Never assume or assert an unstated detail.** If a requirement is ambiguous, missing, or unstated,
+    ask before acting. Do not present an assumption as a fact or as the user's requirement. When in
+    doubt, ask.
 
 ## Workflow
 
@@ -147,3 +150,9 @@ Read the relevant docs → make the minimal localized change → add or update c
 `bun run check` → verify the UI (`bun run dev`, exercise the flow, keep the console clean) → update the
 owning doc(s) and `CHANGELOG.md` → **do not commit**: the user commits and pushes. Commit messages, only
 when asked, use Conventional Commits with a bullet body listing each notable change.
+
+Manual UI proof: for visual or fullscreen checks, use `agent-browser` with a unique `--session` and
+`--headed`; it launches an isolated browser profile, so it never touches the user's Chrome. Check the
+server first (rule 8) and read `GATE_PASSWORD` from `.env.local` without echoing it. Close the session
+with `agent-browser --session <name> close`. If you started the server, stop it and verify the port is
+free; if the user started it, leave it running. Never `pkill chrome`.

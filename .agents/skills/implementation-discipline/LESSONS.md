@@ -318,3 +318,8 @@ Action: kept as a note; when a CSS change is not visible in dev, clear .next and
 What happened: the 0.10.1 picker capped the radio list at 60vh and scrolled it, but the dialog added its header, gap, and padding on top. At a 250px viewport the shipped dialog measured -6 to 256 and clipped.
 Would-have-caught: measuring the whole dialog box, not only the list, at a short viewport; a viewport-relative cap belongs on the scroll container that owns the full content.
 Action: kept as a note; cap the dialog itself at calc(100vh - 2rem), let it own the scroll, and keep the radio grid unconstrained inside it.
+
+## 2026-10-24 - a native button test rendered without the app's global keymap
+What happened: the fullscreen button test rendered `MenuBar` alone and passed Space activation, but in the real app `useEditorKeyboard` preventDefaulted Space on the focused button, so Space toggled playback instead. Manual headed proof caught it after the unit suite was green.
+Would-have-caught: rendering the real global keyboard hook in the test that claims native Space activation, and exercising the integration in a headed browser.
+Action: kept as a note; a native-control test that competes with an app-level shortcut must include the shortcut's real listener, and manual proof must press the actual key.

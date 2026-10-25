@@ -53,7 +53,7 @@ The map mirrors Adobe Premiere Pro's default keybindings (verified against Adobe
 | Key                        | Action                                                             |
 | -------------------------- | ------------------------------------------------------------------ |
 | `V` / `C`                  | Selection tool / Razor tool (click a clip to cut it)               |
-| `Space`                    | Play / pause                                                       |
+| `Space`                    | Play / pause (a focused button owns Space)                         |
 | `J` / `K` / `L`            | Shuttle stop / stop / play (no reverse playback in the browser)    |
 | `←` / `→`                  | Step 1 frame (`Shift`: 5 frames)                                   |
 | `↑` / `↓`                  | Previous / next edit point (clip boundary)                         |
@@ -82,7 +82,7 @@ The map mirrors Adobe Premiere Pro's default keybindings (verified against Adobe
 | `+` / `-`                  | Zoom timeline in / out                                             |
 | `\`                        | Zoom the timeline to fit the whole sequence                        |
 
-Shortcuts are ignored while typing in inputs, textareas, selects, or content-editable elements (see `src/hooks/editor/useEditorKeyboard.ts`).
+Shortcuts are ignored while typing in inputs, textareas, selects, or content-editable elements; a focused button also owns Space (see `src/hooks/editor/useEditorKeyboard.ts`).
 
 **Placing media, end to end.** There are two routes and they are independent:
 
@@ -344,7 +344,7 @@ bun run battery        # scripted UI battery (reuses a server already on :3000, 
 
 The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions, effects), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
 
-Current state: **1565 tests across 72 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **1575 tests across 72 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -424,7 +424,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 72 test files (1565 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
+│   └── __tests__/               # 72 test files (1575 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs

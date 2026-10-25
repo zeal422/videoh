@@ -328,7 +328,8 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
   clip's speed badge stay off while the curve exists.
 - **Play / pause (Space)**, `J`/`K`/`L` shuttle (browsers cannot play backwards, so `J` stops like `K`),
   frame stepping, Home/End, and Up/Down edit-point navigation. Transport state mirrors into
-  `[data-testid="play-pause"]` and `[data-testid="time-display"]`.
+  `[data-testid="play-pause"]` and `[data-testid="time-display"]`. A focused button owns Space and
+  activates itself instead of toggling playback.
 - Scrubbing while paused re-seeks active video elements and redraws once `seeked` lands. Scrubbing
   while playing pauses playback first (Premiere behavior), so dragging the playhead can never inject
   a force-seek per pointer move into a running clock.
@@ -491,6 +492,10 @@ asset.duration` invariant), images and text are unbounded. A reversed clip keeps
   (`src/lib/editor/workspace.ts`), and a corrupt stored layout is sanitized instead of crashing.
 - The menu bar mirrors Premiere Pro's menus with **no dead items** and **no fake shortcuts**: item
   enablement is computed from editor context, and the shortcut column only lists wired keys.
+- The right edge of the menu bar carries a **Full screen** button, outside `role="menubar"` so it
+  keeps native button semantics and Enter/Space activation. It enters or exits the page Fullscreen
+  API, follows `fullscreenchange` so Escape and external exits update the label, and reports a
+  rejected request or missing API through the existing destructive `Action failed` toast.
 - Below 768 px the workspace falls back to a fixed stacked layout.
 
 ## Change appearance

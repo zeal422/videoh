@@ -41,7 +41,7 @@ import { useEditorStore } from '@/lib/editor/store'
  * | V                      | Selection tool                                     |
  * | C                      | Razor tool (click a clip to cut it)                |
  * | Escape                 | Back to the selection tool                         |
- * | Space                  | Play / pause                                       |
+ * | Space                  | Play / pause (not on a focused button)             |
  * | J / K / L              | Shuttle stop / stop / play                         |
  * | ← / →                  | Step 1 frame                                       |
  * | Shift+← / Shift+→      | Step 5 frames                                      |
@@ -232,6 +232,14 @@ export function useEditorKeyboard(onSave: () => void): void {
           break
         }
         case ' ': {
+          // A focused button owns Space: native activation (the fullscreen
+          // toggle included) must win over playback.
+          if (
+            target instanceof HTMLElement &&
+            target.closest('button, [role="button"], [role="menuitem"], [role="menuitemcheckbox"]')
+          ) {
+            break
+          }
           e.preventDefault()
           playbackRef.current?.toggle()
           break
