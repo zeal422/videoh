@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.10.3',
+    date: '2026-10-25',
+    highlights: [
+      'Toolbar tooltips now open below their buttons instead of covering the menu bar',
+      'Placement, text preset, add track, and standard toolbar buttons share the same downward placement',
+      'A static test locks the requested bottom side on every toolbar tooltip',
+      'The placement control no longer clips Overwrite at narrow desktop widths',
+      'The README and About dialog describe the editor as pre-1.0 instead of an MVP',
+    ],
+  },
+  {
     version: '0.10.2',
     date: '2026-10-24',
     highlights: [

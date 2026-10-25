@@ -164,8 +164,9 @@ Stable hooks used across flows and tests:
 - **Empty lanes do not linger** — the edit that takes a lane's last clip removes the lane with it, in the
   same history entry, so one undo restores both. A lane that was already empty is kept, and the last lane
   always survives ([architecture.md](architecture.md#invariants), rule 17).
-- **Trim** — drag either edge; video/audio clips are bounded by their source (the `inPoint + duration ≤
-asset.duration` invariant), images and text are unbounded. A reversed clip keeps the same two-sided
+- **Trim** — drag either edge; video/audio clips are bounded by their source, with the consumed source
+  span (not the timeline duration) required to fit; a `timeScale` ramp that over-consumes is clamped
+  to the last readable frame. Images and text are unbounded. A reversed clip keeps the same two-sided
   behavior: its head shows the span's HIGH source end and its tail the LOW one, so a head move holds the
   low anchor and a tail move holds the high one, and either edge reveals the source on its own side
   rather than sliding the picture under the drag.

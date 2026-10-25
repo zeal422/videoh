@@ -1,39 +1,44 @@
 # Web Video Editor
 
-A browser-based multi-track video editor MVP: a minimal Premiere Pro / CapCut-style editing experience that runs entirely client-side. Import media, arrange clips on a timeline, add transitions (cross-dissolve, dip to black, wipe, slide, push) and text overlays, animate properties with keyframes, re-time clips, mix and shape audio, preview in real time, and export to MP4. No uploads and no server-side processing: object URLs, canvas compositing, Web Audio, and WebCodecs do all of the work in the tab.
+A browser-based multi-track video editor. It runs entirely in the tab: no media uploads, no account, and no project database. Your footage stays on your machine. Object URLs, canvas compositing, Web Audio, and WebCodecs do the work. A server only serves the app shell and the optional access gate.
 
-Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4 + shadcn/ui, and Vitest.
+It is still pre-1.0, not a Premiere replacement. The core path works end to end: import media, cut it on a timeline, preview the result, and export an MP4. The limitations section below lists what is still missing.
+
+Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/ui, and Vitest.
 
 ## Features
 
-- **Media import** — video, audio, and image files via the media bin (multi-select) or drag-and-drop; automatic duration/size probing, JPEG thumbnails, normalized waveform peaks, and audio-track detection.
-- **Multi-track timeline** — move clips (including across compatible tracks, with the whole selection following), trim either edge, split at the playhead, duplicate, delete, and snapping to clip edges, the playhead, and timeline bounds. Add video/audio/text tracks from the `+` button in the timeline's corner cell (or the toolbar `+` and the menus) — new tracks stack per the convention text → video → audio, and `tracks[0]` renders on top.
-- **Manageable layers** — each track header has a context menu (or double-click the name) to **rename**, **mute** or **delete** the layer; delete is disabled for the last remaining lane. A layer the edit leaves **empty is removed with it**, in the same undo step, so a lane never lingers with nothing on it (a lane that was already empty is kept, which is what makes "add a layer, then fill it" work). Dragging a clip near the top or bottom edge of the tracks **scrolls the timeline** so it can reach a lane that is off-screen, and dropping it on a lane of the wrong kind marks that lane, and the drop is rolled back whole — the clip returns to where it started rather than keeping the part of the gesture that happened to be legal.
-- **Track targeting + select-by-lane**: every track is targeted by default; the header menu's **Target Track** toggles a lane (an untargeted lane dims its kind icon) and **Select Track Clips** selects the whole lane, expanding A/V link groups. Targeting steers lane-less placement (bin **quick-add**, **Add Text**) to the first targeted compatible lane, including a video's audio twin, and paste follows that same order once its original lane cannot be used, so a compatible original lane that is still targeted is kept; when no lane of that kind is targeted the old landing order still applies. A clip drag, a duplicate and a drop onto a compatible lane keep the lane the user pointed at, and targeting is session state, not saved in the project file.
-- **Multi-selection + manual A/V linking** — plain click selects a clip (its link group), **Shift+click adds** another clip's group, **Ctrl+click toggles** it, **Ctrl+A** selects everything; every group op (move, delete, cut/copy/paste, split, duplicate) acts on the whole selection. **Drag a box (marquee)** on empty timeline space to select every clip it covers (Shift adds the covered groups, Ctrl toggles them), with edge auto-scroll while dragging. Select a video clip and an audio clip with Shift+click, then **right-click → Link** (or `Ctrl+L`) to bond them Premiere-style; `Ctrl+L` on a linked selection unlinks it again. A **Razor tool** (`C`) cuts a clip exactly where you click; **Shift+Delete ripple-deletes** the selection and closes the gap.
-- **Markers** — press `M` to drop a marker at the playhead: on the primary selected clip when one is selected (source-anchored, so trims, speed changes and reversal keep it on the same media frame), otherwise on the sequence ruler. Markers take a name, one of eight colors and notes (double-click one or use Marker › Edit Selected Marker); `Shift+M` / `Ctrl+Shift+M` jump between markers, markers are snap targets for clip drags and trims, and `Delete` removes the selected one. Sequence markers live in `project.markers`, clip markers in `clip.markers` (source seconds); both persist in the project file.
-- **A/V linked clips** — dropping a video that HAS audio places it as a linked pair: the video part on the video track and an audio-only twin on the audio track (waveform included). The pair selects, moves, splits, duplicates and deletes together, and the audio twin is the sole sound carrier (no double audio). **Right-click any clip** for the Premiere-style menu — Cut, Copy, Paste at playhead, Split, Duplicate, **Link / Unlink Audio/Video**, Delete, **Ripple Delete** — and after unlinking, each half is fully independent.
-- **Drop-between-tracks** — drag media from the bin onto the middle of a row to drop it onto that track, or onto a row's edge (or the empty strip below the tracks) to insert a brand-new layer at exactly that z-position: a kind-colored insertion line with a `+ V2` / `+ A2` preview shows where the layer will land — the Premiere-style way to build stacked compositions (put one video above/below/between others in one gesture).
-- **Insert / overwrite placement modes**. A sticky three-way toolbar control (`Place` / `Insert` / `Overwrite`, all in one segmented group) picks how a media drop lands in the middle of a lane: **Place** is today's plain drop and stays the default, **Insert** shifts every clip at or after the edit point right by the placed span (a straddler splits at the point and its right half moves, and link groups move as one unit, so an A/V pair stays in sync; a clip too close to the split headroom is left alone and the drop still commits) and **Overwrite** replaces the covered span (partial coverage trims to the window edge, interior coverage splits once and head-trims the right fragment, a sub-0.1 s remnant is deleted, and an unrepresentable cut refuses the WHOLE placement with one toast, so a mixed batch can never land half-applied). While you drag, the lane under the pointer wears an `Insert` / `Overwrite` badge; a drop onto a lane of the wrong kind refuses in the two new modes instead of silently relocating (which `Place` still does). One placement is one undo step, and the mode is session-only state, like the active tool.
-- **Source monitor + three-point editing**. Clicking an asset in the media bin loads it into the **Source Monitor** panel (toggleable from the Window menu as one of the six workspace panels; a still shows the still itself), where you can play it and scrub it, then mark **In / Out** with `I` / `O` and place that marked span at the sequence playhead with `,` (insert) or `.` (overwrite), independent of the sticky placement-mode toggle above. One-sided marks leave the other end open, marks clamp to the asset, an inverted or sub-floor range refuses with one toast and places nothing, and images have no source window (their controls disable and they place 4 s). Source selection and marks are session state: they clear when a different asset is selected and when the project is replaced. The source time has one owner (the preview element's own callbacks write `sourcePlayhead`), so the readout, the marks and the placed range cannot disagree.
-- **Transitions** — per-clip `transitionOut` with real overlap, picked per transition as cross-dissolve or dip to black in the Inspector; the compositor and audio mixer both ramp.
-- **Text overlays** — text tracks and clips with font size, color, family, bold/italic, alignment, position, and shadow. **Drag the text directly in the program monitor** to reposition it (a dashed outline shows the box; one drag = one undo step; precise control stays in the Inspector's Position X/Y sliders).
-- **Subtitles / captions** — import an SRT file to create timed caption cues on their own Captions track (malformed cues skip with a count, an empty file refuses). The **Captions** panel beside the timeline lists every cue with editable text and timing, click-to-seek, one-click creation at the playhead, and SRT/VTT download in start order. Captions burn into the MP4 exactly as the monitor shows.
-- **Layer compositing** — per-clip **opacity** (0–100 %) that stacks with crossfade alphas: put a clip on a higher track, lower its opacity, and the track below shows through — the same model as Photoshop/Premiere layering.
-- **Effects beyond opacity** — every clip carries an ordered effect stack edited in Effect Controls: **crop** (four sides, feather, zoom refill, keyframable), sixteen **blend modes** under Opacity, an eyedropper **chroma keyer** with despill, **track mattes** from any higher lane (luma/alpha, reversible), and **motion blur** that accumulates animated moves. A track eyeball hides video/text lanes from the composite. Preview and export render every effect identically.
-- **Keyframes + Effect Controls**: animate opacity, position, scale, volume and the color set (exposure, contrast, saturation, brightness, hue) per clip. The Inspector has a Clip / Effect Controls tab split: a value slider, a keyframe diamond that adds/removes at the playhead, and a light graph whose dots drag in time. Each segment eases with its outgoing keyframe's interpolation (linear, ease in, ease out, ease in/out, Premiere's curves, picked from a segmented control that always sits under the property and edits the visible segment's start keyframe), the graph draws every segment's real bezier shape with the active segment's two handles draggable (a straight segment eases by dragging it), with a per-property default easing for newly authored keyframes, that same easing drives the exported gain schedule (an eased volume segment is sampled into short linear ramps, since the Web Audio API has no easing primitive), keyframe times are clip-local, splitting a clip redistributes its curves (every segment subdivides exactly at the cut, eased segments included, so both halves re-time the original), and every keyframe drag is one undo step.
-- **Color**: the color set applies through the canvas filter stack in preview and export alike; a neutral clip skips the filter pass entirely. **Temperature/tint** (-100..100 each) grade white balance through one SVG matrix per graded clip that both render paths reference, so what you see is what exports; the monitor can show a **luma histogram, an RGB balance read, a waveform and a vectorscope** (scopes section, collapsible, off by default). **3D `.cube` LUT import** keeps each file once in a project-level library that clips reference by id: a 1D file applies as exact per-channel shapers in one shared SVG node, a 3D file runs a shared trilinear pixel pass in the preview and the export, and the library refuses an import that would push its base64 payloads past 3,000,000 characters rather than trip the autosave quota later.
-- **Speed and reverse**: per-clip speed (0.25×–4×) with an Inspector slider and an Alt-drag rate stretch on either clip edge (the source span stays fixed and the speed re-derives; a clip with a time remapping curve is exempt, see below), plus a reverse toggle for video. A rate stretch the command layer rejects applies nothing and says why. Reverse renders frame-accurately in the export and stepped in the preview; reversed audio is dropped. Below the output frame rate BOTH renders blend neighbouring frames, so a slowed clip stops juddering in the file and in the monitor alike: the export decodes the pair and the monitor parks a second muted element on the partner read, and one shared weight function (frame-blend.ts) gives both the same blend. A reversed clip trims from both edges like a forward one (its head shows the span's high source end and its tail the low one, so each edge reveals the source on its own side rather than sliding the picture). Clips carry speed/reverse badges.
-- **Time remapping**: a `timeScale` keyframe curve ramps a clip's speed without changing its timeline length (the source time each timeline second consumes is the curve's integral, so cuts, splits and the export's frame count stay put). Eased segments work here too, and the export samples them into the same curve instead of flattening them. The picture-only rows (time remapping, and the reverse switch next to it) are hidden for anything that carries no picture, which includes an A/V pair's audio twin even when it sits on a video track: a ramp there could only mute the pair. On a reversed clip the row mirrors its axis, so a dot marks the rate the engine applies at that timeline time, the curve is drawn mirrored, and the easing picker and the handles target the active segment's start keyframe on the mirrored axis (the diamond still targets the keyframe the mirrored playhead sits nearest). A ramped clip renders frame-accurate in the export and drops the audio of its whole link group (variable-rate audio has no resampler yet); wherever its read falls below the output frame rate both renders blend the frame pair, exactly as they do for a slowed clip. While a curve exists it IS the rate, so the static Speed slider, the clip's speed badge and Alt-drag rate stretch are disabled (the static speed stays the no-curve fallback).
-- **Audio control + shaping**: per-clip linear gain (0–2) and mute, per-track mute, waveforms, plus per-clip pan, a 3-band EQ (200 Hz / 1 kHz / 4 kHz), a compressor, a **Reduce noise** switch (a fixed broadband chain built into the preview mixer and the export mix from one shared builder), and **auto-ducking** that writes volume keyframes for music under dialogue (estimated from the waveform peaks, with a dialogue-source picker).
-- **Synced preview playback** — audio-clock-driven master clock, per-clip media element pool, canvas compositor, drift correction.
-- **MP4 export via WebCodecs**: offline, frame-accurate H.264 export through a pure frame plan: source frames are decoded (not element-seeked), the animated doc is composited per frame, audio is mixed offline and encoded as AAC (Opus where the browser has no AAC encoder, notably desktop Linux and Firefox), and the result plays with a correct duration header. Wall time tracks decode speed rather than the old realtime capture. Quality presets map to bitrates; progress, cancel, and in-dialog preview included. Needs a WebCodecs-capable browser (Chromium, Edge, Firefox 130+, Safari 26+).
-- **Undo/redo** — up to 100 steps of whole-document snapshots; drag gestures collapse into a single undo entry.
-- **Save/load project JSON** — `.veproj.json` files; media references survive, object URLs do not.
-- **Autosave/restore** — debounced localStorage writes with a restore-or-discard banner on the next visit.
-- **Premiere-style menu bar** — File · Edit · Clip · Sequence · Marker · Graphics · View · Window · Help, driven by a pure, unit-tested menu model; items whose preconditions are unmet render disabled (no dead entries).
-- **Resizable workspace**. Every panel (Media, Source Monitor, Program Monitor, Inspector, Timeline, Captions) is user-resizable and collapsible; sizes, collapsed strips, and panel visibility persist across sessions. Window menu toggles panels, double-click a resize handle to reset its neighbor, and small screens fall back to a fixed stacked layout.
-- **Appearance palettes**. View > Appearance offers Default plus thirteen tinted dark palettes, ordered by hue from Garnet to Orchid, in a two-column picker that scrolls on short windows. A selection applies immediately through the CSS token layer and persists per browser under its own storage key, so Reset Workspace Layout cannot change it. Clip kinds, markers, the monitor, scopes, and the boot splash keep their fixed colours.
+- **Media import.** Video, audio, and image files come in through the media bin or drag and drop. Multi-select works in the bin. The app probes duration and size, makes JPEG thumbnails, normalizes waveform peaks, and detects audio tracks.
+- **Multi-track timeline.** Move a whole selection across compatible tracks, trim either edge, split at the playhead, duplicate, delete, and snap to clip edges, the playhead, or timeline bounds. Add tracks from the `+` button in the timeline corner, the toolbar `+`, or the menus. New tracks follow the text, video, audio order, and `tracks[0]` renders on top.
+- **Manageable layers.** Each track header has a context menu, or double-click the name, to rename, mute, or delete the layer. The last lane cannot be deleted. An edit that leaves a layer empty removes it in the same undo step, so a lane never lingers with nothing on it. A lane that was already empty stays, which is what makes "add a layer, then fill it" work. Drag a clip near the top or bottom of the tracks to scroll the timeline and reach an off-screen lane. A drop on the wrong kind of lane marks the lane and rolls the whole drop back, so the clip returns to where it started.
+- **Track targeting and select-by-lane.** Every track is targeted by default. Target Track toggles a lane and dims its kind icon; Select Track Clips selects the whole lane and expands A/V link groups. Targeting steers bin quick-add, Add Text, and paste to the first targeted compatible lane, including a video's audio twin. Paste keeps its original lane when that lane is still targeted and compatible. A drag, a duplicate, or a drop onto a compatible lane keeps the lane you pointed at. Targeting is session state, not part of the project file. If no lane of that kind is targeted, the old landing order applies.
+- **Compound clips.** Select clips on a video lane and choose Sequence > Create Compound Clip. The selection is replaced by one reusable container; double-click it to open the nested sequence, and use the breadcrumb to return. The container composites as a group, and nested audio mixes through its gain, mute, and volume.
+- **Proxies.** A video source over 1920 px on its long edge can build a session-only lower-resolution proxy from the Media bin or the import prompt, and View > Use Proxies toggles it. The proxy preserves the source audio, and the export always reads the original file.
+- **Multi-selection and manual A/V linking.** A plain click selects a clip and its link group. Shift+click adds another group; Ctrl+click toggles it; Ctrl+A selects everything. Group operations (move, delete, cut, copy, paste, split, duplicate) act on the whole selection. Drag a box on empty timeline space to select every clip it covers. Shift adds the covered groups, Ctrl toggles them, and the timeline auto-scrolls at the edges. To link, select a video clip and an audio clip with Shift+click, then right-click and choose Link, or press `Ctrl+L`. `Ctrl+L` on a linked selection unlinks it. The Razor tool (`C`) cuts a clip where you click. `Shift+Delete` ripple-deletes the selection and closes the gap.
+- **Markers.** Press `M` to drop a marker at the playhead. It lands on the primary selected clip when there is one, source-anchored so trims, speed changes, and reversal keep it on the same media frame. Otherwise it goes on the sequence ruler. Markers have a name, one of eight colors, and notes; double-click one or use Marker › Edit Selected Marker. `Shift+M` and `Ctrl+Shift+M` jump between markers, markers are snap targets for clip drags and trims, and `Delete` removes the selected marker. Sequence markers live in `project.markers`; clip markers live in `clip.markers` in source seconds. Both persist in the project file.
+- **A/V linked clips.** Dropping a video that has audio places a linked pair: the video part on the video track and an audio-only twin on the audio track, with its waveform. The pair selects, moves, splits, duplicates, and deletes together. The audio twin is the only sound carrier, so there is no double audio. Right-click any clip for the Premiere-style menu: Cut, Copy, Paste at playhead, Split, Duplicate, Link / Unlink Audio/Video, Delete, and Ripple Delete. After unlinking, each half is independent.
+- **Drop between tracks.** Drag media from the bin onto the middle of a row to drop it on that track. Drag it onto a row edge, or the empty strip below the tracks, to insert a new layer at that z-position. A kind-colored insertion line with a `+ V2` or `+ A2` preview shows where the layer will land. This is the quickest way to put one video above, below, or between others in a single gesture.
+- **Insert and overwrite placement.** A sticky three-way toolbar control (`Place`, `Insert`, `Overwrite`) picks how a media drop lands in the middle of a lane. Place is the plain drop and the default. Insert shifts every clip at or after the edit point right by the placed span. A straddler splits at the point, its right half moves, and link groups move as one unit so an A/V pair stays in sync. A clip too close to the split headroom is left alone, and the drop still commits. Overwrite replaces the covered span: partial coverage trims to the window edge, interior coverage splits once and head-trims the right fragment, and a remnant under 0.1 s is deleted. Overwrite is all-or-nothing: if a retained side cannot be represented, the whole placement is refused with one toast, so a mixed batch never lands half-applied. While you drag, the lane under the pointer shows an `Insert` or `Overwrite` badge. In those two modes, a drop on the wrong kind of lane is refused instead of silently relocating, which Place still does. One placement is one undo step, and the mode is session state like the active tool.
+- **Source monitor and three-point editing.** Click an asset in the media bin to load it into the Source Monitor, one of the six workspace panels and toggleable from the Window menu. A still image appears in the monitor. Play or scrub to the frame you want, mark In and Out with `I` and `O`, then place that span at the sequence playhead with `,` for insert or `.` for overwrite. These keys ignore the toolbar placement mode. One-sided marks leave the other end open, marks clamp to the asset, and an inverted or sub-floor range refuses with one toast and places nothing. Images have no source window, so their controls disable and they place 4 s. Source selection and marks are session state: they clear when you select a different asset or replace the project. Only the preview element's callbacks write the source time, so the readout, the marks, and the placed range cannot disagree.
+- **Transitions.** Each clip can carry a `transitionOut` with real overlap. Pick cross-dissolve, dip to black, wipe, slide, or push per transition in the Inspector; the spatial types add a direction picker, and wipes add an edge picker plus a feather slider. The compositor and audio mixer both ramp.
+- **Text overlays.** Text tracks and clips support font size, color, family, bold, italic, alignment, position, and shadow. Drag text directly in the program monitor to reposition it. A dashed outline shows the box, one drag is one undo step, and the Inspector's Position X/Y sliders handle precise placement. Title presets store named styles and apply from the Inspector or the Add Text picker.
+- **Subtitles and captions.** Import an SRT file to create timed caption cues on their own Captions track. Malformed cues are skipped with a count, and an empty file is refused. The Captions panel beside the timeline lists every cue with editable text and timing, click-to-seek, one-click creation at the playhead, and SRT/VTT download in start order. Captions burn into the MP4 exactly as the monitor shows them.
+- **Layer compositing.** Per-clip opacity (0 to 100%) stacks with crossfade alphas. Put a clip on a higher track and lower its opacity, and the track below shows through. It is the same layering model as Photoshop or Premiere.
+- **Effects beyond opacity.** Every clip has an ordered effect stack in Effect Controls. It includes crop with four sides, feather, zoom refill, and keyframes; Normal plus sixteen blend modes under Opacity; an eyedropper chroma keyer with despill; track mattes from any higher lane, in luma or alpha and reversible; and motion blur that accumulates animated moves. A track eyeball hides video and text lanes from the composite. Preview and export render every effect the same way.
+- **Keyframes and Effect Controls.** Animate opacity, position, scale, volume, and the color set (exposure, contrast, saturation, brightness, hue) per clip. The Inspector splits into Clip and Effect Controls tabs. Each animated value has a slider, a keyframe diamond that adds or removes a key at the playhead, and a graph whose dots drag in time. Each segment eases with its outgoing keyframe's interpolation: linear, ease in, ease out, ease in/out, or one of Premiere's curves. The segmented control sits under the property and edits the visible segment's start keyframe. The graph draws every segment's real bezier shape, and the active segment's two handles are draggable; dragging a straight segment eases it. A per-property default easing applies to new keyframes. That easing also drives the exported gain schedule: an eased volume segment is sampled into short linear ramps because Web Audio has no easing primitive. Keyframe times are clip-local. Splitting a clip redistributes its curves exactly at the cut, eased segments included, so both halves re-time the original. Every keyframe drag is one undo step.
+- **Color.** The color set runs through the canvas filter stack in preview and export. A neutral clip skips the filter pass. Temperature and tint (-100 to 100 each) grade white balance through one SVG matrix per graded clip that both render paths use, so the monitor matches the export. The monitor can show a luma histogram, an RGB balance read, a waveform, and a vectorscope; the scopes section is collapsible and off by default.
+- **3D LUT import.** Each `.cube` file is stored once in a project-level library, and clips reference it by id. A 1D file applies as exact per-channel shapers in one shared SVG node. A 3D file runs a shared trilinear pixel pass in the preview and the export. The library refuses an import that would push its base64 payloads past 3,000,000 characters, so a large LUT cannot break the autosave quota later.
+- **Speed and reverse.** Each clip has a speed from 0.25× to 4×, set by an Inspector slider or an Alt-drag rate stretch on either edge. The source span stays fixed and the speed re-derives. A clip with a time remapping curve is exempt. A reverse toggle handles video. If the command layer rejects a rate stretch, nothing is applied and the app says why. Reverse renders frame-accurately in the export and stepped in the preview; reversed audio is dropped. Below the output frame rate, both render paths blend neighboring frames, so a slowed clip stops juddering in the file and the monitor. The export decodes the pair, the monitor parks a second muted element on the partner read, and one shared weight function in `frame-blend.ts` gives both the same blend. A reversed clip trims from both edges like a forward one: its head shows the span's high source end and its tail the low one, so each edge reveals the source on its own side instead of sliding the picture. Clips carry speed and reverse badges.
+- **Time remapping.** A `timeScale` keyframe curve ramps a clip's speed without changing its timeline length. The source time each timeline second consumes is the curve's integral, so cuts, splits, and the export's frame count stay put. Eased segments work here too, and the export samples them into the same curve instead of flattening them. Time remapping and the reverse switch are hidden for anything without a picture, including an A/V pair's audio twin even when it sits on a video track; a ramp there could only mute the pair. On a reversed clip the row mirrors its axis. A dot marks the rate the engine applies at that timeline time, the curve is drawn mirrored, and the easing picker and handles target the active segment's start keyframe on the mirrored axis. The diamond still targets the keyframe nearest the mirrored playhead. A ramped clip renders frame-accurately in the export and drops the audio of its whole link group, because variable-rate audio has no resampler yet. Where its read falls below the output frame rate, both render paths blend the frame pair as they do for a slowed clip. While a curve exists, it is the rate: the static Speed slider, the speed badge, and Alt-drag rate stretch are disabled. The static speed remains the no-curve fallback.
+- **Audio control and shaping.** Each clip has linear gain from 0 to 2, mute, and pan. Each track can be muted. Waveforms are drawn per clip. There is a 3-band EQ at 200 Hz, 1 kHz, and 4 kHz, a compressor, a Reduce noise switch, and auto-ducking. Reduce noise is a fixed broadband chain shared by the preview mixer and the export mix. Auto-ducking writes volume keyframes for music under dialogue, estimated from waveform peaks, with a dialogue-source picker.
+- **Synced preview playback.** Playback uses an audio-clock-driven master clock, a per-clip media element pool, a canvas compositor, and drift correction.
+- **MP4 export through WebCodecs.** Export is offline and produces frame-accurate H.264. A pure frame plan resolves each frame; the exporter decodes source frames instead of seeking elements, composites the animated doc per frame, mixes audio offline, and encodes AAC, or Opus where the browser has no AAC encoder (notably desktop Linux and Firefox). The MP4 has a correct duration header. Wall time tracks decode speed, not realtime capture. Quality presets map to bitrates, and the dialog has progress, cancel, and an in-dialog preview. Export to file streams long renders straight to disk where the File System Access API is available. Export needs a WebCodecs-capable browser: Chromium, Edge, Firefox 130+, or Safari 26+.
+- **Undo and redo.** Up to 100 steps of whole-document snapshots. A drag gesture collapses into one undo entry.
+- **Save and load project JSON.** `.veproj.json` files preserve media references; object URLs do not survive.
+- **Autosave and restore.** Debounced localStorage writes with a restore-or-discard banner on the next visit.
+- **Premiere-style menu bar.** File, Edit, Clip, Sequence, Marker, Graphics, View, Window, and Help, driven by a pure, unit-tested menu model. Items whose preconditions are unmet render disabled, so there are no dead entries. A compact full screen button sits beside the version label.
+- **Resizable workspace.** The Media, Source Monitor, Program Monitor, Inspector, Timeline, and Captions panels are resizable and collapsible. Sizes, collapsed strips, and panel visibility persist across sessions. The Window menu toggles panels, double-clicking a resize handle resets its neighbor, and small screens fall back to a fixed stacked layout.
+- **Appearance palettes.** View > Appearance offers Default and thirteen tinted dark palettes, ordered by hue from Garnet to Orchid, in a two-column picker that scrolls on short windows. A selection applies through the CSS token layer and persists per browser under its own storage key, so Reset Workspace Layout cannot change it. Clip kinds, markers, the monitor, scopes, and the boot splash keep their fixed colors.
 
 ## Quick start
 
@@ -42,13 +47,13 @@ bun install
 bun run dev
 ```
 
-Open <http://localhost:3000> (or the preview URL shown by your workspace). For an instant demo, click **Load sample media** in the media bin — it imports the bundled samples from `public/samples/` (`sample-video.mp4`, `sample-audio.mp3`, `sample-image.png`) — then quick-add them to the timeline with the `+` button on each asset.
+Open <http://localhost:3000>, or the preview URL shown by your workspace. For a demo, click Load sample media in the media bin. It imports the bundled samples from `public/samples/`: `sample-video.mp4`, `sample-audio.mp3`, and `sample-image.png`. Then quick-add them to the timeline with the `+` button on each asset.
 
-Use a current Chromium-based browser for the full feature set (WebCodecs + Web Audio + canvas rendering). Export additionally needs WebCodecs (Chromium, Edge, Firefox 130+, Safari 26+).
+Use a current Chromium-based browser for the full feature set. Export also needs WebCodecs, which means Chromium, Edge, Firefox 130+, or Safari 26+.
 
 ### Keyboard shortcuts
 
-The map mirrors Adobe Premiere Pro's default keybindings (verified against Adobe's shortcut docs); app-specific extensions where the browser MVP cannot map 1:1 are marked.
+The map follows Adobe Premiere Pro's default keybindings, checked against Adobe's shortcut docs. Where the browser cannot map a shortcut 1:1, the app-specific extension is marked.
 
 | Key                        | Action                                                             |
 | -------------------------- | ------------------------------------------------------------------ |
@@ -59,15 +64,15 @@ The map mirrors Adobe Premiere Pro's default keybindings (verified against Adobe
 | `↑` / `↓`                  | Previous / next edit point (clip boundary)                         |
 | `Home` / `End`             | Jump to start / end of timeline                                    |
 | `S`                        | Toggle snapping                                                    |
-| `Ctrl+K`                   | Add Edit — split selection (or all tracks) at the playhead         |
+| `Ctrl+K`                   | Add Edit: split selection (or all tracks) at the playhead          |
 | `Delete` / `Backspace`     | Delete the selection (whole link groups)                           |
-| `Shift+Delete`             | Ripple delete — delete AND close the gap                           |
+| `Shift+Delete`             | Ripple delete: delete and close the gap                            |
 | `Ctrl+X` / `Ctrl+C`        | Cut (copy + delete) / copy the selection (multi-clip aware)        |
 | `Ctrl+V`                   | Paste the clipboard at the playhead                                |
 | `Ctrl+A` / `Ctrl+Shift+A`  | Select all / deselect all                                          |
 | `Shift+click`              | Add a clip's link group to the selection (multi-select)            |
 | `Ctrl+click`               | Toggle a clip's link group in the selection                        |
-| `Ctrl+L`                   | Link the selection — or unlink when it is already linked           |
+| `Ctrl+L`                   | Link the selection, or unlink when it is already linked            |
 | `D` / `Ctrl+Shift+/`       | Duplicate the selection (link group)                               |
 | `M`                        | Add a marker at the playhead (clip marker when a clip is selected) |
 | `Shift+M` / `Ctrl+Shift+M` | Go to next / previous marker                                       |
@@ -82,26 +87,26 @@ The map mirrors Adobe Premiere Pro's default keybindings (verified against Adobe
 | `+` / `-`                  | Zoom timeline in / out                                             |
 | `\`                        | Zoom the timeline to fit the whole sequence                        |
 
-Shortcuts are ignored while typing in inputs, textareas, selects, or content-editable elements; a focused button also owns Space (see `src/hooks/editor/useEditorKeyboard.ts`).
+Shortcuts are ignored while typing in inputs, textareas, selects, or content-editable elements. A focused button also owns Space; see `src/hooks/editor/useEditorKeyboard.ts`.
 
-**Placing media, end to end.** There are two routes and they are independent:
+**Placing media.** There are two routes, and they are independent:
 
-1. **A bin drop onto a lane** follows the sticky **Place / Insert / Overwrite** toolbar control. Drag the
-   asset onto the middle of a row to drop it there (a mode badge on the lane previews Insert or
-   Overwrite), or onto a row edge / below the last row to create a new layer at that z-position (that
-   path always means "create a track" and ignores the mode). Place is the default, so nothing becomes
-   destructive without picking a mode; Insert and Overwrite are one click away and stay armed until you
+1. **A bin drop onto a lane** follows the sticky Place / Insert / Overwrite toolbar control. Drag the
+   asset onto the middle of a row to drop it there. A mode badge on the lane previews Insert or
+   Overwrite. Drag onto a row edge or below the last row to create a new layer at that z-position. That
+   path always means "create a track" and ignores the mode. Place is the default, so nothing becomes
+   destructive without picking a mode. Insert and Overwrite are one click away and stay armed until you
    switch back.
 2. **Three-point editing from the Source Monitor.** Click a bin row to load that asset into the Source
-   Monitor (a still shows the still itself), scrub or play to the frame you want, press `I` and `O` to
-   mark the in and out points, park the sequence playhead, then press `,` to insert the marked span
+   Monitor; a still image shows in the monitor. Scrub or play to the frame you want, press `I` and `O`
+   to mark the in and out points, park the sequence playhead, then press `,` to insert the marked span
    there or `.` to overwrite with it. These keys ignore the toolbar control, and with no marks set they
-   place the whole asset. Both routes apply as one undo step, so a single `Ctrl+Z` reverses a
-   placement whatever moved with it.
+   place the whole asset. Both routes apply as one undo step, so a single `Ctrl+Z` reverses a placement
+   whatever moved with it.
 
 ## Architecture
 
-The editor is split into four layers with a strict unidirectional data flow: **UI → command → store (snapshot history) → view**.
+The editor has four layers and one strict direction: UI → command → store → view. The store keeps snapshot history for undo.
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
@@ -116,8 +121,8 @@ The editor is split into four layers with a strict unidirectional data flow: **U
                 ▼                              │
 ┌──────────────────────────────────────────────┴───────────────┐
 │ state/  (src/lib/editor)                                     │
-│   store.ts  — zustand store, whole-Doc snapshot history      │
-│   commands.ts — validate + clone + apply (the only mutator)  │
+│   store.ts  : zustand store, whole-Doc snapshot history      │
+│   commands.ts: validate + clone + apply (the only mutator)   │
 │   types · factories · time · snap · transition ·             │
 │   serialization · persistence · actions                      │
 └───────────────┬──────────────────────────────────────────────┘
@@ -131,12 +136,12 @@ The editor is split into four layers with a strict unidirectional data flow: **U
 └──────────────────────────────┘   └────────────────────────────┘
 ```
 
-- **UI** never mutates state directly. Every edit is a named `EditorCommand` dispatched via `store.apply(...)` (or as transient updates during drags).
+- **UI** never mutates state directly. Every edit is a named `EditorCommand` dispatched through `store.apply(...)`, or a transient update during a drag.
 - **Commands** validate input, clone the document, and return a new `Doc`. The store keeps a snapshot of the previous doc for undo.
-- **The store** is the single source of truth. React components subscribe to slices of it; the playback engine reads the current doc via a `getDoc()` callback and reports the playhead back through the store, which flows to the views.
-- **The engine** is framework-free and drives the preview only: `PlaybackCore` owns the audio clock, the media element pool, the Web Audio graph, and canvas rendering. Export is separate: it walks the pure frame plan and renders through WebCodecs (no playback core, no realtime constraint).
+- **The store** is the single source of truth. React components subscribe to slices of it. The playback engine reads the current doc through a `getDoc()` callback and reports the playhead back through the store, which flows to the views.
+- **The engine** is framework-free and drives the preview. `PlaybackCore` owns the audio clock, the media element pool, the Web Audio graph, and canvas rendering. Export is separate: it walks the pure frame plan and renders through WebCodecs, with no playback core and no realtime constraint.
 
-A deeper module-by-module reference lives in [`docs/architecture.md`](docs/architecture.md). The whole documentation set — architecture, structure, flows, testing, and design system — is indexed at [`docs/README.md`](docs/README.md).
+The module-by-module reference is in [`docs/architecture.md`](docs/architecture.md). The full documentation set, covering architecture, structure, flows, testing, the design system, and deployment, is indexed at [`docs/README.md`](docs/README.md).
 
 ## Data model
 
@@ -169,7 +174,7 @@ The entire edit is one serializable document (`Doc = { project, media }`). All t
           {
             "id": "clip_…",
             "mediaId": "media_…", // absent for text clips
-            "linkId": "link_…", // A/V link group — shared by the pair's video part and audio twin
+            "linkId": "link_…", // A/V link group, shared by the pair's video part and audio twin
             "audioOnly": false, // true for the audio part of an A/V pair (sound, no picture)
             "start": 0, // timeline position (s)
             "duration": 4, // timeline length (s)
@@ -202,7 +207,7 @@ The entire edit is one serializable document (`Doc = { project, media }`). All t
       "duration": 6, // images report 0 (unbounded length)
       "width": 640,
       "height": 360,
-      "url": "blob:…", // object URL — NEVER serialized
+      "url": "blob:…", // object URL, never serialized
       "thumbnail": "data:image/jpeg…", // optional
       "waveformPeaks": [0, 0.42, "…"], // optional, 1000 buckets 0..1
       "missing": false, // true after loading a project until relinked
@@ -213,24 +218,27 @@ The entire edit is one serializable document (`Doc = { project, media }`). All t
 
 Time model conventions:
 
-- **Timeline position** is `clip.start + clip.duration` (absolute seconds from the timeline origin).
-- **Source position** is `clip.inPoint`: where playback starts inside the source media. A trimmed clip keeps `duration` on the timeline but moves `inPoint`; `inPoint + duration` never exceeds the source length for video/audio (images and text are unbounded). A reversed clip reads the same window backwards, so its head shows `inPoint + duration × speed` and its tail `inPoint`, and a trim moves the anchor on the side the edge gave material back to.
-- **Track order is compositing z-order**: `tracks[0]` is the _topmost_ layer. The default project is `V1` (video) over `A1` (audio) at **1920×1080 (Full HD) @ 30fps**; new tracks are conventionally ordered text, then video, then audio. Dropping media between tracks (`addTrack` with `atIndex`) places the layer at the exact z-position the user pointed at — explicit placement skips the convention sort, and any order is legal (e.g. an audio layer between two video layers) because the array order is what renders.
-- Compatibility rules: video/image material goes on `video` tracks, audio on `audio` tracks, text clips on `text` tracks.
+- **Timeline position** is `clip.start`, in absolute seconds from the timeline origin. A clip ends at `clip.start + clip.duration`.
+- **Source position** is `clip.inPoint`, where playback starts inside the source media. A trimmed clip keeps `duration` on the timeline but moves `inPoint`. The shared `sourceTimeAt(clip, local)` contract maps clip-local time to source time, including reverse mirroring and the `timeScale` curve integral (the static speed is the fallback). The consumed source span must fit the asset for a flat clip; an over-consuming ramp freezes on the last readable frame. A reversed clip reads that span backwards: its head shows `sourceTimeAt(clip, 0)` and its tail shows `sourceTimeAt(clip, clip.duration)`, and a trim moves the anchor on the side the edge gave material back to. Images and text are unbounded.
+- **Track order is compositing z-order.** `tracks[0]` is the topmost layer. The default project is `V1` (video) over `A1` (audio) at 1920×1080 (Full HD) and 30fps. New tracks follow the convention of text, then video, then audio. Dropping media between tracks (`addTrack` with `atIndex`) places the layer at the exact z-position you pointed at. Explicit placement skips the convention sort, and any order is legal because the array order is what renders. An audio layer between two video layers is fine.
+- Compatibility rules: video and image material goes on `video` tracks, audio goes on `audio` tracks, and text clips go on `text` tracks.
 
 ## Command pattern
 
-All mutations flow through 49 named commands in `src/lib/editor/commands.ts`, applied with `applyCommand(doc, command)` / `applyCommands(doc, commands[])`. Each command validates its input (throwing `EditorCommandError` on unknown ids, out-of-bounds trims, and so on) and returns a **new** doc. The input is never mutated.
+All mutations flow through 57 named commands in `src/lib/editor/commands.ts`, applied with `applyCommand(doc, command)` or `applyCommands(doc, commands[])`. Each command validates its input and returns a new doc. The input is never mutated. Unknown ids, out-of-bounds trims, and similar errors throw `EditorCommandError`.
 
 | Command                | Description                                                                                                                                                                                                               |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `addMediaAsset`        | Register an imported media asset in the bin.                                                                                                                                                                              |
 | `removeMediaAsset`     | Remove an asset; clips keep a dangling `mediaId`.                                                                                                                                                                         |
 | `relinkMedia`          | Patch an asset (usually a fresh `url`) and clear `missing`.                                                                                                                                                               |
+| `addSequence`          | Register a compound sequence in the project (duplicate ids and project-id collisions rejected).                                                                                                                           |
+| `createCompoundClip`   | Fold selected clips into a new compound sequence and place its container on a video track (cross-sequence, cycle, and depth guards).                                                                                      |
 | `addTrack`             | Append a track and re-sort to the text/video/audio order, or, with `atIndex`, insert at that exact z-position without re-sorting (drop-between-tracks).                                                                   |
 | `removeTrack`          | Remove a track (the last remaining track is protected).                                                                                                                                                                   |
 | `renameTrack`          | Rename a track (empty names are ignored).                                                                                                                                                                                 |
 | `toggleTrackMute`      | Flip a track's `muted` flag.                                                                                                                                                                                              |
+| `setTrackVisible`      | Toggle a video or text track's visibility in the composite.                                                                                                                                                               |
 | `addClip`              | Add a clip to a track (kind-checked, clamped to source).                                                                                                                                                                  |
 | `moveClip`             | Move a clip to a new track and/or `start` position.                                                                                                                                                                       |
 | `trimClip`             | Set `start`, `inPoint`, and `duration` (bounds-checked) for the edge named by `edge` (`head`/`tail`, or `span` when the caller re-times a fixed source span).                                                             |
@@ -241,6 +249,7 @@ All mutations flow through 49 named commands in `src/lib/editor/commands.ts`, ap
 | `setClipGain`          | Set linear gain, clamped to `GAIN_MIN..GAIN_MAX`.                                                                                                                                                                         |
 | `setClipMuted`         | Set a clip's `muted` flag.                                                                                                                                                                                                |
 | `setClipOpacity`       | Set visual opacity, clamped to `OPACITY_MIN..OPACITY_MAX`; omitted at 1 when saved.                                                                                                                                       |
+| `setClipBlendMode`     | Set the clip's canvas blend mode, or clear it with `null` back to Normal.                                                                                                                                                 |
 | `setClipKeyframes`     | Replace one property's keyframes (validated, sorted); an empty list clears that curve.                                                                                                                                    |
 | `setKeyframeDefault`   | Set the project's default interpolation for one animatable property; linear collapses to absent.                                                                                                                          |
 | `setClipSpeed`         | Set the clip's speed, clamped to `SPEED_MIN..SPEED_MAX`, shortening it so its source span stays in range.                                                                                                                 |
@@ -259,6 +268,12 @@ All mutations flow through 49 named commands in `src/lib/editor/commands.ts`, ap
 | `addCaptionCue`        | Stamp a 2 s flagged caption clip on a text track at the given start.                                                                                                                                                      |
 | `addTransition`        | Add a cross-dissolve or dip-to-black transition by pulling the next clip left to overlap. The type is optional: a new transition defaults to crossfade, and omitting it on an existing transition keeps its current type. |
 | `removeTransition`     | Clear a clip's `transitionOut` (the overlap remains).                                                                                                                                                                     |
+| `addEffect`            | Add a crop, chroma key, track matte, or motion blur entry to a clip's effect stack.                                                                                                                                       |
+| `removeEffect`         | Remove one effect entry from a clip.                                                                                                                                                                                      |
+| `setEffectEnabled`     | Enable or bypass one effect entry.                                                                                                                                                                                        |
+| `resetEffect`          | Reset one effect entry's parameters to its defaults.                                                                                                                                                                      |
+| `setEffectParams`      | Validate and clamp one effect entry's parameters (hostile types refuse).                                                                                                                                                  |
+| `setEffectKeyframes`   | Replace one effect property's keyframes; an empty list clears that curve.                                                                                                                                                 |
 | `addSequenceMarker`    | Add a sequence marker (time-sorted; duplicate ids rejected).                                                                                                                                                              |
 | `moveSequenceMarker`   | Move a sequence marker and re-sort.                                                                                                                                                                                       |
 | `updateSequenceMarker` | Patch a sequence marker's name/color/notes.                                                                                                                                                                               |
@@ -272,62 +287,45 @@ All mutations flow through 49 named commands in `src/lib/editor/commands.ts`, ap
 | `setClipLut`           | Assign a library LUT to a clip, or clear it with `null`.                                                                                                                                                                  |
 | `setClipAnimStatic`    | Set an animated property's static value, clamped to its bounds; the default collapses to absent.                                                                                                                          |
 
-**Undo/redo.** The store pushes a whole-`Doc` snapshot onto `past` before each committed command; `undo` pops it and moves the current doc to `future`. Doc JSON is small (kilobytes), so full snapshots are cheap and make every command trivially reversible. The stack is capped at `HISTORY_LIMIT = 100` entries, and undo/redo drop a selection (clip or marker) whose target no longer exists in the restored doc.
+**Undo and redo.** The store pushes a whole-`Doc` snapshot onto `past` before each committed command. `undo` pops it and moves the current doc to `future`. Doc JSON is small, so full snapshots are cheap and every command is easy to reverse. The stack is capped at `HISTORY_LIMIT = 100`. Undo or redo drops a selection whose clip or marker no longer exists in the restored doc.
 
-**Transient gestures.** Timeline drags must not spam the history. A gesture calls `beginTransient()` (snapshot the base doc), applies every pointermove via `applyTransient()` (no history; invalid mid-drag states are swallowed), and finishes with `commitTransient()` — which pushes exactly one history entry if the doc actually changed — or `cancelTransient()` to restore the base. Result: one undo step per drag, regardless of how many frames it spanned.
+**Transient gestures.** Timeline drags must not spam the history. A gesture calls `beginTransient()` to snapshot the base doc, applies every pointermove through `applyTransient()` with no history, and finishes with `commitTransient()` or `cancelTransient()`. `commitTransient()` pushes exactly one history entry if the doc actually changed. `cancelTransient()` restores the base. The result is one undo step per drag, no matter how many frames it spanned.
 
 ## Playback engine
 
-`PlaybackCore` (`src/lib/editor/playback/core.ts`) drives both preview and export:
+`PlaybackCore` (`src/lib/editor/playback/core.ts`) drives the preview:
 
-- **Master clock** — the `AudioContext` clock when Web Audio is available (sample-accurate and drift-free); otherwise `performance.now()`. On `play()` the timeline time is anchored to the clock, and each `requestAnimationFrame` derives the playhead from the elapsed audio time.
-- **Per-clip media pool** — `ClipMediaPool` gives every clip its own `HTMLVideoElement`/`HTMLAudioElement` parked in a hidden container, so two clips can reference the same asset simultaneously (after a split or across tracks).
-- **Drift correction**: every frame the engine compares each active element's `currentTime` with the expected source time (`sourceTimeAt(clip, t - clip.start)`, the one mapping the preview, the plan and the exporter share, mirroring the span for reversed clips); drift over `DRIFT_THRESHOLD` (0.4 s) triggers a resync seek. Reversed and time-remapped clips are stepped instead: the element is parked and seeked every tick, because neither a backwards read nor a rate curve can be expressed as a constant `playbackRate`.
-- **Frame blending (both paths)**: a clip reading strictly below the source frame rate parks a second MUTED element on the partner read (`blendPartnerTime`), and the pair is composited through one shared canvas routine (`drawBlendedContain`) at a weight the two paths derive the same way from their decoder's own timestamps: the exporter from the sample timestamps it fetched, the preview from the presented frames its elements report through `requestVideoFrameCallback`. A browser without that API, a partner frame that has not decoded yet, and a stale or seeking element all fall back to the single stepped frame.
-- **Web Audio graph**: each element feeds a `MediaElementAudioSourceNode` into a per-clip `GainNode`, all connected to a master `GainNode` that routes to `audio.destination` (speakers) and a `MediaStreamAudioDestinationNode` (`audioStream`, a capture destination no longer used by export; the exporter mixes in an `OfflineAudioContext` instead). Per-frame gain is `clip.gain × clip mute × track mute × crossfade alpha`, applied with a 20 ms ramp. Pan, EQ, the compressor and the denoise chain bake into that per-clip chain, which is rebuilt when any of them changes so an edit is audible immediately. Without Web Audio the engine falls back to element `volume`.
-- **Compositor rules** (`compositor.ts`) — tracks composite bottom→top onto a black frame; video/image clips are drawn contain-fit (letterboxed, aspect preserved); text clips render styled, shadowed multi-line text; two overlapping clips crossfade with complementary alphas, otherwise the later clip simply wins visually; a sub-frame-rate draw composites its blend pair additively into a scratch canvas and puts the result down once (the exporter calls the same routine); audio tracks draw nothing.
-- **Scrubbing** — while paused, `seek()` positions active video elements and re-draws once their `seeked` event lands (`drawStill`).
+- **Master clock.** The `AudioContext` clock when Web Audio is available; it is sample-accurate and drift-free. Otherwise the engine uses `performance.now()`. On `play()` the timeline time is anchored to the clock, and each `requestAnimationFrame` derives the playhead from the elapsed audio time.
+- **Per-clip media pool.** `ClipMediaPool` gives every clip its own `HTMLVideoElement` or `HTMLAudioElement` parked in a hidden container, so two clips can reference the same asset at once, after a split or across tracks.
+- **Drift correction.** Every frame the engine compares each active element's `currentTime` with the expected source time from `sourceTimeAt(clip, t - clip.start)`, the one mapping the preview, the plan, and the exporter share, mirroring the span for reversed clips. Drift over `DRIFT_THRESHOLD` (0.4 s) triggers a resync seek. Reversed and time-remapped clips are stepped instead: the element is parked and seeked every tick, because neither a backwards read nor a rate curve can be expressed as a constant `playbackRate`.
+- **Frame blending in both paths.** A clip reading strictly below the source frame rate parks a second muted element on the partner read through `blendPartnerTime`, and the pair is composited through one shared canvas routine, `drawBlendedContain`. The weight comes from each path's decoder timestamps: the exporter uses the sample timestamps it fetched, and the preview uses the presented frames its elements report through `requestVideoFrameCallback`. A browser without that API, a partner frame that has not decoded yet, and a stale or seeking element all fall back to the single stepped frame.
+- **Web Audio graph.** Each element feeds a `MediaElementAudioSourceNode` into a per-clip `GainNode`, and all of them connect to a master `GainNode` that routes to `audio.destination` for speakers and a `MediaStreamAudioDestinationNode` (`audioStream`). That capture destination is no longer used by export; the exporter mixes in an `OfflineAudioContext` instead. Per-frame gain is `clip.gain × clip mute × track mute × crossfade alpha`, applied with a 20 ms ramp. Pan, EQ, the compressor, and the denoise chain are part of that per-clip chain, which is rebuilt when any of them changes so an edit is audible immediately. Without Web Audio the engine falls back to element `volume`.
+- **Compositor rules.** `compositor.ts` composites tracks bottom to top onto a black frame. Video and image clips are drawn contain-fit, letterboxed with the aspect preserved. Text clips render styled, shadowed multi-line text. Two overlapping clips crossfade with complementary alphas; otherwise the later clip wins visually. A sub-frame-rate draw composites its blend pair additively into a scratch canvas and puts the result down once, and the exporter calls the same routine. Audio tracks draw nothing.
+- **Scrubbing.** While paused, `seek()` positions active video elements and re-draws once their `seeked` event lands through `drawStill`.
 
 ## Export
 
-`exportTimeline` (`src/lib/editor/export/mp4.ts`) renders the timeline to a downloadable MP4
-(H.264 + AAC, or Opus audio where the browser cannot encode AAC), offline, with no MediaRecorder
-involved:
+`exportTimeline` (`src/lib/editor/export/mp4.ts`) renders the timeline to a downloadable MP4 offline. The video is H.264. Audio is AAC, or Opus where the browser cannot encode AAC. There is no MediaRecorder.
 
-- `export/offline.ts` builds a **pure frame plan**: `exportFrameTimes` quantizes the timeline to the
-  project fps, `planVideoFrame` resolves each frame's draws (source timestamps honoring speed and
-  reverse, crossfade alphas, keyframed opacity, color filter, transform), and `planAudioFrame`
-  resolves the audible contributions with gain/pan and twin shadowing. Tests verify the plan in Node.
-- **Video frames are decoded, not element-seeked.** Mediabunny's `VideoSampleSink` returns the
-  source frame at an exact timestamp, which is what makes reverse and sub-second speed exact; the plan's composite goes onto an offscreen canvas (text clips through the same `drawTextClip` and decoded frames through the same `drawContain` the preview uses) and into a Mediabunny `CanvasSource` (codec `avc`). A frame the plan marks `blendTime` also fetches the partner sample and draws the pair through `drawBlendedContain`.
-- **Audio** is mixed in one `OfflineAudioContext` render with the same graph topology as the preview
-  (gain keyframes, pan, EQ, compressor, denoise, crossfade ramps), then encoded as an AAC track, or
-  Opus when `AudioEncoder` cannot do AAC (desktop Linux, Firefox).
-- **Quality presets** set the video bitrate: low ≈ 2.5 Mbps, medium ≈ 6 Mbps, high ≈ 12 Mbps.
-- The dialog shows progress, supports cancel, previews the result inline, and downloads
-  `<project name>.mp4`.
+- `export/offline.ts` builds a pure frame plan. `exportFrameTimes` quantizes the timeline to the project fps. `planVideoFrame` resolves each frame's draws: source timestamps that honor speed and reverse, crossfade alphas, keyframed opacity, color filter, and transform. `planAudioFrame` resolves the audible contributions with gain, pan, and twin shadowing. Tests verify the plan in Node.
+- **Video frames are decoded, not element-seeked.** Mediabunny's `VideoSampleSink` returns the source frame at an exact timestamp, which makes reverse and sub-second speed exact. The plan's composite goes onto an offscreen canvas, with text through the same `drawTextClip` and decoded frames through the same `drawContain` the preview uses, and into a Mediabunny `CanvasSource` with codec `avc`. A frame the plan marks `blendTime` also fetches the partner sample and draws the pair through `drawBlendedContain`.
+- **Audio** is mixed in one `OfflineAudioContext` render with the same graph topology as the preview: gain keyframes, pan, EQ, compressor, denoise, and crossfade ramps. It is then encoded as an AAC track, or Opus when `AudioEncoder` cannot do AAC, which covers desktop Linux and Firefox.
+- **Quality presets** set the video bitrate: low at about 2.5 Mbps, medium at about 6 Mbps, high at about 12 Mbps.
+- The dialog shows progress, supports cancel, previews the result inline, and downloads `<project name>.mp4`.
 
 Known limitations:
 
-- **Export requires WebCodecs** (Chromium, Edge, Firefox 130+, Safari 26+). The dialog disables
-  itself and says why on older browsers.
-- **HEVC and ProRes are not offered.** ProRes has no browser encoder: no shipping browser exposes a
-  ProRes `VideoEncoder` (mediabunny's compatibility guide, checked 2026-10-07). HEVC is a value call
-  rather than a platform limit: an encoder exists and a probe could gate it safely, but H.264 at the
-  shipped bitrates covers the upload path and the probe, the dialog option and the per-project
-  even-dimension gating cost more than they return. H.264 video with AAC (or Opus) audio is the
-  supported target.
-- **Export wall time tracks source decode**: roughly realtime for 1080p H.264 decoded in software,
-  faster where the browser decodes on the GPU. It is an offline render, not a realtime capture.
-- **`Download` buffers the MP4 in memory**: `Export to file` streams it straight to disk and bounds the
-  buffer, so use it for long timelines; the dialog's size estimate points you there past ~100 MB.
+- **Export requires WebCodecs.** Chromium, Edge, Firefox 130+, and Safari 26+ qualify. The dialog disables itself and says why on older browsers.
+- **HEVC and ProRes are not offered.** ProRes has no browser encoder; no shipping browser exposes a ProRes `VideoEncoder` (mediabunny's compatibility guide, checked 2026-10-07). HEVC is a judgment call rather than a platform limit. An encoder exists and a probe could gate it safely, but H.264 at the shipped bitrates covers the upload path, and the probe, the dialog option, and the per-project even-dimension gating cost more than they return. H.264 video with AAC or Opus audio is the supported target.
+- **Export wall time tracks source decode.** It is roughly realtime for 1080p H.264 decoded in software and faster where the browser decodes on the GPU. This is an offline render, not a realtime capture.
+- **`Download` buffers the MP4 in memory.** `Export to file` streams it straight to disk and bounds the buffer, so use it for long timelines. The dialog's size estimate points you there past about 100 MB.
 
 ## Persistence
 
-- **Project files** use the `.veproj.json` format (`version: 4`, plus a `savedAt` timestamp; see `serialization.ts`). `serializeDoc` strips object URLs (they are session-bound and can never persist) and the loader hydrates the clip's re-timing, shaping, keyframe and marker fields, clamping and sanitizing them on the way in. Versions 1, 2 and 3 still load; files from a newer app version are refused instead of loading partially. Version 3 added the project LUT library, whose entries are gated on the way in (a malformed entry, an oversized payload or a clip `lutId` naming no entry is dropped rather than trusted). A load that drops entries logs one warning naming the count.
-- **Loading** hydrates every asset with an empty `url` and `missing: true`; clips whose media vanished entirely lose their `mediaId`. Offline assets render as "offline" in the media bin, and a frame that needs them paints **Media offline** over the monitor, naming the files it is missing, instead of showing silent black. Relinking is automatic when you re-import a file with a matching name (and for the bundled samples, which the app refetches itself on any load or restore), or manual via the relink button on each offline asset. Recovered samples are merged into the document itself, so a load or restore stays one undo step and the exporter keeps the source bytes it reads.
-- **Autosave** writes the serialized doc to `localStorage` (key `web-video-editor:autosave:v1`) with an **800 ms debounce**, after every committed change — transient drag frames are skipped, and the final commit triggers exactly one save. Quota or serialization errors surface in the status bar ("Autosave off").
-- **Restore** — on startup a valid autosave raises a banner: _Restore_ replaces the current doc (pushing the empty starter doc onto the undo stack) or _Discard_ clears the entry.
+- **Project files** use `.veproj.json` (`version: 4`, plus a `savedAt` timestamp; see `serialization.ts`). `serializeDoc` strips object URLs because they are session-bound and cannot persist. The loader hydrates the clip's re-timing, shaping, keyframe, and marker fields, clamping and sanitizing them on the way in. Versions 1, 2, and 3 still load; files from a newer app version are refused instead of loading partially. Version 3 added the project LUT library. Its entries are gated on the way in: a malformed entry, an oversized payload, or a clip `lutId` naming no entry is dropped rather than trusted. A load that drops entries logs one warning naming the count.
+- **Loading** hydrates every asset with an empty `url` and `missing: true`; clips whose media vanished entirely lose their `mediaId`. Offline assets render as "offline" in the media bin. A frame that needs them paints Media offline over the monitor, naming the missing files, instead of showing silent black. Relinking is automatic when you re-import a file with a matching name. It also works for the bundled samples, which the app refetches on any load or restore, or manually through the relink button on each offline asset. Recovered samples are merged into the document itself, so a load or restore stays one undo step and the exporter keeps the source bytes it reads.
+- **Autosave** writes the serialized doc to `localStorage` under `web-video-editor:autosave:v1`, with an 800 ms debounce, after every committed change. Transient drag frames are skipped, and the final commit triggers exactly one save. Quota or serialization errors surface in the status bar as "Autosave off".
+- **Restore.** On startup a valid autosave raises a banner. Restore replaces the current doc and pushes the empty starter doc onto the undo stack. Discard clears the entry.
 
 ## Testing
 
@@ -342,31 +340,31 @@ bun run format:check   # prettier check
 bun run battery        # scripted UI battery (reuses a server already on :3000, else starts one; owns its browser session)
 ```
 
-The state core is deliberately pure, so it is tested in a plain Node environment (no browser needed): `commands` (validation, splitting, transitions, effects), `store` (history, transient gestures), `snap`, `transition` (span/alpha math), `serialization` (round-trips, missing media), `persistence` (debounce, validity), `time` helpers, plus `menus` (menu structure + state resolution) and `workspace` (layout state, sanitization, persistence).
+The pure state modules run in a plain Node environment with no browser. The browser-bound `persistence.ts` and `project-io.ts` helpers use mocked storage or File inputs, and their DOM-only paths are covered by the battery. Tests cover `commands` (validation, splitting, transitions, effects), `store` (history, transient gestures), `snap`, `transition` (span and alpha math), `serialization` (round trips, missing media), `persistence` (debounce, validity), `time` helpers, `menus` (menu structure and state resolution), and `workspace` (layout state, sanitization, persistence).
 
-Current state: **1575 tests across 72 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the pure state modules, and `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **1576 tests across 72 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the Node-testable state modules. `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
 ### Menu bar
 
-The top menu bar mirrors Adobe Premiere Pro's menu structure (File · Edit · Clip · Sequence · Marker · Graphics · View · Window · Help), adapted to the features this editor has. Two design rules keep it honest:
+The top menu bar follows Adobe Premiere Pro's menu structure, adapted to the features this editor has: File, Edit, Clip, Sequence, Marker, Graphics, View, Window, and Help. Two rules keep the menu honest:
 
-- **No dead items.** Every visible entry maps to a real action (`src/lib/editor/menus.ts` defines the structure; `MenuBar.tsx` maps action ids to editor operations). Anything the MVP cannot perform is not rendered.
+- **No dead items.** Every visible entry maps to a real action. `src/lib/editor/menus.ts` defines the structure, and `MenuBar.tsx` maps action ids to editor operations. Anything the app cannot perform is not rendered.
 - **No fake shortcuts.** The shortcut column only lists keybindings that are actually wired in `useEditorKeyboard.ts`.
 
-Item availability is computed from the editor context: Undo/Redo follow history depth, clip actions follow selection state (Split requires the playhead inside the selected clip; Mute/Audio Gain require an audio-bearing clip), the Snapping checkbox mirrors the toolbar magnet, and the Window checkboxes mirror panel visibility. The menu model is pure and locked down by `menus.test.ts`.
+Item availability comes from the editor context. Undo and Redo follow history depth. Clip actions follow selection state: Split requires the playhead inside the selected clip, and Mute or Audio Gain requires an audio-bearing clip. The Snapping checkbox mirrors the toolbar magnet, and the Window checkboxes mirror panel visibility. The menu model is pure and locked down by `menus.test.ts`.
 
 ### Workspace panels
 
-On screens ≥768px the shell is a resizable panel workspace (`react-resizable-panels` via the shadcn Resizable wrappers):
+On screens at least 768px wide, the shell is a resizable panel workspace using `react-resizable-panels` through the shadcn Resizable wrappers:
 
-- **Resize** — drag any handle; keyboard resizing works out of the box (focus a handle, use arrow keys). Sizes persist to `localStorage` (debounced while dragging).
-- **Collapse** — each panel header has a chevron; dragging a handle past the panel minimum also collapses. A collapsed panel becomes a slim strip with its rotated title — click it to expand again.
-- **Show/hide** — the Window menu checkboxes close and reopen panels entirely.
-- **Reset** — double-click a resize handle to reset its neighbor to the default size, or use Window › Reset Workspace Layout (enabled whenever the layout deviates from the default).
+- **Resize.** Drag any handle. Keyboard resizing works out of the box: focus a handle and use the arrow keys. Sizes persist to `localStorage`, debounced while dragging.
+- **Collapse.** Each panel header has a chevron. Dragging a handle past the panel minimum also collapses. A collapsed panel becomes a slim strip with its rotated title; click it to expand again.
+- **Show and hide.** The Window menu checkboxes close and reopen panels entirely.
+- **Reset.** Double-click a resize handle to reset its neighbor to the default size, or use Window › Reset Workspace Layout. It is enabled whenever the layout deviates from the default.
 
-All layout state lives in `src/lib/editor/workspace.ts` (pure: defaults, clamping, sanitize-corrupt-data, injected storage) behind the `useWorkspaceStore` zustand wrapper, so a corrupt or hand-edited `localStorage` entry can never crash the editor. Below 768px the workspace is replaced by the original fixed stacked layout.
+All layout state lives in `src/lib/editor/workspace.ts`, which is pure: defaults, clamping, sanitization, and injected storage. It sits behind the `useWorkspaceStore` zustand wrapper, so a corrupt or hand-edited `localStorage` entry cannot crash the editor. Below 768px the workspace is replaced by the original fixed stacked layout.
 
 ## Project structure
 
@@ -424,7 +422,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 72 test files (1575 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
+│   └── __tests__/               # 72 test files (1576 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
 ├── components/editor/
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs
@@ -453,32 +451,22 @@ src/
 
 ## Known limitations and roadmap
 
-Limitations, all observable in the current code:
+These limitations are all observable in the current code:
 
-- **Selection is id-based**: `store.selections` holds clip ids (primary first); group operations expand A/V link groups, the marquee box selects whole groups, and `Select Track Clips` takes a whole lane plus its link twins. Track targeting is session state: it steers lane-less placements (paste, quick-add, add text) but is not saved into the project file.
-- **Export requires WebCodecs**: the MP4 pipeline replaced MediaRecorder/WebM, so very old browsers cannot export (playback still works). ProRes is out of scope because no shipping browser exposes a ProRes `VideoEncoder`; HEVC is left out on value grounds, not because a browser encoder is missing.
-- **Keyframe curves are eased, not overshooting**: the presets (linear, easeIn, easeOut, easeInOut) plus free handle editing on any segment, with the control points clamped inside the unit square. There is no Hold interpolation, no spatial interpolation for position paths, and adjacent segments do not share a smooth joint (each side carries its own handle pair).
-- **Reverse preview is stepped**, `<video>` cannot play backwards in realtime; the export is frame-accurate but playback shows a stepped approximation. Rate stretch on one half of a linked A/V pair does not re-time the twin (link groups still move/delete/split together).
-- **Markers are editor-only**: they render in the timeline and never affect the export (no visual burn-in, no MP4 chapter metadata), and a clip marker that a trim moves out of the visible span is kept in the data but hidden until the clip is extended back. There are no marker spans or marker types.
-- **A 3D LUT grades per pixel in JavaScript**: the pass runs at the source's resolution, so a
-  multi-clip 4K timeline with 3D cubes is LUT-bound. Measured in this repo's headless Chromium (see
-  the benchmark note in CHANGELOG 0.7.0): the pure pass costs about 81 ms per 1080p frame per clip and
-  about 327 ms per 4K frame per clip, down from 101 ms and 410 ms before the red-axis table, and three
-  graded 4K clips measured about 1.44 s per frame at the old rate (before decode and encode). Each
-  clip's cube is decoded from its payload once per session and its red axis is resolved into a table
-  once per grid, so the per-frame cost is the pass itself. A 1D cube has no such cost: it rides the
-  shared SVG filter chain.
-- **Noise reduction is broadband only**: a fixed high-pass/low-pass/hiss-cut chain (native Web Audio biquads); spectral or learned noise reduction is out of scope. Gain is linear 0–2 (+6 dB max).
-- **Ripple delete is explicit** — plain Delete leaves the gap; `Shift+Del` closes it. `removeTransition` leaves the overlap behind (harmless: the later clip wins visually).
-- **Trim bounds** — video/audio clips are bounded by their source; images and text are unbounded (images have no intrinsic length; they default to 4 s).
-- **Missing media is silent** — offline assets render black (video) or nothing (audio) until relinked.
-- **Autosave depends on localStorage quota**; large projects with embedded thumbnails/waveforms can exceed it.
+- **Selection is id-based.** `store.selections` holds clip ids with the primary first. Group operations expand A/V link groups, the marquee box selects whole groups, and `Select Track Clips` takes a whole lane plus its link twins. Track targeting is session state: it steers lane-less placements (paste, quick-add, add text) but is not saved into the project file.
+- **Export requires WebCodecs.** The MP4 pipeline replaced MediaRecorder and WebM, so very old browsers cannot export; playback still works. ProRes is out of scope because no shipping browser exposes a ProRes `VideoEncoder`. HEVC is left out on value grounds, not because a browser encoder is missing.
+- **Keyframe curves are eased, not overshooting.** The presets are linear, easeIn, easeOut, and easeInOut, plus free handle editing on any segment, with control points clamped inside the unit square. There is no Hold interpolation, no spatial interpolation for position paths, and adjacent segments do not share a smooth joint; each side carries its own handle pair.
+- **Reverse preview is stepped.** `<video>` cannot play backwards in realtime; the export is frame-accurate, but playback shows a stepped approximation. Rate stretch on one half of a linked A/V pair does not re-time the twin; link groups still move, delete, and split together.
+- **Markers are editor-only.** They render in the timeline and never affect the export. There is no visual burn-in and no MP4 chapter metadata. A clip marker that a trim moves out of the visible span is kept in the data but hidden until the clip is extended back. There are no marker spans or marker types.
+- **A 3D LUT grades per pixel in JavaScript.** The pass runs at the source's resolution, so a multi-clip 4K timeline with 3D cubes is limited by that pass. In this repo's headless Chromium, the pure pass costs about 81 ms per 1080p frame per clip and about 327 ms per 4K frame per clip, down from 101 ms and 410 ms before the red-axis table. Three graded 4K clips measured about 1.44 s per frame at the old rate, before decode and encode. See the benchmark note in CHANGELOG 0.7.0. Each clip's cube is decoded from its payload once per session, and its red axis is resolved into a table once per grid, so the per-frame cost is the pass itself. A 1D cube has no such cost; it rides the shared SVG filter chain.
+- **Noise reduction is broadband only.** A fixed high-pass, low-pass, and hiss-cut chain uses native Web Audio biquads. Spectral or learned noise reduction is out of scope. Gain is linear from 0 to 2, with +6 dB max.
+- **Ripple delete is explicit.** Plain Delete leaves the gap; `Shift+Del` closes it. `removeTransition` leaves the overlap behind, which is harmless because the later clip wins visually.
+- **Trim bounds.** Video and audio clips are bounded by their source. Images and text are unbounded; images have no intrinsic length and default to 4 s.
+- **Offline media is marked.** A frame that needs an offline asset paints a Media offline overlay naming the missing files, audio stays silent, and export refuses until the asset is relinked.
+- **Autosave depends on localStorage quota.** Large projects with embedded thumbnails or waveforms can exceed it.
 
-Roadmap candidates, roughly in order of impact (the full gap analysis against Premiere, with what
-each release already closed, is in [`ROADMAP.md`](ROADMAP.md)):
-
-1. Track grouping.
+The full gap analysis against Premiere, including what each release has closed and the items deliberately left out, is in [`ROADMAP.md`](ROADMAP.md). It currently lists no open Tier 1 through Tier 3 items.
 
 ---
 
-For the module-level technical reference — per-file exports, the undo/transient lifecycle, the audio graph, the crossfade model, and the invariant list — see [`docs/architecture.md`](docs/architecture.md). The whole set is indexed at [`docs/README.md`](docs/README.md).
+For the module-level technical reference, including per-file exports, the undo and transient lifecycle, the audio graph, the crossfade model, and the invariant list, see [`docs/architecture.md`](docs/architecture.md). The whole set is indexed at [`docs/README.md`](docs/README.md).

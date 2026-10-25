@@ -20,14 +20,14 @@ import type { Clip, Doc, MediaAsset, Track } from '../types'
 import { drawFrame, type FrameBlendSource } from './compositor'
 
 /**
- * PlaybackCore — the playback/export engine.
+ * PlaybackCore: the preview playback engine.
  *
  * - Master clock: the AudioContext clock when audio is available (sample-accurate,
  *   drift-free), otherwise `performance.now()`.
  * - Compositing: draws every frame into the provided canvas via `drawFrame`.
  * - Audio: one HTMLMediaElement per clip (see ClipMediaPool), routed through a
  *   per-clip GainNode → master GainNode → destination (+ optional MediaStream
- *   destination for export). Per-frame gain computes clip gain × mute ×
+ *   capture destination). Per-frame gain computes clip gain × mute ×
  *   track mute × crossfade alpha.
  * - Drift correction: element position is compared with the expected source
  *   time every frame; a gap wider than DRIFT_THRESHOLD (0.4 s) triggers a
@@ -42,14 +42,14 @@ export interface PlaybackCoreOptions {
   getDoc: () => Doc
   /**
    * The effective source URL for an asset: the proxy URL when proxies are on
-   * and ready, else `asset.url`. Omitted by the export engine and by tests,
-   * which always read the original.
+   * and ready, else `asset.url`. Omitted by tests, which always read the
+   * original.
    */
   resolveMediaUrl?: (asset: MediaAsset) => string
   /**
    * The active compound sequence path (0.8.1). The preview renders and syncs
-   * the open sequence's tracks; omitted by the export engine and tests, which
-   * start from the project root.
+   * the open sequence's tracks; omitted by tests, which start from the project
+   * root.
    */
   getActiveSequencePath?: () => readonly string[]
   onFrame?: (t: number) => void

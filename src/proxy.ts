@@ -1,19 +1,20 @@
 /**
  * src/proxy.ts — the password gate (Next 16's renamed middleware convention).
  *
- * Every request funnels through here. A visitor with a valid session cookie
- * sails through; anyone else is redirected to /gate — the only route allowed
- * past the check, because it is what serves the password form. The app's
- * bundle, page, and assets are never sent to an unauthenticated client.
+ * Every gated request funnels through here. A visitor with a valid session
+ * cookie sails through; anyone else is redirected to /gate, the only route allowed
+ * past the check because it serves the password form. The editor page and all
+ * other API routes are gated; the compiled chunks under `_next/static` are
+ * public static assets, so never treat the bundle as secret or put secrets in it.
  *
  * Allowed through without a session: EXACTLY `/gate` and `/api/gate-login`
  * (the two routes that make the login work), plus Next's dev hot-reload
- * endpoint. Static assets need no entry here — the matcher below already
+ * endpoint. Static assets need no entry here; the matcher below already
  * excludes `_next/static`, `_next/image`, `favicon.ico`, and `icon.svg` before
  * the proxy runs, and exact paths are the point: a `startsWith('/icon')`
  * prefix once meant a hypothetical `/icon-admin` route would have skipped the
- * gate silently. Everything else — including `/` and every chunk — requires
- * the cookie.
+ * gate silently. Everything else, including `/` and every other API route,
+ * requires the cookie.
  *
  * When GATE_PASSWORD is unset the gate is open. That is deliberate: a
  * checkout/dev environment without the variable configured must not turn

@@ -964,12 +964,12 @@ function AboutDialog({
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
           <DialogTitle>Web Video Editor</DialogTitle>
-          <DialogDescription>MVP · browser-based video editing</DialogDescription>
+          <DialogDescription>Pre-1.0 · browser-based video editing</DialogDescription>
         </DialogHeader>
         <div className="space-y-2 text-sm">
           <p>
-            A minimal timeline editor: import media, arrange clips on multi-track timelines, add
-            crossfades and text, mix audio, and export to WebM — entirely in your browser.
+            A browser-based timeline editor: import media, arrange clips on multi-track timelines,
+            add transitions and text, mix audio, and export to MP4, entirely in your browser.
           </p>
           <p className="text-muted-foreground">
             Timeline duration:{' '}

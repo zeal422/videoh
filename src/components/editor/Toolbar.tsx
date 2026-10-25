@@ -163,7 +163,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
       <header
         role="toolbar"
         aria-label="Main toolbar"
-        className="flex h-12 shrink-0 items-center gap-1 border-b bg-card px-2 sm:px-3"
+        className="editor-scroll flex h-auto min-h-12 shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden border-b bg-card px-2 py-1 sm:px-3"
       >
         {/* History */}
         <ToolButton
@@ -203,7 +203,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
         <div
           role="group"
           aria-label="Placement mode"
-          className="border-border flex items-center overflow-hidden rounded-md border"
+          className="border-border flex shrink-0 items-center overflow-hidden rounded-md border"
         >
           {PLACEMENT_MODES.map(({ mode, label, hint }) => (
             <Tooltip key={mode}>
@@ -220,7 +220,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
                   {label}
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>
+              <TooltipContent side="bottom">
                 {mode === 'place'
                   ? 'Place lane drops plainly (default)'
                   : mode === 'insert'
@@ -276,7 +276,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
                   </Button>
                 </DropdownMenuTrigger>
               </TooltipTrigger>
-              <TooltipContent>Add text with preset style</TooltipContent>
+              <TooltipContent side="bottom">Add text with preset style</TooltipContent>
             </Tooltip>
             <DropdownMenuContent aria-label="Text style presets">
               <DropdownMenuItem onSelect={() => addTextWithStyle()}>Default style</DropdownMenuItem>
@@ -313,7 +313,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
                 </Button>
               </DropdownMenuTrigger>
             </TooltipTrigger>
-            <TooltipContent>Add track</TooltipContent>
+            <TooltipContent side="bottom">Add track</TooltipContent>
           </Tooltip>
           <DropdownMenuContent>
             <DropdownMenuItem onClick={() => addTrack('video')}>
@@ -351,7 +351,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
         />
 
         {/* Project name (center, flexible) */}
-        <div className="mx-2 min-w-0 flex-1">
+        <div className="mx-1 min-w-0 flex-1 lg:mx-2">
           <Input
             aria-label="Project name"
             value={doc.project.name}
@@ -388,13 +388,13 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
             e.target.value = ''
           }}
         />
-        <Button size="sm" className="ml-1 gap-1.5" onClick={onOpenExport}>
+        <Button size="sm" className="ml-1 gap-1.5" aria-label="Export" onClick={onOpenExport}>
           {isLoading ? (
             <Loader2 className="size-4 animate-spin" />
           ) : (
             <MonitorPlay className="size-4" />
           )}
-          <span className="hidden sm:inline">Export</span>
+          <span className="hidden lg:inline">Export</span>
         </Button>
       </header>
     </TooltipProvider>
@@ -435,7 +435,7 @@ function ToolButton({
           {icon}
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      <TooltipContent side="bottom">{label}</TooltipContent>
     </Tooltip>
   )
 }

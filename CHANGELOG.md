@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.3] - 2026-10-25
+
+### Changed
+
+- **Toolbar tooltips.** The placement mode, text preset, add track, and standard toolbar tooltips now open below their buttons instead of above them. The bubble no longer covers the menu bar.
+- **Narrow toolbar.** The placement-mode group keeps its full width, Export drops its label below 1024 px, and the toolbar scrolls horizontally when needed, so Overwrite is not clipped at narrow desktop widths.
+- **README voice.** The README now uses plainer prose. Em dashes are gone, the long feature bullets are split, and the intro says what the app is and what it is not. The data model, project tree, and links are unchanged.
+- **Project stage.** The README and About dialog call the project pre-1.0 instead of an MVP, the About dialog names MP4 instead of the retired WebM path, and the page title plus remaining internal comments drop the MVP label, matching the completed Tier 1 through Tier 3 scope recorded in the roadmap.
+- **Design system note.** `docs/design-system.md` records the toolbar tooltip placement and the native `title` exception on panel headers.
+- **Doc drift pass.** The README now lists all 57 commands, adds the compound-clip, proxy, title-preset, and full-screen feature notes, corrects the timeline-position and offline-media wording, and points at the roadmap without naming an unlisted candidate. `docs/structure.md` adds the proxy and effect-control modules, `docs/deployment.md` stops claiming there is no server-only gate code or secret configuration, `AGENTS.md` records the browser-bound helper exception, `docs/architecture.md` fixes the time invariant, the export/audio-graph description, and the UI module table, `docs/testing.md` names the toolbar tooltip test as a static lock, the docs index links the roadmap, the proxy and deployment docs stop claiming the compiled chunks are gated, and the stale `PlaybackCore` comments now describe the preview-only engine.
+- **Review follow-up.** The README, architecture invariant, and trim flow now define the consumed source span through the shared `sourceTimeAt` contract, including the `timeScale` integral, instead of timeline duration. The roadmap labels its 0.8.6 gap audit as a historical snapshot and states the actual learned-noise constraint: no model path exists, and a credible model would add bundle and runtime cost.
+
+### Added
+
+- **Toolbar placement locks.** A static-source test asserts that all four toolbar tooltip call sites use `side="bottom"`, and also locks the non-shrinking placement group, the toolbar scroll, and Export's accessible icon-only label. The suite and inventory move to 1,576 tests: 1,552 in `src/lib/editor/__tests__/` plus 24 in `src/lib/gate.test.ts`. README, `docs/testing.md`, and `docs/structure.md` record the new counts.
+
 ## [0.10.2] - 2026-10-24
 
 ### Added

@@ -4,13 +4,14 @@ How the app compares with a desktop NLE today, and what is still missing. Two
 questions, two sections: what has shipped (so a closed gap is not listed twice)
 and what remains, grouped by how often a working editor would feel it.
 
-Research date: September 2026 (Premiere 26.x); every gap status re-verified against
-the code on 2026-10-18, at 0.8.6. The 0.8.7, 0.8.8, 0.8.9, 0.9.0, 0.9.1, 0.9.2, 0.10.0, 0.10.1 and
-0.10.2 rows below describe the playhead fix, the motion-blur static-window bypass, VTT export, the
-battery speedup, the Sequence Settings dialog plus menu fixes, the ripple preloader, the appearance
-palettes, the ten added palettes and the fullscreen control respectively, none of which closes a
-Premiere gap, so no status changed for any of them. A gap moves to "Shipped" only once the release
-that closed it is recorded in [CHANGELOG.md](CHANGELOG.md).
+Research date: September 2026 (Premiere 26.x). The gap table below is a historical snapshot last
+re-verified against the code on 2026-10-18 at 0.8.6. The 0.8.7, 0.8.8, 0.8.9, 0.9.0, 0.9.1, 0.9.2,
+0.10.0, 0.10.1, 0.10.2 and 0.10.3 rows below record later releases: the playhead fix, the motion-blur
+static-window bypass, VTT export, the battery speedup, the Sequence Settings dialog plus menu fixes,
+the ripple preloader, the appearance palettes, the ten added palettes, the fullscreen control and the
+toolbar tooltip placement fix. None of them closes a Premiere gap, so no status changed for any of
+them. A gap moves to "Shipped" only once the release that closed it is recorded in
+[CHANGELOG.md](CHANGELOG.md).
 
 The editing core is not tracked as a gap: the multi-track timeline, trim / split
 / razor, A/V linking, ripple delete, cross-dissolves, text overlays, gain / mute,
@@ -22,6 +23,7 @@ Newest first. Releases before 0.5.0 are in [CHANGELOG.md](CHANGELOG.md).
 
 | Version    | What landed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **0.10.3** | Toolbar tooltip placement. Every custom toolbar tooltip opens below its trigger, so the bubble no longer covers the menu bar in the top toolbar. The placement group also holds its width, with Export icon-only below 1024 px and a horizontally scrolling toolbar when needed, so Overwrite never clips. A static-source test locks the four `side="bottom"` call sites and the placement-group width. No Premiere gap closed.                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **0.10.2** | Full screen control. The menu bar adds a compact Full screen button beside the version label; it toggles the browser Fullscreen API, swaps to Exit full screen, and follows fullscreenchange. Focused buttons own Space, so native activation wins over playback, and the 32px bar keeps its edge-to-edge border. No Premiere gap closed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | **0.10.1** | Ten more appearance palettes. View > Appearance now offers Default plus thirteen tinted palettes, ordered by hue from Garnet to Orchid: Garnet, Blush, Ember, Honey, Olive, Forest, Lagoon, Ocean, Steel, Midnight, Indigo, Plum, and Orchid. The picker is a two-column grid in a scrollable dialog. No Premiere gap closed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | **0.10.0** | Appearance palettes. View > Appearance offers Default, Midnight, Forest, and Plum: curated dark chrome palettes applied through the CSS token layer, persisted under their own browser key, with clip kinds, markers, the monitor, scopes, and the splash fixed. No Premiere gap closed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -128,8 +130,9 @@ bounded export memory and proxies (0.8.0), and nested sequences / compound clips
   limits clamp only to 64..3840 by 64..2160. An option that appears and then fails
   the export is the platform promise this section exists to avoid.
 - **Spectral or learned noise reduction** beyond the fixed broadband chain.
-  "Learned" needs model hosting or shipped weights, which the no-server constraint
-  rules out. "Spectral" is possible but not verifiable to this repo's own standard:
+  "Learned" needs a model path (hosted inference, or shipped weights plus a runtime), and this repo
+  has none; a credible model would also add bundle size and runtime cost. "Spectral" is possible but
+  not verifiable to this repo's own standard:
   the fixed chain is vindicated by a measured frequency-response test that runs in
   plain Node, and a spectral gate inside an `AudioWorklet` is browser-only, so the
   exact thing being changed would leave the Node-testable state core. A tunable

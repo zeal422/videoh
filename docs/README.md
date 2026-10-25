@@ -15,7 +15,8 @@ deeper references, and they cross-link to each other so you can move between the
 Project-level files:
 
 - [README.md](../README.md) — product overview, features, keyboard map, quick start.
-- [CHANGELOG.md](../CHANGELOG.md) — released and unreleased changes ([Keep a Changelog][kac]).
+- [ROADMAP.md](../ROADMAP.md) — Premiere gap analysis, shipped releases, and deliberate non-goals.
+- [CHANGELOG.md](../CHANGELOG.md) — release history ([Keep a Changelog][kac]).
 - [AGENTS.md](../AGENTS.md) — instructions for AI coding agents working in this repo.
 
 How the docs stay honest: every doc claims something about the code in `src/`, and the code links

@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest'
 import { buildMenus, collectMenuActions, MENU_SPECS, type MenuContext } from '../menus'
 import { defaultWorkspace, type PanelId } from '../workspace'
 
-/** Menu bar order mirrors Adobe Premiere Pro's top menu (adapted to the MVP). */
+/** Menu bar order mirrors Adobe Premiere Pro's top menu (adapted to the app). */
 const EXPECTED_MENU_ORDER = [
   'File',
   'Edit',

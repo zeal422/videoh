@@ -133,7 +133,12 @@ them:
   `role="group" aria-label="Placement mode"` bordered box with three square-cornered `Button`s
   (`placement-mode-place|insert|overwrite`); the active one takes `variant="secondary"` and
   `aria-pressed="true"`, the others stay `ghost`. It is session-only state, so the control never
-  implies persistence, and the one-shot `,` / `.` keys work regardless of the toggle.
+  implies persistence, and the one-shot `,` / `.` keys work regardless of the toggle. The group is
+  `shrink-0`; below 1024 px Export is icon-only and the toolbar scrolls horizontally when needed, so
+  Overwrite never clips.
+- **Toolbar tooltips open below.** Every custom toolbar tooltip sets `side="bottom"` on its content,
+  so the bubble stays clear of the menu bar and uses the room under the top toolbar. Panel-header
+  controls use native `title` tooltips and keep browser-managed placement.
 - **The proxy badge is a state, not a control.** The Media bin row shows `proxy` / `proxy…` /
   `proxy failed` in the existing status line, and the build action is a ghost `IconMiniButton` (the
   `Gauge` icon) shown only for a live heavy source. `View > Use Proxies` is a checkbox menu item, so the

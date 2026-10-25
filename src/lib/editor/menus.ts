@@ -6,7 +6,7 @@
  * editor actually has. Design rules:
  *
  * 1. **No dead menu items.** Every item maps to a real action id; anything the
- *    MVP cannot perform is not rendered at all.
+ *    app cannot perform is not rendered at all.
  * 2. **Display-only shortcuts.** The shortcut column only shows keyboard
  *    shortcuts that are actually wired globally in `useEditorKeyboard.ts`.
  * 3. **Pure & testable.** `buildMenus(ctx)` resolves enabled/checked states

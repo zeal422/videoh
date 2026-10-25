@@ -8,12 +8,13 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 
 ```text
 .
-├── src/                     # all application code (see below)
+├── src/                     # all application code (src/proxy.ts is the access-gate middleware; see below)
 ├── public/
 │   ├── robots.txt           # crawler policy
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
 │   ├── battery.sh           # scripted UI battery (63 steps) driven by agent-browser
+│   ├── battery.timing.sh    # battery copy that records per-step timing
 │   └── run-battery.sh       # runner: dev server, gate password, session cleanup, strict verdict
 ├── docs/                    # this documentation set
 ├── next.config.ts           # output: "standalone"
@@ -23,14 +24,18 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 ├── components.json          # shadcn/ui CLI config (new-york, neutral, lucide)
 ├── tsconfig.json            # strict, noEmit, "@/*" → "./src/*"
 ├── package.json             # scripts + dependencies (run with Bun)
+├── bun.lock                 # dependency lockfile
 ├── README.md                # product overview + keyboard map
+├── ROADMAP.md               # Premiere gap analysis
 ├── CHANGELOG.md             # released + unreleased changes
 ├── AGENTS.md                # AI coding-agent instructions
+├── .env.example             # access-gate environment template
 └── .prettierrc              # no semicolons, single quotes, 100 cols
 ```
 
-Everything is committed; there is no backend, no database, and no server-only code. The editor runs
-entirely in the browser (object URLs, canvas, Web Audio, WebCodecs).
+There is no data backend or database. The editor runs entirely in the browser (object URLs, canvas,
+Web Audio, WebCodecs). The only server-only code is the access gate: `src/proxy.ts`, the login route
+under `src/app/api/gate-login/`, and the `src/lib/gate*.ts` primitives described below.
 
 ## `src/app/` — Next.js App Router
 
@@ -54,12 +59,19 @@ src/components/
 │   ├── AppearanceDialog.tsx      #   View > Appearance palette picker, applies and persists immediately
 │   ├── apply-theme.ts            #   writes/removes `data-palette` on `<html>`
 │   ├── ReleaseNotesModal.tsx     #   welcome modal: last five versions, Help > What is new
+│   ├── Preloader.tsx             #   boot ripple grid behind the editor chunk import
 │   ├── PanelShell.tsx            #   resizable/collapsible panel frame
+│   ├── NamedSlider.tsx           #   slider wrapper that names the thumb
 │   ├── Toolbar.tsx               #   tools, history, tracks, save/open, export
 │   ├── MediaBin.tsx              #   import, samples, relink, drag source, bin row selection
 │   ├── SourcePanel.tsx           #   source monitor: preview, transport, mark In/Out
 │   ├── PreviewPanel.tsx          #   program monitor + transport + text drag
+│   ├── ColorFilterDefs.tsx       #   hidden SVG grade/LUT filter host
+│   ├── ScopesPanel.tsx           #   histogram, RGB balance, waveform, vectorscope
 │   ├── InspectorPanel.tsx        #   clip properties / project settings
+│   ├── effect-controls/
+│   │   ├── EffectControlsPanel.tsx   # keyframes, graph, audio shaping, speed/reverse
+│   │   └── AppliedEffectsSection.tsx # effect stack, picker, matte/keyer controls
 │   ├── CaptionsPanel.tsx         #   captions: cue list, SRT import/export, VTT export, New Cue
 │   ├── StatusBar.tsx             #   pinned footer
 │   ├── ExportDialog.tsx          #   export: quality, progress, preview, download
@@ -92,6 +104,7 @@ src/hooks/
 ```text
 src/lib/
 ├── releases.ts           # hand-curated release notes for the welcome modal (gate-locked to package.json)
+├── utils.ts              # shadcn `cn()` class-merge helper
 └── gate.ts, gate-env.ts  # the access gate primitives (section below)
 ```
 
@@ -150,10 +163,12 @@ src/lib/editor/
 ├── timeline-drop.ts      # drop-target geometry for drop-between-tracks
 ├── tracks.ts             # removes the tracks an edit leaves empty (prune)
 ├── timeline-scroll.ts    # drag edge auto-scroll geometry (pure)
+├── proxy.ts              # pure proxy planning: dimensions, bitrate, eligibility
 ├── media/
 │   ├── probe.ts          # importFile: probe duration/size, thumbnail, waveform peaks, hasAudio
 │   ├── relink.ts         # relinkPatchFrom: patch fields a relink carries (file handle included)
-│   └── elements.ts       # ClipMediaPool: per-clip media elements, source nodes, the parked blend partner
+│   ├── elements.ts       # ClipMediaPool: per-clip media elements, source nodes, the parked blend partner
+│   └── proxies.ts        # session proxy build/revoke and effective media URL
 ├── playback/
 │   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate, blend partner
 │   ├── compositor.ts     # drawFrame + the draws the exporter shares: contain-fit geometry, text, crossfade, blends, the 3D LUT pass
@@ -165,7 +180,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 71 test files (1551 tests) in `__tests__/` plus `src/lib/gate.test.ts`: see testing.md
+└── __tests__/            # 71 test files (1552 tests) in `__tests__/` plus `src/lib/gate.test.ts`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```
@@ -177,6 +192,8 @@ src/lib/editor/
 - Tests are colocated under `src/lib/editor/__tests__/` and named `*.test.ts`. Component "wiring"
   behavior is verified by static-source tests rather than a DOM renderer (see
   [testing.md](testing.md)).
-- The state core must stay browser-free so it can run in Vitest's Node environment; browser APIs are
-  isolated to `media/`, `playback/`, and `export/`.
+- The pure state core must stay browser-free so it runs in Vitest's Node environment. Browser APIs
+  live in `media/`, `playback/`, and `export/`, plus the browser-bound `persistence.ts` and
+  `project-io.ts` helpers. Their tests use mocked storage or File inputs; DOM-only paths are covered
+  by the battery.
 - Nothing under `src/lib/editor/` imports from `src/components/`.

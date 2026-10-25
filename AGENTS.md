@@ -1,8 +1,10 @@
 # AGENTS.md — Instructions for AI Coding Agents
 
-Browser-based multi-track video editor. Everything runs client-side (object URLs, canvas, Web Audio,
-WebCodecs), there is no backend, database, or environment configuration. Single page mounted from
-`src/app/page.tsx` (client-only dynamic import of the editor shell). Stack: Next.js 16 App Router +
+Browser-based multi-track video editor. Everything the editor does runs client-side (object URLs,
+canvas, Web Audio, WebCodecs); there is no data backend or database. The only environment
+configuration is the optional access gate (`GATE_PASSWORD` and `GATE_SECRET` in `.env.local`).
+Single page mounted from `src/app/page.tsx` (client-only dynamic import of the editor shell).
+Stack: Next.js 16 App Router +
 React 19 + TypeScript strict (`noImplicitAny` on, build-time type errors not ignored) + Tailwind 4 (tokens in `src/app/globals.css`) + shadcn/ui +
 zustand 5 + Vitest. Run with **Bun**, never npm/pnpm/yarn.
 
@@ -69,13 +71,13 @@ e2e/battery.sh e2e/run-battery.sh`. If the user started the dev server, leave
   clipboard, actions, tracks, timeline-scroll, store, serialization, persistence, workspace, menus. Pure
   TypeScript (no React, except the zustand stores); this is what unit tests target. See
   [docs/architecture.md](docs/architecture.md).
-- `src/lib/editor/media|playback|export/` — the only modules allowed to touch browser APIs (media
-  elements, Web Audio, canvas, WebCodecs).
+- `src/lib/editor/media|playback|export/` — browser APIs live here (media elements, Web Audio, canvas,
+  WebCodecs), plus the explicitly browser-bound `persistence.ts` and `project-io.ts` helpers.
 - `src/components/editor/` — the UI. `src/components/editor/timeline/` holds the timeline.
 - `src/components/ui/` — preinstalled shadcn/ui: use them, never modify by hand.
 - `src/hooks/editor/useEditorKeyboard.ts` — the verified Premiere keyboard map.
 - `src/app/` — `layout.tsx` (dark `<html>`, fonts, Toaster), `page.tsx`, `globals.css` (tokens),
-  `icon.svg`.
+  `icon.svg`, plus the access-gate page (`gate/page.tsx`) and login route (`api/gate-login/`).
 - `src/lib/editor/__tests__/` — all tests (`*.test.ts`), plus the mocked browser harness in `mocks/`.
 - `e2e/battery.sh`: 63-step UI battery, first step is the gate login (needs the dev server +
   `agent-browser`; set `GATE_PASSWORD` when the gate is active). Drive it through
@@ -88,8 +90,9 @@ e2e/battery.sh e2e/run-battery.sh`. If the user started the dev server, leave
 1. **Commands are the only mutation path.** UI dispatches an `EditorCommand` to the store; commands
    clone, validate, and return a new `Doc`. Never edit `doc` fields in place. If new state must be
    undoable, it lives inside `Doc`.
-2. **Keep the state core browser-free** so it runs in Vitest's Node environment. Browser APIs belong in
-   `media/`, `playback/`, and `export/`.
+2. **Keep the pure state core browser-free** so it runs in Vitest's Node environment. Browser APIs
+   belong in `media/`, `playback/`, and `export/`, or in the explicitly browser-bound
+   `persistence.ts` and `project-io.ts` helpers.
 3. **Style through design tokens** (`bg-background`, `text-muted-foreground`, `border-border`, …) with
    [docs/design-system.md](docs/design-system.md). The kind colours (emerald/amber/violet clips, rose
    playhead, amber snap guide) are the deliberate exception; never hardcode surface hex values.

@@ -14,9 +14,9 @@ const geistMono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'Web Video Editor — MVP',
+  title: 'Web Video Editor',
   description:
-    'Browser-based multi-track video editor: import media, arrange clips, add crossfades and text, mix audio, and export to video — all client-side.',
+    'Browser-based multi-track video editor: import media, arrange clips, add transitions and text, mix audio, and export to MP4, all client-side.',
   keywords: ['video editor', 'timeline', 'WebCodecs', 'MP4 export', 'Web Audio', 'canvas'],
 }
 

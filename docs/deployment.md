@@ -11,17 +11,18 @@ Build, run, and verify. Sibling docs: [docs index](README.md) · [architecture.m
 - A **current Chromium-based browser** for the full feature set (WebCodecs + Web Audio + canvas).
   Export needs WebCodecs: Chromium and Edge, plus Firefox 130+ and Safari 26+; playback alone works
   in older browsers.
-- No database, no server-only application code. The editor itself is a client-side app; the only
-  server pieces are the Next.js process that serves the static shell and the **access gate**
-  (see [Access gate](#access-gate) below).
+- No database and no data backend. The editor itself is a client-side app; the only server pieces
+  are the Next.js process that serves the static shell and the **access gate** (see
+  [Access gate](#access-gate) below).
 
 ## Access gate
 
 The deployment can sit behind a password gate (`src/proxy.ts`, Next 16's renamed middleware): every
-request without a valid session cookie is redirected to `/gate`. Only the two routes that make login
-work (`/gate` itself and `POST /api/gate-login`, plus Next's dev-only hot-reload endpoint) are served
-without a session; static assets (`/_next/static`, `/_next/image`, `favicon.ico`, `icon.svg`) are
-excluded by the proxy's matcher. The app bundle never reaches an unauthenticated client.
+request without a valid session cookie is redirected to `/gate`. Only the two login routes (`/gate`
+itself and `POST /api/gate-login`, plus Next's dev-only hot-reload endpoint) are served without a
+session from the app. Static assets (`/_next/static`, `/_next/image`, `favicon.ico`, `icon.svg`) are
+excluded by the proxy's matcher and are public by URL, including the compiled chunks. The editor page
+and all other API routes require a session; do not treat the bundle as secret.
 
 - **Setup:** set `GATE_PASSWORD` and `GATE_SECRET` (see `.env.example`; on Vercel: Project Settings →
   Environment Variables). The password is the human credential; the secret is an independent random
@@ -110,11 +111,11 @@ nothing is serving it):
 
 ```bash
 bun run build && bun run start   # production needs GATE_SECRET; the server refuses to boot without it
-bun run battery                  # 0.10.2 standalone artifact: 63 passed, 0 failed
+bun run battery                  # 0.10.3 standalone artifact: 63 passed, 0 failed
 ```
 
-The 0.10.2 dev-server run was also 63 passed, 0 failed. The historical 0.9.0 and 0.10.1
-records cover both the dev server and the standalone artifact build.
+The 0.10.3 dev-server run was also 63 passed, 0 failed. The historical 0.9.0, 0.10.1, and
+0.10.2 records cover both the dev server and the standalone artifact build.
 
 See [testing.md](testing.md#end-to-end-battery) for the A/B two-tree recipe and the runner's full
 environment.
@@ -122,5 +123,6 @@ environment.
 ## Hosting
 
 Any host that can run the standalone Node/Bun server works (a container, a VM, or a Node runtime
-platform). Because there is no backend or persistence beyond `localStorage`, no database, object
-storage, or secret configuration is required — serve the built server and the static assets together.
+platform). Because there is no data backend or persistence beyond `localStorage`, no database or
+object storage is required. If the access gate is enabled, set `GATE_PASSWORD` and `GATE_SECRET` as
+described above.

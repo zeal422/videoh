@@ -110,3 +110,19 @@ describe('title preset static wiring', () => {
     expect(actions).toMatch(/style\?: TextStyle/)
   })
 })
+
+describe('toolbar tooltip and placement locks', () => {
+  it('requests the bottom side on every tooltip and keeps the placement group from shrinking', () => {
+    const toolbarSource = read('src/components/editor/Toolbar.tsx')
+    const tooltipTags = toolbarSource.match(/<TooltipContent\b[^>]*>/g) ?? []
+    expect(tooltipTags).toHaveLength(4)
+    expect(tooltipTags.every((tag) => tag.includes('side="bottom"'))).toBe(true)
+
+    const placementGroup =
+      toolbarSource.match(/<div\s+role="group"\s+aria-label="Placement mode"[\s\S]*?>/)?.[0] ?? ''
+    expect(placementGroup).toContain('shrink-0')
+    expect(toolbarSource).toMatch(/overflow-x-auto/)
+    expect(toolbarSource).toMatch(/aria-label="Export"/)
+    expect(toolbarSource).toMatch(/hidden lg:inline/)
+  })
+})
