@@ -3,16 +3,16 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
- * Home boot locks: the preloader shows while the shell chunk loads, the
+ * Editor boot locks: the preloader shows while the shell chunk loads, the
  * shell reveals after both the import and the 3.2s minimum show, and a
  * rejected chunk import surfaces a retry that re-imports on click.
  *
  * Each test rebuilds the module registry (resetModules), registers its own
- * EditorShell mock, then imports the page AND the renderer from that same
- * fresh registry. Importing the renderer statically while the page comes
- * from a reset registry would pair two React instances (probe-verified:
- * post-reset dynamic import re-evaluates react); sharing the registry
- * keeps one. Timer control stays on the global fake clock.
+ * EditorShell mock, then imports EditorBoot AND the renderer from that same
+ * fresh registry. Importing the renderer statically while the boot component
+ * comes from a reset registry would pair two React instances (probe-verified:
+ * post-reset dynamic import re-evaluates react); sharing the registry keeps
+ * one. Timer control stays on the global fake clock.
  */
 
 const SHELL_READY = 'shell-ready'
@@ -25,11 +25,11 @@ async function setup(mockEditorShell: () => { default: unknown }) {
   vi.resetModules()
   vi.doMock('@/components/editor/EditorShell', mockEditorShell)
   const rtl: Rtl = await import('@testing-library/react')
-  const Home = (await import('@/app/page')).default
+  const EditorBoot = (await import('@/components/editor/EditorBoot')).EditorBoot
   // Unmount even when an assertion fails, so a failed case cannot leave a
   // mounted preloader and its pending timer behind for the next test.
   cleanupRtl = rtl.cleanup
-  return { Home, rtl }
+  return { EditorBoot, rtl }
 }
 
 function stubShell() {
@@ -48,10 +48,10 @@ afterEach(() => {
   delete document.documentElement.dataset.palette
 })
 
-describe('home boot', () => {
+describe('editor boot', () => {
   it('shows the preloader, then reveals the shell after import and min-show', async () => {
-    const { Home, rtl } = await setup(stubShell)
-    rtl.render(<Home />)
+    const { EditorBoot, rtl } = await setup(stubShell)
+    rtl.render(<EditorBoot />)
     expect(document.querySelector('[data-testid="preloader-grid"]')).not.toBeNull()
     expect(rtl.screen.queryByTestId(SHELL_READY)).toBeNull()
     // Flush the import while the 3.2s timer is still pending: the shell
@@ -71,20 +71,20 @@ describe('home boot', () => {
   })
 
   it('applies a stored palette on boot', async () => {
-    const { Home, rtl } = await setup(stubShell)
+    const { EditorBoot, rtl } = await setup(stubShell)
     const { THEME_STORAGE_KEY } = await import('@/lib/editor/theme')
     window.localStorage.setItem(THEME_STORAGE_KEY, 'midnight')
-    rtl.render(<Home />)
+    rtl.render(<EditorBoot />)
     await rtl.act(async () => {})
     expect(document.documentElement.dataset.palette).toBe('midnight')
     rtl.cleanup()
   })
 
   it('shows a recoverable error when the chunk import rejects', async () => {
-    const { Home, rtl } = await setup(() => {
+    const { EditorBoot, rtl } = await setup(() => {
       throw new Error('chunk failed')
     })
-    rtl.render(<Home />)
+    rtl.render(<EditorBoot />)
     await rtl.act(async () => {})
     expect(rtl.screen.getByRole('alert')).toHaveTextContent('The editor failed to load.')
     expect(rtl.screen.getByRole('button', { name: 'Try again' })).not.toBeNull()
@@ -94,12 +94,12 @@ describe('home boot', () => {
 
   it('retry re-imports and reveals the shell', async () => {
     let calls = 0
-    const { Home, rtl } = await setup(() => {
+    const { EditorBoot, rtl } = await setup(() => {
       calls += 1
       if (calls === 1) throw new Error('chunk failed')
       return stubShell()
     })
-    rtl.render(<Home />)
+    rtl.render(<EditorBoot />)
     await rtl.act(async () => {})
     expect(rtl.screen.getByRole('alert')).not.toBeNull()
     rtl.act(() => {
@@ -113,10 +113,10 @@ describe('home boot', () => {
   })
 
   it('shows a reload fallback after a retry also fails', async () => {
-    const { Home, rtl } = await setup(() => {
+    const { EditorBoot, rtl } = await setup(() => {
       throw new Error('chunk failed')
     })
-    rtl.render(<Home />)
+    rtl.render(<EditorBoot />)
     await rtl.act(async () => {})
     expect(rtl.screen.queryByRole('button', { name: 'Reload page' })).toBeNull()
     const reload = vi.fn()

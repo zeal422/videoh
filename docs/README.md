@@ -1,4 +1,4 @@
-# Documentation — Web Video Editor
+# Documentation - videoh
 
 Start with the [README](../README.md) for the product overview and quick start. These docs are the
 deeper references, and they cross-link to each other so you can move between them without guessing.
@@ -11,6 +11,7 @@ deeper references, and they cross-link to each other so you can move between the
 | [testing.md](testing.md)             | how to run tests, the test inventory, conventions, the mocked harness, and the E2E battery |
 | [design-system.md](design-system.md) | design tokens, theming, layout conventions, and UI/a11y rules                              |
 | [deployment.md](deployment.md)       | build, run, the standalone output, and the verification gate                               |
+| [seo.md](seo.md)                     | public routes, metadata, Search Console, GoatCounter, and the launch checklist             |
 
 Project-level files:
 

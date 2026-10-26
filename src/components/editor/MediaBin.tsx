@@ -184,8 +184,8 @@ export function MediaBin({ className, heading = true }: { className?: string; he
           <div className="mt-6 rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
             <p className="font-medium">No media yet</p>
             <p className="mt-1 leading-relaxed">
-              Import video, audio or image files — or click <em>Load sample media</em> to try the
-              editor instantly. Drag assets onto the timeline.
+              Import video, audio, or image files. Click <em>Load sample media</em> to try the
+              editor. Drag assets onto the timeline.
             </p>
           </div>
         )}

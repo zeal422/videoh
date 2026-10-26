@@ -35,8 +35,29 @@ UI re-render ◀── zustand subscription ◀── store.set({ doc, past }) �
   the previous doc into `past` (bounded by `HISTORY_LIMIT`).
 - The playback engine sits outside React: it reads the current doc through `getDoc()` on every frame
   and pushes time/playing state back into the store, which propagates to the views.
+- Analytics sits outside the editor core. `src/lib/analytics.ts` is browser-bound, imports no editor
+  module, and receives only event names from public links and the export dialog.
 - Export walks the pure frame plan from `export/offline.ts` and renders through WebCodecs. It does
   not instantiate a playback core or run in realtime.
+
+## Public site and editor boot
+
+The public site and the editor share one Next.js app but not one component tree:
+
+- `/` is a server-rendered hero from `src/app/(site)/page.tsx` and `src/components/site/`. It uses
+  `src/lib/seo.ts` for metadata and JSON-LD.
+- `/about`, `/privacy`, `/terms`, and `/contact` are server-rendered pages in the `(site)` route
+  group. They share `LegalPage` and the site header/footer.
+- `/editor` is a server wrapper in `src/app/editor/page.tsx`. It exports `noindex, follow` metadata
+  and renders `EditorBoot`, which is the only client entry into `EditorShell`.
+- The public site never imports `@/lib/editor/store`, `@/components/editor`, or a browser-only editor
+  engine module. `public-surface.test.ts` scans the site tree for those imports.
+- The route invariant is simple: the editor boots only at `/editor`. The old root page is gone, and
+  the old access route is gone.
+
+`EditorBoot` keeps the previous boot contract: the preloader shows while the shell chunk loads, the
+reveal waits for both the import and a 3.2s minimum show, a rejected import shows Try again, and a
+second failure offers Reload page. It also applies the stored appearance palette before the reveal.
 
 ## Module reference
 

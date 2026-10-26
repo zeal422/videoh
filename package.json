@@ -1,7 +1,8 @@
 {
   "name": "videoh",
-  "version": "0.10.3",
+  "version": "0.11.0",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "dev": "set -o pipefail && next dev -p 3000 2>&1 | tee dev.log",
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",

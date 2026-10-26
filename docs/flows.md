@@ -30,6 +30,17 @@ Stable hooks used across flows and tests:
   `aria-pressed` mirrors the active mode
 - Drag payloads `application/x-media-id` and `application/x-media-kind-<kind>`
 
+## Public entry and editor boot
+
+- `/` is the public hero. It has no preloader and no editor shell. The header, hero, and final CTA
+  link to `/editor`; the hero also links to the public GitHub source.
+- `/editor` renders `EditorBoot`. The preloader stays up for the client-only shell import plus the
+  3.2s minimum show, then the editor appears. A rejected import shows Try again, and a second failure
+  offers Reload page. The public route never mounts this boot.
+- The public site and the editor share design tokens but not component trees. Public components do not
+  import the editor store, media, playback, or export modules.
+- The old password screen and login route are gone. There is no access cookie.
+
 ## Import media
 
 - The media bin accepts multi-file selection, OS drag-and-drop, and **Load sample media**, which
@@ -412,6 +423,9 @@ Stable hooks used across flows and tests:
   decode speed. HEVC and ProRes are deliberately not offered: ProRes has no shipping browser
   `VideoEncoder`, and HEVC is left out on value grounds (an encoder exists, and a probe could gate it
   safely); see [README](../README.md).
+- After a successful file or blob export, `ExportDialog` calls `trackExportSuccess()`. That sends
+  `export-success` every time and `first-export` once per browser profile while the local marker
+  persists. Cancelled and failed exports do not call it.
 
 ## Proxies
 
@@ -507,7 +521,7 @@ Stable hooks used across flows and tests:
 - Selection applies immediately and writes the id under `web-video-editor:theme:v1`, separate from
   the workspace layout key. Choosing Default removes the key and the `data-palette` attribute, so
   the base `.dark` tokens are the default.
-- The boot effect in `src/app/page.tsx` applies the stored palette behind the preloader. The dialog
+- The boot effect in `src/components/editor/EditorBoot.tsx` applies the stored palette behind the preloader. The dialog
   mounts only while it is open, so every open reads the stored value and applies it.
 - Palettes override only the 17 chrome tokens. Clip kinds, markers, the monitor, scopes, the splash,
   and `--destructive` stay fixed, and the monitor and scopes keep their neutral NLE surfaces.

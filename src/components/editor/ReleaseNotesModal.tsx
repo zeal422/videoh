@@ -2,7 +2,7 @@
 
 /**
  * ReleaseNotesModal, the hand-curated release notes behind the welcome modal
- * (Help > What's new, and the once-per-version auto-open after login).
+ * (Help > What's new, and the once-per-version auto-open after editor boot).
  *
  * Opened from two places: automatically once per new version after the
  * restore prompt resolves, and manually via Help > What's new. The data lives

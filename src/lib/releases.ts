@@ -1,6 +1,6 @@
 /**
  * src/lib/releases.ts, the hand-curated release notes behind the welcome
- * modal (Help > What's new, and the once-per-version auto-open after login).
+ * modal (Help > What's new, and the once-per-version auto-open after editor boot).
  *
  * Kept separate from CHANGELOG.md on purpose: the changelog is the full
  * record for maintainers, this is the short story for users. Distill at
@@ -21,6 +21,17 @@ export interface ReleaseNotes {
 }
 
 export const releases: ReleaseNotes[] = [
+  {
+    version: '0.11.0',
+    date: '2026-10-25',
+    highlights: [
+      'videoh is now public: a new hero page at / and the editor at /editor, with no password screen',
+      'About, Privacy, Terms, and Contact pages plus the MIT license',
+      'Search metadata, sitemap, robots.txt, structured data, and the Search Console verification file',
+      'Privacy-friendly GoatCounter analytics for page views, CTA clicks, and successful exports',
+      'A public design pass with a display serif, cinematic timeline strip, and a real editor screenshot',
+    ],
+  },
   {
     version: '0.10.3',
     date: '2026-10-25',

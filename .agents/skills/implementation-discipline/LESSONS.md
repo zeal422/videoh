@@ -250,76 +250,115 @@ Would-have-caught: asserting the resolved keyframes in-browser (getKeyframes off
 Action: kept as a note; when a browser-measured animation disagrees with source, check getKeyframes before doubting the math, and wipe .next when they differ.
 
 ## 2026-10-24 - Preloader double-start was the dynamic boundary, not the component
+
 What happened: the boot grid visibly restarted ~245ms after mount in dev and production. Two suspects were cleared first (StrictMode off still remounted; render made fully deterministic with identical SSR bytes, still remounted), and a mount fade was shipped to mask it. A static route rendering the same component showed zero remounts, proving the cause was next/dynamic's loading boundary replacing its fallback after hydration; the fix was loading the shell chunk in an effect with no dynamic boundary, plus deleting the component's own 1.6s key-change loop cut, which was a second restart by design.
 Would-have-caught: trigger 2 (read before you climb) applied to the framework piece: isolate the component from its boundary with a static route before theorizing about hydration or masking with a fade.
 Action: kept as a note; a mount-time visual restart gets a boundary-vs-component isolation probe before any masking animation.
 
 ## 2026-10-24 - Zone map read of the reference clip was wrong
+
 What happened: the plan's frame-by-frame analysis claimed a four-stage chase (corners, center, middle, outer); on a real screen it played as discrete blocks, not a ripple, and corners-first looked broken. Replaced with the continuous center-out wave the pattern name implies (delay proportional to Euclidean distance, sub-0.2s adjacent steps), with a smoothness lock that fails on any stepped map (proven red against the old zone logic).
 Would-have-caught: trigger 7 (prove the fix, not the wiring): the zone read was settled by stills, never by watching the wave move on a screen early.
 Action: kept as a note; motion reads get a live screen check before the plan locks them.
 
 ## 2026-10-24 - Computed-style-right mask still looked square
+
 What happened: the first radial feather (opaque to 50%, gone at 100% of the corner radius) resolved correctly in getComputedStyle but screenshots still showed a hard square: at 50-100% the edge midpoints kept 42% of their light, so the resting grid and the arriving wavefront both held a visible edge. Tightening to 40-85% plus dropping the resting base 0.12 to 0.07 produced the round melt.
 Would-have-caught: trigger 7 (prove the look, not the wiring): a mask is a visual value, so the verdict is the screenshot, never the computed style.
 Action: kept as a note.
 
 ## 2026-10-24 - Designed hold vs fixed harness sleeps (battery 26/63)
+
 What happened: the first battery on the preloader tree went 26/63 with g0 failing first. The cause was the 3.2s min-show hold outlasting the harness's fixed 2.5s post-navigation sleeps: g0/s02/f11-once asserted inside the preloader window, f01's click then raced the reveal, and every media-dependent step cascaded. Fixed harness-side with a menubar boot poll (60s deadline) at the three navigation points; step count unchanged at 63.
 Would-have-caught: trigger 2 (read before you climb) applied to the failing step itself: g0's sleep-vs-hold mismatch was visible in two files before any rerun.
 Action: kept as a note; when a feature adds a designed load hold, the harness's fixed post-navigation sleeps must become boot polls in the same change.
 
 ## 2026-10-24 - Review findings need per-line verification, not trust
+
 What happened: three pasted review findings (harness wait placement, page import rejection, opacity var fallback) all checked out against the current code, including two the implementer had deferred or never considered; the opacity one (unregistered var invalidates the whole calc) would have shipped a bright grid to exactly the oldest browsers. No finding was followed blindly: each was re-read in its file, two needed new tests, one needed only a move.
 Would-have-caught: the standing rule to verify review text as untrusted data before editing.
 Action: kept as a note; a pasted finding still gets its evidence line opened and its red run captured before the fix counts.
 
 ## 2026-10-24 - Assert nothing, attach the run that proves it
+
 What happened: three review findings survived a "clean" verdict because each rested on an untested assumption (gate always shows, chunk never fails, unknown var reads as 0). The claims were asserted from reasoning, never from a run down that path.
 Would-have-caught: trigger 7 applied to negative space: for every claim, name the run that exercised the failure path, not just the happy path. A verdict with no attached failing-then-passing run is a draft, not a result.
 Action: promoted into the working order: every "verified" statement in a report names its evidence (log line, probe output, red/green run). No evidence, no claim.
 
 ## 2026-10-24 - resetModules duplicates React for dynamic imports
+
 What happened: a review claimed home.test.tsx paired two React copies (static renderer vs post-reset dynamic page import). An identity probe confirmed it: pre-reset and post-reset dynamic imports of react are different objects. The tests passed anyway, but only by accident of shared internals.
 Would-have-caught: probing module identity instead of assuming externalized deps are singletons.
 Action: kept as a note; any test using vi.resetModules must import the renderer from the same post-reset registry as the unit under test, and an identity probe settles singleton claims.
 
 ## 2026-10-24 - Plan locks weaker than the plan text
+
 What happened: a review found the keyframes/@property/hue tests pinned only a subset of what the plan's lock paragraph claimed (missing 0/25/100 stops, the --b peak, syntax/initial-value, and any hue-duration or wrapper assertion). The suite was green while the plan promised more.
 Would-have-caught: diffing the lock paragraph against the test file line by line when the plan was written, not after review.
 Action: kept as a note; new lock paragraphs get a symbol-by-symbol check against the test file before the plan ships.
 
 ## 2026-10-24 - React set-state-in-effect on a dialog open read
+
 What happened: the appearance dialog's `open` effect called `setSelected(readTheme(...))`; `bun run lint` rejected it with `react-hooks/set-state-in-effect`.
 Would-have-caught: checking the React Compiler lint rules before choosing an effect to re-read storage on open.
 Action: kept as a note; mount the dialog only while open, read storage in the state initializer, and keep the effect for the external DOM sync only.
 
 ## 2026-10-24 - failing RTL assertion leaked the mounted preloader
+
 What happened: `home.test.tsx`'s new boot test failed before its inline `rtl.cleanup()`, leaving a mounted preloader whose pending 3.2s timer failed the next three tests.
 Would-have-caught: a failure-safe `afterEach` cleanup in any suite that renders a long-lived component with timers.
 Action: kept as a note; register the RTL cleanup in the suite's `afterEach`, not only at the end of each test.
 
 ## 2026-10-24 - storage getter throws before the method guard
+
 What happened: a review found `window.localStorage` was evaluated at the Home effect and both AppearanceDialog call sites, so a blocked getter escaped before `readTheme`/`writeTheme` could catch the method error. The boot could crash instead of using Default.
 Would-have-caught: treating the property access as part of the storage trust boundary, not only the `getItem`/`setItem` calls.
 Action: kept as a note; browser storage access goes through `themeStorage`, which returns `null` on a throwing getter, and callers pass that result to the pure helpers.
 
 ## 2026-10-24 - a Map hid duplicate declarations from the token-set lock
+
 What happened: the palette token-set test read CSS declarations into a Map, so a duplicate allowed token collapsed and the "exactly 17" contract was not enforced. Borders and inputs were skipped by the contrast loop and never asserted.
 Would-have-caught: using the declaration list for count/duplicate contracts, and giving every intentionally skipped value its own assertion.
 Action: kept as a note; count locks read declarations, not key sets, and skipped values get explicit locks.
 
 ## 2026-10-24 - dev server served a stale palette CSS chunk
+
 What happened: after adding the 0.10.1 palette blocks, the restarted dev server served a stylesheet with only the three 0.10.0 blocks. The picker set data-palette and storage, but the page stayed default; the production build had all 13, so the source was correct.
 Would-have-caught: comparing the served stylesheet with the source before treating a browser result as a code failure, and starting the dev server from a clean .next after a CSS-only change.
 Action: kept as a note; when a CSS change is not visible in dev, clear .next and recheck the served stylesheet before changing code.
 
 ## 2026-10-24 - a capped list did not cap its dialog
+
 What happened: the 0.10.1 picker capped the radio list at 60vh and scrolled it, but the dialog added its header, gap, and padding on top. At a 250px viewport the shipped dialog measured -6 to 256 and clipped.
 Would-have-caught: measuring the whole dialog box, not only the list, at a short viewport; a viewport-relative cap belongs on the scroll container that owns the full content.
 Action: kept as a note; cap the dialog itself at calc(100vh - 2rem), let it own the scroll, and keep the radio grid unconstrained inside it.
 
 ## 2026-10-24 - a native button test rendered without the app's global keymap
+
 What happened: the fullscreen button test rendered `MenuBar` alone and passed Space activation, but in the real app `useEditorKeyboard` preventDefaulted Space on the focused button, so Space toggled playback instead. Manual headed proof caught it after the unit suite was green.
 Would-have-caught: rendering the real global keyboard hook in the test that claims native Space activation, and exercising the integration in a headed browser.
 Action: kept as a note; a native-control test that competes with an app-level shortcut must include the shortcut's real listener, and manual proof must press the actual key.
+
+## 2026-10-25 - battery boot block replacement
+
+What happened: replacing the boot function block in `e2e/battery.sh` dropped the shared `wait_boot` helper; the first battery run failed 38 downstream steps with `wait_boot: command not found`.
+Would-have-caught: after replacing a block in a shell script, list the functions the block contained and grep every helper used by later steps before running the full battery.
+Action: kept as a note; the battery is the proof for script structure, not syntax checks alone.
+
+## 2026-10-26 - a storage disclosure that was not exhaustive
+
+What happened: the Privacy page's "What the browser stores" list omitted `releases:lastSeen`, which `EditorShell` reads and writes, so the page's intro read as complete while one stored value was undocumented.
+Would-have-caught: inventorying every localStorage key in source before writing a storage disclosure, then locking the disclosure with a render assertion.
+Action: kept as a note; a page that says "what the browser stores" gets a key-by-key source sweep and a test for every listed marker.
+
+## 2026-10-26 - a scoped docs lock passed when its line was deleted
+
+What happened: `checkScoped` only validated lines that already contained `__tests__/`; deleting the required README tree line left no match and returned null. The structure line still passed, so the README lock was gone.
+Would-have-caught: for every "must exist" claim, assert the expected line exists before validating its content; a loop over matches is vacuous at zero.
+Action: kept as a note; presence locks are separate assertions, and the lock test removes the line to prove the failure path.
+
+## 2026-10-26 - a queue-wide retry deadline starved newer events
+
+What happened: `analytics.ts` stored one `queueStartedAt` and dropped the whole queue after five seconds, so an event queued at 4.9 seconds could be discarded 0.1 seconds later.
+Would-have-caught: reviewing every bounded queue against the documented promise, and testing a late arrival before accepting the single-timestamp implementation.
+Action: kept as a note; bounded retries store the deadline or enqueue time on each item, and the late-arrival test proves an older event expires without killing a newer one.

@@ -1,7 +1,8 @@
-import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
 import { Toaster } from '@/components/ui/toaster'
+import { GoatCounter } from '@/components/site/GoatCounter'
+import { ROOT_METADATA } from '@/lib/seo'
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -13,12 +14,7 @@ const geistMono = Geist_Mono({
   subsets: ['latin'],
 })
 
-export const metadata: Metadata = {
-  title: 'Web Video Editor',
-  description:
-    'Browser-based multi-track video editor: import media, arrange clips, add transitions and text, mix audio, and export to MP4, all client-side.',
-  keywords: ['video editor', 'timeline', 'WebCodecs', 'MP4 export', 'Web Audio', 'canvas'],
-}
+export const metadata = ROOT_METADATA
 
 export default function RootLayout({
   children,
@@ -32,6 +28,7 @@ export default function RootLayout({
       >
         {children}
         <Toaster />
+        <GoatCounter />
       </body>
     </html>
   )

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # e2e/run-battery.sh: take the UI battery from a cold start to a verdict.
 #
-# e2e/battery.sh needs a live server, a gate password and a browser session, and
-# leaves a dev server and a headless Chrome behind if you run it by hand. This
-# runner owns all of that, and it closes the failure mode that matters most: a
+# e2e/battery.sh needs a live server and a browser session, and leaves a dev
+# server and a headless Chrome behind if you run it by hand. This runner owns
+# all of that, and it closes the failure mode that matters most: a
 # harness that kills the background children it spawned when its session ends
 # takes a half-finished run with it, and a partial PASS list still looks like a
 # result. DETACH=1 re-execs this script under setsid, so the run owns its own
@@ -179,12 +179,6 @@ else
   exit 9
 fi
 
-if [ -z "${GATE_PASSWORD:-}" ] && [ -f .env.local ]; then
-  GATE_PASSWORD=$(grep -E '^GATE_PASSWORD=' .env.local | head -1 | cut -d= -f2- |
-    sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
-  if [ -n "$GATE_PASSWORD" ]; then echo "gate password read from .env.local"; fi
-fi
-
 EXPECTED=$(grep -c '^step ' "$BATTERY_SH")
 if [ "$EXPECTED" -eq 0 ]; then
   echo "$BATTERY_SH registers no steps; refusing to run" >&2
@@ -196,8 +190,7 @@ fi
 : >"$OUT"
 echo "running $EXPECTED steps from $BATTERY_SH into $OUT"
 
-BASE_URL="$BASE_URL" SESSION="$SESSION" OUT="$OUT" GATE_PASSWORD="${GATE_PASSWORD:-}" \
-  bash "$BATTERY_SH"
+BASE_URL="$BASE_URL" SESSION="$SESSION" OUT="$OUT" bash "$BATTERY_SH"
 BATTERY_RC=$?
 
 passed=$(grep -c '^PASS' "$OUT")

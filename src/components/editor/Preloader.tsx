@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 
 /**
  * Preloader, the boot loading fallback while the client-only EditorShell
- * chunk loads (see page.tsx).
+ * chunk loads (see EditorBoot.tsx).
  *
  * A centered 10x10 grid of rounded violet cells running one seamless radial
  * ripple: every cell shares the 1.6s phase timeline, and its delay is its

@@ -1,45 +1,36 @@
-# Deployment — Web Video Editor
+# Deployment - videoh
 
 Build, run, and verify. Sibling docs: [docs index](README.md) · [architecture.md](architecture.md) ·
 [structure.md](structure.md) · [flows.md](flows.md) · [testing.md](testing.md) ·
-[design-system.md](design-system.md).
+[design-system.md](design-system.md) · [seo.md](seo.md).
 
 ## Requirements
 
-- **Bun** (the package manager and runner — never npm/pnpm/yarn). `bun run dev` and `bun run build` are
+- **Bun** (the package manager and runner, never npm/pnpm/yarn). `bun run dev` and `bun run build` are
   the entry points.
 - A **current Chromium-based browser** for the full feature set (WebCodecs + Web Audio + canvas).
   Export needs WebCodecs: Chromium and Edge, plus Firefox 130+ and Safari 26+; playback alone works
   in older browsers.
-- No database and no data backend. The editor itself is a client-side app; the only server pieces
-  are the Next.js process that serves the static shell and the **access gate** (see
-  [Access gate](#access-gate) below).
+- No database and no data backend. The editor is client-side. The server serves the public pages, the
+  editor shell, the sitemap, and the static verification file.
+- Optional GoatCounter analytics through `NEXT_PUBLIC_GOATCOUNTER_URL`. Leave it empty to disable
+  analytics, including in Preview and Development.
 
-## Access gate
+## Routes
 
-The deployment can sit behind a password gate (`src/proxy.ts`, Next 16's renamed middleware): every
-request without a valid session cookie is redirected to `/gate`. Only the two login routes (`/gate`
-itself and `POST /api/gate-login`, plus Next's dev-only hot-reload endpoint) are served without a
-session from the app. Static assets (`/_next/static`, `/_next/image`, `favicon.ico`, `icon.svg`) are
-excluded by the proxy's matcher and are public by URL, including the compiled chunks. The editor page
-and all other API routes require a session; do not treat the bundle as secret.
+| Route                          | Behavior                                      |
+| ------------------------------ | --------------------------------------------- |
+| `/`                            | Public hero, indexable, static                |
+| `/editor`                      | Editor boot, `noindex, follow`                |
+| `/about`                       | Public, indexable                             |
+| `/privacy`                     | Public, indexable                             |
+| `/terms`                       | Public, indexable                             |
+| `/contact`                     | Public, indexable                             |
+| `/robots.txt`                  | Public crawler policy                         |
+| `/sitemap.xml`                 | Public sitemap with the five indexable routes |
+| `/google80671fa4533bcad3.html` | Search Console verification file              |
 
-- **Setup:** set `GATE_PASSWORD` and `GATE_SECRET` (see `.env.example`; on Vercel: Project Settings →
-  Environment Variables). The password is the human credential; the secret is an independent random
-  value (`openssl rand -base64 32`) mixed into the session-cookie key. The server **refuses to boot**
-  in production without `GATE_SECRET`; local dev falls back to password-only signing with a console
-  warning. When `GATE_PASSWORD` is unset the gate is open — a checkout without the variable must not
-  turn into a mystery outage.
-- **Sessions:** a correct login sets a signed HttpOnly cookie valid for 24 hours (daily re-login).
-  The cookie key is `HMAC(GATE_SECRET, GATE_PASSWORD)` — neither value alone can mint or verify a
-  cookie, a stolen cookie cannot be brute-forced for the password (the attacker lacks the secret),
-  and rotating the password still invalidates every live session at once.
-- **Throttle:** failed attempts are counted in a second signed cookie; after 3 free tries each
-  further attempt inside the penalty window is refused without comparing the password (15 s doubling
-  to 15 min). Clearing cookies resets the counter — accepted, because the password's entropy plus the
-  signing secret are the real defence and the deployment is not a public target.
-- The E2E battery logs in as its `g0` step when the gate is active (`GATE_PASSWORD` env var).
-- Local dev uses the same gate: copy `.env.example` to `.env.local` and set the password there.
+The site is public and has no login route. The old access path must return 404.
 
 ## Scripts
 
@@ -59,7 +50,7 @@ and all other API routes require a session; do not treat the bundle as secret.
 | `bun run battery`       | the scripted UI battery ([below](#end-to-end-battery))                  |
 | `bun run check`         | the full verification gate (below)                                      |
 
-## The verification gate — `bun run check`
+## The verification gate - `bun run check`
 
 ```bash
 bun run check
@@ -69,14 +60,13 @@ bun run check
 Order is deliberate: fail on the cheapest, most mechanical problems first so the slower steps never run
 on code that would fail anyway.
 
-1. **`format:check`** — Prettier over `src/**/*.{ts,tsx}`, the root config files, and `docs/**/*.md`.
+1. **`format:check`** - Prettier over `src/**/*.{ts,tsx}`, the root config files, and `docs/**/*.md`.
    Cheapest signal.
-2. **`lint`** — ESLint (`eslint-config-next` flat config).
-3. **`typecheck`** — `tsc --noEmit` over the whole project. (`next build` also type-checks — the
-   "Running TypeScript" build step — so this rung is the earlier, faster signal, not the only
-   place types are enforced.)
-4. **`test`** — Vitest. See [testing.md](testing.md) for the inventory and coverage thresholds.
-5. **`build`** — the production build. Fastest way to catch a broken import graph or a page that fails
+2. **`lint`** - ESLint (`eslint-config-next` flat config).
+3. **`typecheck`** - `tsc --noEmit` over the whole project. (`next build` also type-checks, so this is
+   the earlier, faster signal, not the only place types are enforced.)
+4. **`test`** - Vitest. See [testing.md](testing.md) for the inventory and coverage thresholds.
+5. **`build`** - the production build. Fastest way to catch a broken import graph or a page that fails
    to prerender.
 
 Green here means the gate is green. Run it after every change.
@@ -87,9 +77,22 @@ Green here means the gate is green. Run it after every change.
 `.next/standalone/server.js`. The `build` script additionally copies `.next/static` and `public` into
 the standalone folder so `bun run start` can serve assets without a reverse proxy.
 
-The app is fully static-shell: the editor mounts client-only (`dynamic(..., { ssr: false })` in
-`src/app/page.tsx`) because the starter document contains random ids, which would otherwise mismatch
-between server and client.
+The public pages and metadata are server-rendered. The editor mounts client-only through the manual
+effect import in `src/components/editor/EditorBoot.tsx`, because the starter document contains random
+ids that would otherwise mismatch between server and client. The preloader stays up for the 3.2s
+minimum show while the editor chunk loads.
+
+Preview deployments add `X-Robots-Tag: noindex, nofollow` through `next.config.ts` when
+`VERCEL_ENV=preview`. Production, development, and unset environments return no such header. A unit
+test locks that behavior.
+
+## Environment
+
+- `NEXT_PUBLIC_GOATCOUNTER_URL` is optional and public. Set it in Vercel Production only, for example
+  `https://videoh.goatcounter.com/count`.
+- Leave Preview and Development empty so their traffic does not pollute production analytics.
+- Do not put secrets in `NEXT_PUBLIC_*` variables. The editor has no server-side secrets.
+- `.env.example` documents the optional variable.
 
 ## End-to-end battery
 
@@ -100,9 +103,10 @@ bun run battery                               # starts/reuses a dev server, then
 DETACH=1 bun run battery                       # detached, for harnesses that clean up their children
 ```
 
-It requires `agent-browser` on `PATH`, reads `GATE_PASSWORD` from `.env.local`, and writes
-`PASS`/`FAIL` lines to `$OUT` (`results.txt` by default). It exits nonzero on a `FAIL` and on a run
-that produced fewer results than the battery's own `step` lines, so a partial run is never a pass.
+It requires `agent-browser` on `PATH` and writes `PASS`/`FAIL` lines to `$OUT` (`results.txt` by
+default). It exits nonzero on a `FAIL` and on a run that produced fewer results than the battery's own
+`step` lines, so a partial run is never a pass. The first step loads the public hero and asserts the
+Open editor link; the second opens `/editor`; the third clears storage and opens a fresh editor.
 `results*.txt` and `tool-results/` are gitignored.
 
 The dev server is not the shipped artifact. To verify the build that actually ships, serve the
@@ -110,19 +114,38 @@ standalone output and let the runner reuse it (it starts a server only on the de
 nothing is serving it):
 
 ```bash
-bun run build && bun run start   # production needs GATE_SECRET; the server refuses to boot without it
-bun run battery                  # 0.10.3 standalone artifact: 63 passed, 0 failed
+bun run build && bun run start
+bun run battery                  # reuses the server above and starts nothing
 ```
 
-The 0.10.3 dev-server run was also 63 passed, 0 failed. The historical 0.9.0, 0.10.1, and
-0.10.2 records cover both the dev server and the standalone artifact build.
+The 0.11.0 dev and artifact runs on 2026-10-26 were both 63 passed, 0 failed with terminal
+`BATTERY_EXIT=0`. Earlier 0.9.0 through 0.10.3 records covered both the dev server and the
+standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 
 See [testing.md](testing.md#end-to-end-battery) for the A/B two-tree recipe and the runner's full
 environment.
 
 ## Hosting
 
-Any host that can run the standalone Node/Bun server works (a container, a VM, or a Node runtime
-platform). Because there is no data backend or persistence beyond `localStorage`, no database or
-object storage is required. If the access gate is enabled, set `GATE_PASSWORD` and `GATE_SECRET` as
-described above.
+Vercel runs the Next.js app and serves the static files copied from `public/`. No database or object
+storage is required because projects and media stay in the browser.
+
+Before promoting a production deployment, check the candidate deployment, not the production domain:
+
+1. Confirm the build came from the approved tree and the Privacy and Terms copy is approved.
+2. Run the same status, metadata, sitemap, robots, and verification-file checks against the Vercel preview URL with `BASE_URL=<candidate-url>`.
+3. Confirm `/` and `/editor` are `200`, the old access path is `404`, and `/editor` carries `noindex, follow`.
+4. Confirm the preview carries `X-Robots-Tag: noindex, nofollow`. Do not apply the production header-absence check to the preview.
+5. Leave Search Console verification and GoatCounter event checks for after promotion, because those point at production.
+
+After promotion, run the full production check block with `BASE_URL=https://videoh.vercel.app`:
+
+1. Confirm the statuses, exact metadata, sitemap, robots, verification file, and both JSON-LD blocks.
+2. Confirm production has no `X-Robots-Tag` on `/` or `/editor`.
+3. Confirm Search Console verifies the URL-prefix property and accepts the sitemap.
+4. Confirm GoatCounter receives a page view and a custom event, or is intentionally disabled.
+5. Keep the Search Console verification file public after verification.
+
+Rollback: promote the last known-good Vercel deployment or redeploy the restored `HEAD`, then rerun the
+expectation set that matches the release now deployed. Do not apply the 0.11.0 checks to a pre-0.11.0
+release.

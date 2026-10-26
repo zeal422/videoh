@@ -12,10 +12,11 @@ import { basename, join, resolve } from 'node:path'
  * - Repo-wide headline claims ("N tests", "N test files", "N tests across
  *   N files") must exactly match the real suite on disk.
  * - Scoped directory-tree comments ("N test files (M tests)") describe a
- *   subdirectory, not the repo, so they are only checked to be INTERNALLY
- *   consistent (files <= tests) and to not accidentally equal a stale
- *   repo-wide total. They cannot be validated against disk without parsing
- *   the tree layout they annotate.
+ *   subdirectory, not the repo, so unnamed claims are only checked to be
+ *   INTERNALLY consistent (files <= tests) and to not accidentally equal a
+ *   stale repo-wide total. Claims on a line that names the editor test directory
+ *   are checked exactly against disk, and the README tree line is required to
+ *   exist with its count.
  * - Every row of testing.md's per-file inventory table must name a real test
  *   file with that file's real case count, one row per file. The headline
  *   total alone would hide a row that drifted, and a row that loses its cells
@@ -102,13 +103,14 @@ function checkHeadline(doc: string, files: string[], total: number): string | nu
 
 /**
  * Validate scoped directory-tree counts ("N test files (M tests)"). These
- * describe a subdirectory: `src/lib/editor/__tests__` (the gate test lives in
- * `src/lib/` and is listed separately in the same line). Where the doc names
- * the directory, the claim is checked EXACTLY against a real directory count;
- * unnamed claims fall back to the internal-sanity range.
+ * describe a subdirectory: `src/lib/editor/__tests__`. Where the doc names the
+ * directory on the same line, the claim is checked EXACTLY against a real
+ * directory count; unnamed claims fall back to the internal-sanity range. The
+ * README tree line is required to exist with its count, so deleting it cannot
+ * turn the exact check into a no-op.
  */
-function checkScoped(doc: string, files: string[], total: number): string | null {
-  const text = readFileSync(join(ROOT, doc), 'utf8')
+function checkScoped(doc: string, total: number, textOverride?: string): string | null {
+  const text = textOverride ?? readFileSync(join(ROOT, doc), 'utf8')
   const patterns = [
     /(\d+)\s+test files\s*\((\d+)\s+tests\)/g,
     /(\d+)\s+test files,\s*(\d+)\s+tests/g,
@@ -121,41 +123,33 @@ function checkScoped(doc: string, files: string[], total: number): string | null
       if (t < n || t > total) return `${doc}: scoped "${m[0]}" out of range (repo total ${total})`
     }
   }
-  // Exact check for the one scoped claim shape this repo uses: a directory
-  // count for src/lib/editor/__tests__ with the gate test listed separately.
-  // Count the directory from disk so the claim cannot drift.
+  // Gate-independent exact check for the one scoped claim shape this repo
+  // uses: a directory count for src/lib/editor/__tests__ on the same line as
+  // the `__tests__/` tree path. Count the directory from disk so the claim
+  // cannot drift, and do not gate the check on any particular test filename.
   const dir = join(ROOT, 'src', 'lib', 'editor', '__tests__')
   const dirFiles = readdirSync(dir).filter((f) => /\.test\.tsx?$/.test(f))
   const dirTests = dirFiles.reduce((sum, f) => sum + countCases(join(dir, f)), 0)
-  if (text.includes('gate.test.ts')) {
-    // Claims of the form "N test files (M tests) + gate.test.ts": N and M must
-    // equal the directory totals, and the combined claim must be <= repo total.
-    if (!dirTests && dirFiles.length === 0) return `${doc}: editor __tests__ dir empty?`
-    for (const m of text.matchAll(
-      /(\d+)\s+test files[ ,]+\((\d+)\s+tests?\)\s*\+\s*src\/lib\/gate\.test\.ts/g,
-    )) {
-      if (Number(m[1]) !== dirFiles.length || Number(m[2]) !== dirTests) {
-        return `${doc}: "${m[0]}" != ${dirFiles.length} files / ${dirTests} tests in src/lib/editor/__tests__`
-      }
+  if (!dirTests && dirFiles.length === 0) return `${doc}: editor __tests__ dir empty?`
+  if (doc === 'README.md') {
+    const treeLines = text
+      .split('\n')
+      .filter((line) => line.includes('__tests__/') && line.includes('src/lib/editor/__tests__'))
+    if (treeLines.length !== 1) {
+      return `${doc}: expected one editor __tests__ tree line, found ${treeLines.length}`
     }
-    for (const m of text.matchAll(
-      /(\d+)\s+test files,\s*(\d+)\s+tests\s*\(see testing\.md; \+ gate\.test\.ts/g,
-    )) {
-      if (Number(m[1]) !== dirFiles.length || Number(m[2]) !== dirTests) {
-        return `${doc}: "${m[0]}" != ${dirFiles.length} files / ${dirTests} tests in src/lib/editor/__tests__`
-      }
+    const m = treeLines[0].match(/(\d+)\s+test files?\s*\((\d+)\s+tests?\)/)
+    if (!m) return `${doc}: editor __tests__ tree line is missing its test count`
+    if (Number(m[1]) !== dirFiles.length || Number(m[2]) !== dirTests) {
+      return `${doc}: "${m[0]}" != ${dirFiles.length} files / ${dirTests} tests in src/lib/editor/__tests__`
     }
   }
-  // The README tree line names the SAME directory but counts the REPO:
-  // "N test files (M tests) incl. gate.test.ts in src/lib/". N and M must
-  // equal the repo-wide totals, or a stale count hides behind the scoped
-  // shape (checkHeadline strips "N test files (M tests)" before its bare
-  // checks, so without this pattern such a line is never validated).
-  for (const m of text.matchAll(
-    /(\d+)\s+test files\s*\((\d+)\s+tests?\)\s*incl\.\s*gate\.test\.ts/g,
-  )) {
-    if (Number(m[1]) !== files.length || Number(m[2]) !== total) {
-      return `${doc}: "${m[0]}" != ${files.length} files / ${total} tests repo-wide (incl. gate.test.ts)`
+  for (const line of text.split('\n')) {
+    if (!line.includes('__tests__/')) continue
+    for (const m of line.matchAll(/(\d+)\s+test files?\s*\((\d+)\s+tests?\)/g)) {
+      if (Number(m[1]) !== dirFiles.length || Number(m[2]) !== dirTests) {
+        return `${doc}: "${m[0]}" != ${dirFiles.length} files / ${dirTests} tests in src/lib/editor/__tests__`
+      }
     }
   }
   return null
@@ -281,8 +275,17 @@ describe('docs test-count claims match the real suite', () => {
     )
   })
 
-  it('every doc scoped directory count is internally consistent', () => {
-    expect(DOCS.map((doc) => checkScoped(doc, files, total)).filter((f) => f !== null)).toEqual([])
+  it('every doc scoped directory count is internally consistent and the README tree line exists', () => {
+    expect(DOCS.map((doc) => checkScoped(doc, total)).filter((f) => f !== null)).toEqual([])
+
+    const readme = readFileSync(join(ROOT, 'README.md'), 'utf8')
+    const withoutTree = readme
+      .split('\n')
+      .filter((line) => !line.includes('__tests__/'))
+      .join('\n')
+    expect(checkScoped('README.md', total, withoutTree)).toContain(
+      'expected one editor __tests__ tree line',
+    )
   })
 
   it('every per-file row in the testing.md inventory matches its suite', () => {

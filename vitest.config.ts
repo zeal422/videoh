@@ -55,6 +55,7 @@ export default defineConfig({
         'src/lib/editor/theme.ts',
         'src/lib/editor/menus.ts',
         'src/lib/releases.ts',
+        'src/lib/seo.ts',
       ],
       thresholds: {
         statements: 70,

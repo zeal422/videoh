@@ -278,25 +278,47 @@ fill_timing() { # fill_timing <start> <duration> — Timing spinbuttons of a sel
   return 0
 }
 
-# ————— 0. boot —————
-s01_boot() { ab open "$BASE_URL" >/dev/null && sleep 2.5; }
+# ————— 0. public entry and editor boot —————
+s01_public() {
+  ab open "$BASE_URL" >/dev/null || return 1
+  local hero=0
+  local deadline=$((SECONDS + 60))
+  while [ "$hero" != "1" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    hero=$(evaln '(() => document.querySelector("[data-testid=hero]") ? "1" : "0")()')
+    [ "$hero" = "1" ] || { hero=0; sleep 0.25; }
+  done
+  [ "$hero" = "1" ] || { echo "no public hero after navigation (url=$(evaln 'location.href' 2>/dev/null))" >&2; return 1; }
+  local href
+  href=$(evaln '(() => { const a = document.querySelector("[data-testid=open-editor]"); return a ? a.getAttribute("href") : ""; })()')
+  [ "$href" = "/editor" ] || { echo "open-editor href=$href" >&2; return 1; }
+}
 
-# g0 gate login — the app sits behind a password gate (src/proxy.ts). With
-# GATE_PASSWORD unset (gate open) this is a no-op; with it set, the first
-# navigation lands on /gate and every later step needs the session cookie.
-g0_login() {
-  if snap | grep -q 'This editor is private'; then
-    ab fill 'input[type=password]' "${GATE_PASSWORD:?GATE_PASSWORD must match the server}" >/dev/null
-    ab press Enter >/dev/null
-    sleep 2.5
-  fi
-  dismiss_greeting || return 1 # fresh visitor: the welcome modal hides the app until closed
+# Boot poll: after any navigation the 3.2s preloader hold (plus dev-server
+# compile on a cold box) means a fixed sleep cannot land past the reveal.
+# Poll the mounted menubar with a 60s deadline instead; the deadline only
+# binds on failure. A DOM query, not the a11y snapshot: an open welcome
+# modal hides the chrome from snap while the page is fine.
+wait_boot() {
+  local boot=0
+  local deadline=$((SECONDS + 60))
+  while [ "$boot" != "1" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    boot=$(evaln '(() => { const d = document; return (d.querySelector("[role=menubar]") || d.querySelector("[data-testid=release-notes-modal]")) ? "1" : "0"; })()')
+    [ "$boot" = "1" ] || { boot=0; sleep 0.25; }
+  done
+  [ "$boot" = "1" ] || { echo "no editor boot after navigation (url=$(evaln 'location.href' 2>/dev/null))" >&2; return 1; }
+}
+
+s02_boot() {
+  ab click '[data-testid=open-editor]' >/dev/null || return 1
+  wait_boot || return 1
+  dismiss_greeting || return 1
   snap | grep -q 'Load sample media'
 }
 
-s02_fresh() {
-  ab eval 'localStorage.clear()' >/dev/null
-  ab reload >/dev/null && sleep 2.5
+s03_fresh() {
+  ab eval 'localStorage.clear()' >/dev/null || return 1
+  ab open "$BASE_URL/editor" >/dev/null || return 1
+  wait_boot || return 1
   dismiss_greeting || return 1
   snap | grep -q 'Load sample media'
 }
@@ -3275,9 +3297,9 @@ console_clean() {
 }
 
 # ————— run —————
-step "s01 boot: page loads and renders"            s01_boot
-step "g0  gate: login accepts the access password"   g0_login
-step "s02 fresh: storage cleared, editor empty"    s02_fresh
+step "s01 public: hero loads and links to the editor" s01_public
+step "s02 boot: Open editor loads the editor"      s02_boot
+step "s03 fresh: storage cleared, editor empty"     s03_fresh
 step "f01 import: sample media loads 3 assets"     f01_import
 step "f01b import: a real (non-bundled) file imports" f01b_import_real_file
 step "f02 add: video+audio+image quick-added"      f02_add

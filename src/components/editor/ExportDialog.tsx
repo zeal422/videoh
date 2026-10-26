@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/select'
 import { Label } from '@/components/ui/label'
 import { toast } from '@/hooks/use-toast'
+import { trackExportSuccess } from '@/lib/analytics'
 
 import { docDuration } from '@/lib/editor/factories'
 import { hasOfflineMedia } from '@/lib/editor/offline'
@@ -154,6 +155,7 @@ export function ExportDialog({
           description: `${(result.blob.size / 1e6).toFixed(1)} MB MP4`,
         })
       }
+      trackExportSuccess()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (message !== 'Export cancelled') {

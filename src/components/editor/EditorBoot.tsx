@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { readTheme } from '@/lib/editor/theme'
 
 /**
- * Web Video Editor, a single-page editor.
+ * videoh, a browser-based editor.
  *
  * The entire app is client-side (object URLs, canvas compositing, Web Audio,
  * WebCodecs), and the initial document contains randomly generated ids, so
@@ -26,7 +26,7 @@ import { readTheme } from '@/lib/editor/theme'
  */
 const MIN_SHOW_MS = 3200
 
-export default function Home() {
+export function EditorBoot() {
   const [Shell, setShell] = useState<ComponentType | null>(null)
   const [failed, setFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)

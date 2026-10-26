@@ -698,7 +698,7 @@ export function MenuBar({
             {isFullscreen ? 'Exit full screen' : 'Full screen'}
           </Button>
           {/* Running version, static muted label at the right edge. The value
-              comes from releases.ts, the same gate-locked source as the
+              comes from releases.ts, the same version-locked source as the
               welcome modal, so it cannot drift from package.json. */}
           <span
             data-testid="menubar-version"
@@ -963,16 +963,16 @@ function AboutDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>Web Video Editor</DialogTitle>
-          <DialogDescription>Pre-1.0 · browser-based video editing</DialogDescription>
+          <DialogTitle>videoh</DialogTitle>
+          <DialogDescription>Pre-1.0 · video editing in your browser</DialogDescription>
         </DialogHeader>
         <div className="space-y-2 text-sm">
           <p>
-            A browser-based timeline editor: import media, arrange clips on multi-track timelines,
-            add transitions and text, mix audio, and export to MP4, entirely in your browser.
+            Edit on a multi-track timeline. Import media, arrange clips, add transitions and text,
+            mix audio, and export an MP4. Your files stay on your device.
           </p>
           <p className="text-muted-foreground">
-            Timeline duration:{' '}
+            Timeline{' '}
             {activeSequenceDuration(
               useEditorStore.getState().doc,
               useEditorStore.getState().activeSequencePath,

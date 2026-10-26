@@ -1,8 +1,10 @@
-# Web Video Editor
+# videoh
 
-A browser-based multi-track video editor. It runs entirely in the tab: no media uploads, no account, and no project database. Your footage stays on your machine. Object URLs, canvas compositing, Web Audio, and WebCodecs do the work. A server only serves the app shell and the optional access gate.
+A browser-based multi-track video editor. It runs entirely in the tab: no media uploads, no account, and no project database. Your footage stays on your machine. Object URLs, canvas compositing, Web Audio, and WebCodecs do the work.
 
-It is still pre-1.0, not a Premiere replacement. The core path works end to end: import media, cut it on a timeline, preview the result, and export an MP4. The limitations section below lists what is still missing.
+Live site: <https://videoh.vercel.app>. Source: <https://github.com/zeal422/videoh>. License: [MIT](LICENSE).
+
+The public site is a product page at `/`; the editor is at `/editor`. The site is public. The project is still pre-1.0, not a Premiere replacement. The core path works end to end: import media, cut it on a timeline, preview the result, and export an MP4. The limitations section below lists what is still missing.
 
 Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/ui, and Vitest.
 
@@ -47,7 +49,7 @@ bun install
 bun run dev
 ```
 
-Open <http://localhost:3000>, or the preview URL shown by your workspace. For a demo, click Load sample media in the media bin. It imports the bundled samples from `public/samples/`: `sample-video.mp4`, `sample-audio.mp3`, and `sample-image.png`. Then quick-add them to the timeline with the `+` button on each asset.
+Open <http://localhost:3000/editor>, or the preview URL shown by your workspace. For a demo, click Load sample media in the media bin. It imports the bundled samples from `public/samples/`: `sample-video.mp4`, `sample-audio.mp3`, and `sample-image.png`. Then quick-add them to the timeline with the `+` button on each asset.
 
 Use a current Chromium-based browser for the full feature set. Export also needs WebCodecs, which means Chromium, Edge, Firefox 130+, or Safari 26+.
 
@@ -340,9 +342,11 @@ bun run format:check   # prettier check
 bun run battery        # scripted UI battery (reuses a server already on :3000, else starts one; owns its browser session)
 ```
 
-The pure state modules run in a plain Node environment with no browser. The browser-bound `persistence.ts` and `project-io.ts` helpers use mocked storage or File inputs, and their DOM-only paths are covered by the battery. Tests cover `commands` (validation, splitting, transitions, effects), `store` (history, transient gestures), `snap`, `transition` (span and alpha math), `serialization` (round trips, missing media), `persistence` (debounce, validity), `time` helpers, `menus` (menu structure and state resolution), and `workspace` (layout state, sanitization, persistence).
+The pure state modules run in a plain Node environment with no browser. The browser-bound `persistence.ts`, `project-io.ts`, and `analytics.ts` helpers use mocked storage, File inputs, or mocked analytics APIs. The DOM-only persistence and project-io paths are covered by the battery; `analytics.ts` DOM paths are covered in jsdom. Tests cover `commands` (validation, splitting, transitions, effects), `store` (history, transient gestures), `snap`, `transition` (span and alpha math), `serialization` (round trips, missing media), `persistence` (debounce, validity), `time` helpers, `menus` (menu structure and state resolution), `workspace` (layout state, sanitization, persistence), the public pages, the SEO metadata, and the license.
 
-Current state: **1576 tests across 72 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the Node-testable state modules. `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+The public site at `/` is a server-rendered hero and information page. It shares the editor's dark tokens but never imports the editor store or browser engines. `/editor` is the client-only editor boot. The public pages live under `src/app/(site)`. The sitemap and social image are route files in `src/app`, and the site constants live in `src/lib/seo.ts`.
+
+Current state: **1603 tests across 77 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the Node-testable state modules. `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -366,11 +370,29 @@ On screens at least 768px wide, the shell is a resizable panel workspace using `
 
 All layout state lives in `src/lib/editor/workspace.ts`, which is pure: defaults, clamping, sanitization, and injected storage. It sits behind the `useWorkspaceStore` zustand wrapper, so a corrupt or hand-edited `localStorage` entry cannot crash the editor. Below 768px the workspace is replaced by the original fixed stacked layout.
 
+## Public site and license
+
+The public site is part of the same Next.js app:
+
+- `/` is the indexable hero with the product story, FAQ, screenshot, and CTAs.
+- `/editor` is the editor. It is `noindex, follow` because its content is client-rendered.
+- `/about`, `/privacy`, `/terms`, and `/contact` are public pages.
+- `/sitemap.xml`, `/robots.txt`, and the Google Search Console verification file are served from the app and `public/`.
+- The old access route is gone and returns 404.
+
+The source is MIT licensed. See [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md). Optional GoatCounter analytics use `NEXT_PUBLIC_GOATCOUNTER_URL`; leave it empty to disable analytics. See [docs/seo.md](docs/seo.md) for the measurement and Search Console notes.
+
 ## Project structure
 
 The full filesystem map lives in [`docs/structure.md`](docs/structure.md). High-level outline:
 
 ```text
+LICENSE                        # MIT license
+CONTRIBUTING.md                # Bun setup, checks, contribution terms
+docs/seo.md                    # search, analytics, and release checklist
+public/google80671fa4533bcad3.html  # Search Console verification
+public/screenshots/editor.png  # real editor screenshot for the hero
+public/robots.txt              # allow all plus the sitemap URL
 src/
 ├── lib/editor/                  # state core (pure, unit-tested)
 │   ├── types.ts                 # Doc, Project, Track, Clip, MediaAsset, TextStyle…
@@ -422,8 +444,26 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 72 test files (1576 tests) incl. gate.test.ts in src/lib/; mocks/ = browser-mock harness
+│   └── __tests__/               # 77 test files (1603 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+├── app/
+│   ├── (site)/                  # public hero, About, Privacy, Terms, Contact, site layout
+│   ├── editor/page.tsx          # server wrapper with noindex metadata around EditorBoot
+│   ├── layout.tsx               # root metadata, Geist fonts, Toaster, GoatCounter
+│   ├── sitemap.ts               # MetadataRoute.Sitemap from INDEXABLE_ROUTES
+│   ├── opengraph-image.tsx      # 1200x630 social card
+│   └── globals.css              # tokens, public-site keyframes, grain, editor scrollbars
+├── lib/seo.ts                   # site constants, canonical, pageMetadata, JSON-LD
+├── lib/analytics.ts             # GoatCounter events, click beacon, first-export marker
+├── components/site/
+│   ├── SiteHeader.tsx           # transparent favicon bars + wordmark, About, GitHub, tracked Open editor CTA
+│   ├── SiteFooter.tsx           # public links, contact mailto, MIT license
+│   ├── Hero.tsx                 # hero, screenshot, features, FAQ, final CTA
+│   ├── TimelineHero.tsx         # CSS-only timeline strip with one rose playhead
+│   ├── LegalPage.tsx            # shared legal page shell
+│   ├── TrackedLink.tsx          # plain anchor that calls trackClick
+│   └── GoatCounter.tsx          # optional page-view script
 ├── components/editor/
+│   ├── EditorBoot.tsx           # client-only shell import, 3.2s preloader, retry/reload
 │   ├── EditorShell.tsx          # panel workspace layout, autosave lifecycle, restore banner
 │   ├── MenuBar.tsx              # Premiere-style menu bar + shortcuts/about/gain dialogs
 │   ├── PanelShell.tsx           # resizable/collapsible panel frame (header, strip)

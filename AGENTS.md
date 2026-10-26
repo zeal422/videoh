@@ -2,14 +2,15 @@
 
 Browser-based multi-track video editor. Everything the editor does runs client-side (object URLs,
 canvas, Web Audio, WebCodecs); there is no data backend or database. The only environment
-configuration is the optional access gate (`GATE_PASSWORD` and `GATE_SECRET` in `.env.local`).
-Single page mounted from `src/app/page.tsx` (client-only dynamic import of the editor shell).
+configuration is the optional public analytics endpoint (`NEXT_PUBLIC_GOATCOUNTER_URL`).
+The public hero is at `/`, and the client-only editor boots from `src/components/editor/EditorBoot.tsx`
+at `/editor`.
 Stack: Next.js 16 App Router +
 React 19 + TypeScript strict (`noImplicitAny` on, build-time type errors not ignored) + Tailwind 4 (tokens in `src/app/globals.css`) + shadcn/ui +
 zustand 5 + Vitest. Run with **Bun**, never npm/pnpm/yarn.
 
 Docs: [README.md](README.md) and the [docs/ index](docs/README.md) (architecture, structure, flows,
-testing, design-system, deployment). Read [CHANGELOG.md](CHANGELOG.md) for release history; notable
+testing, design-system, deployment, seo). Read [CHANGELOG.md](CHANGELOG.md) for release history; notable
 changes must be documented there ([Keep a Changelog](https://keepachangelog.com/en/1.1.0) format).
 
 ## Commands
@@ -46,8 +47,8 @@ Running the suite (these are the steps agents get wrong):
   table rows together, which docs-drift then counts as broken cells.
 - Battery: `bun run battery` (`bash e2e/run-battery.sh`, see
   [docs/testing.md](docs/testing.md)). The runner starts a dev server only when
-  the port is free, reads `GATE_PASSWORD` from `.env.local` itself, closes its
-  browser session, and stops only a server it started, so nothing is left behind.
+  the port is free, closes its browser session, and stops only a server it
+  started, so nothing is left behind.
   It runs minutes (1080p export included) and needs `agent-browser` on PATH. For the SHIPPED
   artifact, build and serve it yourself (`bun run build && bun run start`) and run the battery: it
   reuses the server already on the port. Dev-green does not imply prod-green (minified chunks, copied
@@ -57,9 +58,9 @@ Running the suite (these are the steps agents get wrong):
   17 lines that did pass look exactly like a result. The verdict is strict, so a
   killed run cannot pass: fewer result lines than `step` lines in
   `e2e/battery.sh` exits nonzero with INCOMPLETE. Never report a battery result
-  that did not come from a full run. Syntax-check edits with `bash -n
-e2e/battery.sh e2e/run-battery.sh`. If the user started the dev server, leave
-  it running.
+  that did not come from a full run. Syntax-check edits with
+  `bash -n e2e/battery.sh e2e/battery.timing.sh e2e/run-battery.sh`. If the user
+  started the dev server, leave it running.
   Full battery runs are the release verdict only, never the iteration loop:
   iterate with unit tests, manual `agent-browser` sessions, or prefix runs
   (comment out trailing `step` lines; the verdict adapts to what ran). Reserve
@@ -72,18 +73,24 @@ e2e/battery.sh e2e/run-battery.sh`. If the user started the dev server, leave
   TypeScript (no React, except the zustand stores); this is what unit tests target. See
   [docs/architecture.md](docs/architecture.md).
 - `src/lib/editor/media|playback|export/` — browser APIs live here (media elements, Web Audio, canvas,
-  WebCodecs), plus the explicitly browser-bound `persistence.ts` and `project-io.ts` helpers.
+  WebCodecs), plus the explicitly browser-bound `persistence.ts`, `project-io.ts`, and
+  `src/lib/analytics.ts` helpers.
 - `src/components/editor/` — the UI. `src/components/editor/timeline/` holds the timeline.
 - `src/components/ui/` — preinstalled shadcn/ui: use them, never modify by hand.
 - `src/hooks/editor/useEditorKeyboard.ts` — the verified Premiere keyboard map.
-- `src/app/` — `layout.tsx` (dark `<html>`, fonts, Toaster), `page.tsx`, `globals.css` (tokens),
-  `icon.svg`, plus the access-gate page (`gate/page.tsx`) and login route (`api/gate-login/`).
-- `src/lib/editor/__tests__/` — all tests (`*.test.ts`), plus the mocked browser harness in `mocks/`.
-- `e2e/battery.sh`: 63-step UI battery, first step is the gate login (needs the dev server +
-  `agent-browser`; set `GATE_PASSWORD` when the gate is active). Drive it through
-  `e2e/run-battery.sh` (`bun run battery`), which owns the server, the password, the session and the
-  strict verdict.
+- `src/app/` — root `layout.tsx` (dark `<html>`, fonts, Toaster, GoatCounter), the public `(site)`
+  route group, `editor/page.tsx`, `globals.css` (tokens and public-site motion), `icon.svg`,
+  `sitemap.ts`, and `opengraph-image.tsx`.
+- `src/components/site/` — public header, footer, hero, timeline strip, legal shell, tracked anchor,
+  and GoatCounter script. It never imports the editor store or browser engines.
+- `src/lib/seo.ts` — site constants, canonical URLs, page metadata, sitemap routes, and JSON-LD.
+- `src/lib/editor/__tests__/`: all tests (`*.test.ts(x)`), plus the mocked browser harness in `mocks/`.
+- `e2e/battery.sh`: 63-step UI battery, first step loads the public hero and its editor link (needs the
+  dev server + `agent-browser`). Drive it through `e2e/run-battery.sh` (`bun run battery`), which owns
+  the server, the session, and the strict verdict.
 - `public/samples/` — bundled demo media used by "Load sample media".
+- `public/google80671fa4533bcad3.html` — Search Console verification. Keep it public.
+- `public/screenshots/editor.png` — hero screenshot; recapture when the editor chrome changes.
 
 ## Critical rules
 
@@ -92,7 +99,7 @@ e2e/battery.sh e2e/run-battery.sh`. If the user started the dev server, leave
    undoable, it lives inside `Doc`.
 2. **Keep the pure state core browser-free** so it runs in Vitest's Node environment. Browser APIs
    belong in `media/`, `playback/`, and `export/`, or in the explicitly browser-bound
-   `persistence.ts` and `project-io.ts` helpers.
+   `persistence.ts`, `project-io.ts`, and `analytics.ts` helpers.
 3. **Style through design tokens** (`bg-background`, `text-muted-foreground`, `border-border`, …) with
    [docs/design-system.md](docs/design-system.md). The kind colours (emerald/amber/violet clips, rose
    playhead, amber snap guide) are the deliberate exception; never hardcode surface hex values.
@@ -156,6 +163,5 @@ when asked, use Conventional Commits with a bullet body listing each notable cha
 
 Manual UI proof: for visual or fullscreen checks, use `agent-browser` with a unique `--session` and
 `--headed`; it launches an isolated browser profile, so it never touches the user's Chrome. Check the
-server first (rule 8) and read `GATE_PASSWORD` from `.env.local` without echoing it. Close the session
-with `agent-browser --session <name> close`. If you started the server, stop it and verify the port is
+server first (rule 8). Close the session with `agent-browser --session <name> close`. If you started the server, stop it and verify the port is
 free; if the user started it, leave it running. Never `pkill chrome`.

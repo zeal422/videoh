@@ -552,7 +552,7 @@ export const MENU_SPECS: MenuSpec[] = [
         label: 'Keyboard Shortcuts…',
         action: 'help.shortcuts',
       },
-      { id: 'help.about', kind: 'item', label: 'About Web Video Editor', action: 'help.about' },
+      { id: 'help.about', kind: 'item', label: 'About videoh', action: 'help.about' },
     ],
   },
 ]

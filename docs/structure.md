@@ -8,44 +8,56 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 
 ```text
 .
-├── src/                     # all application code (src/proxy.ts is the access-gate middleware; see below)
+├── src/                     # all application code
 ├── public/
-│   ├── robots.txt           # crawler policy
+│   ├── google80671fa4533bcad3.html  # Search Console verification file
+│   ├── screenshots/editor.png       # real editor screenshot for the hero
+│   ├── robots.txt           # allow all plus the sitemap URL
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
 │   ├── battery.sh           # scripted UI battery (63 steps) driven by agent-browser
 │   ├── battery.timing.sh    # battery copy that records per-step timing
-│   └── run-battery.sh       # runner: dev server, gate password, session cleanup, strict verdict
-├── docs/                    # this documentation set
-├── next.config.ts           # output: "standalone"
+│   └── run-battery.sh       # runner: dev server, session cleanup, strict verdict
+├── docs/                    # this documentation set, including seo.md
+├── next.config.ts           # output: "standalone", preview X-Robots-Tag
 ├── vitest.config.ts         # node env, @ alias, coverage include + thresholds
 ├── eslint.config.mjs        # eslint-config-next flat config
 ├── postcss.config.mjs       # @tailwindcss/postcss
 ├── components.json          # shadcn/ui CLI config (new-york, neutral, lucide)
 ├── tsconfig.json            # strict, noEmit, "@/*" → "./src/*"
-├── package.json             # scripts + dependencies (run with Bun)
+├── package.json             # scripts, dependencies, MIT license (run with Bun)
 ├── bun.lock                 # dependency lockfile
+├── LICENSE                  # MIT license
+├── CONTRIBUTING.md          # Bun setup, checks, contribution terms
 ├── README.md                # product overview + keyboard map
 ├── ROADMAP.md               # Premiere gap analysis
 ├── CHANGELOG.md             # released + unreleased changes
 ├── AGENTS.md                # AI coding-agent instructions
-├── .env.example             # access-gate environment template
+├── .env.example             # optional public analytics template
 └── .prettierrc              # no semicolons, single quotes, 100 cols
 ```
 
 There is no data backend or database. The editor runs entirely in the browser (object URLs, canvas,
-Web Audio, WebCodecs). The only server-only code is the access gate: `src/proxy.ts`, the login route
-under `src/app/api/gate-login/`, and the `src/lib/gate*.ts` primitives described below.
+Web Audio, WebCodecs). The public site is server-rendered at `/`, and the editor is a client-only boot
+at `/editor`. The only optional integration is GoatCounter analytics, configured by
+`NEXT_PUBLIC_GOATCOUNTER_URL`.
 
 ## `src/app/` — Next.js App Router
 
 ```text
 src/app/
-├── layout.tsx        # root layout: Geist fonts, dark <html>, <Toaster>
-├── page.tsx          # client-only dynamic import of the editor shell (avoids SSR id mismatch)
-├── globals.css       # Tailwind 4 entry + design tokens (:root / .dark) + editor scrollbars
-├── gate/page.tsx     # password screen served when the access gate is locked (see deployment.md)
-├── api/gate-login/   # POST route: password check, session cookie, throttle ramp
+├── (site)/
+│   ├── layout.tsx          # public header/footer, skip link, Instrument Serif display variable
+│   ├── page.tsx            # indexable hero at / plus both JSON-LD blocks
+│   ├── about/page.tsx
+│   ├── privacy/page.tsx
+│   ├── terms/page.tsx
+│   └── contact/page.tsx
+├── editor/page.tsx    # server wrapper with noindex metadata around EditorBoot
+├── layout.tsx        # root metadata: Geist fonts, dark <html>, <Toaster>, GoatCounter
+├── sitemap.ts        # MetadataRoute.Sitemap from INDEXABLE_ROUTES
+├── opengraph-image.tsx # 1200x630 social card
+├── globals.css       # Tailwind 4 entry + tokens + public-site motion + editor scrollbars
 └── icon.svg          # favicon (Next.js file convention)
 ```
 
@@ -53,7 +65,16 @@ src/app/
 
 ```text
 src/components/
+├── site/                         # public site, no editor store or browser-engine imports
+│   ├── SiteHeader.tsx            #   transparent favicon bars + wordmark, About, GitHub, tracked Open editor CTA
+│   ├── SiteFooter.tsx            #   public links, contact mailto, MIT license
+│   ├── Hero.tsx                  #   hero, screenshot, features, FAQ, final CTA
+│   ├── TimelineHero.tsx          #   CSS-only timeline strip with one rose playhead
+│   ├── LegalPage.tsx             #   shared legal page shell
+│   ├── TrackedLink.tsx           #   plain anchor that calls trackClick
+│   └── GoatCounter.tsx           #   optional page-view script
 ├── editor/                       # editor UI (see architecture.md for responsibilities)
+│   ├── EditorBoot.tsx            #   client-only shell import, 3.2s preloader, retry/reload
 │   ├── EditorShell.tsx           #   panel workspace layout + autosave/restore + gesture safety net + release-notes auto-open
 │   ├── MenuBar.tsx               #   Premiere-style menu bar + dialogs + right-edge fullscreen toggle + version label
 │   ├── AppearanceDialog.tsx      #   View > Appearance palette picker, applies and persists immediately
@@ -101,21 +122,12 @@ src/hooks/
 
 ## `src/lib/`: outside the editor core
 
-```text
+````text
 src/lib/
-├── releases.ts           # hand-curated release notes for the welcome modal (gate-locked to package.json)
-├── utils.ts              # shadcn `cn()` class-merge helper
-└── gate.ts, gate-env.ts  # the access gate primitives (section below)
-```
-
-## `src/lib/gate.ts` — the access gate primitives
-
-Pure session/throttle crypto (HMAC-SHA256 via node:crypto, constant-time compares): sign/verify the
-24 h session cookie under a key derived from `GATE_SECRET` + `GATE_PASSWORD` (`sessionKey()`), the
-failure-counter cookie, and the delay ramp. `gate-env.ts` resolves and validates the two env
-materials (secret required in production, dev warns and falls back). Unit-tested in `gate.test.ts`;
-`src/proxy.ts` (Next 16 middleware) and `src/app/api/gate-login/route.ts` wire it to cookies. See
-[deployment.md](deployment.md#access-gate).
+├── releases.ts           # hand-curated release notes for the welcome modal (version-locked to package.json)
+├── seo.ts                # site constants, canonical, pageMetadata, INDEXABLE_ROUTES, JSON-LD
+├── analytics.ts          # GoatCounter custom events, click beacon, first-export marker
+└── utils.ts              # shadcn `cn()` class-merge helper
 
 ## `src/lib/editor/` — the editor core
 
@@ -180,20 +192,21 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 71 test files (1552 tests) in `__tests__/` plus `src/lib/gate.test.ts`: see testing.md
+└── __tests__/            # 77 test files (1603 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
-```
+````
 
 `src/lib/utils.ts` holds the shadcn `cn()` class-merge helper.
 
 ## Conventions
 
-- Tests are colocated under `src/lib/editor/__tests__/` and named `*.test.ts`. Component "wiring"
-  behavior is verified by static-source tests rather than a DOM renderer (see
+- Tests are colocated under `src/lib/editor/__tests__/` and named `*.test.ts(x)`. Component behavior
+  uses jsdom render tests plus static-source locks for code-shape guarantees (see
   [testing.md](testing.md)).
 - The pure state core must stay browser-free so it runs in Vitest's Node environment. Browser APIs
-  live in `media/`, `playback/`, and `export/`, plus the browser-bound `persistence.ts` and
-  `project-io.ts` helpers. Their tests use mocked storage or File inputs; DOM-only paths are covered
-  by the battery.
+  live in `media/`, `playback/`, and `export/`, plus the browser-bound `persistence.ts`,
+  `project-io.ts`, and `analytics.ts` helpers. Their tests use mocked storage, File inputs, or mocked
+  analytics APIs; the DOM-only persistence and project-io paths are covered by the battery, and the
+  analytics DOM paths are covered in jsdom.
 - Nothing under `src/lib/editor/` imports from `src/components/`.

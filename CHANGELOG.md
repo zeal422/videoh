@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] - 2026-10-25
+
+### Added
+
+- **Public site.** `/` is now an indexable hero with the product story, a real editor screenshot, feature cards, an FAQ, and tracked CTAs. About, Privacy, Terms, and Contact live in the `(site)` route group with a shared header, footer, legal shell, and display serif. The header pairs transparent favicon bars with the wordmark. The hero screenshot is a richer demo project with a night city still, an AFTER HOURS title, waveforms, markers, a transition, and a scale keyframe curve.
+- **Search foundation.** Root metadata covers `metadataBase`, the title template, description, authors, creator, robots, Open Graph, Twitter, and icons. Each non-root page sets its own canonical and Open Graph URL. The app ships `sitemap.xml`, a crawler policy, a 1200x630 social card, `SoftwareApplication` and `FAQPage` JSON-LD, and the Google Search Console verification file.
+- **Analytics.** Optional GoatCounter page views plus custom events for editor opens, source clicks, contact email clicks, first exports, and every successful export. CTA clicks use `TrackedLink` and `trackClick`; a not-ready script uses `navigator.sendBeacon` so navigation does not drop the event.
+- **MIT license.** The repository adds the MIT license, `"license": "MIT"` in `package.json`, a contributing guide, and license links in the README and footer.
+- **SEO documentation.** `docs/seo.md` records the page inventory, search intent, event model, Search Console steps, limits, and release checklist.
+
+### Changed
+
+- **Editor route.** The editor now boots at `/editor` through `EditorBoot`, with the same 3.2s preloader, retry, reload fallback, and stored palette behavior. The public hero never mounts the editor shell.
+- **Site chrome.** The editor About dialog and menu label use `videoh`. The README and docs index use the product name and describe the public site boundary.
+- **Preview protection.** Vercel Preview deployments return `X-Robots-Tag: noindex, nofollow`; production, development, and unset environments do not.
+- **Battery.** The 63-step battery starts at the public hero, follows its Open editor link, and then clears storage on `/editor`. The runner no longer reads or passes a password.
+- **Docs and counts.** Architecture, structure, flows, design system, testing, deployment, and AGENTS document the public site, the editor boot, the browser-bound analytics helper, and the new test inventory. The suite moves to 1,603 tests across 77 files.
+
+### Removed
+
+- **Password gate.** The proxy, gate primitives, gate page, login route, gate tests, gate environment entries, and battery login step are gone. The old access path returns 404.
+- **Old root page.** `src/app/page.tsx` is deleted after the boot logic moves to `EditorBoot`.
+
 ## [0.10.3] - 2026-10-25
 
 ### Changed

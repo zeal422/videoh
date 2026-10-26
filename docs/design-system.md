@@ -18,7 +18,7 @@ Tokens, theming, layout, and UI conventions. Sibling docs: [docs index](README.m
   scrollbars, and checkboxes render dark chrome instead of flashing white.
 - **Palettes layer on top.** View > Appearance stores an allowlisted id under
   `web-video-editor:theme:v1` and sets `data-palette` on `<html>`. The boot effect in
-  `src/app/page.tsx` applies it behind the opaque preloader. The `:root[data-palette='<id>']` blocks
+  `src/components/editor/EditorBoot.tsx` applies it behind the opaque preloader. The `:root[data-palette='<id>']` blocks
   override only the 17 chrome tokens below. Default is the absence of the attribute, so no
   `data-palette="default"` block exists.
 - **No theming dependency.** No `next-themes` or other theme library is installed; the switch is CSS
@@ -72,6 +72,43 @@ All colours are authored in `oklch()`. Use the semantic utilities (`bg-backgroun
 - **Geist Sans** for UI (`--font-geist-sans` → `--font-sans`) and **Geist Mono** for timecodes,
   shortcut hints, and numeric readouts (`--font-geist-mono` → `font-mono`), loaded via
   `next/font/google` in `layout.tsx`.
+- **Instrument Serif** is the public-site display face (`--font-instrument-serif` →
+  `--font-display`). It is loaded in `src/app/(site)/layout.tsx` and scoped there, so the editor keeps
+  Geist Sans for controls and panels.
+
+## Public site
+
+The public site at `/` shares the editor's dark base, rose playhead, and amber secondary accent, but it
+is not the editor shell. It is a server-rendered product page with its own header, footer, hero, and
+legal pages.
+
+- **Composition.** A cinematic "editing room at 2 a.m." direction: near-black surfaces, a restrained
+  rose glow, a CSS-only grain overlay, and one decorative timeline strip. The strip uses the editor's
+  kind colours (emerald video, amber audio, violet text) and exactly one rose playhead. Amber is a
+  small secondary accent, never a second playhead.
+- **Display type.** Instrument Serif is the documented public-site exception. Headings use
+  `font-display`; body text stays Geist Sans. Do not apply the serif to editor controls.
+- **Wordmark.** The header pairs transparent favicon bars with the Instrument Serif wordmark inside
+  the same home link. The favicon keeps its dark tile; the header mark has no tile. The bars are
+  decorative, 24px on mobile and 28px on desktop, with no separate accessible name.
+- **Screenshot.** The hero uses a real `public/screenshots/editor.png` capture at 1600x1000 with
+  `next/image`, `preload`, explicit dimensions, `sizes`, and descriptive alt text. The demo project
+  shows a night city still, an AFTER HOURS title, waveforms, markers, a transition, and a scale
+  keyframe curve; the photo is by
+  [Jorik Kleen on Unsplash](https://unsplash.com/photos/cars-on-road-near-high-rise-buildings-during-night-time-gEQKilqT6bU).
+  Recapture it when the editor chrome changes.
+- **Motion.** Every animation class is `motion-safe:`. The hero rises, clips settle with a stagger, and
+  the playhead sweeps once in a loop. Reduced motion leaves the same composition static. There is no
+  bare animation fallback.
+- **Grain.** The grain is a CSS pseudo-element with a tiled SVG noise data URI and low opacity. It is
+  decorative, pointer-events-none, and sits behind content.
+- **Focus and keyboard.** The site layout starts with a skip link to `#main`. CTAs use a visible
+  `focus-visible:ring-2` ring; plain links keep the browser focus outline. Navigation uses plain
+  anchors, so no router test scaffolding is needed.
+- **Responsive.** The hero stacks below `lg`, the feature grid stacks below `md`, and the FAQ switches
+  from stacked rows to a two-column definition list at `sm`. The header wraps rather than clipping.
+- **No editor chrome.** The public site never imports the editor store, media, playback, or export
+  modules. It does not reuse the resizable workspace shell.
 
 ## Editor chrome (deliberate exceptions)
 

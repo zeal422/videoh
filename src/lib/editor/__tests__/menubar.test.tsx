@@ -79,7 +79,7 @@ describe('menubar version label', () => {
     const right = screen.getByTestId('menubar-right')
     const menubar = screen.getByRole('menubar')
     const button = screen.getByTestId('menubar-fullscreen')
-    // Value comes from the gate-locked releases.ts source (test 1 of
+    // Value comes from the version-locked releases.ts source (test 1 of
     // releases.test.ts ties it to package.json), not a hardcoded literal.
     expect(label).toHaveTextContent(`v${CURRENT_VERSION}`)
     expect(label.className).toContain('text-muted-foreground')
