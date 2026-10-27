@@ -57,8 +57,8 @@ locally for the duration of this epic and retired when the real editor capture r
 | 00  | [This orchestrator](PLAN-EDITOR-PARITY.md)                    | in progress                  | none       | none                            |
 | 01  | [Reference and spec](PLAN-01-REFERENCE-AND-SPEC.md)           | done                         | 00         | none                            |
 | 02  | [Geometry and chrome](PLAN-02-GEOMETRY-AND-CHROME.md)         | done                         | 01         | internal commit, no release     |
-| 03  | [Filmstrips](PLAN-03-FILMSTRIPS.md)                           | implemented, awaiting commit | 01, 02     | `0.12.0`                        |
-| 04  | [Volume automation](PLAN-04-VOLUME-AUTOMATION.md)             | planned                      | 01, 02, 03 | `0.13.0`                        |
+| 03  | [Filmstrips](PLAN-03-FILMSTRIPS.md)                           | done                         | 01, 02     | `0.12.0`                        |
+| 04  | [Volume automation](PLAN-04-VOLUME-AUTOMATION.md)             | implemented, awaiting commit | 01, 02, 03 | `0.13.0`                        |
 | 05  | [Track controls](PLAN-05-TRACK-CONTROLS.md)                   | planned                      | 02, 04     | `0.14.0`                        |
 | 06  | [Editing tools](PLAN-06-EDITING-TOOLS.md)                     | planned                      | 04, 05     | `0.15.0`                        |
 | 07  | [Integration and release](PLAN-07-INTEGRATION-AND-RELEASE.md) | planned                      | all        | final gate for the last release |

@@ -1,6 +1,6 @@
 # PLAN 03: Sampled filmstrip thumbnails
 
-Status: implemented, awaiting commit
+Status: done
 Depends on: [PLAN 01](PLAN-01-REFERENCE-AND-SPEC.md), [PLAN 02](PLAN-02-GEOMETRY-AND-CHROME.md)
 Release: `0.12.0` with Plan 02's chrome
 Goal: draw sampled source frames inside video clips and the source image inside image clips, without

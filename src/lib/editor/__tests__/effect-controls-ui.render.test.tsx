@@ -42,7 +42,14 @@ afterEach(() => {
 })
 
 function docWithSelectedVideoClip(): { doc: Doc; clipId: string } {
-  const asset = createMediaAsset({ kind: 'video', duration: 30, name: 'demo.mp4' })
+  // The fixture is audio-bearing: the Clip tab's Volume summary follows the
+  // audible carrier, so a silent video would (correctly) have no section.
+  const asset = createMediaAsset({
+    kind: 'video',
+    duration: 30,
+    name: 'demo.mp4',
+    hasAudio: true,
+  })
   const clip = createClip({ id: 'clip_ec', mediaId: asset.id, start: 0, duration: 6 })
   const track = createTrack('video', 1, { clips: [clip as Clip] })
   const doc: Doc = {

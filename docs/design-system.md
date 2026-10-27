@@ -127,6 +127,13 @@ them:
   strip loads. A top and bottom black scrim keeps the label readable. The layer never takes pointer
   events; the label, badges, waveform, trim handles, and markers stay above it, and the strip is
   clipped by the clip's rounded border.
+- **Volume envelope.** Audio-bearing clips paint the volume automation as a 1.5px white line with
+  `stroke-white/90` and 6px white dots inside 12px hit targets. The curve is deliberately not the
+  selection rose: rose stays the selection/playhead signal. The plot is inset 8px from the trim
+  handles, sits above the waveform and below the label and z-10 trim handles, and only the dots and
+  the 10px transparent hit path take pointer events. A muted clip dims the whole layer to 50% but
+  keeps it editable. The shared `KeyframeGraph` draws the same curve in its dB mode on an 80px box,
+  with 7px `-inf`, `-6 dB`, and `0 dB` labels over the muted graph background.
 - **Marker swatches** use the eight-colour Premiere palette (`MARKER_COLOR_VALUES` in
   `markers.ts`, Tailwind 500-family values) applied as an inline `backgroundColor`. They are content
   data (the colour the user picked) and stay fixed across themes.

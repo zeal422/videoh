@@ -99,7 +99,8 @@ src/components/
 │   └── timeline/
 │       ├── TimelinePanel.tsx     #   lanes, playhead, drop targets, zoom, track menu
 │       ├── Ruler.tsx             #   canvas time ruler + scrubbing
-│       ├── ClipView.tsx          #   clip: move/trim gestures, context menu, link badge
+│       ├── ClipView.tsx          #   clip: move/trim gestures, context menu, link badge, envelope layer
+│       ├── VolumeEnvelope.tsx    #   on-clip dB curve, draggable dots, add/remove/keyboard gestures
 │       ├── Filmstrip.tsx         #   sampled source cells / image draw / poster fallback under the clip
 │       ├── SequenceMarkers.tsx   #   ruler marker tabs + drag/edit menu
 │       ├── ClipMarkers.tsx       #   clip marker tabs (source-anchored)
@@ -158,6 +159,7 @@ src/lib/editor/
 ├── lut.ts                # `.cube` parsing/storage/budget (pure) + the 3D trilinear pixel pass
 ├── frame-blend.ts        # sub-frame-rate blend math: the partner read + the pair weight BOTH render paths share
 ├── filmstrip.ts          # pure strip planner: cell centers, capped buckets, cache key
+├── volume-automation.ts  # dB display mapping, curve sampling, keyframe helpers, audible-carrier rule (pure)
 ├── offline.ts            # offline-media detection for the monitor (pure)
 ├── transition.ts         # transition span + alpha math (crossfade, dip to black) + spatial geometry (wipe, slide, push)
 ├── effects.ts            # effect-stack math: order rule, sample derivation, crop/matte/blur geometry, blend set (pure)
@@ -195,7 +197,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 81 test files (1698 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 84 test files (1761 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ````

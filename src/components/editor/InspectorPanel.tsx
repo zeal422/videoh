@@ -31,7 +31,9 @@ import {
 } from '@/lib/editor/factories'
 import { linkedAudioTwin } from '@/lib/editor/links'
 import { parseCubeLut } from '@/lib/editor/lut'
+import { animatedValue } from '@/lib/editor/keyframes'
 import { formatTime } from '@/lib/editor/time'
+import { clipCarriesSound, formatDb } from '@/lib/editor/volume-automation'
 import {
   TEMPERATURE_MAX,
   TEMPERATURE_MIN,
@@ -41,10 +43,13 @@ import {
   TRANSITION_MIN,
 } from '@/lib/editor/constants'
 import { useEditorStore } from '@/lib/editor/store'
-import type { BlendMode, Clip, TextPreset, TextStyle, Transition } from '@/lib/editor/types'
+import type { BlendMode, Clip, Doc, TextPreset, TextStyle, Transition } from '@/lib/editor/types'
 import { BLEND_MODES } from '@/lib/editor/effects'
 import { useState } from 'react'
-import { EffectControlsPanel } from '@/components/editor/effect-controls/EffectControlsPanel'
+import {
+  EffectControlsPanel,
+  KeyframeGraph,
+} from '@/components/editor/effect-controls/EffectControlsPanel'
 import { cn } from '@/lib/utils'
 
 /**
@@ -160,15 +165,17 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
   const apply = useEditorStore((s) => s.apply)
   const asset = findMedia(doc, clip.mediaId)
   const isText = clip.text !== undefined && trackKind === 'text'
-  const hasAudio =
-    !!asset && (asset.kind === 'audio' || (asset.kind === 'video' && trackKind === 'video'))
-  // Opacity applies to every visually rendered clip (video/image/text).
-  const isVisual = isText || (!!asset && asset.kind !== 'audio')
-  // Linked A/V pair: gain/mute live on the AUDIO twin, whichever half is
+  // Linked A/V pair: volume/mute live on the AUDIO twin, whichever half is
   // selected (muting the video half would unmask its embedded audio and
   // double-play against the twin).
   const audibleTwin = linkedAudioTwin(doc, clip)
   const audioClip = audibleTwin ?? clip
+  // The Volume summary follows the clip that actually carries the sound: the
+  // twin for an A/V pair, otherwise the clip itself. `clipCarriesSound` is the
+  // one carrier rule, so a silent video no longer gets a gain/mute section.
+  const hasAudio = clipCarriesSound(doc, audioClip)
+  // Opacity applies to every visually rendered clip (video/image/text).
+  const isVisual = isText || (!!asset && asset.kind !== 'audio')
 
   const track = findClip(doc, clip.id)?.track
   const nextClip = track ? nextClipOnTrack(track, clip) : undefined
@@ -237,7 +244,7 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
             className="flex items-center gap-1.5 text-[11px] leading-relaxed text-muted-foreground"
           >
             <Link2 className="size-3.5 shrink-0" aria-hidden="true" />
-            Linked with the audio clip — audio edits (gain, mute) apply to the pair. Right-click the
+            Linked with the audio clip. Volume and mute edits apply to the pair. Right-click the
             clip to unlink.
           </p>
         )}
@@ -349,7 +356,18 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
             </div>
           </Section>
           <Separator />
+        </>
+      )}
 
+      {hasAudio && (
+        <>
+          <VolumeSection clip={clip} audioClip={audioClip} doc={doc} />
+          <Separator />
+        </>
+      )}
+
+      {isVisual && (
+        <>
           <Section title="Color grade">
             <div className="space-y-3">
               {GRADE_CONTROLS.map(({ key, label, min, max }) => {
@@ -465,65 +483,6 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                 and magenta. Both grade the preview and the export through one shared SVG matrix, so
                 what you see is what renders.
               </p>
-            </div>
-          </Section>
-          <Separator />
-        </>
-      )}
-
-      {hasAudio && (
-        <>
-          <Section title="Audio">
-            <div className="space-y-3">
-              <div>
-                <div className="mb-1.5 flex items-center justify-between">
-                  <Label htmlFor="gain" className="text-xs">
-                    Gain
-                  </Label>
-                  <span className="text-xs tabular-nums text-muted-foreground">
-                    {Math.round((audioClip.gain ?? 1) * 100)}%
-                  </span>
-                </div>
-                <NamedSlider
-                  id="gain"
-                  aria-label="Clip gain percent"
-                  value={[Math.round((audioClip.gain ?? 1) * 100)]}
-                  min={0}
-                  max={200}
-                  step={5}
-                  onValueChange={([v]) =>
-                    useEditorStore.getState().applyTransient({
-                      type: 'setClipGain',
-                      clipId: audioClip.id,
-                      gain: v / 100,
-                    })
-                  }
-                  onValueCommit={([v]) =>
-                    apply({
-                      type: 'setClipGain',
-                      clipId: audioClip.id,
-                      gain: v / 100,
-                    })
-                  }
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <Label htmlFor="mute" className="text-xs">
-                  Mute clip
-                </Label>
-                <Switch
-                  id="mute"
-                  aria-label="Mute clip"
-                  checked={!!audioClip.muted}
-                  onCheckedChange={(checked) =>
-                    apply({
-                      type: 'setClipMuted',
-                      clipId: audioClip.id,
-                      muted: checked,
-                    })
-                  }
-                />
-              </div>
             </div>
           </Section>
           <Separator />
@@ -764,6 +723,125 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
         )}
       </Section>
     </div>
+  )
+}
+
+/**
+ * The Clip tab's Volume summary (0.13.0): the current level in dB, mute, the
+ * static gain slider and the shared keyframe graph on the dB scale. It is a
+ * summary of the same `clip.keyframes.volume` curve Effect Controls edits, not
+ * a second mixer; there is no pan/EQ here. For a linked A/V pair the target is
+ * the audio twin, whichever half is selected.
+ */
+function VolumeSection({ clip, audioClip, doc }: { clip: Clip; audioClip: Clip; doc: Doc }) {
+  const apply = useEditorStore((s) => s.apply)
+  const playhead = useEditorStore((s) => s.playhead)
+  const local = Math.min(Math.max(0, playhead - audioClip.start), audioClip.duration)
+  const current = animatedValue(audioClip, 'volume', local)
+  const animated = (audioClip.keyframes?.volume?.length ?? 0) > 0
+  const linked = audioClip.id !== clip.id
+  const targetName = findMedia(doc, audioClip.mediaId)?.name ?? 'audio clip'
+
+  return (
+    <Section title="Volume">
+      <div data-testid="clip-volume-section" className="space-y-3">
+        {linked && (
+          <p
+            data-testid="volume-twin-target"
+            className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground"
+          >
+            <Link2 className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+            <span>
+              Editing the linked audio clip{' '}
+              <span className="font-medium text-foreground">{targetName}</span>.
+            </span>
+          </p>
+        )}
+
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">Current level</Label>
+          <span data-testid="clip-volume-db" className="text-xs tabular-nums text-muted-foreground">
+            {formatDb(current)}
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <Label htmlFor="mute" className="text-xs">
+            Mute clip
+          </Label>
+          <Switch
+            id="mute"
+            aria-label="Mute clip"
+            checked={!!audioClip.muted}
+            onCheckedChange={(checked) =>
+              apply({
+                type: 'setClipMuted',
+                clipId: audioClip.id,
+                muted: checked,
+              })
+            }
+          />
+        </div>
+
+        <div>
+          <div className="mb-1.5 flex items-center justify-between">
+            <Label htmlFor="gain" className="text-xs">
+              Gain
+            </Label>
+            <span data-testid="clip-gain-db" className="text-xs tabular-nums text-muted-foreground">
+              {formatDb(audioClip.gain ?? 1)}
+            </span>
+          </div>
+          <NamedSlider
+            id="gain"
+            // Keep the stable accessible name: the visible readout is dB, the
+            // thumb still moves through the linear 0..200% gain stops.
+            aria-label="Clip gain percent"
+            value={[Math.round((audioClip.gain ?? 1) * 100)]}
+            min={0}
+            max={200}
+            step={5}
+            onValueChange={([v]) =>
+              useEditorStore.getState().applyTransient({
+                type: 'setClipGain',
+                clipId: audioClip.id,
+                gain: v / 100,
+              })
+            }
+            onValueCommit={([v]) =>
+              apply({
+                type: 'setClipGain',
+                clipId: audioClip.id,
+                gain: v / 100,
+              })
+            }
+          />
+          <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+            {animated
+              ? 'A volume keyframe curve is active. The slider sets the fallback gain; drag the clip dots or edit Effect Controls to shape the curve.'
+              : 'Static gain. Double-click the volume line on the clip to add the first keyframe.'}
+          </p>
+        </div>
+
+        {animated ? (
+          <KeyframeGraph
+            clip={audioClip}
+            property="volume"
+            playheadLocal={local}
+            mirrored={false}
+            scale="db"
+          />
+        ) : (
+          <p
+            data-testid="volume-graph-empty"
+            className="rounded border border-dashed border-border px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground"
+          >
+            No volume keyframes yet. Add them in Effect Controls or double-click the volume line on
+            the timeline.
+          </p>
+        )}
+      </div>
+    </Section>
   )
 }
 

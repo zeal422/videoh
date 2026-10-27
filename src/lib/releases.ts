@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.13.0',
+    date: '2026-10-27',
+    highlights: [
+      'Audio clips draw a white volume envelope over the waveform: drag keyframe dots, double-click the line to add a point, Alt-click or Delete to remove one, and nudge with the arrow keys',
+      'The envelope stays on the clip that carries the sound: the audio twin of a linked pair, or a solo video with embedded audio; a muted clip dims but keeps its curve editable',
+      'The Clip tab replaces the linear Audio section with a dB Volume summary: current level, mute, static gain, and the same shared keyframe graph',
+      'Volume storage stays linear; the UI reads dB from -inf at the -60 dB floor to +6 dB, and the preview and export gain schedules read the same curve',
+      'One undo entry per drag, double-click add, and keyboard delete; auto-duck curves render and remain editable',
+    ],
+  },
+  {
     version: '0.12.0',
     date: '2026-10-27',
     highlights: [

@@ -20,7 +20,7 @@ const FEATURES = [
 ]
 
 const SCREENSHOT_ALT =
-  'The videoh editor showing sampled filmstrip thumbnails across video clips, an image clip, audio waveforms, a captions panel, and a multi-track timeline with the inspector'
+  'The videoh editor showing a color-bar video with filmstrip thumbnails, a multi-track timeline with a white volume envelope and keyframe dots over the music waveform, and the inspector dB volume graph'
 
 export function Hero() {
   return (

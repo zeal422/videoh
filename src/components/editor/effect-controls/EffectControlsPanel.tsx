@@ -59,6 +59,7 @@ import { AppliedEffectsSection } from '@/components/editor/effect-controls/Appli
 import { linkedAudioTwin } from '@/lib/editor/links'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
 import { frameToTime } from '@/lib/editor/time'
+import { dbToUnit, formatDb, gainToUnit, unitToGain } from '@/lib/editor/volume-automation'
 import type { Clip, Keyframe, KeyframeInterpolation } from '@/lib/editor/types'
 
 /**
@@ -232,7 +233,8 @@ function formatValue(property: KeyframeProperty, value: number): string {
     return `${Math.round(value * 100)}%`
   }
   if (property === 'scale' || property === 'timeScale') return `${value.toFixed(2)}×`
-  if (property === 'volume') return `${Math.round(value * 100)}%`
+  // Volume storage stays linear; only the readout is dB (see volume-automation).
+  if (property === 'volume') return formatDb(value)
   if (property === 'hue') return `${Math.round(value)}°`
   if (property === 'positionX' || property === 'positionY') return `${Math.round(value)} px`
   return value.toFixed(2)
@@ -531,6 +533,7 @@ function PropertyRow({
           property={property}
           playheadLocal={playheadLocal}
           mirrored={mirrored}
+          scale={property === 'volume' ? 'db' : 'linear'}
         />
       )}
     </div>
@@ -543,12 +546,18 @@ function KeyframeGraph({
   property,
   playheadLocal,
   mirrored,
+  scale = 'linear',
 }: {
   clip: Clip
   property: KeyframeProperty
   playheadLocal: number
   /** True for a reversed clip's `timeScale` row: the x axis is flipped. */
   mirrored: boolean
+  /**
+   * Y-axis mapping: stored values by default, dB for the volume row. Only the
+   * PRESENTATION changes; keyframe values stay linear in the doc.
+   */
+  scale?: 'linear' | 'db'
 }) {
   const apply = useEditorStore((s) => s.apply)
   // One frame in the project's frame grid: the keyboard nudge's unit.
@@ -656,6 +665,13 @@ function KeyframeGraph({
 
   const bounds = KEYFRAME_PROPERTY_BOUNDS[property]
   const span = Math.max(1e-6, bounds.max - bounds.min)
+  // The one y mapping every drawn point reads. Linear is the stored-value
+  // box; dB plots through the shared display domain so -6 dB sits where the
+  // volume automation shows it. The graph never writes this position back.
+  const percentForValue = (value: number) =>
+    scale === 'db'
+      ? gainToUnit(value) * 100
+      : Math.max(0, Math.min(100, ((value - bounds.min) / span) * 100))
 
   const at = axis(playheadLocal)
   // The active segment; the picker, the handles and `data-active-quad` share
@@ -668,7 +684,7 @@ function KeyframeGraph({
   // directly and the mirror lives in the segment's own box.
   const dotPoint = (k: Keyframe) => ({
     x: (Math.max(0, Math.min(clip.duration, axis(k.time))) / Math.max(1e-6, clip.duration)) * 100,
-    y: Math.max(0, Math.min(100, ((k.value - bounds.min) / span) * 100)),
+    y: percentForValue(k.value),
   })
   const fmt = (n: number) => n.toFixed(3)
 
@@ -678,6 +694,22 @@ function KeyframeGraph({
   // draw and the drag go through the one conversion the helper names.
   const segments = keyframes.slice(0, -1).map((a, i) => {
     const b = keyframes[i + 1]
+    const svg = (p: { x: number; y: number }) => `${fmt(p.x)},${fmt(100 - p.y)}`
+    if (scale === 'db') {
+      // A cubic drawn in value space is not the same curve in a non-linear dB
+      // space, so the dB row samples `animatedValue` and draws the real shape.
+      // A linear row keeps its exact cubic (and its easing handles below).
+      const samples = 24
+      const points: { x: number; y: number }[] = []
+      for (let s = 0; s <= samples; s++) {
+        const time = a.time + ((b.time - a.time) * s) / samples
+        const x =
+          (Math.max(0, Math.min(clip.duration, axis(time))) / Math.max(1e-6, clip.duration)) * 100
+        points.push({ x, y: percentForValue(animatedValue(clip, property, time)) })
+      }
+      const d = points.map((p, j) => `${j === 0 ? 'M' : 'L'} ${svg(p)}`).join(' ')
+      return { i, d }
+    }
     const left = mirrored ? dotPoint(b) : dotPoint(a)
     const right = mirrored ? dotPoint(a) : dotPoint(b)
     const raw = segmentControls(a)
@@ -686,7 +718,6 @@ function KeyframeGraph({
       x: left.x + u * (right.x - left.x),
       y: left.y + v * (right.y - left.y),
     })
-    const svg = (p: { x: number; y: number }) => `${fmt(p.x)},${fmt(100 - p.y)}`
     const d = quad
       ? `M ${svg(left)} C ${svg(box(quad[0], quad[1]))} ${svg(box(quad[2], quad[3]))} ${svg(right)}`
       : `M ${svg(left)} L ${svg(right)}`
@@ -709,7 +740,12 @@ function KeyframeGraph({
           const right = mirrored ? dotPoint(a) : dotPoint(b)
           const point = (p: number) => ({
             x: left.x + quad[p * 2] * (right.x - left.x),
-            y: left.y + quad[p * 2 + 1] * (right.y - left.y),
+            // In dB the control point's VALUE is mapped through the display
+            // curve, so the handle sits on the same axis as the sampled path.
+            y:
+              scale === 'db'
+                ? percentForValue(a.value + quad[p * 2 + 1] * (b.value - a.value))
+                : left.y + quad[p * 2 + 1] * (right.y - left.y),
           })
           return {
             startIndex: activeStart,
@@ -755,7 +791,10 @@ function KeyframeGraph({
         x:
           (Math.max(0, Math.min(clip.duration, axis(k.time))) / Math.max(1e-6, clip.duration)) *
           100,
-        y: Math.max(0, Math.min(100, ((k.value - bounds.min) / span) * 100)),
+        y:
+          scale === 'db'
+            ? gainToUnit(k.value) * 100
+            : Math.max(0, Math.min(100, ((k.value - bounds.min) / span) * 100)),
       })
       const left = point(mirrored ? end : start)
       const right = point(mirrored ? start : end)
@@ -771,8 +810,18 @@ function KeyframeGraph({
       // the path draws through. Reading u off the whole strip would agree only
       // on a full-width segment and would jump the handle on every partial one.
       const u = Math.abs(spanX) < 1e-9 ? current.x : (uRow * 100 - left.x) / spanX
-      // A flat segment has no vertical box to read: keep the stored y.
-      const v = Math.abs(spanY) < 1e-9 ? current.y : (vRow * 100 - left.y) / spanY
+      // A flat segment has no vertical box to read: keep the stored y. In dB
+      // the pointer's position is converted back to a linear gain first, then
+      // normalized against the segment's stored values (the quad is stored in
+      // value space even though its handle is drawn in dB space).
+      const v =
+        scale === 'db'
+          ? Math.abs(end.value - start.value) < 1e-9
+            ? current.y
+            : (unitToGain(vRow) - start.value) / (end.value - start.value)
+          : Math.abs(spanY) < 1e-9
+            ? current.y
+            : (vRow * 100 - left.y) / spanY
       const nextQuad = withQuadHandle(raw, handleDrag.which, {
         x: mirrored ? 1 - u : u,
         y: mirrored ? 1 - v : v,
@@ -866,7 +915,9 @@ function KeyframeGraph({
       ref={wrapRef}
       data-testid={`kf-graph-${property}`}
       data-active-quad={active?.quadAttr}
-      className="relative h-10 w-full rounded border border-border bg-muted/30"
+      className={`relative w-full rounded border border-border bg-muted/30 ${
+        scale === 'db' ? 'h-20' : 'h-10'
+      }`}
       onKeyDown={swallowArrows}
     >
       <svg
@@ -894,6 +945,27 @@ function KeyframeGraph({
           />
         ))}
       </svg>
+      {scale === 'db' && (
+        <div
+          data-testid={`kf-axis-${property}`}
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 text-[7px] leading-none text-muted-foreground"
+        >
+          <span className="absolute bottom-0 left-1 rounded-sm bg-muted/70 px-0.5">-inf</span>
+          <span
+            className="absolute left-1 -translate-y-1/2 rounded-sm bg-muted/70 px-0.5"
+            style={{ bottom: `${dbToUnit(-6) * 100}%` }}
+          >
+            -6 dB
+          </span>
+          <span
+            className="absolute left-1 -translate-y-1/2 rounded-sm bg-muted/70 px-0.5"
+            style={{ bottom: `${dbToUnit(0) * 100}%` }}
+          >
+            0 dB
+          </span>
+        </div>
+      )}
       {active &&
         (['out', 'in'] as const).map((which) => {
           const pos = which === 'out' ? active.out : active.in
@@ -1261,4 +1333,4 @@ function SpeedSection({ clip }: { clip: Clip }) {
   )
 }
 
-export { PropertyRow as EffectControlsPropertyRow }
+export { KeyframeGraph, PropertyRow as EffectControlsPropertyRow }

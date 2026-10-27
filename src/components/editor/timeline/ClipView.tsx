@@ -50,12 +50,14 @@ import {
   resolveSelectionGroups,
 } from '@/lib/editor/links'
 import { currentTransientToken, isTransientActive, useEditorStore } from '@/lib/editor/store'
+import { clipCarriesSound } from '@/lib/editor/volume-automation'
 import type { Clip, Doc, MediaAsset, Track } from '@/lib/editor/types'
 import { toast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import { Waveform } from './Waveform'
 import { ClipMarkers } from './ClipMarkers'
 import { Filmstrip } from './Filmstrip'
+import { VolumeEnvelope } from './VolumeEnvelope'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -832,6 +834,20 @@ export function ClipView({
               widthPx={widthPx}
               height={height}
               muted={!!clip.muted}
+            />
+          )}
+
+          {/* volume automation: above the waveform, below the label and the
+              z-10 trim handles. Only the audible carrier of an A/V pair gets
+              one (a linked video half has none). The clip root is inset-y-1,
+              so its real height is `height - 8`. */}
+          {clipCarriesSound(doc, clip) && (
+            <VolumeEnvelope
+              clip={clip}
+              widthPx={widthPx}
+              height={height - 8}
+              selected={isSelected}
+              razorActive={activeTool === 'razor'}
             />
           )}
 

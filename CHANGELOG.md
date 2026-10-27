@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-10-27
+
+### Added
+
+- **On-clip volume envelope.** Audio-bearing clips draw a white dB curve above the waveform with a 12px hit target around each 6px dot. Drag a dot to change its time and gain, double-click the line to add a point at the interpolated value, Alt-click or press Delete/Backspace to remove one, and nudge time by a frame or gain by 0.5 dB from the keyboard. A drag starts only after 3px of screen movement and commits one undo entry; pointercancel restores the base document. The plot is inset 8px from the trim handles, the curve sits below the label and the z-10 trim handles, and empty clip space still selects, moves, and trims. The razor tool makes the whole envelope inert.
+- **The audible carrier owns the envelope.** A linked A/V pair shows it on the audio twin, never the silent video half. A solo video with embedded audio shows it, text and image clips do not, and a compound is checked through its referenced sequence. A muted clip dims the curve but keeps it editable so unmuting reveals the automation. A selected clip with no curve shows a flat line; an idle clip shows nothing.
+- **dB Clip tab.** The Clip tab's old linear `Audio` section becomes `Volume`: the current level at the playhead, mute, the static gain slider, and a compact graph using the shared `KeyframeGraph`. The Effect Controls volume row reads dB too. Storage stays linear 0..2; one pure mapping (`gainToDb`, `dbToGain`, `formatDb`, `dbToUnit`, `unitToGain`) serves both surfaces and the shared graph. The display domain is -60 dB to +6 dB, with `-inf dB` at or below the floor, and rounding happens only at display time.
+- **One graph, two surfaces.** `KeyframeGraph` is exported from `EffectControlsPanel.tsx` and imported by the Clip tab. A `scale` prop (`linear` default, `db` for volume) switches the y mapping and adds the `0 dB`, `-6 dB`, and `-inf` axis labels; the dB curve is sampled through `animatedValue` so eased segments draw their real shape.
+
+### Changed
+
+- **Volume presentation.** The Effect Controls volume readout, the Clip tab summaries, and the timeline envelope all show dB. The static gain slider keeps its linear 0..200% stops and its stable `aria-label="Clip gain percent"`, so the existing accessible name and render lock stay valid.
+- **Shared curve maths.** `volume-automation.ts` adds pure sampling, add/remove/move helpers that never mutate the clip, and `clipCarriesSound` for the envelope's carrier rule. A keyframe at exactly `clip.duration` is accepted and preserved; a drag past the end clamps to the duration with no epsilon subtraction.
+
+### Fixed
+
+- **First point on a static clip.** Double-clicking the line before any curve existed now seeds the first keyframe at the click time with the static gain. The earlier draft required an existing curve and silently did nothing.
+- **Silent video Volume section.** The Clip tab now follows the audible carrier through `clipCarriesSound` on `audioClip`, so a video with no audio probe or waveform peaks no longer shows a gain/mute section. A linked A/V pair still routes the section to its audio twin.
+- **No new automation store.** `Clip.keyframes.volume` remains the only curve. Preview and export still read `animatedValue(clip, 'volume', local)`, and auto-duck writes the same property.
+
+### Tests and docs
+
+- The suite moves to 84 files and 1,761 tests. `volume-automation.test.ts` covers dB conversion and formatting, the -60/+6 mapping, eased sampling, add/remove/move clamping and crossings, non-mutation, the carrier matrix, and the preview/export schedule agreement. `volume-envelope.render.test.tsx` covers the 3px threshold, one undo per drag, foreign commits, pointercancel, Alt removal, double-click add (including the first point), keyboard nudge/delete, crossing re-sort, trim-handle z-order, razor cutting, the linked-twin and solo-video carriers, the muted dim, the empty-space click, the auto-duck curve, the Clip tab targeting the twin, and the silent-video hide. `volume-envelope-ui.test.ts` pins the layering, pointer-event split, shared-graph import, and linear storage.
+- Coverage includes `volume-automation.ts`. Architecture, flows, design-system, structure, testing, the roadmap, and the README record the feature. The hero screenshot is a fresh 1600x1000 capture with the envelope and the dB graph visible.
+
 ## [0.12.0] - 2026-10-27
 
 ### Added

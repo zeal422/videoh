@@ -1,6 +1,6 @@
 # PLAN 04: Volume automation and the dB inspector
 
-Status: planned
+Status: implemented, awaiting commit
 Depends on: [PLAN 01](PLAN-01-REFERENCE-AND-SPEC.md), [PLAN 02](PLAN-02-GEOMETRY-AND-CHROME.md),
 [PLAN 03](PLAN-03-FILMSTRIPS.md)
 Release: `0.13.0`

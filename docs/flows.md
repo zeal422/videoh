@@ -227,6 +227,39 @@ Stable hooks used across flows and tests:
   same rule. `Select Track Clips` takes a whole lane and expands A/V link groups.
 - The inspector shows a "Linked with the audio clip…" hint and routes gain/mute to the twin.
 
+## Volume automation
+
+- Volume is one existing keyframe curve, `clip.keyframes.volume`, evaluated by `animatedValue`. The
+  envelope, the Effect Controls volume row, the Clip tab summary, and the shared graph are four views
+  of that same data. There is no second automation store and no new keyframe property.
+- The envelope appears on the clip that carries the sound. For a linked A/V pair that is the audio
+  twin; the video half stays clean. A solo video with embedded audio shows it, while text, image, and
+  compound clips without sound do not (a compound is checked through its sequence). A muted clip keeps
+  its curve and dims it, so unmuting reveals the same automation.
+- The curve is a white line above the waveform and below the label and trim handles. It samples
+  `animatedValue` every ~2px, so an eased segment draws its real shape. A selected clip with no curve
+  shows a flat line; an idle clip shows nothing. The plot is inset 8px from the trim handles, and each
+  visible 6px dot sits inside a 12px hit target.
+- A press on a dot starts no transient until the pointer moves 3px in screen space. A shorter
+  press/release is a click. Once the threshold is crossed, vertical movement edits gain in dB
+  (converted back to linear and clamped 0..2), horizontal movement edits time (clamped to
+  `clip.duration`), a crossing re-sorts the array while the grabbed point follows the pointer, and the
+  release commits one undo entry. A foreign commit ends the gesture; pointercancel restores the base
+  document.
+- Double-clicking the line adds a point at the interpolated value (the first point seeds the curve at
+  the click time with the static gain). Alt-click removes a dot on release while under the threshold;
+  a moved Alt-press neither removes nor drags. Delete/Backspace on a focused dot removes it, Left/Right
+  nudge one frame, and Up/Down change gain by 0.5 dB. The razor tool makes the whole envelope inert so
+  a razor click still cuts.
+- The Clip tab replaces the old linear Audio section with a dB Volume summary: the current level at
+  the playhead, mute, the static gain slider, and the shared `KeyframeGraph` on the dB scale. A
+  selected video half targets its linked twin and labels which clip is being edited. The Effect
+  Controls volume row uses the same dB readout and graph.
+- Storage stays linear. The display domain runs from -60 dB to +6 dB, a gain at or below -60 dB plots
+  at the floor and reads `-inf dB`, and rounding happens only in the formatter. The preview mixer and
+  the export schedule still read `animatedValue(clip, 'volume', local)`, so an edit changes the same
+  curve the engines play.
+
 ## Markers
 
 - `M` adds a marker: with a primary selected clip it lands on that clip in **source seconds**,
