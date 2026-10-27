@@ -179,7 +179,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
           icon={<Redo2 className="size-4" />}
         />
 
-        <Separator orientation="vertical" className="mx-1 h-6" />
+        <Separator orientation="vertical" className="mx-0.5 h-6" />
 
         {/* Tools (Premiere: V selection / C razor) */}
         <ToolButton
@@ -195,7 +195,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
           icon={<Slice className="size-4" />}
         />
 
-        <Separator orientation="vertical" className="mx-1 h-6" />
+        <Separator orientation="vertical" className="mx-0.5 h-6" />
 
         {/* Placement mode (Premiere-style Place / Insert / Overwrite). Sticky
             and session-only; `,`/`.` are independent one-shot insert/overwrite
@@ -231,7 +231,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
           ))}
         </div>
 
-        <Separator orientation="vertical" className="mx-1 h-6" />
+        <Separator orientation="vertical" className="mx-0.5 h-6" />
 
         {/* Edit tools */}
         <ToolButton
@@ -253,7 +253,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
           icon={<Trash2 className="size-4" />}
         />
 
-        <Separator orientation="vertical" className="mx-1 h-6" />
+        <Separator orientation="vertical" className="mx-0.5 h-6" />
 
         {/* Add material */}
         <div className="flex items-center">
@@ -308,7 +308,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
           <Tooltip>
             <TooltipTrigger asChild>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" aria-label="Add track">
+                <Button variant="ghost" size="icon" aria-label="Add track" className="size-8">
                   <Plus className="size-4" />
                 </Button>
               </DropdownMenuTrigger>
@@ -328,7 +328,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <Separator orientation="vertical" className="mx-1 h-6" />
+        <Separator orientation="vertical" className="mx-0.5 h-6" />
 
         {/* Snap + zoom */}
         <ToolButton
@@ -394,7 +394,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
           ) : (
             <MonitorPlay className="size-4" />
           )}
-          <span className="hidden lg:inline">Export</span>
+          <span className="hidden xl:inline">Export</span>
         </Button>
       </header>
     </TooltipProvider>
@@ -430,7 +430,7 @@ function ToolButton({
           aria-label={label}
           onClick={onClick}
           disabled={disabled}
-          className={active ? 'bg-accent text-accent-foreground' : undefined}
+          className={active ? 'size-8 bg-accent text-accent-foreground' : 'size-8'}
         >
           {icon}
         </Button>

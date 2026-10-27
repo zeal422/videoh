@@ -123,6 +123,6 @@ describe('toolbar tooltip and placement locks', () => {
     expect(placementGroup).toContain('shrink-0')
     expect(toolbarSource).toMatch(/overflow-x-auto/)
     expect(toolbarSource).toMatch(/aria-label="Export"/)
-    expect(toolbarSource).toMatch(/hidden lg:inline/)
+    expect(toolbarSource).toMatch(/hidden xl:inline/)
   })
 })

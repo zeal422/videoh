@@ -15,7 +15,6 @@ import {
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { toast } from '@/hooks/use-toast'
 
 import { importFile } from '@/lib/editor/media/probe'
@@ -251,7 +250,7 @@ function MediaItem({
         e.dataTransfer.effectAllowed = 'copy'
       }}
     >
-      <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded bg-muted">
+      <div className="flex h-10 w-16 shrink-0 items-center justify-center overflow-hidden rounded bg-muted">
         {asset.thumbnail ? (
           <img src={asset.thumbnail} alt="" className="size-full object-cover" />
         ) : (
@@ -262,26 +261,21 @@ function MediaItem({
         <p className="truncate text-xs font-medium" title={asset.name}>
           {asset.name}
         </p>
-        <div className="mt-0.5 flex items-center gap-1">
-          <Badge variant="outline" className="px-1 py-0 text-[10px] uppercase">
-            {asset.kind}
-          </Badge>
+        <div className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
+          <span className="uppercase">{asset.kind}</span>
+          <span aria-hidden>·</span>
           {asset.missing ? (
-            <span className="text-[10px] text-amber-500">offline</span>
+            <span className="text-amber-500">offline</span>
           ) : (
-            <span className="text-[10px] text-muted-foreground">
+            <span>
               {asset.kind === 'image'
                 ? `${asset.width}×${asset.height}`
                 : `${asset.duration.toFixed(1)}s`}
             </span>
           )}
-          {proxy?.status === 'ready' && <span className="text-[10px] text-emerald-500">proxy</span>}
-          {proxy?.status === 'building' && (
-            <span className="text-[10px] text-muted-foreground">proxy…</span>
-          )}
-          {proxy?.status === 'failed' && (
-            <span className="text-[10px] text-destructive">proxy failed</span>
-          )}
+          {proxy?.status === 'ready' && <span className="text-emerald-500">proxy</span>}
+          {proxy?.status === 'building' && <span>proxy…</span>}
+          {proxy?.status === 'failed' && <span className="text-destructive">proxy failed</span>}
         </div>
       </div>
       <div className="flex shrink-0 flex-col gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">

@@ -346,7 +346,7 @@ The pure state modules run in a plain Node environment with no browser. The brow
 
 The public site at `/` is a server-rendered hero and information page. It shares the editor's dark tokens but never imports the editor store or browser engines. `/editor` is the client-only editor boot. The public pages live under `src/app/(site)`. The sitemap and social image are route files in `src/app`, and the site constants live in `src/lib/seo.ts`.
 
-Current state: **1603 tests across 77 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the Node-testable state modules. `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **1632 tests across 78 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the Node-testable state modules. `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -444,7 +444,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 77 test files (1603 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+│   └── __tests__/               # 78 test files (1632 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ├── app/
 │   ├── (site)/                  # public hero, About, Privacy, Terms, Contact, site layout
 │   ├── editor/page.tsx          # server wrapper with noindex metadata around EditorBoot

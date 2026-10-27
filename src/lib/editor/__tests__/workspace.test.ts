@@ -82,6 +82,17 @@ describe('defaults and catalog', () => {
       expect(b.min).toBeLessThan(b.max)
     }
   })
+
+  it('defaults to the reference panel shares', () => {
+    // Media is a share of the media+preview upper row; inspector and timeline
+    // are root/left-workspace shares. 32% of the 74% upper row is about 24% of
+    // the full viewport.
+    expect(PANEL_BOUNDS.media.default).toBe(32)
+    expect(PANEL_BOUNDS.inspector.default).toBe(26)
+    expect(PANEL_BOUNDS.timeline.default).toBe(50)
+    expect(defaultWorkspace().sizes.media).toBe(32)
+    expect(defaultWorkspace().sizes.timeline).toBe(50)
+  })
 })
 
 describe('immutable update helpers', () => {

@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 
 import { TimelinePanel, TRACK_HEADER_WIDTH } from '@/components/editor/timeline/TimelinePanel'
@@ -89,6 +91,111 @@ describe('TimelinePanel render', () => {
     render(<TimelinePanel />)
     // createDoc ships starter lanes; they must be visible without any clips.
     expect(document.querySelectorAll('[data-lane-id]').length).toBeGreaterThan(0)
+  })
+})
+
+describe('timeline geometry contract', () => {
+  const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8')
+
+  function threeKindDoc(): Doc {
+    return {
+      project: {
+        tracks: [createTrack('video', 1), createTrack('audio', 1), createTrack('text', 1)],
+        id: 'p_geometry',
+        name: 'geometry',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      },
+      media: [],
+    }
+  }
+
+  it('renders 44/40/36px rows and the 168px header', () => {
+    useEditorStore.setState({ doc: threeKindDoc() })
+    render(<TimelinePanel />)
+
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-track-row]'))
+    expect(rows.map((row) => row.style.height)).toEqual(['44px', '40px', '36px'])
+    for (const row of rows) {
+      expect(row.querySelector<HTMLElement>('[data-testid^="track-header-"]')?.style.width).toBe(
+        '168px',
+      )
+    }
+    expect(TRACK_HEADER_WIDTH).toBe(168)
+  })
+
+  it('locks the geometry constants in source', () => {
+    const timeline = read('src/components/editor/timeline/TimelinePanel.tsx')
+    expect(timeline).toMatch(/video:\s*44,/)
+    expect(timeline).toMatch(/audio:\s*40,/)
+    expect(timeline).toMatch(/text:\s*36,/)
+    const constants = read('src/lib/editor/constants.ts')
+    expect(constants).toContain('TRACK_HEADER_WIDTH = 168')
+  })
+
+  it('draws padded whole-second ruler labels and skips fractional majors', () => {
+    const first = render(
+      <Ruler
+        width={800}
+        pxPerSec={80}
+        onScrubStart={() => {}}
+        onScrub={() => {}}
+        onScrubEnd={() => {}}
+      />,
+    )
+    const canvas = document.querySelector('canvas') as HTMLCanvasElement & {
+      __fakeCtx?: { calls: { op: string; args: unknown[] }[] }
+    }
+    const labels =
+      canvas.__fakeCtx?.calls
+        .filter((call) => call.op === 'fillText')
+        .map((call) => call.args[0]) ?? []
+    expect(labels).toContain('00:00')
+    expect(labels).toContain('00:01')
+    expect(labels).toContain('00:10')
+    expect(labels.some((label) => String(label).includes('.'))).toBe(false)
+    first.unmount()
+
+    // At 800 px/s the major step is 0.1s. The formatter prints whole seconds,
+    // so every fractional tick must keep its line but skip its label.
+    render(
+      <Ruler
+        width={800}
+        pxPerSec={800}
+        onScrubStart={() => {}}
+        onScrub={() => {}}
+        onScrubEnd={() => {}}
+      />,
+    )
+    const fineCanvas = document.querySelector('canvas') as HTMLCanvasElement & {
+      __fakeCtx?: { calls: { op: string; args: unknown[] }[] }
+    }
+    const fineLabels =
+      fineCanvas.__fakeCtx?.calls
+        .filter((call) => call.op === 'fillText')
+        .map((call) => String(call.args[0])) ?? []
+    expect(fineLabels).toEqual(['00:00', '00:01'])
+    expect(new Set(fineLabels).size).toBe(fineLabels.length)
+  })
+
+  it('uses the ruler formatter only in the ruler and the transport formatter only in the transport', () => {
+    const ruler = read('src/components/editor/timeline/Ruler.tsx')
+    expect(ruler).toContain('formatRulerTime(')
+    expect(ruler).not.toContain('formatTime(')
+    const preview = read('src/components/editor/PreviewPanel.tsx')
+    expect(preview).toContain('formatTransportTime(')
+    expect(preview).not.toContain('formatTime(')
+    for (const path of [
+      'src/components/editor/StatusBar.tsx',
+      'src/components/editor/InspectorPanel.tsx',
+      'src/components/editor/ExportDialog.tsx',
+      'src/components/editor/timeline/MarkerDialog.tsx',
+    ]) {
+      const src = read(path)
+      expect(src).not.toContain('formatTransportTime')
+      expect(src).not.toContain('formatRulerTime')
+    }
   })
 })
 

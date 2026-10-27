@@ -1,6 +1,6 @@
 # PLAN 02: Geometry and chrome
 
-Status: planned
+Status: implemented, awaiting commit
 Depends on: [PLAN 01](PLAN-01-REFERENCE-AND-SPEC.md)
 Release: internal commit, no version bump
 Goal: make the editor frame, panel proportions, track rows, media cards, and status bar match the
@@ -174,6 +174,11 @@ Rules:
 - Do not add ripple, slip, or Pen icons yet. Plan 06 adds them with their behavior.
 - Use the same button height and icon size throughout. Do not create a second toolbar style.
 
+Implemented density: tool buttons and the add-track icon are 32px (`size-8`), group separators use
+`mx-0.5`, and the Export label appears at `xl` and above. At 1024 the project-name input keeps its
+full text at 192px and the toolbar does not overflow; the status bar carries the full project name at
+every width.
+
 ## 5. Media bin cards
 
 The reference uses a wider card with a larger thumbnail. Use the existing `asset.thumbnail`, which
@@ -328,6 +333,47 @@ Flakiness controls:
 - The screenshots are region checks, not pixel diffs.
 - If a height or width change breaks a test, fix the math or the test's intent. Do not relax the
   assertion.
+
+## Implementation record
+
+Implemented on 2026-10-27 on `updates`, uncommitted.
+
+Measured at 1600x1000 with `e2e/fixtures/editor-parity.veproj.json`, Source and Captions hidden:
+
+| Region          | Measurement                                                                                 |
+| --------------- | ------------------------------------------------------------------------------------------- |
+| Media           | 376x443 at x=0, 23.5% of the viewport                                                       |
+| Program Monitor | 798x443 beside it                                                                           |
+| Inspector       | 414x892 at x=1186, full height, 25.9% of the viewport                                       |
+| Timeline        | 1180x443 at x=0, y=529, spanning under media and ending at the inspector                    |
+| Track rows      | 44, 44, 44, 44, 44, 40, 40, 40, 40 px                                                       |
+| Track header    | 168px                                                                                       |
+| Media thumbnail | 64x40 CSS px                                                                                |
+| Transport       | `00:02.7 / 00:18.0`                                                                         |
+| Status bar      | `Selected clip 00:00–00:04.2 (4.2s)` and `5 video tracks · 4 audio tracks`, no px/s or undo |
+
+Responsive checks: 1280x800 keeps the counts visible and fits the toolbar; 1024x768 hides the track
+counts, keeps the full project name in a 192px input, and makes Export icon-only; 390x844 keeps the
+compact layout, hides the wordmark and track counts, and redraws the preview after the playhead is
+reasserted. Collapsing media, source, and inspector shows their strips, expanding restores them, and
+Reset Workspace Layout restores media 32, inspector 26, timeline 50. Reset also unhides panels,
+which is existing workspace behavior, so the demo hide is re-applied after a reset.
+
+The 15-step prefix battery passed 15/15, including both f10 marker steps. The panel-tree move
+shortened the media panel, so two battery steps now scroll their media targets into view before
+clicking: `f01b` scrolls to Remove, and `f02_add` scrolls to each card's Add button. The counts use
+DOM queries rather than visible-only accessibility refs. Both battery scripts carry the same change.
+
+`bun run check` is green: 78 test files, 1,632 tests, 11 routes, production build. The console is
+clean at every width.
+
+Review fixes: upper-row sizes are not persisted while the preview is hidden, so its removal cannot
+overwrite media/source with the forced/normalized values; the ruler labels only whole-second ticks;
+and the transport, range, and duration formatters derive integer tenths from the clamped total, so
+2.3, 10.1, and 59.9 no longer drop a tenth. Tests cover all three. The panel guard is a static source
+lock because `react-resizable-panels` never fires `onLayout` in jsdom; the browser proof verifies the
+runtime behavior (saved sizes stayed 32/24 while the preview was hidden and restored to 32/24 on
+return).
 
 ## Acceptance criteria
 

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
-import { formatTime, rulerStep } from '@/lib/editor/time'
+import { formatRulerTime, rulerStep } from '@/lib/editor/time'
 
 /**
  * Time ruler: canvas-drawn ticks + labels, doubles as the scrub surface
@@ -70,7 +70,12 @@ export function Ruler({
       const x = Math.round(t * pxPerSec) + 0.5
       ctx.moveTo(x, 12)
       ctx.lineTo(x, 28)
-      ctx.fillText(formatTime(t), x + 3, 2)
+      // A step can be fractional (0.5, 0.25, 0.1 at high zoom) while the label
+      // formatter only prints whole seconds. Draw every major tick, but label
+      // only whole seconds so a 0.5s tick cannot repeat the previous label.
+      if (Math.abs(t - Math.round(t)) < 1e-6) {
+        ctx.fillText(formatRulerTime(Math.round(t)), x + 3, 2)
+      }
     }
     ctx.stroke()
   }, [width, pxPerSec])

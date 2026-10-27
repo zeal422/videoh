@@ -77,7 +77,7 @@ export const FPS_MIN = 1
 export const FPS_MAX = 60
 
 /** Sticky track-header column width in the timeline (px). */
-export const TRACK_HEADER_WIDTH = 160
+export const TRACK_HEADER_WIDTH = 168
 
 /** Frames stepped by Shift+← / Shift+→ (Premiere default). */
 export const FRAME_STEPS = 5

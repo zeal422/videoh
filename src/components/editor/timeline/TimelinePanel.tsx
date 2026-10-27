@@ -70,9 +70,9 @@ import { cn } from '@/lib/utils'
 export { TRACK_HEADER_WIDTH }
 
 const TRACK_HEIGHT: Record<TrackKind, number> = {
-  video: 64,
-  audio: 56,
-  text: 44,
+  video: 44,
+  audio: 40,
+  text: 36,
 }
 const RULER_HEIGHT = 28
 const TAIL_PADDING_SEC = 20
@@ -1036,7 +1036,6 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
               {track.name}
             </span>
           )}
-          <span className="text-[10px] text-muted-foreground">{track.clips.length}</span>
           {track.kind !== 'audio' && (
             <Button
               variant="ghost"

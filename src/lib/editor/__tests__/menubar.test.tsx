@@ -92,6 +92,24 @@ describe('menubar version label', () => {
     expect(label).toBe(right.lastElementChild)
     expect(menubar).not.toContainElement(button)
   })
+
+  it('renders the videoh wordmark as a link outside the menubar', () => {
+    render(
+      <MenuBar onOpenExport={() => {}} onResetLayout={() => {}} onOpenReleaseNotes={() => {}} />,
+    )
+    const wordmark = screen.getByTestId('editor-wordmark')
+    const menubar = screen.getByRole('menubar')
+    expect(wordmark.tagName).toBe('A')
+    expect(wordmark).toHaveAttribute('href', '/')
+    expect(wordmark).toHaveTextContent('videoh')
+    expect(menubar).not.toContainElement(wordmark)
+    expect(wordmark.className).toContain('hidden')
+    expect(wordmark.className).toContain('md:inline-flex')
+    const src = read('src/components/editor/MenuBar.tsx')
+    expect(src.indexOf('editor-wordmark')).toBeLessThan(
+      src.indexOf('aria-label="Application menu"'),
+    )
+  })
 })
 
 /**

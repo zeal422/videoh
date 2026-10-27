@@ -15,7 +15,7 @@ import { NamedSlider } from '@/components/editor/NamedSlider'
 import { Button } from '@/components/ui/button'
 import { activeSequenceDuration, findClip } from '@/lib/editor/factories'
 import { offlineMediaAt } from '@/lib/editor/offline'
-import { formatTime } from '@/lib/editor/time'
+import { formatTransportTime } from '@/lib/editor/time'
 import { attachPreviewEngine, detachPreviewEngine } from '@/lib/editor/playback/preview'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { clamp01, measureTextBox } from '@/lib/editor/playback/text-box'
@@ -348,7 +348,8 @@ export function PreviewPanel() {
           className="ml-3 whitespace-nowrap font-mono text-xs text-zinc-300"
           data-testid="time-display"
         >
-          {formatTime(playhead)} <span className="text-zinc-500">/ {formatTime(duration)}</span>
+          {formatTransportTime(playhead)}{' '}
+          <span className="text-zinc-500">/ {formatTransportTime(duration)}</span>
         </div>
 
         <div className="ml-4 hidden items-center gap-2 @lg:flex">

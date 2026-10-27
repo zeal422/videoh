@@ -147,12 +147,11 @@ them:
   back to a fixed stacked layout. Panel sizes, collapsed state, and visibility persist via
   `workspace.ts`.
 - **The Source monitor is one of the six workspace panels** (`panel-source`, the upper row is
-  `source | preview | inspector`), built exactly like the inspector: a `PanelShell` plus a
-  `HandleWithReset` inside the upper `ResizablePanelGroup`. The Source Monitor sits FIRST, not in the
-  middle: in a shared row a collapsible panel's freed space can only flow into the panel to its right,
-  so a collapsible panel placed first flows into the unbounded Program Monitor and always collapses
-  cleanly, while one placed in the middle depends on its neighbour's headroom and can refuse. It
-  follows the flex-chain rule above.
+  `media | source | preview`), built exactly like the inspector: a `PanelShell` plus a
+  `HandleWithReset` inside the upper `ResizablePanelGroup`. The Source Monitor sits before the
+  Program Monitor: in a shared row a collapsible panel's freed space flows into the panel to its
+  right, so it collapses into the unbounded Program Monitor instead of depending on a neighbour's
+  headroom. It follows the flex-chain rule above.
   Its root is `flex min-h-0 flex-1 flex-col`, the preview host is `aspect-video shrink-0`, and the
   transport/marks rows sit under it. Desktop-only: the mobile `CompactLayout` mounts no workspace
   panels. Empty state is muted text ("No source selected"); the marked-span readout turns
@@ -160,18 +159,40 @@ them:
   singleton `<video data-testid="source-preview">`; a still renders as
   `<img data-testid="source-image">` inside the same `aspect-video` black host instead, because a
   `<video>` cannot decode a PNG (left alone it showed a black box with a demuxer error).
-- **The bottom row is timeline plus captions.** The Captions panel docks to the
-  right of the timeline (`panel-captions`, `side="bottom"`, same flex chain as
-  every other panel). The timeline fills the horizontal remainder with no
-  stored width (like the Program Monitor upstairs); only the captions width
-  persists, while `sizes.timeline` keeps meaning the bottom group's vertical
-  share. It follows the flex-chain rule above.
+- **The bottom row is timeline plus captions, inside the left workspace.** The Captions panel docks
+  to the right of the timeline (`panel-captions`, `side="bottom"`, same flex chain as every other
+  panel). The timeline fills the horizontal remainder with no stored width (like the Program Monitor
+  upstairs); only the captions width persists, while `sizes.timeline` keeps meaning the bottom
+  group's vertical share. The root right column is the inspector, full height, so the timeline can
+  span under the media panel and end at the inspector edge. It follows the flex-chain rule above.
+- **Reference geometry.** The desktop panel tree is `(media | source | preview) over (timeline |
+captions)` on the left, with the inspector as a full-height right column. Panel defaults are
+  `PANEL_BOUNDS` shares of their own group: media 32 (about 24% of the full viewport beside the 26%
+  inspector), source 24, inspector 26 (root), timeline 50 (left workspace height), captions 24.
+  Track rows are 44px video, 40px audio, and 36px text, with a 168px sticky header. The header holds
+  the kind icon, name, visibility eye (video/text), and mute toggle at 24px hit targets; the clip
+  count and a header target button are deliberately absent (targeting lives in the context menu).
+- **Editor wordmark.** A compact `videoh` link sits before the File menu, outside `role="menubar"`,
+  and points at `/`. It hides below `md` so the File through Help triggers keep their room; the
+  full-screen button and version stay pinned at the right edge.
+- **Media cards.** The thumbnail is 64x40 (`h-10 w-16`, `object-cover`) from the existing 160px JPEG,
+  followed by the truncated file name and one muted line with kind and duration or dimensions plus
+  proxy state. The selected ring, offline styling, and hover actions (add, remove, proxy, relink)
+  stay unchanged.
+- **Status bar.** The left side shows the project name, resolution and fps, and the compact timeline
+  duration. The right side shows the multi-selection count or the single-clip range
+  (`00:00–00:04.2` with an en dash) plus its duration (`4.2s`), video and audio track counts for the
+  active sequence (text tracks omitted, `hidden xl:inline`), and the always-visible autosave
+  indicator. `px/s` and undo-step counts are debug data and stay out of the footer.
+- **Time formats.** The transport uses padded total minutes (`00:02.7`, `61:01.2`); the ruler uses
+  padded `mm:ss` under an hour and `h:mm:ss` at or over it. Everything else (status duration,
+  inspector, markers, tooltips, export dialog) keeps the compact `formatTime` form.
 - **The placement-mode control is a segmented group, not three tool buttons.** It renders as one
   `role="group" aria-label="Placement mode"` bordered box with three square-cornered `Button`s
   (`placement-mode-place|insert|overwrite`); the active one takes `variant="secondary"` and
   `aria-pressed="true"`, the others stay `ghost`. It is session-only state, so the control never
   implies persistence, and the one-shot `,` / `.` keys work regardless of the toggle. The group is
-  `shrink-0`; below 1024 px Export is icon-only and the toolbar scrolls horizontally when needed, so
+  `shrink-0`; below 1280 px Export is icon-only and the toolbar scrolls horizontally when needed, so
   Overwrite never clips.
 - **Toolbar tooltips open below.** Every custom toolbar tooltip sets `side="bottom"` on its content,
   so the bubble stays clear of the menu bar and uses the room under the top toolbar. Panel-header

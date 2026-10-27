@@ -357,7 +357,16 @@ f01_import() {
 
 # ————— F2 quick-add —————
 f02_add() {
-  for r in $(refs 'Add to timeline'); do ab click "@$r" >/dev/null 2>&1; sleep 0.4; done
+  local ids id
+  # The reference panel tree puts the media bin in the upper row, so at the
+  # battery's short default viewport the lower cards are below the fold. Scroll
+  # each card into view before clicking its real quick-add button.
+  ids=$(evaln '[...document.querySelectorAll("[data-testid^=media-item-]")].map((e) => e.dataset.testid).join(" ")')
+  for id in $ids; do
+    ab scrollintoview "[data-testid=$id]" >/dev/null 2>&1
+    ab click "[data-testid=$id] button[aria-label=\"Add to timeline\"]" >/dev/null 2>&1
+    sleep 0.4
+  done
   sleep 0.5
   [ "$(clipcount)" -ge 3 ]
 }
@@ -556,7 +565,7 @@ between() { awk -v t="$1" -v lo="$2" -v hi="$3" 'BEGIN { exit !(t > lo && t < hi
 time_display_is() {
   evaln "document.querySelector('[data-testid=time-display]').innerText.trim().startsWith('$1')"
 }
-# Playhead seconds from the transport readout ("m:ss.s / ..."), "" when unreadable.
+# Playhead seconds from the transport readout ("mm:ss.s / ..."), "" when unreadable.
 playhead_seconds() {
   local t
   t=$(evaln "document.querySelector('[data-testid=time-display]').innerText")
@@ -580,13 +589,13 @@ f10_markers_sequence() {
   # Shift+M from the start and Ctrl+Shift+M from the end both land on the marker.
   ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
   ab press Shift+m >/dev/null 2>&1 && sleeps 0.4
-  [ "$(time_display_is '0:01.')" = "true" ] || {
+  [ "$(time_display_is '00:01.')" = "true" ] || {
     echo "f10: Shift+M did not land on the marker" >&2
     return 1
   }
   ab find role button click --name 'Go to end (End)' >/dev/null && sleeps 0.4
   ab press Control+Shift+m >/dev/null 2>&1 && sleeps 0.4
-  [ "$(time_display_is '0:01.')" = "true" ] || {
+  [ "$(time_display_is '00:01.')" = "true" ] || {
     echo "f10: Ctrl+Shift+M did not land on the marker" >&2
     return 1
   }
@@ -723,7 +732,7 @@ f01b_import_real_file() {
   }
   sleep 2.5
   rm -f "$png"
-  [ "$(ab get count '[aria-label="Add to timeline"]')" = "4" ] || return 1
+  [ "$(evaln 'document.querySelectorAll("[aria-label=\"Add to timeline\"]").length')" = "4" ] || return 1
   # Remove the throwaway again: only the bundled samples can re-hydrate after a
   # project roundtrip, so this asset would come back OFFLINE, and one offline
   # asset in the bin disables the export dialog's Start button
@@ -737,6 +746,7 @@ f01b_import_real_file() {
     return el ? el.getAttribute("data-testid") : "none";
   })()')
   [ "$item" != "none" ] || { echo "f01b: the imported pixel is not in the bin" >&2; return 1; }
+  ab scrollintoview "[data-testid=$item]" >/dev/null 2>&1
   ab click "[data-testid=$item] button[aria-label=\"Remove from bin\"]" >/dev/null 2>&1
   sleeps 0.5
   [ "$(ab get count '[aria-label="Add to timeline"]')" = "3" ]

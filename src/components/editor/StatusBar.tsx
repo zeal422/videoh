@@ -2,23 +2,27 @@
 
 import { Check, CloudOff, Loader2 } from 'lucide-react'
 import { useEditorStore } from '@/lib/editor/store'
-import { activeSequenceDuration, findClip } from '@/lib/editor/factories'
-import { formatTime } from '@/lib/editor/time'
+import { activeSequenceDuration, activeTracks, findClip } from '@/lib/editor/factories'
+import { formatDurationSeconds, formatRangeTime, formatTime } from '@/lib/editor/time'
 
 /** Bottom status bar — always pinned to the viewport bottom (app-shell footer). */
 export function StatusBar() {
   const project = useEditorStore((s) => s.doc.project)
   const doc = useEditorStore((s) => s.doc)
+  const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
   const duration = useEditorStore((s) => activeSequenceDuration(s.doc, s.activeSequencePath))
   const autosaveStatus = useEditorStore((s) => s.autosaveStatus)
   const autosavedAt = useEditorStore((s) => s.autosavedAt)
   const selections = useEditorStore((s) => s.selections)
-  const pxPerSec = useEditorStore((s) => s.pxPerSec)
-  const past = useEditorStore((s) => s.past)
   const clock = autosavedAt ? new Date(autosavedAt).toLocaleTimeString() : ''
 
   const primary = selections[0]
   const selected = primary != null ? findClip(doc, primary)?.clip : undefined
+  const tracks = activeTracks(doc, activeSequencePath)
+  const videoCount = tracks.filter((t) => t.kind === 'video').length
+  const audioCount = tracks.filter((t) => t.kind === 'audio').length
+  const countLabel = (count: number, kind: string) =>
+    `${count} ${kind} track${count === 1 ? '' : 's'}`
 
   return (
     <footer
@@ -42,14 +46,16 @@ export function StatusBar() {
         {selections.length > 1 && (
           <span className="font-medium text-foreground/80">{selections.length} clips selected</span>
         )}
-        {selected && (
-          <span className="hidden md:inline">
-            Selected clip {formatTime(selected.start)}–
-            {formatTime(selected.start + selected.duration)}
+        {selections.length === 1 && selected && (
+          <span className="hidden md:inline" data-testid="status-selection">
+            Selected clip {formatRangeTime(selected.start)}–
+            {formatRangeTime(selected.start + selected.duration)} (
+            {formatDurationSeconds(selected.duration)})
           </span>
         )}
-        <span className="hidden lg:inline">{Math.round(pxPerSec)} px/s</span>
-        <span className="hidden lg:inline">{past.length} undo steps</span>
+        <span className="hidden xl:inline" data-testid="status-track-counts">
+          {countLabel(videoCount, 'video')} · {countLabel(audioCount, 'audio')}
+        </span>
         <AutosaveIndicator status={autosaveStatus} clock={clock} />
       </div>
     </footer>

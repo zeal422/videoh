@@ -362,3 +362,15 @@ Action: kept as a note; presence locks are separate assertions, and the lock tes
 What happened: `analytics.ts` stored one `queueStartedAt` and dropped the whole queue after five seconds, so an event queued at 4.9 seconds could be discarded 0.1 seconds later.
 Would-have-caught: reviewing every bounded queue against the documented promise, and testing a late arrival before accepting the single-timestamp implementation.
 Action: kept as a note; bounded retries store the deadline or enqueue time on each item, and the late-arrival test proves an older event expires without killing a newer one.
+
+## 2026-10-27 - the panel-tree move hid media actions from the battery
+
+What happened: moving the media panel into the upper row halved its height. At the battery's default 1280x577 viewport the lower media cards fell below the fold, so the visible-only accessibility refs in `f02_add` skipped the image, `f01b` could not scroll to its Remove button, and the prefix run failed even though the desktop grid was correct.
+Would-have-caught: running the prefix battery immediately after the panel-tree change, then auditing every battery step that clicks a media-bin target by snapshot ref instead of assuming the change only affected the two time-format prefixes.
+Action: kept as a note; a layout change that shortens a scrollable panel gets a battery audit for visible-only refs, and the affected steps scroll their targets into view.
+
+## 2026-10-27 - a jsdom runtime test could not drive the panel layout observer
+
+What happened: a review asked to replace the `handleUpperRowLayout` source lock with a jsdom runtime test that hides the preview and asserts sizes are not persisted. Rendering `EditorShell`, hiding the preview and pumping the mock frames produced zero `onLayout`/`setSize` calls because `react-resizable-panels` cannot measure layout in jsdom.
+Would-have-caught: probing the observer with a mount-time spy before writing the test, then checking the repo's own flakiness rule that jsdom must not be asked to do real layout.
+Action: kept as a note; panel-layout persistence gets a static wiring lock plus a browser proof, not a jsdom layout test.

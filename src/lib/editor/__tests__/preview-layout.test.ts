@@ -57,6 +57,13 @@ describe('preview panel layout wiring', () => {
     expect(panel).not.toMatch(/\bsm:flex\b/) // viewport variant must not return
   })
 
+  it('uses the padded transport clock, not the compact formatter', () => {
+    const panel = read('src/components/editor/PreviewPanel.tsx')
+    expect(panel).toContain('formatTransportTime(playhead)')
+    expect(panel).toContain('formatTransportTime(duration)')
+    expect(panel).not.toContain('formatTime(')
+  })
+
   it('resets the workspace by imperatively resizing the live panels', () => {
     const shell = read('src/components/editor/EditorShell.tsx')
     // The imperative part — without it the reset only rewrites the store and

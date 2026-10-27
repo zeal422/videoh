@@ -534,6 +534,45 @@ describe('EditorShell bottom-row wiring (static)', () => {
   })
 })
 
+describe('EditorShell reference panel tree', () => {
+  it('mounts all six panels in the desktop workspace', () => {
+    window.localStorage.setItem('releases:lastSeen', CURRENT_VERSION)
+    render(<EditorShell />)
+    for (const name of [
+      'Collapse Media panel',
+      'Collapse Source Monitor panel',
+      'Collapse Inspector panel',
+      'Collapse Timeline panel',
+      'Collapse Captions panel',
+    ]) {
+      expect(screen.getByRole('button', { name })).toBeInTheDocument()
+    }
+    expect(screen.getByTestId('preview-canvas')).toBeInTheDocument()
+  })
+
+  it('keeps media in the upper row and the inspector as the root right column', () => {
+    const src = readFileSync('src/components/editor/EditorShell.tsx', 'utf8')
+    const workspace = src.indexOf('id="panel-workspace"')
+    const inspector = src.indexOf('id="inspector"')
+    const upper = src.indexOf('id="panel-upper"')
+    const media = src.indexOf('id="media"')
+    const preview = src.indexOf('id="panel-preview"')
+    const bottom = src.indexOf('id="panel-bottom"')
+    expect(workspace).toBeGreaterThan(-1)
+    expect(upper).toBeGreaterThan(workspace)
+    expect(media).toBeGreaterThan(upper)
+    expect(preview).toBeGreaterThan(media)
+    expect(bottom).toBeGreaterThan(upper)
+    // The inspector renders after the whole left workspace panel, so it spans
+    // the full height instead of sharing the upper row.
+    expect(inspector).toBeGreaterThan(bottom)
+    expect(src).toContain('!hidden.media || !hidden.preview || !hidden.source')
+    // Hiding the preview removes the auto remainder and normalizes the fixed
+    // panels, so the layout observer must not persist those forced sizes.
+    expect(src).toMatch(/handleUpperRowLayout[\s\S]*?if \(hidden\.preview\) return/)
+  })
+})
+
 describe('playhead effect-contract', () => {
   /** Root doc plus one compound container (ends at 15) opening seq_1. */
   function compoundDoc(): Doc {

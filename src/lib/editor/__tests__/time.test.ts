@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   clamp,
+  formatDurationSeconds,
+  formatRangeTime,
+  formatRulerTime,
   formatTime,
   formatTimecode,
+  formatTransportTime,
   frameToTime,
   rulerStep,
   stepFrames,
@@ -14,7 +18,55 @@ describe('formatTime', () => {
     expect(formatTime(0)).toBe('0:00.0')
     expect(formatTime(4.27)).toBe('0:04.2')
     expect(formatTime(67.89)).toBe('1:07.8')
+    expect(formatTime(2.3)).toBe('0:02.3')
+    expect(formatTime(10.1)).toBe('0:10.1')
+    expect(formatTime(59.9)).toBe('0:59.9')
     expect(formatTime(-3)).toBe('0:00.0')
+  })
+})
+
+describe('formatTransportTime', () => {
+  it.each([
+    [0, '00:00.0'],
+    [4.27, '00:04.2'],
+    [67.89, '01:07.8'],
+    [60, '01:00.0'],
+    [3667.89, '61:07.8'],
+    [10.1, '00:10.1'],
+  ])('formats %s seconds as %s', (seconds, expected) => {
+    expect(formatTransportTime(seconds as number)).toBe(expected)
+  })
+})
+
+describe('formatRulerTime', () => {
+  it('pads mm:ss under an hour', () => {
+    expect(formatRulerTime(0)).toBe('00:00')
+    expect(formatRulerTime(59.9)).toBe('00:59')
+    expect(formatRulerTime(60)).toBe('01:00')
+    expect(formatRulerTime(3599)).toBe('59:59')
+  })
+
+  it('switches to h:mm:ss at one hour', () => {
+    expect(formatRulerTime(3600)).toBe('1:00:00')
+    expect(formatRulerTime(3661)).toBe('1:01:01')
+  })
+})
+
+describe('status-bar time', () => {
+  it('pads range endpoints and trims a whole-second tenth', () => {
+    expect(formatRangeTime(0)).toBe('00:00')
+    expect(formatRangeTime(4)).toBe('00:04')
+    expect(formatRangeTime(4.27)).toBe('00:04.2')
+    expect(formatRangeTime(64.5)).toBe('01:04.5')
+    expect(formatRangeTime(59.9)).toBe('00:59.9')
+  })
+
+  it('formats a short duration with one decimal, trimming .0', () => {
+    expect(formatDurationSeconds(4)).toBe('4s')
+    expect(formatDurationSeconds(4.2)).toBe('4.2s')
+    expect(formatDurationSeconds(4.25)).toBe('4.2s')
+    expect(formatDurationSeconds(0.5)).toBe('0.5s')
+    expect(formatDurationSeconds(59.9)).toBe('59.9s')
   })
 })
 

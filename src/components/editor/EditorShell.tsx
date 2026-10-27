@@ -41,7 +41,7 @@ import { toast } from '@/hooks/use-toast'
 /**
  * App shell — Premiere-style workspace layout:
  *
- *   menubar (top) · toolbar · [ media | preview | inspector ] · timeline · status bar
+ *   menubar (top) · toolbar · [ (media | source | preview) over (timeline | captions) | inspector ] · status bar
  *
  * Desktop (≥768px): every region is a resizable, collapsible panel
  * (react-resizable-panels). Sizes persist to localStorage; the Window menu
@@ -101,11 +101,13 @@ export function EditorShell() {
 
   // Layout observers. Only persist while the measured panel is actually
   // rendered — otherwise group indices shift and would store the wrong panel.
-  const handleMediaLayout = useCallback(
+  const handleRootLayout = useCallback(
     (layout: number[]) => {
-      if (!hidden.media && layout[0] !== undefined) setSize('media', layout[0])
+      // Root: left workspace | inspector. The inspector is always second when
+      // it is rendered.
+      if (!hidden.inspector && layout[1] !== undefined) setSize('inspector', layout[1])
     },
-    [hidden.media, setSize],
+    [hidden.inspector, setSize],
   )
   const handleTimelineLayout = useCallback(
     (layout: number[]) => {
@@ -176,22 +178,29 @@ export function EditorShell() {
     return () => cancelAnimationFrame(timer)
   }, [hidden.captions, hidden.timeline, isMobile])
   /**
-   * Upper row: `source | preview | inspector`. A hidden panel is not rendered, so
+   * Upper row: `media | source | preview`. A hidden panel is not rendered, so
    * each panel's index is its position among the VISIBLE panels (0-based).
-   * Source: always 0. Preview: 0 or 1 (and it stores no size). Inspector:
-   * `(hidden.source ? 0 : 1) + (hidden.preview ? 0 : 1)`.
+   * Media: always 0 when present. Source: 0 when media is hidden, else 1.
+   * Preview: always last and fills the remainder, so it stores no size.
    */
   const handleUpperRowLayout = useCallback(
     (layout: number[]) => {
-      // The upper row is `source | preview | inspector`, so the source is always
-      // first among the visible panels.
-      if (!hidden.source && layout[0] !== undefined) setSize('source', layout[0])
-      if (!hidden.inspector) {
-        const inspectorIndex = (hidden.source ? 0 : 1) + (hidden.preview ? 0 : 1)
-        if (layout[inspectorIndex] !== undefined) setSize('inspector', layout[inspectorIndex])
+      // Without the preview's auto remainder the fixed panels normalize to the
+      // full row, and a lone panel is forced to fill it. Neither value is the
+      // user's chosen width, so do not persist either while the preview is
+      // hidden. This keeps media/source at their saved shares when the preview
+      // returns. The per-panel guards mirror handleBottomRowLayout for the
+      // single-panel case.
+      if (hidden.preview) return
+      if (!hidden.media && (!hidden.source || !hidden.preview)) {
+        if (layout[0] !== undefined) setSize('media', layout[0])
+      }
+      if (!hidden.source && (!hidden.media || !hidden.preview)) {
+        const sourceIndex = hidden.media ? 0 : 1
+        if (layout[sourceIndex] !== undefined) setSize('source', layout[sourceIndex])
       }
     },
-    [hidden.inspector, hidden.preview, hidden.source, setSize],
+    [hidden.media, hidden.preview, hidden.source, setSize],
   )
 
   // Autosave lifecycle: subscribe once; check for a restorable session on mount.
@@ -318,7 +327,7 @@ export function EditorShell() {
     useEditorStore.getState().setPendingRestore(null)
   }
 
-  const showUpperRow = !hidden.preview || !hidden.source || !hidden.inspector
+  const showUpperRow = !hidden.media || !hidden.preview || !hidden.source
 
   return (
     /* Theme lives on <html> (layout.tsx) so Radix portals — menubar dropdowns,
@@ -364,37 +373,16 @@ export function EditorShell() {
       {isMobile ? (
         <CompactLayout />
       ) : (
-        /* Root: media pool | main area */
+        /* Root: left workspace | inspector */
         <ResizablePanelGroup
           direction="horizontal"
           className="min-h-0 flex-1"
-          onLayout={handleMediaLayout}
+          onLayout={handleRootLayout}
         >
-          {!hidden.media && (
-            <>
-              <PanelShell
-                id="media"
-                title="Media"
-                side="left"
-                order={1}
-                minSize={PANEL_BOUNDS.media.min}
-                maxSize={PANEL_BOUNDS.media.max}
-                defaultSize={sizes.media}
-                registerRef={registerRef}
-                className="bg-card"
-              >
-                <MediaBin heading={false} className="min-h-0 flex-1" />
-              </PanelShell>
-              <HandleWithReset
-                ariaLabel="Resize media panel (double-click to reset)"
-                onReset={() => resetPanel('media')}
-              />
-            </>
-          )}
-
-          {/* Main area: fills the rest of the root group */}
-          <ResizablePanel id="panel-main" order={2} className="min-h-0 min-w-0">
-            {/* Vertical split: upper row | timeline */}
+          {/* Left workspace: upper row (media | source | preview) over the
+              bottom row (timeline | captions). The inspector is a full-height
+              root column, so the timeline can span under the media panel. */}
+          <ResizablePanel id="panel-workspace" order={1} className="min-h-0 min-w-0">
             <ResizablePanelGroup
               direction="vertical"
               className="min-h-0"
@@ -402,18 +390,41 @@ export function EditorShell() {
             >
               <ResizablePanel id="panel-upper" order={1} className="min-h-0">
                 {showUpperRow ? (
-                  /* Upper row: source monitor | program monitor | inspector */
+                  /* Upper row: media pool | source monitor | program monitor */
                   <ResizablePanelGroup
                     direction="horizontal"
                     className="min-h-0"
                     onLayout={handleUpperRowLayout}
                   >
+                    {!hidden.media && (
+                      <>
+                        <PanelShell
+                          id="media"
+                          title="Media"
+                          side="left"
+                          order={1}
+                          minSize={PANEL_BOUNDS.media.min}
+                          maxSize={PANEL_BOUNDS.media.max}
+                          defaultSize={sizes.media}
+                          registerRef={registerRef}
+                          className="bg-card"
+                        >
+                          <MediaBin heading={false} className="min-h-0 flex-1" />
+                        </PanelShell>
+                        {(!hidden.source || !hidden.preview) && (
+                          <HandleWithReset
+                            ariaLabel="Resize media panel (double-click to reset)"
+                            onReset={() => resetPanel('media')}
+                          />
+                        )}
+                      </>
+                    )}
                     {!hidden.source && (
                       <PanelShell
                         id="source"
                         title="Source Monitor"
                         side="left"
-                        order={1}
+                        order={2}
                         minSize={PANEL_BOUNDS.source.min}
                         maxSize={PANEL_BOUNDS.source.max}
                         defaultSize={sizes.source}
@@ -434,37 +445,9 @@ export function EditorShell() {
                          renders a plain block box, so without it PreviewPanel's
                          flex column never inherits the panel height and the
                          transport row gets clipped when this row is resized short. */
-                      <ResizablePanel id="panel-preview" order={2} className="flex min-h-0 min-w-0">
+                      <ResizablePanel id="panel-preview" order={3} className="flex min-h-0 min-w-0">
                         <PreviewPanel />
                       </ResizablePanel>
-                    )}
-                    {!hidden.preview && !hidden.inspector && (
-                      <HandleWithReset
-                        ariaLabel="Resize inspector panel (double-click to reset)"
-                        onReset={() => resetPanel('inspector')}
-                      />
-                    )}
-                    {/* The preview is hidden, so the source and the inspector meet directly. */}
-                    {hidden.preview && !hidden.source && !hidden.inspector && (
-                      <HandleWithReset
-                        ariaLabel="Resize inspector panel (double-click to reset)"
-                        onReset={() => resetPanel('inspector')}
-                      />
-                    )}
-                    {!hidden.inspector && (
-                      <PanelShell
-                        id="inspector"
-                        title="Inspector"
-                        side="right"
-                        order={3}
-                        minSize={PANEL_BOUNDS.inspector.min}
-                        maxSize={PANEL_BOUNDS.inspector.max}
-                        defaultSize={sizes.inspector}
-                        registerRef={registerRef}
-                        className="bg-card"
-                      >
-                        <InspectorPanel className="flex-1" />
-                      </PanelShell>
                     )}
                   </ResizablePanelGroup>
                 ) : (
@@ -542,6 +525,28 @@ export function EditorShell() {
               )}
             </ResizablePanelGroup>
           </ResizablePanel>
+
+          {!hidden.inspector && (
+            <>
+              <HandleWithReset
+                ariaLabel="Resize inspector panel (double-click to reset)"
+                onReset={() => resetPanel('inspector')}
+              />
+              <PanelShell
+                id="inspector"
+                title="Inspector"
+                side="right"
+                order={2}
+                minSize={PANEL_BOUNDS.inspector.min}
+                maxSize={PANEL_BOUNDS.inspector.max}
+                defaultSize={sizes.inspector}
+                registerRef={registerRef}
+                className="bg-card"
+              >
+                <InspectorPanel className="flex-1" />
+              </PanelShell>
+            </>
+          )}
         </ResizablePanelGroup>
       )}
 

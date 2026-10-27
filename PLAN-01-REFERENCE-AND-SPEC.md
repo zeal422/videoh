@@ -1,6 +1,6 @@
 # PLAN 01: Reference, spec, and filmstrip spike
 
-Status: implemented, awaiting commit
+Status: done
 Depends on: [PLAN-EDITOR-PARITY.md](PLAN-EDITOR-PARITY.md)
 Release: none
 Goal: turn the local reference into a testable scope, freeze the geometry, and prove the filmstrip
@@ -275,6 +275,11 @@ question. `PANEL_BOUNDS` values are group-relative: after the move, the media de
 the media+preview upper row to hit the 24% full-viewport target (`24 / 0.74`), while the inspector
 stays a root share at 26.
 
+Plan 02 confirmed the frozen values in the browser on 2026-10-27: 44/40/36px rows, 168px header,
+media 376px (23.5% of 1600), inspector 414px (25.9%), and timeline 443px (49.7% of the content
+height). No value moved, so this table stands. The panel tree is now media/source/preview over
+timeline/captions on the left, with the inspector as the full-height right column.
+
 The Source monitor stays visible by default. The demo project hides it through the existing
 workspace state, exactly as a user would. Do not change the default workspace just to make the
 screenshot easier.
@@ -480,7 +485,7 @@ Before this plan is marked done, check:
 - Verified: the fixture parses through `parseSerializedDoc`, has 5 video and 4 audio tracks, 19
   clips, 18.0s duration, two linked A/V pairs, one solo video, one image clip, one transition, one
   volume curve, and one marker. Every media source window fits its asset, and the only overlap is
-  backed by `transitionOut`.
+  backed by `transitionOut`. The owner has committed the fixture; `git ls-files` now lists it.
 - Verified: the fixture hydrates all three bundled samples in the browser and shows 9 tracks.
 - Verified: the spike verdict is numeric and has a fallback. All five gates pass.
 - Verified: no production file changed. The working tree adds `.gitignore`, the plan docs, and the
@@ -497,7 +502,7 @@ This plan is proven by artifacts and decisions, not by product tests.
 - Pass: `git check-ignore -v .design/editor-parity/editor-target.png` confirms the ignore rule at
   `.gitignore:52`.
 - Pass: `git check-ignore -v e2e/fixtures/editor-parity.veproj.json` exits nonzero, so the fixture
-  is not ignored. It is present and ready for the owner's commit. After that commit,
+  is not ignored. It is tracked after the owner's commit:
   `git ls-files --error-unmatch e2e/fixtures/editor-parity.veproj.json` succeeds.
 - Pass: `sha256sum .design/editor-parity/editor-target.png` is
   `feb5a439014967a10e99b2bb26fb9f6ec709cd208b0ec740ee0a7e3dfa126066`, matching the recorded hash.
@@ -517,8 +522,8 @@ This plan is proven by artifacts and decisions, not by product tests.
 - Met: the reference is local, ignored, and documented with provenance and a retirement rule.
 - Met: the inventory classifies every visible element and leaves no "figure it out later" row.
 - Met: the geometry contract is frozen and referenced by Plans 02, 03, 04, and 05.
-- Met, pending the owner's commit: the demo fixture exists at
-  `e2e/fixtures/editor-parity.veproj.json` and is ready to track; `.design/` remains local-only.
+- Met: the demo fixture exists at `e2e/fixtures/editor-parity.veproj.json` and is tracked after the
+  owner's commit; `.design/` remains local-only.
 - Met: the filmstrip spike has a go verdict with numbers, including the static-speed source frames,
   and a fallback.
 - Met: the screenshot procedure is repeatable, records the fixed settings, and uses selector waits

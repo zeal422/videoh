@@ -617,6 +617,14 @@ export function MenuBar({
   return (
     <>
       <div className="bg-card flex h-8 w-full max-w-full items-center">
+        <a
+          href="/"
+          data-testid="editor-wordmark"
+          aria-label="videoh home"
+          className="text-foreground hover:text-foreground/80 hidden h-8 shrink-0 items-center px-2 text-sm font-semibold tracking-tight no-underline md:inline-flex"
+        >
+          videoh
+        </a>
         <Menubar
           role="menubar"
           aria-label="Application menu"

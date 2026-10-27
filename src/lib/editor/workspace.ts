@@ -46,10 +46,10 @@ export const PANEL_BOUNDS: Record<
   'media' | 'source' | 'inspector' | 'timeline' | 'captions',
   PanelBounds
 > = {
-  media: { default: 20, min: 12, max: 42 },
+  media: { default: 32, min: 12, max: 42 },
   source: { default: 24, min: 14, max: 44 },
   inspector: { default: 26, min: 16, max: 46 },
-  timeline: { default: 38, min: 15, max: 72 },
+  timeline: { default: 50, min: 15, max: 72 },
   captions: { default: 24, min: 15, max: 45 },
 }
 
