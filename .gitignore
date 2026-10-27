@@ -48,5 +48,8 @@ tool-results/
 .kilo/
 .freebuff/
 
+# local-only editor parity reference and spike
+.design/
+
 # scratch instruction files
 TO_FIX.md

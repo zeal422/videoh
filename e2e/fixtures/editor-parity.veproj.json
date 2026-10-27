@@ -1,0 +1,268 @@
+{
+  "version": 4,
+  "savedAt": "2026-10-27T00:00:00.000Z",
+  "project": {
+    "id": "proj-editor-parity",
+    "name": "Editor Parity Demo",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "markers": [
+      {
+        "id": "marker-beat",
+        "time": 2.7,
+        "name": "Beat",
+        "color": "green"
+      }
+    ],
+    "tracks": [
+      {
+        "id": "track-v5",
+        "kind": "video",
+        "name": "V5",
+        "clips": [
+          {
+            "id": "clip-v5-open",
+            "mediaId": "media-video",
+            "start": 0.5,
+            "duration": 2.5,
+            "inPoint": 0.5
+          }
+        ]
+      },
+      {
+        "id": "track-v4",
+        "kind": "video",
+        "name": "V4",
+        "clips": [
+          {
+            "id": "clip-v4-a",
+            "mediaId": "media-video",
+            "start": 3,
+            "duration": 4.8,
+            "inPoint": 0,
+            "transitionOut": {
+              "type": "crossfade",
+              "duration": 0.6,
+              "direction": "left",
+              "edge": "hard",
+              "feather": 0.1
+            }
+          },
+          {
+            "id": "clip-v4-b",
+            "mediaId": "media-video",
+            "start": 7.2,
+            "duration": 4,
+            "inPoint": 1
+          }
+        ]
+      },
+      {
+        "id": "track-v3",
+        "kind": "video",
+        "name": "V3",
+        "clips": [
+          {
+            "id": "clip-v3-a",
+            "mediaId": "media-video",
+            "start": 2,
+            "duration": 3,
+            "inPoint": 0
+          },
+          {
+            "id": "clip-v3-b",
+            "mediaId": "media-video",
+            "start": 5,
+            "duration": 3,
+            "inPoint": 3
+          },
+          {
+            "id": "clip-v3-c",
+            "mediaId": "media-video",
+            "start": 10.5,
+            "duration": 3,
+            "inPoint": 1
+          },
+          {
+            "id": "clip-v3-d",
+            "mediaId": "media-video",
+            "start": 15,
+            "duration": 3,
+            "inPoint": 2
+          }
+        ]
+      },
+      {
+        "id": "track-v2",
+        "kind": "video",
+        "name": "V2",
+        "clips": [
+          {
+            "id": "clip-v2-a",
+            "mediaId": "media-video",
+            "start": 1.5,
+            "duration": 2.5,
+            "inPoint": 0
+          },
+          {
+            "id": "clip-v2-b",
+            "mediaId": "media-video",
+            "start": 4,
+            "duration": 2.5,
+            "inPoint": 2.5
+          },
+          {
+            "id": "clip-v2-image",
+            "mediaId": "media-image",
+            "start": 14.5,
+            "duration": 3.5,
+            "inPoint": 0
+          }
+        ]
+      },
+      {
+        "id": "track-v1",
+        "kind": "video",
+        "name": "V1",
+        "clips": [
+          {
+            "id": "clip-brand-video-1",
+            "mediaId": "media-video",
+            "linkId": "link-brand-1",
+            "start": 0,
+            "duration": 4.2,
+            "inPoint": 0
+          },
+          {
+            "id": "clip-brand-video-2",
+            "mediaId": "media-video",
+            "linkId": "link-brand-2",
+            "start": 6,
+            "duration": 3,
+            "inPoint": 1.4
+          },
+          {
+            "id": "clip-v1-solo",
+            "mediaId": "media-video",
+            "start": 10,
+            "duration": 3,
+            "inPoint": 2.5
+          }
+        ]
+      },
+      {
+        "id": "track-a1",
+        "kind": "audio",
+        "name": "A1",
+        "clips": [
+          {
+            "id": "clip-brand-audio-1",
+            "mediaId": "media-video",
+            "linkId": "link-brand-1",
+            "audioOnly": true,
+            "start": 0,
+            "duration": 4.2,
+            "inPoint": 0
+          },
+          {
+            "id": "clip-brand-audio-2",
+            "mediaId": "media-video",
+            "linkId": "link-brand-2",
+            "audioOnly": true,
+            "start": 6,
+            "duration": 3,
+            "inPoint": 1.4
+          },
+          {
+            "id": "clip-a1-extra",
+            "mediaId": "media-audio",
+            "start": 10,
+            "duration": 3,
+            "inPoint": 0.5
+          }
+        ]
+      },
+      {
+        "id": "track-a2",
+        "kind": "audio",
+        "name": "A2",
+        "clips": [
+          {
+            "id": "clip-music",
+            "mediaId": "media-audio",
+            "start": 0,
+            "duration": 7.9,
+            "inPoint": 0,
+            "keyframes": {
+              "volume": [
+                { "time": 0, "value": 1 },
+                { "time": 2, "value": 0.8 },
+                { "time": 4, "value": 0.55 },
+                { "time": 6, "value": 0.3 },
+                { "time": 7.9, "value": 0.18 }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "track-a3",
+        "kind": "audio",
+        "name": "A3",
+        "clips": [
+          {
+            "id": "clip-bed",
+            "mediaId": "media-audio",
+            "start": 8,
+            "duration": 5,
+            "inPoint": 1,
+            "gain": 0.8
+          }
+        ]
+      },
+      {
+        "id": "track-a4",
+        "kind": "audio",
+        "name": "A4",
+        "clips": [
+          {
+            "id": "clip-whoosh",
+            "mediaId": "media-audio",
+            "start": 0.5,
+            "duration": 2,
+            "inPoint": 3
+          }
+        ]
+      }
+    ]
+  },
+  "media": [
+    {
+      "id": "media-video",
+      "name": "sample-video.mp4",
+      "kind": "video",
+      "duration": 6.023219954648526,
+      "width": 640,
+      "height": 360,
+      "hasAudio": true
+    },
+    {
+      "id": "media-audio",
+      "name": "sample-audio.mp3",
+      "kind": "audio",
+      "duration": 8.045714285714286,
+      "width": 0,
+      "height": 0,
+      "hasAudio": true
+    },
+    {
+      "id": "media-image",
+      "name": "sample-image.png",
+      "kind": "image",
+      "duration": 0,
+      "width": 1280,
+      "height": 720
+    }
+  ]
+}
