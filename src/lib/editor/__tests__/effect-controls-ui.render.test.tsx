@@ -800,6 +800,48 @@ describe('InspectorPanel tabs', () => {
     fireEvent(window, new MouseEvent('pointerup'))
   })
 
+  it('a locked lane refuses a keyframe dot drag before any transient starts', async () => {
+    const { doc } = docWithSelectedVideoClip()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.keyframes = {
+      opacity: [
+        { time: 1, value: 1 },
+        { time: 3, value: 1 },
+      ],
+    }
+    doc.project.tracks[0].locked = true
+    useEditorStore.setState({ doc: structuredClone(doc) })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    const graph = screen.getByTestId('kf-graph-opacity')
+    graph.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 200,
+        bottom: 40,
+        width: 200,
+        height: 40,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect
+
+    fireEvent.pointerDown(screen.getByTestId('kf-dot-opacity-0'), {
+      bubbles: true,
+      pointerId: 5,
+      clientX: 33,
+    })
+    fireEvent.pointerMove(window, { pointerId: 5, clientX: 50 })
+    expect(isTransientActive()).toBe(false)
+    fireEvent.pointerUp(window, { pointerId: 5 })
+    const time =
+      useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity?.[0].time
+    expect(time).toBe(1)
+    expect(useEditorStore.getState().past).toHaveLength(0)
+  })
+
   it('a foreign pointer release does not end the keyframe drag it does not own', async () => {
     const { doc } = docWithSelectedVideoClip()
     const clip = doc.project.tracks[0].clips[0]

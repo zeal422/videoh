@@ -83,9 +83,10 @@ describe('effect controls surface', () => {
     expect(ec).toMatch(/data-testid=\{`kf-dot-\$\{property\}-\$\{i\}`\}/)
     expect(ec).toMatch(/applyTransient\(\{ type: 'setClipKeyframes'/)
     // One undo step: the dot snapshots the base on pointerdown and the release
-    // commits, so the drag cannot leave a no-op history entry behind.
+    // commits, so the drag cannot leave a no-op history entry behind. The lock
+    // gate (0.14.0) runs first, so a locked lane never begins the transient.
     expect(ec).toMatch(
-      /onPointerDown=\{\(e\) => \{\s*e\.stopPropagation\(\)\s*tokenRef\.current = useEditorStore\.getState\(\)\.beginTransient\(e\.pointerId\)/,
+      /onPointerDown=\{\(e\) => \{\s*e\.stopPropagation\(\)\s*if \(refuseLockedClip\(clip\.id\)\) return\s*tokenRef\.current = useEditorStore\.getState\(\)\.beginTransient\(e\.pointerId\)/,
     )
     // The drag keeps the token so a foreign commit mid-drag refuses frames.
     expect(ec).toMatch(/if \(currentTransientToken\(\) !== tokenRef\.current\) return/)

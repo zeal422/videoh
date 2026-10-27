@@ -347,10 +347,25 @@ Stable hooks used across flows and tests:
   it would otherwise push onto the lanes below — the browser clamps it, so a timeline that still fits
   does not move at all. Without this, the lane holding your clips scrolled out of view and the new layer
   looked unusable.
-- **Managing a layer** — right-click a track header (or double-click its name) for Rename Track…, Mute/
-  Unmute Track and Delete Track. Delete is disabled while only one lane remains, because the model
-  forbids removing the last track. Rename takes focus when it is chosen from the menu, so the name you
-  type goes into the field rather than being swallowed by the closing menu.
+- **Managing a layer** — right-click a track header (or double-click its name) for Rename Track…,
+  Target Track, Solo Track (audio lanes), Lock Track, Select Track Clips, Mute/Unmute Track and Delete
+  Track. Delete is disabled while only one lane remains, because the model forbids removing the last
+  track. Rename takes focus when it is chosen from the menu, so the name you type goes into the field
+  rather than being swallowed by the closing menu.
+- **Solo** — audio lanes show `M` and `S` buttons beside the lock. Soloing any audio lane leaves only
+  the non-muted soloed audio lanes audible; video and text lanes are excluded while a solo is active,
+  so a solo video's embedded audio goes silent. Multiple solos are allowed, and a soloed lane that is
+  also muted stays silent. The rule is evaluated per sequence: a solo inside a compound applies when
+  that sequence renders, while the parent sequence keeps its own solo state. Preview, the offline
+  plan and the MP4 mix read the same `audibleTrackIds` set.
+- **Lock** — every lane has a lock button that stays visibly lit while set. A locked lane's clips
+  still select, inspect, copy and play, but every edit is refused: move, trim, rate stretch, split,
+  delete, paste/drop, transitions, effects, clip properties, keyframes, clip markers and the volume
+  envelope. Link-group edits refuse when any member's lane is locked, media removal/relink refuses
+  while a locked clip uses the asset, and removing an open lane that holds a locked clip's link
+  partner refuses. Track controls, selection, inspection, compound open, undo/redo and autosave stay
+  available, so the lane can be unlocked and pre-lock edits can still be undone. The command layer is
+  the authority (`LOCK_RULES`); the UI refuses gestures early and shows one toast naming the lane.
 - Per-clip **opacity** (0–100 %) multiplies with crossfade alphas, so a clip on a higher track blends
   through to the track below. When opacity (or any animatable property) has keyframes, the curve
   replaces the static value during preview and export alike.
@@ -525,7 +540,8 @@ Stable hooks used across flows and tests:
    alone reached) in the same committed history entry, so undo restores it.
 4. The preview composites a compound as a group and mixes its audio through the container's gain/mute/
    volume curve; the export does the same, starting from the project root and never consulting the open
-   path.
+   path. Track solo is per sequence too: the container's own lane is gated by the parent's solo set,
+   while the nested tracks are gated by the child sequence's own set.
 
 ## Save, load, autosave, restore
 

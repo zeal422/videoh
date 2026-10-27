@@ -58,7 +58,9 @@ import { findClip, findMedia } from '@/lib/editor/factories'
 import { AppliedEffectsSection } from '@/components/editor/effect-controls/AppliedEffectsSection'
 import { linkedAudioTwin } from '@/lib/editor/links'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
+import { lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
 import { frameToTime } from '@/lib/editor/time'
+import { toast } from '@/hooks/use-toast'
 import { dbToUnit, formatDb, gainToUnit, unitToGain } from '@/lib/editor/volume-automation'
 import type { Clip, Keyframe, KeyframeInterpolation } from '@/lib/editor/types'
 
@@ -100,6 +102,22 @@ const TIME_PROPS: { key: KeyframeProperty; label: string }[] = [
  * only skips form fields) would read an arrow as frame-step / jump-to-edit.
  * Their wrappers call this, the same guard the marker dialog's color group uses.
  */
+/**
+ * Lock gate for the graph's own gestures (0.14.0): a dot or handle drag writes
+ * the clip's keyframes, so a locked lane refuses it before the transient starts.
+ * The command layer enforces the same rule; this supplies the early message.
+ */
+function refuseLockedClip(clipId: string): boolean {
+  const locked = lockedTrackForClip(useEditorStore.getState().doc, clipId)
+  if (!locked) return false
+  toast({
+    title: 'Track locked',
+    description: trackLockMessage(locked),
+    variant: 'destructive',
+  })
+  return true
+}
+
 function swallowArrows(e: ReactKeyboardEvent): void {
   if (
     e.key !== 'ArrowLeft' &&
@@ -864,6 +882,7 @@ function KeyframeGraph({
   const onHandlePointerDown = (which: 'out' | 'in', e: ReactPointerEvent) => {
     e.stopPropagation()
     if (activeStart === null) return
+    if (refuseLockedClip(clip.id)) return
     tokenRef.current = useEditorStore.getState().beginTransient(e.pointerId)
     setHandleDrag({ which, startIndex: activeStart, pointerId: e.pointerId })
   }
@@ -1015,6 +1034,7 @@ function KeyframeGraph({
             style={{ left: `${left}%`, bottom: `${Math.max(0, Math.min(100, bottom))}%` }}
             onPointerDown={(e) => {
               e.stopPropagation()
+              if (refuseLockedClip(clip.id)) return
               tokenRef.current = useEditorStore.getState().beginTransient(e.pointerId)
               dragTimeRef.current = k.time
               setPointerId(e.pointerId)

@@ -64,6 +64,7 @@ import {
 } from './effects'
 import { linkedClips } from './links'
 import { lutBudgetMessage, lutLibraryChars } from './lut'
+import { clipGroupTracks, findLockedTrack } from './tracks'
 import { clamp } from './time'
 import {
   hasTimeScaleCurve,
@@ -124,6 +125,19 @@ export class EditorCommandError extends Error {
 }
 
 /**
+ * A command refused because it would edit a locked track (0.14.0). Carries the
+ * track id so the store can surface one notice without parsing the message.
+ */
+export class TrackLockedError extends EditorCommandError {
+  readonly trackId: string
+  constructor(track: { id: string; name: string }) {
+    super(`Track ${track.name} is locked. Unlock it to edit its clips.`)
+    this.name = 'TrackLockedError'
+    this.trackId = track.id
+  }
+}
+
+/**
  * Which part of a clip a `trimClip` call moves.
  *
  * `'head'`/`'tail'` name the EDGE the caller dragged for a plain trim: the
@@ -166,6 +180,8 @@ export type EditorCommand =
   | { type: 'removeTrack'; trackId: string }
   | { type: 'renameTrack'; trackId: string; name: string }
   | { type: 'toggleTrackMute'; trackId: string }
+  | { type: 'setTrackSolo'; trackId: string; solo: boolean }
+  | { type: 'setTrackLocked'; trackId: string; locked: boolean }
   // clips
   | { type: 'addClip'; clip: Clip; trackId: string }
   | { type: 'moveClip'; clipId: string; trackId: string; start: number }
@@ -286,6 +302,7 @@ export type EditorCommand =
  * to surface the message (toasts) or ignore.
  */
 export function applyCommand(doc: Doc, command: EditorCommand): Doc {
+  assertCommandAllowed(doc, command)
   const next = structuredClone(doc) as Doc
   mutateDoc(next, command)
   return next
@@ -294,8 +311,215 @@ export function applyCommand(doc: Doc, command: EditorCommand): Doc {
 /** Applies a sequence of commands as one unit (single clone). */
 export function applyCommands(doc: Doc, commands: EditorCommand[]): Doc {
   const next = structuredClone(doc) as Doc
-  for (const command of commands) mutateDoc(next, command)
+  for (const command of commands) {
+    // Validate against the state this command will ACTUALLY see. A batch can
+    // lock a lane, move a clip, or create a track before a later command, so
+    // the pre-batch doc is not enough: [setTrackLocked, addClip] would
+    // otherwise pass both guards and leave the clip on a locked lane. The
+    // clone is discarded when any command throws, so the caller still sees no
+    // partial write and no history entry.
+    assertCommandAllowed(next, command)
+    mutateDoc(next, command)
+  }
   return next
+}
+
+/**
+ * The one lock inventory (0.14.0). `Record<EditorCommand['type'], …>` makes
+ * the TypeScript build fail when a command is added without a decision, so a
+ * new command can never inherit "allowed" by omission. Resolvers return every
+ * track the command would edit (link partners included); the guard refuses the
+ * command when any of them is locked.
+ */
+type CommandOf<K extends EditorCommand['type']> = Extract<EditorCommand, { type: K }>
+
+type LockRule<K extends EditorCommand['type']> =
+  | { readonly exempt: true }
+  | {
+      readonly exempt?: false
+      readonly tracks: (doc: Doc, command: CommandOf<K>) => readonly Track[]
+    }
+
+type LockRuleMap = { readonly [K in EditorCommand['type']]: LockRule<K> }
+
+function trackRef(doc: Doc, trackId: string): Track[] {
+  const found = findTrackIn(doc, trackId)
+  return found ? [found.track] : []
+}
+
+function clipRef(doc: Doc, clipId: string): Track[] {
+  const found = findClip(doc, clipId)
+  return found ? [found.track] : []
+}
+
+/** Every track holding a clip backed by `mediaId`, across root and sequences. */
+function mediaClipTracks(doc: Doc, mediaId: string): Track[] {
+  const out: Track[] = []
+  const seen = new Set<string>()
+  const scan = (tracks: readonly Track[]) => {
+    for (const track of tracks) {
+      if (seen.has(track.id)) continue
+      if (track.clips.some((clip) => clip.mediaId === mediaId)) {
+        seen.add(track.id)
+        out.push(track)
+      }
+    }
+  }
+  scan(doc.project.tracks)
+  for (const sequence of doc.project.sequences ?? []) scan(sequence.tracks)
+  return out
+}
+
+/**
+ * Removing a lane edits the lane itself, its clips' link partners (the group
+ * would lose a member), and every clip that references it through a
+ * `trackMatte` effect: `removeTrack` strips those entries in the same command.
+ * A locked lane in any of those roles refuses the whole removal.
+ */
+function removeTrackTracks(doc: Doc, trackId: string): Track[] {
+  const found = findTrackIn(doc, trackId)
+  if (!found) return []
+  const out: Track[] = []
+  const seen = new Set<string>()
+  const add = (track: Track | undefined) => {
+    if (!track || seen.has(track.id)) return
+    seen.add(track.id)
+    out.push(track)
+  }
+  add(found.track)
+  for (const track of clipGroupTracks(
+    doc,
+    found.track.clips.map((clip) => clip.id),
+  )) {
+    add(track)
+  }
+  for (const track of sequenceTracks(doc, found.sequenceId)) {
+    if (
+      track.clips.some((clip) =>
+        (clip.effects ?? []).some((e) => e.type === 'trackMatte' && e.trackId === trackId),
+      )
+    ) {
+      add(track)
+    }
+  }
+  return out
+}
+
+const LOCK_RULES: LockRuleMap = {
+  // Media bin. Adding an asset touches no clip. Removing or relinking one
+  // changes every clip that uses it, so any such clip's locked lane refuses.
+  addMediaAsset: { exempt: true },
+  removeMediaAsset: { tracks: (doc, command) => mediaClipTracks(doc, command.mediaId) },
+  relinkMedia: { tracks: (doc, command) => mediaClipTracks(doc, command.mediaId) },
+
+  // Sequences. A sequence definition holds no clips until a compound container
+  // is created, which checks its sources and destination below.
+  addSequence: { exempt: true },
+  createCompoundClip: {
+    tracks: (doc, command) => [
+      ...clipGroupTracks(doc, command.clipIds),
+      ...trackRef(doc, command.trackId),
+    ],
+  },
+
+  // Track controls. Rename/visibility/mute/solo/lock and adding a lane are
+  // metadata or controls, never clip edits (the user must be able to unlock).
+  addTrack: { exempt: true },
+  removeTrack: { tracks: (doc, command) => removeTrackTracks(doc, command.trackId) },
+  renameTrack: { exempt: true },
+  toggleTrackMute: { exempt: true },
+  setTrackSolo: { exempt: true },
+  setTrackLocked: { exempt: true },
+  setTrackVisible: { exempt: true },
+
+  // Clip geometry. Move/trim/split/delete/unlink act on a whole link group, and
+  // move also touches its destination lane. Paste/drop/insert/overwrite arrive
+  // as addClip, so the destination lane is the one checked.
+  addClip: { tracks: (doc, command) => trackRef(doc, command.trackId) },
+  moveClip: {
+    tracks: (doc, command) => [
+      ...clipGroupTracks(doc, [command.clipId]),
+      ...trackRef(doc, command.trackId),
+    ],
+  },
+  // Trim edits only the named clip's lane. Move/delete/split/unlink carry the
+  // whole link group; trim does not, so a locked partner does not block it.
+  trimClip: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  splitClip: { tracks: (doc, command) => clipGroupTracks(doc, [command.clipId]) },
+  deleteClip: { tracks: (doc, command) => clipGroupTracks(doc, [command.clipId]) },
+  unlinkClip: { tracks: (doc, command) => clipGroupTracks(doc, [command.clipId]) },
+  linkClips: { tracks: (doc, command) => clipGroupTracks(doc, command.clipIds) },
+
+  // Clip properties: all are edits of the named clip's own lane. The UI routes
+  // audio properties for an A/V pair to the audio twin, so the carrier's lock
+  // is the one that refuses.
+  setClipGain: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipMuted: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipOpacity: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipKeyframes: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipSpeed: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipReverse: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipPan: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipEq: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipCompressor: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipDenoise: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipColorParams: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipAnimStatic: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipBlendMode: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipLut: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+
+  // Project preferences and libraries: no clip is edited.
+  setKeyframeDefault: { exempt: true },
+  importProjectLut: { exempt: true },
+  saveTextPreset: { exempt: true },
+  renameTextPreset: { exempt: true },
+  deleteTextPreset: { exempt: true },
+
+  // Text and captions. Property edits hit the clip's lane; a new cue hits the
+  // text lane it names. `importCaptions` always creates a NEW text track, so it
+  // cannot touch a locked one and needs no refusal (noted in the plan report).
+  setTextContent: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setTextStyle: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  importCaptions: { exempt: true },
+  addCaptionCue: { tracks: (doc, command) => trackRef(doc, command.trackId) },
+
+  // Transitions and effects: clip edits on the named clip's lane.
+  addTransition: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  removeTransition: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  addEffect: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  removeEffect: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setEffectEnabled: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  resetEffect: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setEffectParams: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setEffectKeyframes: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+
+  // Markers: sequence markers are not clip edits; clip markers are.
+  addSequenceMarker: { exempt: true },
+  moveSequenceMarker: { exempt: true },
+  updateSequenceMarker: { exempt: true },
+  deleteSequenceMarker: { exempt: true },
+  addClipMarker: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  moveClipMarker: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  updateClipMarker: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  deleteClipMarker: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+
+  // Project settings are not an edit to a track.
+  setProjectSettings: { exempt: true },
+}
+
+/**
+ * Refuses a command that would edit a locked track. The single lock gate for
+ * committed and transient writes (`applyCommand` / `applyCommands`), so a UI
+ * bypass cannot edit a locked track. The cast is the runtime side of the
+ * per-key mapped type above: the map key and the command discriminant are the
+ * same value, so the entry's resolver accepts this command by construction.
+ */
+export function assertCommandAllowed(doc: Doc, command: EditorCommand): void {
+  const rule = LOCK_RULES[command.type] as LockRule<EditorCommand['type']>
+  if (rule.exempt) return
+  const resolve = rule.tracks as (doc: Doc, command: EditorCommand) => readonly Track[]
+  const locked = findLockedTrack(resolve(doc, command))
+  if (locked) throw new TrackLockedError(locked)
 }
 
 function mutateDoc(doc: Doc, command: EditorCommand): void {
@@ -507,6 +731,27 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
     case 'toggleTrackMute': {
       const track = requireTrack(doc, command.trackId)
       track.muted = !track.muted
+      return
+    }
+
+    case 'setTrackSolo': {
+      const track = requireTrack(doc, command.trackId)
+      if (track.kind !== 'audio') {
+        throw new EditorCommandError('Solo is only available on audio tracks')
+      }
+      if (typeof command.solo !== 'boolean') {
+        throw new EditorCommandError('Track solo must be a boolean')
+      }
+      track.solo = command.solo
+      return
+    }
+
+    case 'setTrackLocked': {
+      const track = requireTrack(doc, command.trackId)
+      if (typeof command.locked !== 'boolean') {
+        throw new EditorCommandError('Track lock must be a boolean')
+      }
+      track.locked = command.locked
       return
     }
 

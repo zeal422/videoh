@@ -50,6 +50,7 @@ import {
   resolveSelectionGroups,
 } from '@/lib/editor/links'
 import { currentTransientToken, isTransientActive, useEditorStore } from '@/lib/editor/store'
+import { firstLockedTrackForClips, lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
 import { clipCarriesSound } from '@/lib/editor/volume-automation'
 import type { Clip, Doc, MediaAsset, Track } from '@/lib/editor/types'
 import { toast } from '@/hooks/use-toast'
@@ -254,6 +255,23 @@ export function ClipView({
           origStart: c.start,
         }
       })
+    // Lock gate (0.14.0): refuse BEFORE beginTransient, so a refused move or
+    // trim writes no frame and the clip never leaves its place. A move drags
+    // every selected partner and edits the whole link group, so it checks all
+    // of them; a trim edits only the dragged clip, so its own lane is the one
+    // that refuses. The command layer remains the authority.
+    const lockedTrack =
+      mode === 'move'
+        ? firstLockedTrackForClips(fresh.doc, [clip.id, ...partners.map((p) => p.id)])
+        : lockedTrackForClip(fresh.doc, clip.id)
+    if (lockedTrack) {
+      toast({
+        title: 'Track locked',
+        description: trackLockMessage(lockedTrack),
+        variant: 'destructive',
+      })
+      return
+    }
     // The drag is driven by listeners on `window` rather than by handlers on the
     // clip element. A clip that moves to another lane is rendered inside THAT
     // lane's clip list, so React unmounts this component and mounts a new one in
@@ -662,7 +680,7 @@ export function ClipView({
       const store = useEditorStore.getState()
       const commands = commandsToCutClips(store.doc, menuSelectionIds())
       if (!commands) return
-      store.apply(commands)
+      if (!store.apply(commands)) return
       store.deselectAll()
     })
 
@@ -718,7 +736,7 @@ export function ClipView({
       const store = useEditorStore.getState()
       const commands = commandsToLinkClips(store.doc, menuSelectionIds())
       if (!commands) return
-      store.apply(commands)
+      if (!store.apply(commands)) return
       toast({ title: 'Clips linked' })
     })
 
@@ -727,7 +745,7 @@ export function ClipView({
       const store = useEditorStore.getState()
       const commands = commandsToUnlinkClips(store.doc, menuSelectionIds())
       if (!commands) return
-      store.apply(commands)
+      if (!store.apply(commands)) return
       toast({ title: 'Audio and video unlinked' })
     })
 
@@ -740,14 +758,14 @@ export function ClipView({
         store.activeSequencePath,
       )
       if (!commands) return
-      store.apply(commands)
+      if (!store.apply(commands)) return
       store.deselectAll()
     })
 
   const onMenuDelete = () =>
     runMenuAction(() => {
       const store = useEditorStore.getState()
-      store.apply(commandsToDeleteClips(store.doc, menuSelectionIds()))
+      if (!store.apply(commandsToDeleteClips(store.doc, menuSelectionIds()))) return
       store.deselectAll()
     })
 

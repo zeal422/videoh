@@ -377,6 +377,20 @@ export interface Track {
    * `muted`; a hidden track still serves as a track-matte source.
    */
   visible?: boolean
+  /**
+   * Audio monitoring solo (0.14.0). Audio tracks only; absent means false.
+   * While any audio track in a sequence is soloed, only soloed audio tracks
+   * are audible there; a soloed track that is also muted stays silent. The one
+   * shared rule lives in `tracks.ts` and gates preview and both export paths.
+   */
+  solo?: boolean
+  /**
+   * Track lock (0.14.0). Absent means false. A locked track's clips cannot be
+   * moved, trimmed, split, deleted, or property-edited; playback, selection and
+   * inspection stay available, as do the track controls that can unlock it.
+   * Enforced by the command layer (`LOCK_RULES`), not only by the UI.
+   */
+  locked?: boolean
   clips: Clip[]
 }
 

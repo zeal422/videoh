@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { findClip } from '@/lib/editor/factories'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
+import { lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
 import { frameToTime } from '@/lib/editor/time'
 import {
   addVolumeKeyframe,
@@ -20,6 +21,7 @@ import {
   DB_FLOOR,
 } from '@/lib/editor/volume-automation'
 import type { Clip, Keyframe } from '@/lib/editor/types'
+import { toast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 
 /** The trim handles are 8px wide; the envelope's plot starts clear of them. */
@@ -116,6 +118,26 @@ export function VolumeEnvelope({
   }
 
   /**
+   * Lock gate (0.14.0): every envelope edit (dot drag, double-click add,
+   * Alt-click remove, keyboard nudge or delete) is a clip edit, so a locked
+   * lane refuses it before anything is written. The command layer enforces the
+   * same rule; this only supplies the early message and stops the gesture.
+   */
+  const refuseIfLocked = (): boolean => {
+    // The envelope writes only THIS clip's volume curve, so its own lane is
+    // the lock that matters; a locked partner lane blocks group geometry
+    // (move/trim/split), not this clip's automation.
+    const locked = lockedTrackForClip(useEditorStore.getState().doc, clip.id)
+    if (!locked) return false
+    toast({
+      title: 'Track locked',
+      description: trackLockMessage(locked),
+      variant: 'destructive',
+    })
+    return true
+  }
+
+  /**
    * The live clip and its curve. An absent curve is an EMPTY array, not a
    * reason to bail: double-clicking a static clip must be able to seed the
    * very first point.
@@ -136,6 +158,7 @@ export function VolumeEnvelope({
   }
 
   const addAt = (clientX: number) => {
+    if (refuseIfLocked()) return
     const rect = plotRef.current?.getBoundingClientRect()
     if (!rect || rect.width <= 0) return
     const found = liveCurve()
@@ -157,6 +180,7 @@ export function VolumeEnvelope({
     if (razorActive || e.button !== 0) return
     e.preventDefault()
     e.stopPropagation()
+    if (refuseIfLocked()) return
     // A second pointerdown abandons the still-live gesture first: detach it
     // and roll its transient back, rather than folding two drags into one undo.
     detachRef.current?.()
@@ -281,6 +305,7 @@ export function VolumeEnvelope({
     if (key === 'Delete' || key === 'Backspace') {
       e.preventDefault()
       e.stopPropagation()
+      if (refuseIfLocked()) return
       const found = liveCurve()
       if (!found) return
       const current = found.curve[index]
@@ -296,6 +321,7 @@ export function VolumeEnvelope({
     }
     e.preventDefault()
     e.stopPropagation()
+    if (refuseIfLocked()) return
     const found = liveCurve()
     if (!found) return
     const current = found.curve[index]

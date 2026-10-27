@@ -59,6 +59,7 @@ export function EditorShell() {
   const isMobile = useIsMobile()
   const doc = useEditorStore((s) => s.doc)
   const pendingRestore = useEditorStore((s) => s.pendingRestore)
+  const lockNotice = useEditorStore((s) => s.lockNotice)
   const hidden = useWorkspaceStore((s) => s.hidden)
   const sizes = useWorkspaceStore((s) => s.sizes)
   const collapsed = useWorkspaceStore((s) => s.collapsed)
@@ -243,6 +244,18 @@ export function EditorShell() {
   useEffect(() => {
     refreshPausedPreview()
   }, [doc])
+
+  // One lock refusal message, from any dispatch path (0.14.0). The command
+  // layer is the authority; the store records the refusal instead of throwing
+  // so a keyboard repeat or a slider commit reports it here exactly once.
+  useEffect(() => {
+    if (!lockNotice) return
+    toast({
+      title: 'Track locked',
+      description: lockNotice.message,
+      variant: 'destructive',
+    })
+  }, [lockNotice])
 
   // Filmstrip asset lifecycle: the store update that installs a project,
   // removes media, or relinks a file runs this BEFORE React re-renders, so a

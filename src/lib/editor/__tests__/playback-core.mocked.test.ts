@@ -1602,3 +1602,123 @@ describe('PlaybackCore sub-frame-rate blending (mocked browser)', () => {
     spy.mockRestore()
   })
 })
+
+describe('track solo in the preview mixer (0.14.0)', () => {
+  const AUDIO = createMediaAsset({
+    id: 'msolo',
+    kind: 'audio',
+    name: 's.mp3',
+    duration: 10,
+    url: 'blob:solo',
+    waveformPeaks: [0.4, 0.6],
+  })
+
+  function soloDoc(
+    a1: { solo?: boolean; muted?: boolean } = {},
+    a2: { solo?: boolean; muted?: boolean } = {},
+    gains: { one?: number; two?: number } = {},
+  ): Doc {
+    const doc = createDoc()
+    doc.media = [AUDIO]
+    const video = createTrack('video', 1, { id: 'sv' })
+    const one = createTrack('audio', 1, {
+      id: 'sa1',
+      ...a1,
+      clips: [
+        createClip({
+          id: 's1',
+          mediaId: AUDIO.id,
+          start: 0,
+          duration: 4,
+          audioOnly: true,
+          gain: gains.one,
+        }),
+      ],
+    })
+    const two = createTrack('audio', 2, {
+      id: 'sa2',
+      ...a2,
+      clips: [
+        createClip({
+          id: 's2',
+          mediaId: AUDIO.id,
+          start: 0,
+          duration: 4,
+          audioOnly: true,
+          gain: gains.two,
+        }),
+      ],
+    })
+    doc.project.tracks = [video, one, two]
+    return doc
+  }
+
+  const gainsOf = () =>
+    masterGainOf(h.lastAudioContext()).inputs.map((n) => (n as FakeGainNode).gain.last?.value ?? 1)
+
+  it('no solo keeps both audio lanes audible', async () => {
+    const { core } = makeCore(soloDoc())
+    await core.play()
+    await h.pump.pump(1)
+    expect(gainsOf()).toEqual([1, 1])
+    core.dispose()
+  })
+
+  it('soloing A1 silences A2 in the preview graph', async () => {
+    const { core } = makeCore(soloDoc({ solo: true }))
+    await core.play()
+    await h.pump.pump(1)
+    expect(gainsOf()).toEqual([1, 0])
+    core.dispose()
+  })
+
+  it('two solos stay audible, and gain still multiplies', async () => {
+    const { core } = makeCore(soloDoc({ solo: true }, { solo: true }, { one: 0.5, two: 0.25 }))
+    await core.play()
+    await h.pump.pump(1)
+    const gains = gainsOf()
+    expect(gains[0]).toBeCloseTo(0.5)
+    expect(gains[1]).toBeCloseTo(0.25)
+    core.dispose()
+  })
+
+  it('a soloed track that is muted stays silent', async () => {
+    const { core } = makeCore(soloDoc({ solo: true, muted: true }))
+    await core.play()
+    await h.pump.pump(1)
+    expect(gainsOf()).toEqual([0, 0])
+    core.dispose()
+  })
+
+  it("silences a solo video's embedded audio while an audio lane is soloed", async () => {
+    const { doc, asset } = makeDoc()
+    doc.project.tracks = [
+      createTrack('video', 1, {
+        id: 'vv',
+        clips: [createClip({ id: 'vv1', mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })],
+      }),
+      createTrack('audio', 1, {
+        id: 'sa1',
+        solo: true,
+        clips: [
+          createClip({
+            id: 'sa1clip',
+            mediaId: AUDIO.id,
+            start: 0,
+            duration: 4,
+            audioOnly: true,
+          }),
+        ],
+      }),
+    ]
+    doc.media.push(AUDIO)
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+    const gains = gainsOf()
+    expect(gains).toHaveLength(2)
+    expect(gains[0]).toBe(0)
+    expect(gains[1]).toBe(1)
+    core.dispose()
+  })
+})

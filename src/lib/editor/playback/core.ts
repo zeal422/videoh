@@ -16,6 +16,7 @@ import { hasLinkedAudioTwin, linkGroupChangesRate } from '../links'
 import { animatedValue, constantTimeScaleRate, hasTimeScaleRamp } from '../keyframes'
 import { ClipMediaPool } from '../media/elements'
 import { clamp } from '../time'
+import { audibleTrackIds } from '../tracks'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
 import { drawFrame, type FrameBlendSource } from './compositor'
 
@@ -68,7 +69,9 @@ interface NestedClip {
   /** Absolute time of this clip's sequence local 0. */
   offset: number
   /** Enclosing containers from outermost to innermost, with their track and sequence offset. */
-  ancestors: { clip: Clip; track: Track; offset: number }[]
+  ancestors: { clip: Clip; track: Track; offset: number; audibleTracks: Set<string> }[]
+  /** Track ids audible in THIS clip's sequence (solo + mute, tracks.ts). */
+  audibleTracks: Set<string>
 }
 
 /** Depth-first walk of a track list, descending into every compound clip. */
@@ -76,12 +79,15 @@ function walkClips(
   doc: Doc,
   tracks: readonly Track[],
   offset: number,
-  ancestors: { clip: Clip; track: Track; offset: number }[],
+  ancestors: { clip: Clip; track: Track; offset: number; audibleTracks: Set<string> }[],
   out: NestedClip[],
 ): void {
+  // One audibility set per sequence: solo and mute are evaluated in the
+  // sequence that owns the tracks, never against a parent's or child's set.
+  const audibleTracks = audibleTrackIds(tracks)
   for (const track of tracks) {
     for (const clip of track.clips) {
-      out.push({ clip, track, offset, ancestors })
+      out.push({ clip, track, offset, ancestors, audibleTracks })
       if (clip.sequenceId) {
         const sequence = findSequence(doc, clip.sequenceId)
         if (sequence) {
@@ -89,7 +95,7 @@ function walkClips(
             doc,
             sequence.tracks,
             offset + clip.start,
-            [...ancestors, { clip, track, offset }],
+            [...ancestors, { clip, track, offset, audibleTracks }],
             out,
           )
         }
@@ -518,7 +524,7 @@ export class PlaybackCore {
   private syncMedia(t: number, forceSeek = false): void {
     const doc = this.opts.getDoc()
     this.releaseMissingClips()
-    for (const { clip, track, offset, ancestors } of this.activeClipList(doc)) {
+    for (const { clip, track, offset, ancestors, audibleTracks } of this.activeClipList(doc)) {
       if (track.kind === 'text') continue
       const asset = findMedia(doc, clip.mediaId)
       // Restored sessions keep assets without a URL ("missing" until
@@ -571,7 +577,7 @@ export class PlaybackCore {
         } else {
           applyPlaybackRate(el, clip)
         }
-        const gain = this.computeGain(doc, track, clip, t, offset, ancestors)
+        const gain = this.computeGain(doc, track, clip, t, offset, ancestors, audibleTracks)
         this.applyGain(clip.id, el, gain, clip)
       } else if (!el.paused) {
         el.pause()
@@ -774,14 +780,20 @@ export class PlaybackCore {
     this.seekingEls.delete(el)
   }
 
-  /** volume curve (animated or static gain) × clip mute × track mute × crossfade alpha; reversed clips are silent. */
+  /** volume curve × solo/mute audibility × clip mute × crossfade alpha; reversed clips are silent. */
   private computeGain(
     doc: Doc,
     track: Track,
     clip: Clip,
     t: number,
     offset = 0,
-    ancestors: { clip: Clip; track: Track; offset: number }[] = [],
+    ancestors: {
+      clip: Clip
+      track: Track
+      offset: number
+      audibleTracks: Set<string>
+    }[] = [],
+    audibleTracks: Set<string> = audibleTrackIds([track]),
   ): number {
     const local = t - offset - clip.start
     let gain = animatedValue(clip, 'volume', local)
@@ -798,7 +810,7 @@ export class PlaybackCore {
     // flag could; it covers both pair members.
     if (
       clip.muted ||
-      track.muted ||
+      !audibleTracks.has(track.id) ||
       clip.reverse ||
       linkGroupChangesRate(doc, clip) ||
       hasLinkedAudioTwin(doc, clip)
@@ -811,7 +823,7 @@ export class PlaybackCore {
     // Every enclosing compound container applies its gain, mute, volume curve
     // and crossfade ONCE to the nested mix (its own track and local clock).
     for (const ancestor of ancestors) {
-      if (ancestor.clip.muted || ancestor.track.muted) return 0
+      if (ancestor.clip.muted || !ancestor.audibleTracks.has(ancestor.track.id)) return 0
       gain *= animatedValue(ancestor.clip, 'volume', t - ancestor.offset - ancestor.clip.start)
       gain *= crossfadeFactor(ancestor.track, ancestor.clip, t - ancestor.offset)
     }

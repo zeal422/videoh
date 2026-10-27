@@ -165,13 +165,12 @@ export function CaptionsPanel() {
       const track = state.project.tracks.find(
         (t) => t.kind === 'text' && t.clips.some((c) => c.isCaption),
       )
-      if (track) {
-        store.apply({ type: 'addCaptionCue', trackId: track.id, start: newCueAt })
-      } else {
-        // No captions track yet: create a first-free Captions track and stamp
-        // the cue in one batch, so creation stays one undo step.
-        store.apply(commandsToAddCaptionCue(state, newCueAt))
-      }
+      const applied = track
+        ? store.apply({ type: 'addCaptionCue', trackId: track.id, start: newCueAt })
+        : // No captions track yet: create a first-free Captions track and stamp
+          // the cue in one batch, so creation stays one undo step.
+          store.apply(commandsToAddCaptionCue(state, newCueAt))
+      if (!applied) return
       // The path resets only after the stamp lands: a refusal must not
       // strand the user at the root with no cue created. The explicit seek
       // lands the playhead on the new cue; the engine call is required for
@@ -204,7 +203,7 @@ export function CaptionsPanel() {
       return
     }
     try {
-      useEditorStore.getState().apply({
+      const applied = useEditorStore.getState().apply({
         type: 'importCaptions',
         cues: cues.map((c) => ({
           start: c.startMs / 1000,
@@ -212,6 +211,7 @@ export function CaptionsPanel() {
           text: c.text,
         })),
       })
+      if (!applied) return
     } catch (error) {
       if (error instanceof EditorCommandError) {
         toast({ title: 'Could not import the SRT file', variant: 'destructive' })

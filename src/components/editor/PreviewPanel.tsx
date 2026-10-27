@@ -20,6 +20,7 @@ import { attachPreviewEngine, detachPreviewEngine } from '@/lib/editor/playback/
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { clamp01, measureTextBox } from '@/lib/editor/playback/text-box'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
+import { lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
 import { toast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import { ScopesPanel } from './ScopesPanel'
@@ -164,6 +165,17 @@ export function PreviewPanel() {
       return
     }
     if (!canDragText || !textClip?.style || e.button !== 0) return
+    // Lock gate (0.14.0): a text drag writes the clip's style, so a locked
+    // lane refuses it before the transient starts (the command layer agrees).
+    const lockedTrack = lockedTrackForClip(useEditorStore.getState().doc, textClip.id)
+    if (lockedTrack) {
+      toast({
+        title: 'Track locked',
+        description: trackLockMessage(lockedTrack),
+        variant: 'destructive',
+      })
+      return
+    }
     const canvas = canvasRef.current
     const rect = canvas?.getBoundingClientRect()
     if (!rect || rect.width === 0 || rect.height === 0) return

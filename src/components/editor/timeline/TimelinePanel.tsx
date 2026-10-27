@@ -10,6 +10,8 @@ import {
   Type as TypeIcon,
   Eye,
   EyeOff,
+  Lock,
+  LockOpen,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -813,6 +815,7 @@ export function TimelinePanel() {
                 data-lane-id={track.id}
                 data-lane-kind={track.kind}
                 data-visible={track.visible === false ? 'false' : 'true'}
+                data-locked={track.locked === true ? 'true' : 'false'}
                 className={cn(
                   'relative flex-1 border-b border-border/60',
                   track.visible === false && 'opacity-60',
@@ -952,7 +955,7 @@ export function TimelinePanel() {
 
 /**
  * A timeline lane's header: kind icon, name (double-click or the menu to
- * rename), clip count, track mute, and the track menu.
+ * rename), the visibility/mute/solo/lock controls, and the track menu.
  *
  * The menu is where the track-level commands live — `renameTrack` and
  * `removeTrack` had no UI reachable from anywhere, so neither was usable.
@@ -970,6 +973,21 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
   const renameFromMenuRef = useRef(false)
   const toggleMute = () =>
     useEditorStore.getState().apply({ type: 'toggleTrackMute', trackId: track.id })
+  // Solo is an audio-monitoring control (0.14.0): the header only shows it on
+  // audio lanes, and the command refuses it on any other kind anyway.
+  const soloed = track.solo === true
+  const setSolo = (solo: boolean) => {
+    if (soloed === solo) return
+    useEditorStore.getState().apply({ type: 'setTrackSolo', trackId: track.id, solo })
+  }
+  // Lock (0.14.0): valid on every lane kind. Dispatch only on a real change;
+  // the command layer always writes a history entry, so the UI must not send
+  // a no-op.
+  const locked = track.locked === true
+  const setLocked = (next: boolean) => {
+    if (locked === next) return
+    useEditorStore.getState().apply({ type: 'setTrackLocked', trackId: track.id, locked: next })
+  }
   // Visibility eyeball (0.8.6): video/text lanes only. Audio lanes keep the
   // mute toggle above; a video-only flag would do nothing there.
   const hidden = track.visible === false
@@ -1006,8 +1024,9 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
           data-testid={`track-header-${track.id}`}
           data-targeted={untargeted ? 'false' : 'true'}
           data-visible={hidden ? 'false' : 'true'}
+          data-locked={locked ? 'true' : 'false'}
           className={cn(
-            'sticky left-0 z-30 flex shrink-0 items-center gap-2 border-b border-r border-b-border/60 bg-card px-2',
+            'sticky left-0 z-30 flex shrink-0 items-center gap-1.5 border-b border-r border-b-border/60 bg-card px-2',
             hidden && 'opacity-60',
           )}
           style={{ width: TRACK_HEADER_WIDTH }}
@@ -1054,6 +1073,7 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
               size="icon"
               className="size-6"
               aria-label={hidden ? `Show ${track.name}` : `Hide ${track.name}`}
+              aria-pressed={!hidden}
               onClick={toggleVisible}
             >
               {hidden ? (
@@ -1063,18 +1083,66 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
               )}
             </Button>
           )}
+          {track.kind === 'audio' ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              data-testid={`track-mute-${track.id}`}
+              className={cn(
+                'size-6 text-[10px] font-semibold',
+                track.muted ? 'bg-rose-500/15 text-rose-400' : 'text-muted-foreground',
+              )}
+              aria-label={track.muted ? `Unmute ${track.name}` : `Mute ${track.name}`}
+              aria-pressed={track.muted === true}
+              onClick={toggleMute}
+            >
+              M
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-6"
+              aria-label={track.muted ? `Unmute ${track.name}` : `Mute ${track.name}`}
+              aria-pressed={track.muted === true}
+              onClick={toggleMute}
+            >
+              {track.muted ? (
+                <VolumeX className="size-3.5 text-rose-400" />
+              ) : (
+                <Volume2 className="size-3.5" />
+              )}
+            </Button>
+          )}
+          {track.kind === 'audio' && (
+            <Button
+              variant="ghost"
+              size="icon"
+              data-testid={`track-solo-${track.id}`}
+              className={cn(
+                'size-6 text-[10px] font-semibold',
+                soloed ? 'bg-amber-500/20 text-amber-300' : 'text-muted-foreground',
+              )}
+              aria-label={soloed ? `Unsolo ${track.name}` : `Solo ${track.name}`}
+              aria-pressed={soloed}
+              onClick={() => setSolo(!soloed)}
+            >
+              S
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"
-            className="size-6"
-            aria-label={track.muted ? `Unmute ${track.name}` : `Mute ${track.name}`}
-            onClick={toggleMute}
-          >
-            {track.muted ? (
-              <VolumeX className="size-3.5 text-rose-400" />
-            ) : (
-              <Volume2 className="size-3.5" />
+            data-testid={`track-lock-${track.id}`}
+            className={cn(
+              'size-6',
+              locked ? 'bg-amber-500/15 text-amber-400' : 'text-muted-foreground',
             )}
+            aria-label={locked ? `Unlock ${track.name}` : `Lock ${track.name}`}
+            aria-pressed={locked}
+            onClick={() => setLocked(!locked)}
+          >
+            {locked ? <Lock className="size-3.5" /> : <LockOpen className="size-3.5" />}
           </Button>
         </div>
       </ContextMenuTrigger>
@@ -1101,6 +1169,22 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
           onCheckedChange={(next) => setTargeted(next)}
         >
           Target Track
+        </ContextMenuCheckboxItem>
+        {track.kind === 'audio' && (
+          <ContextMenuCheckboxItem
+            data-testid="track-menu-solo"
+            checked={soloed}
+            onCheckedChange={(next) => setSolo(next)}
+          >
+            Solo Track
+          </ContextMenuCheckboxItem>
+        )}
+        <ContextMenuCheckboxItem
+          data-testid="track-menu-lock"
+          checked={locked}
+          onCheckedChange={(next) => setLocked(next)}
+        >
+          Lock Track
         </ContextMenuCheckboxItem>
         <ContextMenuItem
           data-testid="track-menu-select"

@@ -182,8 +182,20 @@ captions)` on the left, with the inspector as a full-height right column. Panel 
   `PANEL_BOUNDS` shares of their own group: media 32 (about 24% of the full viewport beside the 26%
   inspector), source 24, inspector 26 (root), timeline 50 (left workspace height), captions 24.
   Track rows are 44px video, 40px audio, and 36px text, with a 168px sticky header. The header holds
-  the kind icon, name, visibility eye (video/text), and mute toggle at 24px hit targets; the clip
-  count and a header target button are deliberately absent (targeting lives in the context menu).
+  the kind icon, the truncated name, and three 24px controls: visibility/mute on video and text lanes,
+  or `M`/`S` text buttons on audio lanes, plus the lock button everywhere. The clip count and a header
+  target button are deliberately absent (targeting lives in the context menu). The header uses
+  `gap-1.5` so the name keeps readable width beside the controls, and hit targets never shrink below
+  24px.
+- **Solo and lock controls.** Audio `M`/`S` are pressed-state text buttons: mute tints rose, solo tints
+  amber. The lock button shows `LockOpen` in the muted-foreground token and `Lock` in amber with a
+  translucent amber fill when set, so a locked lane is visible without hovering. The header and lane
+  carry `data-locked`, and the lane is NOT dimmed as a whole: a locked lane is still inspectable, and
+  dimming would read as disabled. The context menu mirrors both as checkbox items (`Solo Track` on
+  audio only, `Lock Track` on every lane) beside Target Track.
+- **Track eyeball dims the whole lane.** The header eye (video/text lanes only) toggles `visible`;
+  the lane div carries `data-visible` and dims with the header, so a hidden lane reads as one unit.
+  Audio lanes get no eye; muting stays on the track mute toggle.
 - **Editor wordmark.** A compact `videoh` link sits before the File menu, outside `role="menubar"`,
   and points at `/`. It hides below `md` so the File through Help triggers keep their room; the
   full-screen button and version stay pinned at the right edge.

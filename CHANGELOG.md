@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] - 2026-10-27
+
+### Added
+
+- **Track solo.** Audio lanes show `M`/`S` text buttons. `Track.solo` is audio-only: the command refuses it on video and text lanes, and hydration drops a hostile flag there. Audibility is one pure set (`audibleTrackIds`): with no solo it is every non-muted track, and with any audio solo it is only the non-muted soloed audio tracks. The preview mixer, `planAudioFrame`, and the MP4 `scheduleTracks` / `docHasAudibleClips` all read it. Solo is evaluated per sequence, so a solo inside a compound applies when that sequence renders and the parent keeps its own state. A solo video's embedded audio is silent while an audio lane is soloed, a soloed lane that is muted stays silent, and the A/V twin remains the sole carrier.
+- **Track lock.** `Track.locked` is valid on every lane kind. The typed `LOCK_RULES` map covers every command, so a new command fails the TypeScript build until it has a decision and an affected-track resolver. `assertCommandAllowed` refuses a locked lane before anything is cloned. Move, delete, split, unlink, and link changes expand through link groups; media removal and relink check every clip using the asset; removing an open lane that holds a locked clip's link partner refuses; add/paste/drop check the destination lane; clip properties, transitions, effects, keyframes, clip markers, and caption cues check their clip or lane. Track controls, adding lanes, sequence markers, project libraries and settings, caption import, project open, undo/redo, and autosave are exempt.
+- **Header controls and menus.** Audio lanes show `M`/`S` and a lock; video and text lanes keep the eye and mute plus the lock. The lock shows `LockOpen` normally and amber `Lock` with a translucent fill when set, and the header and lane carry `data-locked`. The context menu adds Solo Track (audio only) and Lock Track checkboxes, keeps Target Track, and the 168px header holds three 24px controls beside the name.
+- **Refusal UX.** Clip move/trim, the volume envelope, keyframe graph dots and handles, text drag, and clip-marker drag pre-check the lane and toast before starting a transient. A committed refusal leaves the doc and history byte-identical and raises one "Track locked" toast naming the lane through the store's `lockNotice`.
+
+### Changed
+
+- `store.apply` returns `true` when a command lands and `false` when a command-layer lock refusal stops it; other command errors still throw. `applyTransient` routes through the same guard and writes nothing for a locked lane. Callers with success side effects now check the result.
+- Track factories and hydration preserve `solo` and `locked`. There is no schema bump: v4 files round-trip, absent fields read false, and v1 to v3 files load with both false.
+- The header gap tightens to `gap-1.5` so a short name survives beside the controls.
+
+### Fixed
+
+- **Batch lock bypass.** `applyCommands` validated every command against the pre-batch doc, so a
+  batch that locked an open lane and then edited it could land the edit on a locked lane. Each
+  command is now guarded against the in-flight clone; a later refusal still discards the whole batch,
+  so the caller sees no partial write and no history entry.
+- **Matte-reference lock hole.** Removing an open lane stripped every `trackMatte` entry that
+  pointed at it, including entries on a locked lane, while the lock resolver only checked the removed
+  lane and its clips' link partners. The resolver now also covers every lane in the sequence whose
+  clips reference the removed lane through a `trackMatte` effect.
+- **Nested export early-out.** `docHasAudibleClips` now applies the same container gate as `scheduleTracks`, so a muted or soloed-out compound no longer counts as audible. The mix returns no audio track instead of building a silent one.
+
+### Tests and docs
+
+- The suite moves to 85 files and 1,823 tests. `track-controls.test.ts` covers the flags, the shared audibility set, the whole lock inventory (blocked and exempt), store and transient refusals, whole-batch refusal, linked groups, media removal and relink, compound scope, undo of a pre-lock edit, and selection/copy. Serialization tests cover the flags, absent values, hostile non-booleans, a solo flag on a non-audio lane, and v1 to v3 files. The preview, offline plan, and MP4 mix run the same solo matrix. Browser proof covered solo, solo plus mute, two solos, drag/trim/delete/split/effect/paste refusals, a locked pair member, an open lane holding a locked partner, unlock success, lock persistence across reload, and undo/redo.
+
 ## [0.13.0] - 2026-10-27
 
 ### Added

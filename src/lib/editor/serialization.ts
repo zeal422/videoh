@@ -274,18 +274,27 @@ export function deserializeDoc(data: unknown): {
 
 /** Hydrates a track list (root or a compound sequence). */
 function hydrateTracks(rawTracks: unknown, media: MediaAsset[]): Track[] {
-  return (Array.isArray(rawTracks) ? (rawTracks as Record<string, unknown>[]) : []).map((t) => ({
-    id: typeof t.id === 'string' ? t.id : `track_${Math.random().toString(36).slice(2)}`,
-    kind: (t.kind === 'audio' || t.kind === 'text' ? t.kind : 'video') as TrackKind,
-    name: typeof t.name === 'string' ? t.name : 'Track',
-    muted: !!t.muted,
-    // Absent means visible; only an explicit false survives, so hydrated
-    // docs (and the files saved from them) stay clean.
-    ...(t.visible === false ? { visible: false as const } : {}),
-    clips: (Array.isArray(t.clips) ? (t.clips as Record<string, unknown>[]) : []).map((c) =>
-      hydrateClip(c, media),
-    ),
-  }))
+  return (Array.isArray(rawTracks) ? (rawTracks as Record<string, unknown>[]) : []).map((t) => {
+    const kind = (t.kind === 'audio' || t.kind === 'text' ? t.kind : 'video') as TrackKind
+    return {
+      id: typeof t.id === 'string' ? t.id : `track_${Math.random().toString(36).slice(2)}`,
+      kind,
+      name: typeof t.name === 'string' ? t.name : 'Track',
+      muted: !!t.muted,
+      // Absent means visible; only an explicit false survives, so hydrated
+      // docs (and the files saved from them) stay clean.
+      ...(t.visible === false ? { visible: false as const } : {}),
+      // Solo and lock (0.14.0) read the opposite way: absent means false, so
+      // only an explicit true survives. Solo is audio-only; a hostile `true`
+      // on a video or text lane hydrates as absent, the same refusal the
+      // command layer applies.
+      ...(t.solo === true && kind === 'audio' ? { solo: true as const } : {}),
+      ...(t.locked === true ? { locked: true as const } : {}),
+      clips: (Array.isArray(t.clips) ? (t.clips as Record<string, unknown>[]) : []).map((c) =>
+        hydrateClip(c, media),
+      ),
+    }
+  })
 }
 
 /** Hydrates the project's compound sequences, dropping non-object entries. */

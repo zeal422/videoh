@@ -800,3 +800,76 @@ describe('Clip tab volume summary', () => {
     expect(after.project.tracks[1].clips[0].gain).toBeCloseTo(0.55, 5)
   })
 })
+
+describe('volume envelope on a locked track (0.14.0)', () => {
+  function lockedDoc(keyframes = TWO_POINTS) {
+    const doc = audioDoc(keyframes)
+    doc.project.tracks[0].locked = true
+    return doc
+  }
+
+  it('refuses a dot drag before any transient starts', () => {
+    seedStore(lockedDoc(), 'clip-a')
+    render(<EnvelopeHarness />)
+    stubPlot()
+    const pastBefore = useEditorStore.getState().past.length
+
+    fireEvent.pointerDown(screen.getByTestId('volume-dot-0'), {
+      bubbles: true,
+      pointerId: 21,
+      clientX: 50,
+      clientY: yFor(1),
+      button: 0,
+    })
+    fireEvent.pointerMove(window, { pointerId: 21, clientX: 150, clientY: yFor(0.5) })
+    expect(isTransientActive()).toBe(false)
+    expect(screen.queryByTestId('volume-envelope-hud')).not.toBeInTheDocument()
+    fireEvent.pointerUp(window, { pointerId: 21 })
+
+    const curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.volume
+    expect(curve).toEqual(TWO_POINTS)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore)
+  })
+
+  it('refuses a double-click add', () => {
+    seedStore(audioDoc(), 'clip-a')
+    useEditorStore.getState().doc.project.tracks[0].locked = true
+    render(<EnvelopeHarness />)
+    stubPlot()
+    fireEvent.doubleClick(screen.getByTestId('volume-envelope-hit'), {
+      clientX: 100,
+      clientY: yFor(1),
+    })
+    expect(
+      useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.volume,
+    ).toBeUndefined()
+  })
+
+  it('refuses Alt-click removal', () => {
+    seedStore(lockedDoc(), 'clip-a')
+    render(<EnvelopeHarness />)
+    stubPlot()
+    fireEvent.pointerDown(screen.getByTestId('volume-dot-0'), {
+      bubbles: true,
+      pointerId: 22,
+      clientX: 50,
+      clientY: yFor(1),
+      button: 0,
+      altKey: true,
+    })
+    fireEvent.pointerUp(window, { pointerId: 22 })
+    const curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.volume
+    expect(curve).toEqual(TWO_POINTS)
+  })
+
+  it('refuses keyboard nudge and delete', () => {
+    seedStore(lockedDoc(), 'clip-a')
+    render(<EnvelopeHarness />)
+    const dot = screen.getByTestId('volume-dot-0')
+    fireEvent.keyDown(dot, { key: 'ArrowUp' })
+    fireEvent.keyDown(dot, { key: 'ArrowLeft' })
+    fireEvent.keyDown(dot, { key: 'Delete' })
+    const curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.volume
+    expect(curve).toEqual(TWO_POINTS)
+  })
+})

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { HISTORY_LIMIT, PPS_DEFAULT } from './constants'
 import { clearClipboard } from './clipboard'
-import { applyCommand, applyCommands, EditorCommand } from './commands'
+import { applyCommand, applyCommands, EditorCommand, TrackLockedError } from './commands'
 import { activeTracks, createDoc, findClip, findSequence, findTrack } from './factories'
 import { linkedClips } from './links'
 import { markerSelectionExists, type MarkerSelection } from './markers'
@@ -120,8 +120,22 @@ export interface EditorState {
   autosavedAt: number | null
   /** Serialized JSON awaiting user confirmation for restore (startup banner). */
   pendingRestore: string | null
+  /**
+   * The latest command refused because a track was locked (0.14.0). Session
+   * state, never in the Doc and never undoable: the shell watches it and shows
+   * one toast with the command layer's own message, so every dispatch path
+   * (keyboard, menu, drag, Inspector, envelope) reports the refusal the same
+   * way without each call site growing its own catch.
+   */
+  lockNotice: { id: number; message: string; trackId: string } | null
 
-  apply: (command: EditorCommand | EditorCommand[]) => void
+  /**
+   * Applies one command or a batch and returns true when it landed. A command
+   * refused because a track is locked returns false: the doc and history stay
+   * untouched and `lockNotice` carries the message for the UI. Other command
+   * errors still throw (callers own their messages).
+   */
+  apply: (command: EditorCommand | EditorCommand[]) => boolean
   /** Begins a gesture slot and returns its token; pass the initiating pointerId when known. */
   beginTransient: (pointerId?: number) => number
   applyTransient: (command: EditorCommand) => void
@@ -228,6 +242,8 @@ function normalizeSourceState(
 let transientBase: Doc | null = null
 let transientToken = 0
 let transientPointerId: number | null = null
+/** Monotonic id for lock refusals, so the shell reacts to each new one. */
+let lockNoticeId = 0
 
 /** Ends the gesture slot: invalidates the live token and forgets its pointer. */
 function endTransient() {
@@ -332,6 +348,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   autosaveStatus: 'idle',
   autosavedAt: null,
   pendingRestore: null,
+  lockNotice: null,
 
   apply: (command) => {
     // A foreign commit during a live gesture (keyboard delete, menu action,
@@ -341,7 +358,21 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // makes the drag's later frames refuse to apply.
     rollbackToBase(set, get)
     const { doc, past } = get()
-    const next = Array.isArray(command) ? applyCommands(doc, command) : applyCommand(doc, command)
+    let next: Doc
+    try {
+      next = Array.isArray(command) ? applyCommands(doc, command) : applyCommand(doc, command)
+    } catch (error) {
+      // A locked track refuses the whole dispatch at the command layer: no
+      // doc write, no history entry. Surface it through the shell's one
+      // notice and let the caller keep its normal control flow.
+      if (error instanceof TrackLockedError) {
+        set({
+          lockNotice: { id: ++lockNoticeId, message: error.message, trackId: error.trackId },
+        })
+        return false
+      }
+      throw error
+    }
     // An edit that takes a lane's last clip takes the lane with it (empty
     // layers never linger), and an edit that drops the last container of a
     // compound takes its sequence with it. Both ride in the same history entry
@@ -370,6 +401,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // A removed media asset takes the Source monitor's selection with it.
       ...normalizeSourceState(pruned, get()),
     })
+    return true
   },
 
   beginTransient: (pointerId) => {
@@ -379,9 +411,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   applyTransient: (command) => {
-    // Deliberately unguarded: slider previews (InspectorPanel, EffectControls)
-    // apply transient frames WITHOUT a gesture slot and commit once via
-    // onValueCommit. Drag gestures guard their own frames by token instead.
+    // Slider previews (InspectorPanel, EffectControls) apply transient frames
+    // WITHOUT a gesture slot and commit once via onValueCommit. Drag gestures
+    // guard their own frames by token instead. `applyCommand` runs the lock
+    // guard first, so a mid-drag frame on a locked track writes nothing; the
+    // committed `apply` raises the one notice. Gesture paths also pre-check the
+    // lock before `beginTransient`, so a refused drag never starts.
     const { doc } = get()
     try {
       set({ doc: applyCommand(doc, command) })

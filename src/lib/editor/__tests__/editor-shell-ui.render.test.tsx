@@ -759,3 +759,37 @@ describe('playhead effect-contract', () => {
     expect(store().playhead).toBeCloseTo(2, 5)
   })
 })
+
+describe('track lock notice (0.14.0)', () => {
+  it('surfaces the command message for a refused dispatch and keeps the doc', async () => {
+    const asset = createMediaAsset({ kind: 'video', duration: 10, name: 'x.mp4' })
+    const track = createTrack('video', 1, { id: 'lv', locked: true })
+    track.clips = [createClip({ id: 'lc', mediaId: asset.id, start: 0, duration: 2, inPoint: 0 })]
+    const doc: Doc = {
+      project: {
+        tracks: [track],
+        id: 'p_lock_notice',
+        name: 'lock',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      },
+      media: [asset],
+    }
+    useEditorStore.setState({ doc })
+
+    render(
+      <>
+        <EditorShell />
+        <Toaster />
+      </>,
+    )
+    act(() => {
+      useEditorStore.getState().apply({ type: 'deleteClip', clipId: 'lc' })
+    })
+    expect(
+      await screen.findByText('Track V1 is locked. Unlock it to edit its clips.'),
+    ).toBeInTheDocument()
+    expect(useEditorStore.getState().doc.project.tracks[0].clips).toHaveLength(1)
+  })
+})

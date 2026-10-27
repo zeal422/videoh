@@ -10,7 +10,7 @@ import { Ruler } from '@/components/editor/timeline/Ruler'
 import { applyCommands } from '@/lib/editor/commands'
 import * as commandsModule from '@/lib/editor/commands'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
-import { editorStore, useEditorStore } from '../store'
+import { editorStore, isTransientActive, useEditorStore } from '../store'
 import { PPS_DEFAULT } from '@/lib/editor/constants'
 import { createClip, createDoc, createMediaAsset, createTrack, sourceTimeAt } from '../factories'
 import { toast } from '@/hooks/use-toast'
@@ -1282,5 +1282,174 @@ describe('lane-drop routing by placement mode (0.7.2)', () => {
     expect(tracks[0].clips).toHaveLength(1)
     expect(tracks[1].clips.find((c) => c.id === 'c1')!.start).toBe(6) // no shift
     expect(useEditorStore.getState().past).toHaveLength(1)
+  })
+})
+
+describe('track solo and lock controls (0.14.0)', () => {
+  function controlsDoc(lockedVideo = false) {
+    const asset = createMediaAsset({ kind: 'video', duration: 30, name: 'demo.mp4' })
+    const video = createTrack('video', 1, { id: 'ui_v', locked: lockedVideo })
+    video.clips = [
+      createClip({ id: 'ui_vc', mediaId: asset.id, start: 1, duration: 5, inPoint: 0 }),
+    ]
+    const audio = createTrack('audio', 1, { id: 'ui_a' })
+    const text = createTrack('text', 1, { id: 'ui_t' })
+    const doc: Doc = {
+      project: {
+        tracks: [text, video, audio],
+        id: 'p_controls',
+        name: 'controls',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      },
+      media: [asset],
+    }
+    return { doc, asset, video, audio, text }
+  }
+
+  const RULER_HEIGHT = 28
+
+  function clickMenuItem(testId: string) {
+    const item = screen.getByTestId(testId)
+    fireEvent.pointerDown(item, { button: 0 })
+    fireEvent.pointerUp(item, { button: 0 })
+    fireEvent.click(item, { button: 0 })
+  }
+
+  it('shows M/S on audio only and a lock control on every kind', () => {
+    const { doc } = controlsDoc()
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    expect(screen.getByTestId('track-solo-ui_a')).toBeInTheDocument()
+    expect(screen.getByTestId('track-mute-ui_a')).toHaveTextContent('M')
+    expect(screen.queryByTestId('track-solo-ui_v')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('track-solo-ui_t')).not.toBeInTheDocument()
+    for (const id of ['ui_v', 'ui_a', 'ui_t']) {
+      expect(screen.getByTestId(`track-lock-${id}`)).toBeInTheDocument()
+    }
+    // The 168px header keeps 24px hit targets for every control.
+    expect(TRACK_HEADER_WIDTH).toBe(168)
+    for (const id of ['track-mute-ui_a', 'track-solo-ui_a', 'track-lock-ui_a']) {
+      expect(screen.getByTestId(id).className).toContain('size-6')
+    }
+  })
+
+  it('S writes solo, reflects aria-pressed, and undo restores it', () => {
+    const { doc } = controlsDoc()
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+    const solo = screen.getByTestId('track-solo-ui_a')
+    expect(solo).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(solo)
+    const track = () => useEditorStore.getState().doc.project.tracks.find((t) => t.id === 'ui_a')!
+    expect(track().solo).toBe(true)
+    expect(screen.getByTestId('track-solo-ui_a')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('track-solo-ui_a')).toHaveAccessibleName('Unsolo A1')
+    act(() => useEditorStore.getState().undo())
+    // Undo restores the exact pre-command track: absent means false.
+    expect(track().solo).toBeUndefined()
+    expect(screen.getByTestId('track-solo-ui_a')).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('the lock control is visible without hovering and toggles both ways', () => {
+    const { doc } = controlsDoc()
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+    const lock = screen.getByTestId('track-lock-ui_v')
+    expect(lock).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(lock)
+    expect(useEditorStore.getState().doc.project.tracks.find((t) => t.id === 'ui_v')?.locked).toBe(
+      true,
+    )
+    expect(screen.getByTestId('track-lock-ui_v')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('track-lock-ui_v').className).toContain('text-amber-400')
+    expect(screen.getByTestId('track-header-ui_v')).toHaveAttribute('data-locked', 'true')
+    expect(document.querySelector('[data-lane-id="ui_v"]')).toHaveAttribute('data-locked', 'true')
+    fireEvent.click(screen.getByTestId('track-lock-ui_v'))
+    expect(useEditorStore.getState().doc.project.tracks.find((t) => t.id === 'ui_v')?.locked).toBe(
+      false,
+    )
+  })
+
+  it('context menu offers Solo Track on audio, Lock Track on every lane, and keeps Target', () => {
+    const { doc } = controlsDoc()
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    fireEvent.contextMenu(screen.getByTestId('track-header-ui_a'))
+    expect(screen.getByTestId('track-menu-solo')).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByTestId('track-menu-lock')).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByTestId('track-menu-target')).toBeInTheDocument()
+    clickMenuItem('track-menu-solo')
+    expect(useEditorStore.getState().doc.project.tracks.find((t) => t.id === 'ui_a')?.solo).toBe(
+      true,
+    )
+
+    fireEvent.contextMenu(screen.getByTestId('track-header-ui_v'))
+    expect(screen.queryByTestId('track-menu-solo')).not.toBeInTheDocument()
+    expect(screen.getByTestId('track-menu-lock')).toBeInTheDocument()
+    clickMenuItem('track-menu-lock')
+    expect(useEditorStore.getState().doc.project.tracks.find((t) => t.id === 'ui_v')?.locked).toBe(
+      true,
+    )
+  })
+
+  it('a locked clip refuses a drag before any transient starts', () => {
+    const { doc } = controlsDoc(true)
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+    const startNow = () => useEditorStore.getState().doc.project.tracks[1].clips[0].start
+    const pastBefore = useEditorStore.getState().past.length
+    vi.mocked(toast).mockClear()
+
+    fireEvent.pointerDown(screen.getByTestId('clip-ui_vc'), {
+      button: 0,
+      pointerId: 11,
+      clientX: 100,
+      clientY: RULER_HEIGHT + 10 + 40,
+    })
+    fireEvent.pointerMove(window, {
+      pointerId: 11,
+      clientX: 180,
+      clientY: RULER_HEIGHT + 10 + 40,
+    })
+    expect(startNow()).toBe(1)
+    expect(isTransientActive()).toBe(false)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore)
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Track locked',
+        description: 'Track V1 is locked. Unlock it to edit its clips.',
+      }),
+    )
+    fireEvent.pointerUp(window, { pointerId: 11 })
+  })
+
+  it('a locked clip refuses a trim at pointerdown', () => {
+    const { doc } = controlsDoc(true)
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+    const durationNow = () => useEditorStore.getState().doc.project.tracks[1].clips[0].duration
+    const pastBefore = useEditorStore.getState().past.length
+    vi.mocked(toast).mockClear()
+
+    fireEvent.pointerDown(screen.getByLabelText('Trim clip end'), {
+      button: 0,
+      pointerId: 12,
+      clientX: 700,
+      clientY: RULER_HEIGHT + 10 + 40,
+    })
+    fireEvent.pointerMove(window, {
+      pointerId: 12,
+      clientX: 780,
+      clientY: RULER_HEIGHT + 10 + 40,
+    })
+    expect(durationNow()).toBe(5)
+    expect(isTransientActive()).toBe(false)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore)
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Track locked' }))
+    fireEvent.pointerUp(window, { pointerId: 12 })
   })
 })

@@ -20,7 +20,9 @@ import {
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { applySnap, computeSnapPoints, snapGuide } from '@/lib/editor/snap'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
+import { lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
 import { clamp } from '@/lib/editor/time'
+import { toast } from '@/hooks/use-toast'
 import type { Clip, Marker } from '@/lib/editor/types'
 import { cn } from '@/lib/utils'
 
@@ -69,6 +71,17 @@ export function ClipMarkers({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }
     if (e.button !== 0) return
     e.preventDefault()
     e.stopPropagation()
+    // Lock gate (0.14.0): a marker drag writes the clip, so a locked lane
+    // refuses it before the transient starts (the command layer agrees).
+    const lockedTrack = lockedTrackForClip(useEditorStore.getState().doc, clip.id)
+    if (lockedTrack) {
+      toast({
+        title: 'Track locked',
+        description: trackLockMessage(lockedTrack),
+        variant: 'destructive',
+      })
+      return
+    }
     // A second pointerdown abandons a still-live drag: cancel it (one clean
     // rollback) rather than just detaching, which would fold its move into
     // the new drag's undo entry. Multi-pointer only.
@@ -218,10 +231,10 @@ export function ClipMarkers({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }
                 data-testid="marker-menu-delete"
                 variant="destructive"
                 onSelect={() => {
-                  useEditorStore
+                  const applied = useEditorStore
                     .getState()
                     .apply({ type: 'deleteClipMarker', clipId: clip.id, markerId: marker.id })
-                  useEditorStore.getState().selectMarker(null)
+                  if (applied) useEditorStore.getState().selectMarker(null)
                 }}
               >
                 Delete Marker

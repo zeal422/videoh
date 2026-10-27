@@ -61,7 +61,7 @@ describe('timeline stacking order', () => {
   })
 
   it('track headers cover the playhead line (z-30 > z-20)', () => {
-    expect(panel).toMatch(/sticky left-0 z-30 flex shrink-0 items-center gap-2/)
+    expect(panel).toMatch(/sticky left-0 z-30 flex shrink-0 items-center gap-1\.5/)
   })
 
   it('snap guide stays under the playhead line and the headers, also row-confined', () => {

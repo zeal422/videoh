@@ -96,7 +96,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
   const deleteSelected = () => {
     if (!hasSelection) return
     // Linked A/V pairs die together — until explicitly unlinked.
-    apply(commandsToDeleteClips(doc, selectedIds))
+    if (!apply(commandsToDeleteClips(doc, selectedIds))) return
     useEditorStore.getState().deselectAll()
   }
 

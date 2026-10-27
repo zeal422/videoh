@@ -20,6 +20,7 @@ import { enabledEffects } from '../effects'
 import { segmentControls } from '../ease-segment'
 import { clipRendersAudio, linkGroupChangesRate } from '../links'
 import { clamp } from '../time'
+import { audibleTrackIds } from '../tracks'
 import type { BlendMode, Clip, Doc, EffectEntry, MediaAsset, Track } from '../types'
 
 /**
@@ -256,14 +257,19 @@ export function planAudioFrame(
 ): AudioFramePlan {
   const audible: AudioContribution[] = []
   const seqT = t - offset
+  // Solo + mute are evaluated per sequence: this list is the sequence being
+  // rendered, and a nested call computes the child's own set. One shared rule
+  // with the preview mixer and the MP4 mix (tracks.ts).
+  const audibleTracks = audibleTrackIds(tracks)
   for (const track of tracks) {
     if (track.kind === 'text') continue
     for (const clip of track.clips) {
       if (clip.sequenceId) {
         const sequence = findSequence(doc, clip.sequenceId)
         if (!sequence) continue
-        // The container's own mute OR its owning track's mute silences the mix.
-        if (!isActive(clip, seqT) || clip.muted || track.muted) continue
+        // The container's own mute, its owning track's mute, or a solo set
+        // that excludes that track silences the whole nested mix.
+        if (!isActive(clip, seqT) || clip.muted || !audibleTracks.has(track.id)) continue
         const containerGain =
           animatedValue(clip, 'volume', seqT - clip.start) * crossfadeFactor(track, clip, seqT)
         audible.push(
@@ -284,7 +290,13 @@ export function planAudioFrame(
       // The skip is DERIVED from the rates (linkGroupChangesRate): both halves
       // of an A/V pair go silent together, while a manual link with no carrier
       // keeps its own audio; the reverse skip it mirrors is a plain stored flag.
-      if (clip.muted || track.muted || clip.reverse || linkGroupChangesRate(doc, clip)) continue
+      if (
+        clip.muted ||
+        !audibleTracks.has(track.id) ||
+        clip.reverse ||
+        linkGroupChangesRate(doc, clip)
+      )
+        continue
 
       const local = seqT - clip.start
       let gain = animatedValue(clip, 'volume', local)

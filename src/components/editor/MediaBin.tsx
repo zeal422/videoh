@@ -85,7 +85,7 @@ export function MediaBin({ className, heading = true }: { className?: string; he
 
   const removeAsset = (asset: MediaAsset) => {
     try {
-      useEditorStore.getState().apply({ type: 'removeMediaAsset', mediaId: asset.id })
+      if (!useEditorStore.getState().apply({ type: 'removeMediaAsset', mediaId: asset.id })) return
       // The remove succeeded: the proxy's bytes belong to a gone asset.
       dropProxy(asset.id)
     } catch (error) {
@@ -100,11 +100,12 @@ export function MediaBin({ className, heading = true }: { className?: string; he
   const relink = async (asset: MediaAsset, file: File) => {
     try {
       const fresh = await importFile(file)
-      useEditorStore.getState().apply({
+      const applied = useEditorStore.getState().apply({
         type: 'relinkMedia',
         mediaId: asset.id,
         patch: relinkPatchFrom(fresh, 'manual'),
       })
+      if (!applied) return
       // The source bytes changed, so any proxy built for the old file is stale.
       dropProxy(asset.id)
       toast({ title: 'Media relinked', description: asset.name })

@@ -1,6 +1,6 @@
 # PLAN 05: Track solo and lock
 
-Status: planned
+Status: implemented, awaiting commit
 Depends on: [PLAN 02](PLAN-02-GEOMETRY-AND-CHROME.md), [PLAN 04](PLAN-04-VOLUME-AUTOMATION.md)
 Release: `0.14.0`
 Goal: add real audio-track solo and real track lock, with both behaviors enforced in the command and
@@ -39,8 +39,9 @@ mix layers, not only in the UI.
 - `src/lib/editor/export/mp4.ts`: `renderAudioMix`, `scheduledAudioSource`, and
   `docHasAudibleClips` are the shipped audio path. `scheduledAudioSource` has the per-clip gate at
   `:1006`; `scheduleTracks` is the compound recursion at `:842`.
-- `src/components/editor/timeline/TimelinePanel.tsx`: `TrackHeader` has name, count, eye, mute,
-  context menu.
+- `src/components/editor/timeline/TimelinePanel.tsx`: `TrackHeader` has name, eye and mute controls,
+  and the context menu. The clip count this plan originally listed is already gone: Plan 02 removed
+  it, and a stale JSDoc line was the only remaining mention.
 - `src/lib/editor/links.ts`: linked groups move, delete, split, and select together.
 - `src/lib/editor/actions.ts`: ripple delete, split, delete, duplicate, link, unlink helpers.
 
@@ -202,7 +203,7 @@ Enforcement:
 - A transient write on a locked track must leave the doc byte-identical, must not start or commit a
   transient, and must show the lock message once. The check runs before the first pointermove, add,
   remove, or keyboard nudge, not only on release.
-- `applyCommands` validates the whole batch before mutating, so one locked member refuses the batch.
+- `applyCommands` guards each command against the in-flight clone, not the pre-batch doc, so a batch that locks a lane and then edits it refuses. A later refusal discards the clone, so the caller still sees no partial write and no history entry.
 - A command that moves a linked group must check every member's track.
 - A command that deletes media must check every clip using it.
 - A command that adds a clip via paste/drop/insert/overwrite must check the destination track.
@@ -242,11 +243,12 @@ Track header:
 - Use `Lock` and `LockOpen` from lucide. The locked state must be visible without hovering.
 - Keep the target control in the context menu. Do not add a header target button; Plan 02 removed it
   to make room for the working controls.
-- Header width is 168px. It fits the kind icon, a short name, and four 24px controls with the name
-  truncated. The reference's narrower header cannot hold M/S/lock/mute at accessible hit sizes;
-  record 168 as a deliberate deviation in Plan 01 and the decision log. Do not shrink hit targets
-  below 24px.
-- Drop the clip count from the header. It is debug density the reference does not show.
+- Header width is 168px. It fits the kind icon, a short name, and three 24px controls with the name
+  truncated: eye/mute/lock on video and text lanes, or M/S/lock on audio lanes. The reference's
+  narrower header cannot hold M/S/lock/mute at accessible hit sizes; record 168 as a deliberate
+  deviation in Plan 01 and the decision log. Do not shrink hit targets below 24px.
+- Keep the clip count absent. It is debug density the reference does not show, and Plan 02 already
+  removed it.
 - Add `data-testid` for solo and lock.
 - Context menu adds `Solo Track` (audio only) and `Lock Track` checkboxes. Keep rename, target,
   select clips, mute, and delete.
@@ -298,8 +300,9 @@ Lock:
   `applyTransientBatch` when it lands.
 - Direct command-layer refusals for `setClipAnimStatic`, `setClipPan`, `setClipEq`,
   `setClipCompressor`, `setClipDenoise`, `setEffectParams`, `setEffectEnabled`, `resetEffect`,
-  `setEffectKeyframes`, `linkClips`, `unlinkClip`, `createCompoundClip`, `importCaptions`, and
-  `addCaptionCue`.
+  `setEffectKeyframes`, `linkClips`, `unlinkClip`, `createCompoundClip`, and `addCaptionCue`.
+- `importCaptions` is exempt: it always unshifts a NEW text track and never names an existing one, so
+  no locked lane can be touched. The test proves it still lands with every lane locked.
 - Plan 06's `setClipInPoint` is added to the typed map and has the same refusal tests.
 - Plan 04 volume envelope gestures: dot drag, add, remove, and keyboard edit refuse on a locked
   track.
@@ -354,6 +357,34 @@ Flakiness controls:
 - No fixed sleeps for toast or pointer events; use user-event or the existing pointer harness.
 - Avoid testing browser-level lock state through CSS only; assert `aria-pressed` and the command
   result.
+
+## Implementation notes
+
+Recorded after the build, so the plan matches what shipped:
+
+- **Header.** No clip count existed when this plan started; Plan 02 had already removed it. The
+  stale JSDoc line is corrected, and the header carries three 24px controls, not four.
+- **`importCaptions`.** The command creates a brand-new text track, so it cannot touch a locked lane.
+  It is exempt rather than refused, and the test proves a locked doc still accepts the import on a
+  new lane. The direct-refusal list no longer includes it.
+- **Trim scope.** `trimClip` checks the named clip's own lane. Move, delete, split, unlink, and link
+  expand through `clipGroupTracks`, matching the plan's group-refusal list (move/delete/split). The
+  consequence is deliberate: trimming one half of an A/V pair while the partner's lane is locked can
+  desync the pair, because the command never writes the locked clip.
+- **Store return.** `store.apply` now returns a boolean: true when the command landed, false when a
+  `TrackLockedError` was converted into `lockNotice`. Callers with success side effects check it, so
+  a refusal cannot show a success toast or clear a selection. The plan did not specify this; it is
+  the smallest way to meet the no-false-feedback requirement.
+- **Batch guard.** A review found that validating the whole batch against the original doc let
+  `[setTrackLocked, addClip]` land an edit on a newly locked lane. `applyCommands` now guards each
+  command against the state the in-flight clone will hand it; a later refusal discards the clone, so
+  the caller still sees no partial write or history entry. `track-controls.test.ts` covers the
+  command layer and the store path.
+- **Matte references.** `removeTrack` strips `trackMatte` entries pointing at the removed lane from
+  every remaining clip in the sequence. A review found the lock resolver only checked the removed
+  lane and link partners, so removing an open matte source could edit a locked clip. The resolver
+  now includes every lane whose clips reference the removed lane; tests prove the refusal and the
+  open-lane removal.
 
 ## 6. Release tasks for `0.14.0`
 

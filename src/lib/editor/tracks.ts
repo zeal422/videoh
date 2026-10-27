@@ -1,5 +1,91 @@
-import { rootReferences, sequenceReferences } from './factories'
+import { findClip, rootReferences, sequenceReferences } from './factories'
+import { linkedClips } from './links'
 import type { Doc, Track } from './types'
+
+// ————— Audibility (0.14.0) —————
+
+/**
+ * True when at least one AUDIO track in the list is soloed. Solo is an audio
+ * monitoring feature: a `solo` flag on a video or text lane can never arm it
+ * (hydration drops one, and `setTrackSolo` refuses to create one).
+ */
+export function anySoloFor(tracks: readonly Track[]): boolean {
+  return tracks.some((track) => track.kind === 'audio' && track.solo === true)
+}
+
+/**
+ * The track ids a sequence may be heard from at this moment. With no solo, it
+ * is every non-muted track (the pre-0.14.0 rule). With any solo, it is ONLY
+ * the soloed audio tracks that are also not muted: a video lane is excluded,
+ * so a solo video's embedded audio is silent while an audio track is soloed,
+ * and a soloed track that is itself muted stays silent. The preview mixer, the
+ * offline plan and the shipped MP4 mix all read this one set, so they cannot
+ * disagree about what is audible.
+ */
+export function audibleTrackIds(tracks: readonly Track[]): Set<string> {
+  const solo = anySoloFor(tracks)
+  const ids = new Set<string>()
+  for (const track of tracks) {
+    if (track.muted) continue
+    if (solo && (track.kind !== 'audio' || track.solo !== true)) continue
+    ids.add(track.id)
+  }
+  return ids
+}
+
+// ————— Lock (0.14.0) —————
+
+/** The first locked track in the list, or undefined when every lane is open. */
+export function findLockedTrack(tracks: readonly Track[]): Track | undefined {
+  return tracks.find((track) => track.locked === true)
+}
+
+/** The one user-facing lock message, shared by the command layer and the UI. */
+export function trackLockMessage(track: Track): string {
+  return `Track ${track.name} is locked. Unlock it to edit its clips.`
+}
+
+/**
+ * Every track an edit of the given clips can touch: the clips' own lanes plus
+ * every member of their link groups (a linked group is one editing unit, so a
+ * locked partner refuses the whole operation). Deduped by track id, doc order
+ * preserved. Unknown clip ids contribute nothing; the command itself reports
+ * them.
+ */
+export function clipGroupTracks(doc: Doc, clipIds: readonly string[]): Track[] {
+  const out: Track[] = []
+  const seen = new Set<string>()
+  const add = (track: Track | undefined) => {
+    if (!track || seen.has(track.id)) return
+    seen.add(track.id)
+    out.push(track)
+  }
+  for (const clipId of clipIds) {
+    add(findClip(doc, clipId)?.track)
+    for (const member of linkedClips(doc, clipId)) add(findClip(doc, member.id)?.track)
+  }
+  return out
+}
+
+/**
+ * The first locked track an edit of these clips would touch, own lane or link
+ * partner. The UI gesture gates read this BEFORE beginning a transient, so a
+ * refused drag or trim never writes a frame.
+ */
+export function firstLockedTrackForClips(doc: Doc, clipIds: readonly string[]): Track | undefined {
+  return findLockedTrack(clipGroupTracks(doc, clipIds))
+}
+
+/** Lock check for a single clip edit (its lane, not its link partners). */
+export function lockedTrackForClip(doc: Doc, clipId: string): Track | undefined {
+  const track = findClip(doc, clipId)?.track
+  return track?.locked ? track : undefined
+}
+
+/** Lock check for a clip edit that carries its link group (move/trim/split). */
+export function lockedTrackForClipGroup(doc: Doc, clipId: string): Track | undefined {
+  return firstLockedTrackForClips(doc, [clipId])
+}
 
 /**
  * Removes the tracks an edit left empty.

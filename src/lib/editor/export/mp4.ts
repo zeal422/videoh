@@ -27,6 +27,7 @@ import {
 } from '../factories'
 import { constantTimeScaleRate } from '../keyframes'
 import { clipRendersAudio, linkGroupChangesRate } from '../links'
+import { audibleTrackIds } from '../tracks'
 import { findLut } from '../lut'
 import {
   blitTransformed,
@@ -849,6 +850,10 @@ async function scheduleTracks(
   /** Absolute timeline end of the innermost container (Infinity at the root). */
   limitEnd: number = Number.POSITIVE_INFINITY,
 ): Promise<void> {
+  // Solo + mute for THIS sequence (tracks.ts). The container gate uses the
+  // parent's set; the recursive call computes the child's own set, so a
+  // nested solo never inherits its parent's state.
+  const audibleTracks = audibleTrackIds(tracks)
   for (const track of tracks) {
     for (const clip of track.clips) {
       if (clip.sequenceId) {
@@ -856,8 +861,9 @@ async function scheduleTracks(
         if (!sequence) continue
         const containerGain = ctx.createGain()
         const containerXfade = ctx.createGain()
-        // The container's own mute OR its owning track's mute silences the mix.
-        if (clip.muted || track.muted) {
+        // The container's own mute, its owning track's mute, or a solo set
+        // that excludes that track silences the mix.
+        if (clip.muted || !audibleTracks.has(track.id)) {
           containerGain.gain.value = 0
         } else {
           for (const ev of clipGainSchedule(clip)) {
@@ -888,7 +894,7 @@ async function scheduleTracks(
         continue
       }
 
-      const scheduled = scheduledAudioSource(doc, track, clip)
+      const scheduled = scheduledAudioSource(doc, track, clip, audibleTracks)
       if (!scheduled) continue
       // Clip the child to its enclosing container's visible interval (0.8.1):
       // nested audio must not outlast the container that owns it.
@@ -999,11 +1005,13 @@ function scheduledAudioSource(
   doc: Doc,
   track: Track,
   clip: Clip,
+  audibleTracks: Set<string>,
 ): { assetId: string; file: File } | null {
   const asset = findMedia(doc, clip.mediaId)
   if (!asset?.file) return null
   if (!clipRendersAudio(doc, clip)) return null
-  if (clip.muted || track.muted || clip.reverse || linkGroupChangesRate(doc, clip)) return null
+  if (clip.muted || !audibleTracks.has(track.id) || clip.reverse || linkGroupChangesRate(doc, clip))
+    return null
   return { assetId: asset.id, file: asset.file }
 }
 
@@ -1011,21 +1019,26 @@ function scheduledAudioSource(
  * True when any clip will be scheduled into the mix. The same
  * `scheduledAudioSource` gate the per-clip loop uses, so the early-out and
  * the loop cannot disagree: a doc whose only clips are skipped (muted,
- * reversed or rate-dropped) returns null and gets no audio track at all
- * instead of a silent one. A solo video's embedded audio still makes the doc
- * audible, unlike the old asset-kind scan.
+ * soloed out, reversed or rate-dropped) returns null and gets no audio track
+ * at all instead of a silent one. A solo video's embedded audio still makes
+ * the doc audible, unlike the old asset-kind scan.
  */
 function docHasAudibleClips(doc: Doc): boolean {
-  const scan = (tracks: readonly Track[]): boolean =>
-    tracks.some((track) =>
+  const scan = (tracks: readonly Track[]): boolean => {
+    const audibleTracks = audibleTrackIds(tracks)
+    return tracks.some((track) =>
       track.clips.some((clip) => {
         if (clip.sequenceId) {
+          // A soloed-out or muted container silences everything inside it,
+          // exactly as scheduleTracks' container gate does.
+          if (clip.muted || !audibleTracks.has(track.id)) return false
           const sequence = findSequence(doc, clip.sequenceId)
           return sequence ? scan(sequence.tracks) : false
         }
-        return scheduledAudioSource(doc, track, clip) !== null
+        return scheduledAudioSource(doc, track, clip, audibleTracks) !== null
       }),
     )
+  }
   return scan(doc.project.tracks)
 }
 

@@ -142,7 +142,7 @@ src/lib/editor/
 ├── constants.ts          # all tuning constants and limits
 ├── factories.ts          # uid + create* constructors, finders, compatibility checks, sourceTimeAt
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
-├── commands.ts           # the 57 EditorCommand variants + applyCommand(s), direction-aware split spans
+├── commands.ts           # the 59 EditorCommand variants + applyCommand(s), direction-aware split spans, LOCK_RULES
 ├── trim.ts               # pure trim/split math: source-fitting bisection, timeScale curve rebases
 ├── snap.ts               # snap-point computation and application
 ├── srt.ts                # SRT parse/serialize + the caption cue collector (pure)
@@ -177,7 +177,7 @@ src/lib/editor/
 ├── project-io.ts         # save / open / import-media / sample browser helpers
 ├── sample-media.ts       # bundled sample list + load plan (fresh adds, offline relinks)
 ├── timeline-drop.ts      # drop-target geometry for drop-between-tracks
-├── tracks.ts             # removes the tracks an edit leaves empty (prune)
+├── tracks.ts             # solo audibility + lock checks, removes the tracks an edit leaves empty (prune)
 ├── timeline-scroll.ts    # drag edge auto-scroll geometry (pure)
 ├── proxy.ts              # pure proxy planning: dimensions, bitrate, eligibility
 ├── media/
@@ -197,7 +197,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 84 test files (1761 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 85 test files (1823 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ````

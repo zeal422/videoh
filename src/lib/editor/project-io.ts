@@ -79,11 +79,14 @@ export async function importMediaFiles(
       const store = useEditorStore.getState()
       const missing = store.doc.media.find((m) => m.missing && m.name === asset.name)
       if (missing) {
-        store.apply({
-          type: 'relinkMedia',
-          mediaId: missing.id,
-          patch: relinkPatchFrom(asset, sampleMode),
-        })
+        if (
+          !store.apply({
+            type: 'relinkMedia',
+            mediaId: missing.id,
+            patch: relinkPatchFrom(asset, sampleMode),
+          })
+        )
+          continue
         toast({ title: 'Media relinked', description: asset.name })
       } else if (options?.sample && sampleImportAction(store.doc.media, asset.name) !== 'add') {
         // The bin changed while this file was probing: another load or a

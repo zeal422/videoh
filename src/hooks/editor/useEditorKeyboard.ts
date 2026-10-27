@@ -125,8 +125,7 @@ export function useEditorKeyboard(onSave: () => void): void {
           e.preventDefault()
           const commands = commandsToCutClips(doc, selectedIds)
           if (commands) {
-            store.apply(commands)
-            store.deselectAll()
+            if (store.apply(commands)) store.deselectAll()
           }
         }
         return
@@ -286,12 +285,11 @@ export function useEditorKeyboard(onSave: () => void): void {
                 selectedIds,
                 store.activeSequencePath,
               )
-              if (commands) store.apply(commands)
+              if (commands && store.apply(commands)) store.deselectAll()
             } else {
               // Linked A/V pairs die together — until explicitly unlinked.
-              store.apply(commandsToDeleteClips(doc, selectedIds))
+              if (store.apply(commandsToDeleteClips(doc, selectedIds))) store.deselectAll()
             }
-            store.deselectAll()
           }
           break
         }

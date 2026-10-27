@@ -56,7 +56,7 @@ import { FAQ_ITEMS, CONTACT_EMAIL, GITHUB_URL } from '@/lib/seo'
 
 const HERO_TITLE = 'Open-source video editing in your browser.'
 const SCREENSHOT_ALT =
-  'The videoh editor showing a color-bar video with filmstrip thumbnails, a multi-track timeline with a white volume envelope and keyframe dots over the music waveform, and the inspector dB volume graph'
+  'The videoh editor showing a color-bar video with filmstrip thumbnails, a multi-track timeline with mute, solo, and lock controls on its track headers, a white volume envelope with keyframe dots over the music waveform, and the inspector dB volume graph'
 
 /**
  * Public page locks: the hero is a real product page rather than the editor

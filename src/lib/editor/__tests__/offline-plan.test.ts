@@ -27,7 +27,7 @@ import { addBlendLayer, beginBlendPair } from '../playback/compositor'
 import { createFake2DContext } from './mocks/browser-mocks'
 import { clampSourceTime, createClip, createTextClip, createTrack } from '../factories'
 import { animatedValue } from '../keyframes'
-import type { Clip, Doc, MediaAsset } from '../types'
+import type { Clip, Doc, MediaAsset, Sequence, Track } from '../types'
 import type { ClipDraw } from '../export/offline'
 
 /** Minimal AudioBuffer stand-in for the OfflineAudioContext stub. */
@@ -1536,14 +1536,12 @@ describe('compound clip plans (0.8.1)', () => {
     }
     const run = async (muted: boolean) => {
       const starts: { when: number; duration: number }[] = []
-      const gains: FakeParam[] = []
       class FakeOfflineContext {
         destination = {}
         sampleRate = 48000
         currentTime = 0
         createGain() {
           const g = { gain: new FakeParam(), connect: () => undefined }
-          gains.push(g.gain)
           return g
         }
         createStereoPanner() {
@@ -1572,14 +1570,16 @@ describe('compound clip plans (0.8.1)', () => {
       } finally {
         vi.unstubAllGlobals()
       }
-      return { starts, gains }
+      return { starts }
     }
     const clipped = await run(false)
     // The 4s child is clipped to the container's 2s span.
     expect(clipped.starts).toEqual([{ when: 2, duration: 2 }])
     const muted = await run(true)
-    // The muted container track zeroes the container gain node.
-    expect(muted.gains.some((g) => g.value === 0)).toBe(true)
+    // The muted container track silences the nested mix entirely, so the
+    // early-out agrees with the loop: nothing is scheduled at all (0.14.0),
+    // rather than building a zero-gain container graph.
+    expect(muted.starts).toEqual([])
   })
 
   it('planAudioFrame drops a nested contribution under a muted container track', () => {
@@ -1845,5 +1845,258 @@ describe('nested matte fetch (0.8.6)', () => {
     const out: ClipDraw[] = []
     collectMatteDraws(d, plan.draws, 1, seen, out)
     expect(out.map((x) => x.clip.id).sort()).toEqual(['deep', 'mid'])
+  })
+})
+
+describe('track solo (0.14.0)', () => {
+  const file = () => new File([new Uint8Array([1])], 's.mp3', { type: 'audio/mpeg' })
+  const withFile = (asset: MediaAsset) => ({ ...asset, file: file() })
+  const AUDIO_SOLO = withFile(asset({ id: 'ms', kind: 'audio', duration: 60, url: 'blob:s' }))
+  const VIDEO_SOLO = withFile(
+    asset({ id: 'mvs', kind: 'video', duration: 60, url: 'blob:vs', hasAudio: true }),
+  )
+
+  function soloProject(tracks: Track[]): Doc {
+    return {
+      project: {
+        id: 'p_solo',
+        name: 'solo',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks,
+      },
+      media: [AUDIO_SOLO, VIDEO_SOLO],
+    }
+  }
+
+  const audioTrack = (id: string, clipId: string, start: number, over: Partial<Track> = {}) =>
+    createTrack('audio', 1, {
+      id,
+      ...over,
+      clips: [
+        createClip({ id: clipId, mediaId: 'ms', start, duration: 2, inPoint: 0, audioOnly: true }),
+      ],
+    })
+
+  function matrixDoc(overA1: Partial<Track> = {}, overA2: Partial<Track> = {}): Doc {
+    return soloProject([
+      createTrack('video', 1, { id: 'v1', clips: [] }),
+      audioTrack('a1', 'ca1', 0, overA1),
+      audioTrack('a2', 'ca2', 1, overA2),
+    ])
+  }
+
+  it('no solo keeps the old mute rule', () => {
+    const ids = planAudioFrame(matrixDoc(), 1).audible.map((c) => c.clip.id)
+    expect(ids).toEqual(['ca1', 'ca2'])
+    expect(planAudioFrame(matrixDoc({}, { muted: true }), 1).audible.map((c) => c.clip.id)).toEqual(
+      ['ca1'],
+    )
+  })
+
+  it('one solo leaves only that track', () => {
+    expect(planAudioFrame(matrixDoc({ solo: true }), 1).audible.map((c) => c.clip.id)).toEqual([
+      'ca1',
+    ])
+  })
+
+  it('two solos are both audible', () => {
+    expect(
+      planAudioFrame(matrixDoc({ solo: true }, { solo: true }), 1).audible.map((c) => c.clip.id),
+    ).toEqual(['ca1', 'ca2'])
+  })
+
+  it('a soloed track that is muted stays silent', () => {
+    expect(planAudioFrame(matrixDoc({ solo: true, muted: true }), 1).audible).toHaveLength(0)
+  })
+
+  it('a mute elsewhere does not silence the soloed track', () => {
+    expect(
+      planAudioFrame(matrixDoc({ solo: true }, { muted: true }), 1).audible.map((c) => c.clip.id),
+    ).toEqual(['ca1'])
+  })
+
+  it('a solo video with embedded audio is silent while an audio track is soloed', () => {
+    const videoDoc = soloProject([
+      createTrack('video', 1, {
+        id: 'v1',
+        clips: [createClip({ id: 'cv', mediaId: 'mvs', start: 0, duration: 2, inPoint: 0 })],
+      }),
+      audioTrack('a1', 'ca1', 0),
+    ])
+    expect(planAudioFrame(videoDoc, 1).audible.map((c) => c.clip.id)).toEqual(['cv', 'ca1'])
+    // The soloed audio lane stays audible; only the video lane's embedded
+    // audio is excluded by the solo set.
+    expect(
+      planAudioFrame(
+        soloProject([videoDoc.project.tracks[0], audioTrack('a1', 'ca1', 0, { solo: true })]),
+        1,
+      ).audible.map((c) => c.clip.id),
+    ).toEqual(['ca1'])
+  })
+
+  it('keeps the A/V twin as the carrier: the video half stays shadowed under solo', () => {
+    const pairVideo = createClip({
+      id: 'pv',
+      mediaId: 'mvs',
+      start: 0,
+      duration: 2,
+      inPoint: 0,
+      linkId: 'L',
+    })
+    const twin = createClip({
+      id: 'pa',
+      mediaId: 'mvs',
+      start: 0,
+      duration: 2,
+      inPoint: 0,
+      linkId: 'L',
+      audioOnly: true,
+    })
+    const doc = soloProject([
+      createTrack('video', 1, { id: 'v1', clips: [pairVideo] }),
+      createTrack('audio', 1, { id: 'a1', solo: true, clips: [twin] }),
+    ])
+    expect(planAudioFrame(doc, 1).audible.map((c) => c.clip.id)).toEqual(['pa'])
+  })
+
+  it('solo is per sequence: child solo applies inside, parent solo gates the container', () => {
+    const childA1 = createClip({
+      id: 'child_a1',
+      mediaId: 'ms',
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+      audioOnly: true,
+    })
+    const childA2 = createClip({
+      id: 'child_a2',
+      mediaId: 'ms',
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+      audioOnly: true,
+    })
+    const sequence: Sequence = {
+      id: 'seq_solo',
+      name: 'child',
+      tracks: [
+        createTrack('audio', 1, { id: 'sa1', clips: [childA1] }),
+        createTrack('audio', 2, { id: 'sa2', solo: true, clips: [childA2] }),
+      ],
+    }
+    const compound = createClip({ id: 'comp', sequenceId: 'seq_solo', start: 0, duration: 4 })
+    const doc: Doc = {
+      project: {
+        id: 'p_nested',
+        name: 'nested',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [
+          createTrack('video', 1, { id: 'v1', clips: [compound] }),
+          audioTrack('a1', 'root_a1', 0),
+        ],
+        sequences: [sequence],
+      },
+      media: [AUDIO_SOLO],
+    }
+    // No root solo: the container is open, and the CHILD's solo picks sa2.
+    expect(
+      planAudioFrame(doc, 1)
+        .audible.map((c) => c.clip.id)
+        .sort(),
+    ).toEqual(['child_a2', 'root_a1'])
+    // Root solo on A1 excludes the video container entirely, so the child mix
+    // is silent even though sa2 is still soloed inside its own sequence.
+    const rootSolo: Doc = {
+      ...doc,
+      project: {
+        ...doc.project,
+        tracks: doc.project.tracks.map((t) => (t.id === 'a1' ? { ...t, solo: true } : t)),
+      },
+    }
+    expect(planAudioFrame(rootSolo, 1).audible.map((c) => c.clip.id)).toEqual(['root_a1'])
+  })
+
+  it('gain and crossfade still apply to a soloed track', () => {
+    const doc = matrixDoc({ solo: true })
+    doc.project.tracks[1].clips[0].gain = 0.5
+    const contribution = planAudioFrame(doc, 1).audible[0]
+    expect(contribution.gain).toBeCloseTo(0.5)
+  })
+
+  /** Schedule `doc` through the shipped MP4 mix and return source start times. */
+  async function mixStarts(doc: Doc): Promise<number[]> {
+    const starts: number[] = []
+    class FakeOfflineContext {
+      destination = {}
+      sampleRate = 48000
+      currentTime = 0
+      createGain() {
+        return { gain: new FakeParam(), connect: () => undefined }
+      }
+      createStereoPanner() {
+        return { pan: new FakeParam(), connect: () => undefined }
+      }
+      createBufferSource() {
+        return {
+          buffer: null,
+          playbackRate: new FakeParam(),
+          connect: () => undefined,
+          start: (when: number) => starts.push(when),
+        }
+      }
+      decodeAudioData(): Promise<AudioBuffer> {
+        return Promise.resolve(fakeBuffer())
+      }
+      startRendering(): Promise<AudioBuffer> {
+        return Promise.resolve(fakeBuffer())
+      }
+    }
+    class FakeParam {
+      value = 1
+      setValueAtTime = () => undefined
+      linearRampToValueAtTime = () => undefined
+    }
+    vi.stubGlobal('OfflineAudioContext', FakeOfflineContext)
+    try {
+      const buffer = await renderAudioMix(doc, 20)
+      if (!buffer) return []
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    return starts
+  }
+
+  it('the shipped MP4 mix schedules the same audible set as the plan', async () => {
+    const cases: { name: string; doc: Doc; expected: number[] }[] = [
+      { name: 'no solo', doc: matrixDoc(), expected: [0, 1] },
+      { name: 'A1 solo', doc: matrixDoc({ solo: true }), expected: [0] },
+      { name: 'A2 solo', doc: matrixDoc({}, { solo: true }), expected: [1] },
+      {
+        name: 'both solo',
+        doc: matrixDoc({ solo: true }, { solo: true }),
+        expected: [0, 1],
+      },
+      {
+        name: 'solo plus mute',
+        doc: matrixDoc({ solo: true, muted: true }),
+        expected: [],
+      },
+      {
+        name: 'solo plus mute elsewhere',
+        doc: matrixDoc({ solo: true }, { muted: true }),
+        expected: [0],
+      },
+    ]
+    for (const c of cases) {
+      const planIds = planAudioFrame(c.doc, 1).audible.map(
+        (contribution) => contribution.clip.start,
+      )
+      expect(await mixStarts(c.doc), `${c.name} (starts)`).toEqual(c.expected)
+      expect(planIds, `${c.name} (plan)`).toEqual([...c.expected])
+    }
   })
 })

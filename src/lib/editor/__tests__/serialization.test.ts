@@ -1089,3 +1089,68 @@ describe('effects serialization (0.8.6)', () => {
     })
   })
 })
+
+describe('track solo and lock serialization (0.14.0)', () => {
+  function flagsDoc() {
+    const doc = createDoc()
+    const [video, audio] = doc.project.tracks
+    video.locked = true
+    audio.solo = true
+    audio.locked = true
+    return doc
+  }
+
+  it('round-trips solo and locked at v4 without a schema bump', () => {
+    const json = serializeDoc(flagsDoc())
+    expect(json.version).toBe(4)
+    const { doc } = deserializeDoc(JSON.parse(JSON.stringify(json)))
+    expect(doc.project.tracks[0].locked).toBe(true)
+    expect(doc.project.tracks[0].solo).toBeUndefined()
+    expect(doc.project.tracks[1].solo).toBe(true)
+    expect(doc.project.tracks[1].locked).toBe(true)
+  })
+
+  it('reads absent flags as false', () => {
+    const { doc } = deserializeDoc(JSON.parse(JSON.stringify(serializeDoc(createDoc()))))
+    for (const track of doc.project.tracks) {
+      expect(track.solo).toBeUndefined()
+      expect(track.locked).toBeUndefined()
+    }
+  })
+
+  it('drops hostile values, and a solo flag on a video or text lane', () => {
+    const wire = JSON.parse(JSON.stringify(serializeDoc(createDoc())))
+    wire.project.tracks[0].solo = true // video lane: never a valid solo
+    wire.project.tracks[0].locked = 'yes'
+    wire.project.tracks[1].solo = 1
+    wire.project.tracks[1].locked = true
+    const extra = {
+      id: 't_text',
+      kind: 'text',
+      name: 'T1',
+      solo: true,
+      locked: false,
+      clips: [],
+    }
+    wire.project.tracks.push(extra)
+    const { doc } = deserializeDoc(wire)
+    expect(doc.project.tracks[0].solo).toBeUndefined()
+    expect(doc.project.tracks[0].locked).toBeUndefined()
+    expect(doc.project.tracks[1].solo).toBeUndefined()
+    expect(doc.project.tracks[1].locked).toBe(true)
+    expect(doc.project.tracks[2].solo).toBeUndefined()
+    expect(doc.project.tracks[2].locked).toBeUndefined()
+  })
+
+  it('reads version 1 to 3 files with no flags as false', () => {
+    const base = JSON.parse(JSON.stringify(serializeDoc(createDoc())))
+    for (const version of [1, 2, 3]) {
+      const wire = { ...base, version }
+      const { doc } = deserializeDoc(wire)
+      for (const track of doc.project.tracks) {
+        expect(track.solo, `v${version}`).toBeUndefined()
+        expect(track.locked, `v${version}`).toBeUndefined()
+      }
+    }
+  })
+})

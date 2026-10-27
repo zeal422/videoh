@@ -368,8 +368,7 @@ export function MenuBar({
           case 'clip.delete': {
             if (selectedIds.length === 0) return
             // Linked A/V pairs die together — until explicitly unlinked.
-            store.apply(commandsToDeleteClips(store.doc, selectedIds))
-            store.deselectAll()
+            if (store.apply(commandsToDeleteClips(store.doc, selectedIds))) store.deselectAll()
             break
           }
           case 'clip.rippleDelete': {
@@ -380,16 +379,14 @@ export function MenuBar({
               store.activeSequencePath,
             )
             if (!rippleCommands) return
-            store.apply(rippleCommands)
-            store.deselectAll()
+            if (store.apply(rippleCommands)) store.deselectAll()
             break
           }
           case 'clip.cut': {
             if (selectedIds.length === 0) return
             const cutCommands = commandsToCutClips(store.doc, selectedIds)
             if (!cutCommands) return
-            store.apply(cutCommands)
-            store.deselectAll()
+            if (store.apply(cutCommands)) store.deselectAll()
             break
           }
           case 'clip.copy': {
@@ -413,7 +410,7 @@ export function MenuBar({
             if (selectedIds.length < 2) return
             const linkCommands = commandsToLinkClips(store.doc, selectedIds)
             if (!linkCommands) return
-            store.apply(linkCommands)
+            if (!store.apply(linkCommands)) break
             toast({ title: 'Clips linked' })
             break
           }
@@ -421,7 +418,7 @@ export function MenuBar({
             if (selectedIds.length === 0) return
             const unlinkCommands = commandsToUnlinkClips(store.doc, selectedIds)
             if (!unlinkCommands) return
-            store.apply(unlinkCommands)
+            if (!store.apply(unlinkCommands)) break
             toast({ title: 'Audio and video unlinked' })
             break
           }
@@ -500,8 +497,7 @@ export function MenuBar({
             if (!store.selectedMarker) return
             const deleteMarkerCommands = commandsToDeleteMarker(store.doc, store.selectedMarker)
             if (!deleteMarkerCommands) return
-            store.apply(deleteMarkerCommands)
-            store.selectMarker(null)
+            if (store.apply(deleteMarkerCommands)) store.selectMarker(null)
             break
           }
           case 'marker.next': {

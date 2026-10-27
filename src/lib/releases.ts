@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.14.0',
+    date: '2026-10-27',
+    highlights: [
+      'Track solo is real audio monitoring: audio lanes show M and S, and while any audio track is soloed only the non-muted soloed audio lanes are audible',
+      'Track lock is enforced by the command layer: a locked lane refuses moves, trims, splits, deletes, pastes, effects, property edits, keyframes, markers, and the volume envelope',
+      'Preview, the offline export plan, and the MP4 mix read one shared audibility rule, including solo inside compounds and a solo video keeping its embedded audio only while no audio lane is soloed',
+      'Solo and lock serialize, autosave, undo, and redo; a locked lane still selects, inspects, plays, and unlocks, and linked-group and media edits refuse when a locked member would be touched',
+    ],
+  },
+  {
     version: '0.13.0',
     date: '2026-10-27',
     highlights: [
