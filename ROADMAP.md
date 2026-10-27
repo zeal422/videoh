@@ -5,18 +5,18 @@ questions, two sections: what has shipped (so a closed gap is not listed twice)
 and what remains, grouped by how often a working editor would feel it.
 
 Research date: September 2026 (Premiere 26.x). The gap table below is a historical snapshot last
-re-verified against the code on 2026-10-18 at 0.8.6. The 0.8.7, 0.8.8, 0.8.9, 0.9.0, 0.9.1, 0.9.2,
-0.10.0, 0.10.1, 0.10.2, 0.10.3, 0.11.0 and 0.12.0 rows below record later releases: the playhead fix, the
-motion-blur static-window bypass, VTT export, the battery speedup, the Sequence Settings dialog plus
-menu fixes, the ripple preloader, the appearance palettes, the ten added palettes, the fullscreen
-control, the toolbar tooltip placement fix, the public launch, and the reference chrome plus sampled
-filmstrips. None of them closes a Premiere gap,
-so no status changed for any of them. A gap moves to "Shipped" only once the release that closed it is recorded in
+re-verified against the code on 2026-10-18 at 0.8.6. The 0.8.7 through 0.15.0 rows below record later
+releases: the playhead fix, the motion-blur static-window bypass, VTT export, the battery speedup, the
+Sequence Settings dialog plus menu fixes, the ripple preloader, the appearance palettes, the ten added
+palettes, the fullscreen control, the toolbar tooltip placement fix, the public launch, the reference
+chrome plus sampled filmstrips, on-clip volume automation and the dB inspector, track solo and lock,
+and the Ripple Trim and Slip tools. None of them closes a Premiere gap, so no status changed for any
+of them. A gap moves to "Shipped" only once the release that closed it is recorded in
 [CHANGELOG.md](CHANGELOG.md).
 
 The editing core is not tracked as a gap: the multi-track timeline, trim / split
-/ razor, A/V linking, ripple delete, cross-dissolves, text overlays, gain / mute,
-undo and project save / load all exist today.
+/ razor, ripple trim, slip, A/V linking, ripple delete, cross-dissolves, text
+overlays, gain / mute, undo and project save / load all exist today.
 
 ## Shipped so far
 
@@ -24,6 +24,7 @@ Newest first. Releases before 0.5.0 are in [CHANGELOG.md](CHANGELOG.md).
 
 | Version    | What landed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **0.15.0** | Ripple Trim and Slip tools. `B` trims a clip edge and shifts every later clip on the same track by one shared end delta; the start stays anchored, a transition overlap is preserved, and any other overlap or a left shift below zero refuses. `Y` drags a clip body to change the source window without moving the clip or changing its duration; a linked pair that reads the same window slips both halves, while a mixed-window group, image, text, compound, or time-remapped clip refuses. Both tools respect locked tracks, show a tool cursor, and commit one undo entry per gesture, with the same-track ripple limitation named in the tooltip.                                                                                                                                                                                  |
 | **0.14.0** | Track solo and lock. Audio lanes gain M/S buttons: while any audio track is soloed, only non-muted soloed audio lanes are audible, and the same rule gates the preview mixer, the offline plan, and the MP4 mix, including per-sequence solo inside compounds. Every lane gains a lock control enforced by the command layer: moves, trims, splits, deletes, paste/drop, transitions, effects, clip properties, keyframes, clip markers, and the volume envelope all refuse with one toast naming the lane, while selection, inspection, playback, undo/redo, and the lock control stay available. Solo and lock serialize, autosave, undo, and redo. Closes the reference's track solo and track lock gap.                                                                                                                                 |
 | **0.13.0** | On-clip volume automation and the dB inspector. Audio-bearing clips draw a white volume envelope above the waveform with draggable keyframe dots, double-click add, Alt-click/Delete remove, and keyboard nudging; the envelope stays on the audible A/V twin and dims on mute. The Clip tab replaces the linear Audio section with a dB Volume summary and the shared keyframe graph, while storage stays linear 0..2 and the preview/export gain schedules read the same curve. Closes the reference's clip volume automation and dB inspector gap.                                                                                                                                                                                                                                                                                       |
 | **0.12.0** | Sampled filmstrips and the matching editor chrome. Video clips draw source frames from their actual trimmed, retimed, reversed, or time-remapped window; image clips show the image itself; a linked video half stays clean while its audio twin carries the waveform. Strips are runtime-only, capped at 4096px, and held in a 16MP LRU cache, so no strip data enters the project file. The frame now matches the reference layout and density. No Premiere gap closed.                                                                                                                                                                                                                                                                                                                                                                   |

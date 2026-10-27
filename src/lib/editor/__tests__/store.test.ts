@@ -196,6 +196,99 @@ describe('transient gestures', () => {
     expect(useEditorStore.getState().doc.project.tracks.flatMap((t) => t.clips)[0].start).toBe(0)
   })
 
+  it('applyTransientBatch installs a whole batch and commits ONE history entry', () => {
+    addTestClip()
+    const store = useEditorStore.getState()
+    const clipId = store.doc.project.tracks.flatMap((t) => t.clips)[0].id
+    const trackId = videoTrackId(store.doc)
+    const before = useEditorStore.getState().past.length
+
+    store.beginTransient()
+    store.applyTransientBatch([
+      { type: 'moveClip', clipId, trackId, start: 1 },
+      { type: 'setClipMuted', clipId, muted: true },
+    ])
+    const mid = useEditorStore.getState().doc.project.tracks.flatMap((t) => t.clips)[0]
+    expect(mid.start).toBe(1)
+    expect(mid.muted).toBe(true)
+    expect(useEditorStore.getState().past).toHaveLength(before)
+
+    store.commitTransient()
+    expect(useEditorStore.getState().past).toHaveLength(before + 1)
+    useEditorStore.getState().undo()
+    const undone = useEditorStore.getState().doc.project.tracks.flatMap((t) => t.clips)[0]
+    expect(undone.start).toBe(0)
+    expect(undone.muted).toBeUndefined()
+  })
+
+  it('applyTransientBatch writes NOTHING when a later command is invalid', () => {
+    addTestClip()
+    const store = useEditorStore.getState()
+    const clipId = store.doc.project.tracks.flatMap((t) => t.clips)[0].id
+    const trackId = videoTrackId(store.doc)
+    const before = structuredClone(useEditorStore.getState().doc)
+    const past = useEditorStore.getState().past.length
+
+    store.beginTransient()
+    store.applyTransientBatch([
+      { type: 'moveClip', clipId, trackId, start: 4 },
+      { type: 'moveClip', clipId: 'missing', trackId, start: 8 },
+    ])
+    // The first command mutated only the discarded clone.
+    expect(useEditorStore.getState().doc).toEqual(before)
+    expect(useEditorStore.getState().past).toHaveLength(past)
+    store.commitTransient()
+    expect(useEditorStore.getState().past).toHaveLength(past)
+  })
+
+  it('applyTransientBatch refuses a batch that would edit a locked lane', () => {
+    addTestClip()
+    const store = useEditorStore.getState()
+    const clipId = store.doc.project.tracks.flatMap((t) => t.clips)[0].id
+    const trackId = videoTrackId(store.doc)
+    useEditorStore.setState({
+      doc: {
+        ...store.doc,
+        project: {
+          ...store.doc.project,
+          tracks: store.doc.project.tracks.map((t) =>
+            t.id === trackId ? { ...t, locked: true } : t,
+          ),
+        },
+      },
+    })
+    const before = structuredClone(useEditorStore.getState().doc)
+    const past = useEditorStore.getState().past.length
+
+    useEditorStore.getState().beginTransient()
+    useEditorStore.getState().applyTransientBatch([{ type: 'moveClip', clipId, trackId, start: 4 }])
+    expect(useEditorStore.getState().doc).toEqual(before)
+    expect(useEditorStore.getState().past).toHaveLength(past)
+    useEditorStore.getState().cancelTransient()
+  })
+
+  it('resetTransient restores the base without ending the gesture', () => {
+    addTestClip()
+    const store = useEditorStore.getState()
+    const clipId = store.doc.project.tracks.flatMap((t) => t.clips)[0].id
+    const trackId = videoTrackId(store.doc)
+    const before = useEditorStore.getState().past.length
+
+    store.beginTransient()
+    store.applyTransient({ type: 'moveClip', clipId, trackId, start: 3 })
+    const token = currentTransientToken()
+    store.resetTransient()
+    expect(useEditorStore.getState().doc.project.tracks.flatMap((t) => t.clips)[0].start).toBe(0)
+    // The slot stays open: a later frame and the release still commit once.
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(token)
+
+    store.applyTransient({ type: 'moveClip', clipId, trackId, start: 2 })
+    store.commitTransient()
+    expect(useEditorStore.getState().doc.project.tracks.flatMap((t) => t.clips)[0].start).toBe(2)
+    expect(useEditorStore.getState().past).toHaveLength(before + 1)
+  })
+
   it('cancelTransient restores the base without history', () => {
     addTestClip()
     const store = useEditorStore.getState()
@@ -460,13 +553,13 @@ describe('multi-selection (Premiere shift/ctrl click)', () => {
     expect(useEditorStore.getState().selections).toEqual([clips[1].id])
   })
 
-  it('activeTool toggles between select and razor without touching history', () => {
+  it('activeTool toggles across the tool set without touching history', () => {
     expect(useEditorStore.getState().activeTool).toBe('select')
-    useEditorStore.getState().setActiveTool('razor')
-    expect(useEditorStore.getState().activeTool).toBe('razor')
+    for (const tool of ['razor', 'ripple', 'slip', 'select'] as const) {
+      useEditorStore.getState().setActiveTool(tool)
+      expect(useEditorStore.getState().activeTool).toBe(tool)
+    }
     expect(useEditorStore.getState().past).toHaveLength(0)
-    useEditorStore.getState().setActiveTool('select')
-    expect(useEditorStore.getState().activeTool).toBe('select')
   })
 })
 

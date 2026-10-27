@@ -2,6 +2,7 @@
 
 import { useRef, useState } from 'react'
 import {
+  BetweenHorizontalStart,
   Copy,
   ChevronDown,
   FolderOpen,
@@ -9,6 +10,7 @@ import {
   Loader2,
   MonitorPlay,
   MousePointer2,
+  MoveHorizontal,
   Plus,
   Redo2,
   Save,
@@ -193,6 +195,18 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
           onClick={() => setActiveTool('razor')}
           active={activeTool === 'razor'}
           icon={<Slice className="size-4" />}
+        />
+        <ToolButton
+          label="Ripple trim tool (B). Drag a clip edge to shift later clips on this track; linked partners on other tracks do not shift."
+          onClick={() => setActiveTool('ripple')}
+          active={activeTool === 'ripple'}
+          icon={<BetweenHorizontalStart className="size-4" />}
+        />
+        <ToolButton
+          label="Slip tool (Y). Drag a clip to change which part of its source it shows, without moving it."
+          onClick={() => setActiveTool('slip')}
+          active={activeTool === 'slip'}
+          icon={<MoveHorizontal className="size-4" />}
         />
 
         <Separator orientation="vertical" className="mx-0.5 h-6" />
@@ -428,6 +442,7 @@ function ToolButton({
           variant="ghost"
           size="icon"
           aria-label={label}
+          aria-pressed={active}
           onClick={onClick}
           disabled={disabled}
           className={active ? 'size-8 bg-accent text-accent-foreground' : 'size-8'}

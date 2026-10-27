@@ -24,6 +24,8 @@ import {
   decideTrimStart,
   trimRooms,
 } from '@/lib/editor/clip-gesture'
+import { planRippleShift, planRippleTrim } from '@/lib/editor/ripple-trim'
+import { planSlip } from '@/lib/editor/slip'
 import { autoScrollStep } from '@/lib/editor/timeline-scroll'
 import {
   commandsToCreateCompoundClip,
@@ -79,8 +81,10 @@ import {
  * it. Every group op (move/delete/cut/split/link…) runs on the WHOLE
  * selection.
  *
- * Tools (Premiere V/C): with the razor tool active (press C), pointer-down
- * cuts the clip at the pointer position instead of starting a move.
+ * Tools (Premiere V/C/B/Y): with the razor active (C), pointer-down cuts the
+ * clip. With ripple active (B), the edge handles trim AND shift the track's
+ * later clips; the body only selects. With slip active (Y), a body drag moves
+ * the source window and never the clip.
  */
 export function ClipView({
   doc,
@@ -107,6 +111,12 @@ export function ClipView({
   // store-external facts (module clipboard, live playhead) that a plain
   // render could leave stale, so opening the menu bumps a re-render tick.
   const [, setMenuTick] = useState(0)
+  /** Live slip readout: source in/out and the actual delta. */
+  const [slipHud, setSlipHud] = useState<null | {
+    inPoint: number
+    outPoint: number
+    delta: number
+  }>(null)
   // Group-aware selection: a clip highlights when IT or a link-group partner
   // is selected (Premiere highlights both halves of an A/V pair).
   const isSelected = clipIsSelected(doc, selections, clip)
@@ -120,7 +130,7 @@ export function ClipView({
 
   // ————— gesture state —————
   const gesture = useRef<null | {
-    mode: 'move' | 'trim-start' | 'trim-end'
+    mode: 'move' | 'trim-start' | 'trim-end' | 'slip'
     /** Alt-drag on an edge re-times the clip (rate stretch) instead of trimming. */
     rateStretch: boolean
     startX: number
@@ -158,6 +168,16 @@ export function ClipView({
     token: number
     /** Initiating pointer; other pointers' events are ignored (multi-touch). */
     pointerId: number
+    /** Slip target: the sequence-local link group captured at pointer-down. */
+    slipGroup?: Clip[]
+    /** Slip source length; undefined for an image, text, or compound clip. */
+    slipAssetDuration?: number
+    /** One refusal toast per gesture, not one per pointer frame. */
+    slipToastShown?: boolean
+    /** Ripple preflight: the frozen pre-gesture doc the planner reads. */
+    baseDoc?: Doc
+    /** One ripple refusal toast per gesture. */
+    rippleToastShown?: boolean
   }>(null)
 
   /**
@@ -235,6 +255,12 @@ export function ClipView({
     // what makes a shift-selected multi-drag move every selected clip.
     if (transientOwnedElsewhere) return
 
+    // Ripple only trims edges and slip only slips the body. A click still
+    // selected above; it just does not start an edit the tool cannot do.
+    if (activeTool === 'ripple' && mode === 'move') return
+    if (activeTool === 'slip' && mode !== 'move') return
+
+    const gestureMode = activeTool === 'slip' && mode === 'move' ? 'slip' : mode
     const lanes = readLanes()
     // Capture EVERY other selected clip (whole link groups) so a MOVE drags
     // the full selection in sync — same time delta, each keeps its own lane
@@ -244,26 +270,32 @@ export function ClipView({
     const trackIndexOf = (clipId: string) =>
       tracks.findIndex((t) => t.clips.some((c) => c.id === clipId))
     const selIds = fresh.selections.length > 0 ? fresh.selections : [clip.id]
-    const partners = resolveSelectionGroups(fresh.doc, selIds)
-      .filter((c) => c.id !== clip.id)
-      .map((c) => {
-        const idx = trackIndexOf(c.id)
-        return {
-          id: c.id,
-          trackIndex: idx,
-          kind: tracks[idx]?.kind ?? '',
-          origStart: c.start,
-        }
-      })
+    const partners =
+      gestureMode === 'move'
+        ? resolveSelectionGroups(fresh.doc, selIds)
+            .filter((c) => c.id !== clip.id)
+            .map((c) => {
+              const idx = trackIndexOf(c.id)
+              return {
+                id: c.id,
+                trackIndex: idx,
+                kind: tracks[idx]?.kind ?? '',
+                origStart: c.start,
+              }
+            })
+        : []
     // Lock gate (0.14.0): refuse BEFORE beginTransient, so a refused move or
     // trim writes no frame and the clip never leaves its place. A move drags
     // every selected partner and edits the whole link group, so it checks all
     // of them; a trim edits only the dragged clip, so its own lane is the one
-    // that refuses. The command layer remains the authority.
+    // that refuses. Slip writes the whole linked group, so its group is the
+    // unit. The command layer remains the authority.
     const lockedTrack =
-      mode === 'move'
-        ? firstLockedTrackForClips(fresh.doc, [clip.id, ...partners.map((p) => p.id)])
-        : lockedTrackForClip(fresh.doc, clip.id)
+      gestureMode === 'slip'
+        ? firstLockedTrackForClips(fresh.doc, [clip.id])
+        : gestureMode === 'move'
+          ? firstLockedTrackForClips(fresh.doc, [clip.id, ...partners.map((p) => p.id)])
+          : lockedTrackForClip(fresh.doc, clip.id)
     if (lockedTrack) {
       toast({
         title: 'Track locked',
@@ -289,10 +321,16 @@ export function ClipView({
       // and the pointercancel listeners below are this same handler, so a
       // foreign cancel is ignored for the same reason.
       if (ev.pointerId !== gesture.current?.pointerId) return
-      endGesture()
+      // The new modal tools cancel on pointercancel. Select and razor keep
+      // their existing commit-on-pointercancel behavior; the plan explicitly
+      // leaves those gestures alone.
+      const modalGesture =
+        gesture.current?.mode === 'slip' ||
+        (activeTool === 'ripple' && gesture.current?.mode !== 'move')
+      endGesture(ev.type === 'pointercancel' && modalGesture)
     }
     gesture.current = {
-      mode,
+      mode: gestureMode,
       rateStretch: e.altKey && mode !== 'move',
       startX: e.clientX,
       startY: e.clientY,
@@ -308,6 +346,16 @@ export function ClipView({
       stretchVerdict: 'pending',
       token: useEditorStore.getState().beginTransient(e.pointerId),
       pointerId: e.pointerId,
+      slipGroup: gestureMode === 'slip' ? linkedClips(fresh.doc, clip.id) : undefined,
+      slipAssetDuration:
+        gestureMode === 'slip' && asset && asset.kind !== 'image' ? asset.duration : undefined,
+      slipToastShown: false,
+      // Ripple plans against the PRE-gesture doc every frame: the proposal is
+      // absolute from the frozen origin, and the live doc already holds the
+      // previous frame's trim and shifts.
+      baseDoc:
+        gestureMode !== 'slip' && activeTool === 'ripple' ? structuredClone(fresh.doc) : undefined,
+      rippleToastShown: false,
       onMove,
       onUp,
     }
@@ -402,6 +450,45 @@ export function ClipView({
     g.moved = true
     g.lastX = clientX
     g.lastY = clientY
+
+    if (g.mode === 'slip') {
+      const rate = g.orig.speed ?? 1
+      // Dragging right drags the film right under a fixed window, which
+      // reveals EARLIER source. A reversed clip sees the same gesture in the
+      // opposite source direction.
+      const delta = (g.orig.reverse ? 1 : -1) * ((clientX - g.startX) / scale) * rate
+      const plan = planSlip({
+        clip: g.orig,
+        group: g.slipGroup,
+        assetDuration: g.slipAssetDuration,
+        delta,
+      })
+      if (plan.status === 'refused') {
+        if (!g.slipToastShown) {
+          g.slipToastShown = true
+          toast({
+            title: 'Cannot slip that clip',
+            description: plan.message,
+            variant: 'destructive',
+          })
+        }
+        return
+      }
+      if (plan.status === 'ok') {
+        store.applyTransientBatch(plan.commands)
+        setSlipHud({
+          inPoint: plan.inPoint,
+          outPoint: plan.inPoint + g.orig.duration * rate,
+          delta: plan.delta,
+        })
+      } else if (plan.status === 'noop') {
+        // Returning to the origin is a real no-op: restore the frozen base so
+        // the release cannot commit the previous frame's in point.
+        store.resetTransient()
+        setSlipHud(null)
+      }
+      return
+    }
 
     // Every clip that travels with the pointer must be excluded, not just the
     // one under it: in a MOVE the partners shift by the same delta
@@ -531,6 +618,49 @@ export function ClipView({
           // Verdict 'ok': the pair is legal for every later frame too, so it
           // dispatches below without a second validation clone.
         }
+        if (activeTool === 'ripple') {
+          if (!g.baseDoc) return
+          const atOrigin =
+            Math.abs(s.start - g.orig.start) < 1e-9 &&
+            Math.abs(s.duration - g.orig.duration) < 1e-9 &&
+            Math.abs(s.inPoint - g.orig.inPoint) < 1e-9 &&
+            Math.abs(s.speed - (g.orig.speed ?? 1)) < 1e-9
+          if (atOrigin) {
+            store.resetTransient()
+            return
+          }
+          // A rate stretch keeps the source span and re-times the clip. Ripple
+          // adds the same end-delta shift a normal trim would: a tail stretch
+          // moves the end, a head stretch anchors it and shifts nothing.
+          const endDelta = s.start + s.duration - (g.orig.start + g.orig.duration)
+          const shift = planRippleShift({
+            doc: g.baseDoc,
+            clipId: clip.id,
+            endDelta,
+            activeSequencePath: store.activeSequencePath,
+          })
+          if (shift.status === 'refused') {
+            if (!g.rippleToastShown) {
+              g.rippleToastShown = true
+              toast({
+                title: 'Cannot ripple trim',
+                description: shift.message,
+                variant: 'destructive',
+              })
+            }
+            return
+          }
+          if (shift.status === 'noop') {
+            // No end movement means no clips to shift, but a previous frame
+            // may have shifted them: restore the base, then land the rate
+            // stretch itself on it.
+            store.resetTransient()
+            store.applyTransientBatch([speedCommand, trimCommand])
+          } else {
+            store.applyTransientBatch([speedCommand, trimCommand, ...shift.commands])
+          }
+          return
+        }
         store.applyTransient(speedCommand)
         store.applyTransient(trimCommand)
         return
@@ -560,6 +690,30 @@ export function ClipView({
         snapPoints: points,
       })
       onSnapGuide(snapping ? d.snapped : null)
+      if (activeTool === 'ripple') {
+        if (!g.baseDoc) return
+        const plan = planRippleTrim({
+          doc: g.baseDoc,
+          clipId: clip.id,
+          edge: 'head',
+          proposal: { start: d.start, inPoint: d.inPoint, duration: d.duration },
+          activeSequencePath: store.activeSequencePath,
+        })
+        if (plan.status === 'refused') {
+          if (!g.rippleToastShown) {
+            g.rippleToastShown = true
+            toast({
+              title: 'Cannot ripple trim',
+              description: plan.message,
+              variant: 'destructive',
+            })
+          }
+          return
+        }
+        if (plan.status === 'ok') store.applyTransientBatch(plan.commands)
+        else store.resetTransient()
+        return
+      }
       try {
         store.applyTransient({
           type: 'trimClip',
@@ -595,6 +749,30 @@ export function ClipView({
       snapPoints: points,
     })
     onSnapGuide(snapping ? d.snapped : null)
+    if (activeTool === 'ripple') {
+      if (!g.baseDoc) return
+      const plan = planRippleTrim({
+        doc: g.baseDoc,
+        clipId: clip.id,
+        edge: 'tail',
+        proposal: { start: g.orig.start, inPoint: g.orig.inPoint, duration: d.duration },
+        activeSequencePath: store.activeSequencePath,
+      })
+      if (plan.status === 'refused') {
+        if (!g.rippleToastShown) {
+          g.rippleToastShown = true
+          toast({
+            title: 'Cannot ripple trim',
+            description: plan.message,
+            variant: 'destructive',
+          })
+        }
+        return
+      }
+      if (plan.status === 'ok') store.applyTransientBatch(plan.commands)
+      else store.resetTransient()
+      return
+    }
     try {
       store.applyTransient({
         type: 'trimClip',
@@ -621,7 +799,7 @@ export function ClipView({
     [],
   )
 
-  const endGesture = () => {
+  const endGesture = (cancelled = false) => {
     stopAutoScroll()
     const g = gesture.current
     if (!g) return
@@ -629,8 +807,9 @@ export function ClipView({
     window.removeEventListener('pointerup', g.onUp, true)
     window.removeEventListener('pointercancel', g.onUp, true)
     // Releasing over an incompatible lane is refused — say why, so the clip
-    // snapping back is explained rather than silent.
-    if (g.blockedLane) {
+    // snapping back is explained rather than silent. A pointercancel is not a
+    // release and says nothing.
+    if (!cancelled && g.blockedLane) {
       const what =
         clip.text !== undefined
           ? 'Text clips'
@@ -648,11 +827,13 @@ export function ClipView({
     // lane the drag kept applying the legal half of the gesture (the time shift,
     // on the original lane), so committing here would move the clip to a new
     // time under a toast saying the drop was invalid. Cancel restores the base
-    // doc instead, so the clip goes back to where it started.
+    // doc instead, so the clip goes back to where it started. A cancelled
+    // modal gesture does the same.
     const store = useEditorStore.getState()
-    if (g.blockedLane) store.cancelTransient()
+    if (cancelled || g.blockedLane) store.cancelTransient()
     else store.commitTransient()
     gesture.current = null
+    setSlipHud(null)
     onSnapGuide(null)
   }
 
@@ -794,6 +975,7 @@ export function ClipView({
       <ContextMenuTrigger asChild>
         <div
           data-testid={`clip-${clip.id}`}
+          data-in-point={clip.inPoint}
           role="button"
           aria-label={`Clip ${clip.text ?? asset?.name ?? 'text'} from ${clip.start.toFixed(2)} to ${(clip.start + clip.duration).toFixed(2)} seconds`}
           tabIndex={0}
@@ -803,6 +985,7 @@ export function ClipView({
             isSelected && 'z-10 ring-2 ring-rose-400 ring-offset-1 ring-offset-background',
             !asset && clip.mediaId && 'border-dashed border-red-500/60 bg-red-950/40',
             activeTool === 'razor' && 'cursor-crosshair',
+            activeTool === 'slip' && 'cursor-ew-resize',
           )}
           style={{ left: leftPx, width: widthPx, touchAction: 'none' }}
           onPointerDown={(e) => beginGesture(e, 'move')}
@@ -865,8 +1048,21 @@ export function ClipView({
               widthPx={widthPx}
               height={height - 8}
               selected={isSelected}
-              razorActive={activeTool === 'razor'}
+              inert={activeTool !== 'select'}
             />
+          )}
+
+          {/* slip readout: the source window under the pointer, and the delta
+              from the gesture's frozen origin. */}
+          {slipHud && (
+            <div
+              data-testid="slip-readout"
+              className="pointer-events-none absolute top-0.5 right-1 rounded bg-black/70 px-1 text-[9px] tabular-nums text-white"
+            >
+              In {slipHud.inPoint.toFixed(2)} / Out {slipHud.outPoint.toFixed(2)} (
+              {slipHud.delta >= 0 ? '+' : ''}
+              {slipHud.delta.toFixed(2)}s)
+            </div>
           )}
 
           {/* label */}
@@ -938,7 +1134,7 @@ export function ClipView({
           {/* trim handles */}
           <div
             aria-label="Trim clip start"
-            className="absolute inset-y-0 left-0 z-10 w-2 cursor-ew-resize opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100"
+            className={`absolute inset-y-0 left-0 z-10 w-2 ${activeTool === 'slip' ? 'cursor-default' : 'cursor-ew-resize'} opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100`}
             style={{
               background: 'linear-gradient(90deg, rgba(255,255,255,.45), transparent)',
             }}
@@ -946,7 +1142,7 @@ export function ClipView({
           />
           <div
             aria-label="Trim clip end"
-            className="absolute inset-y-0 right-0 z-10 w-2 cursor-ew-resize opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100"
+            className={`absolute inset-y-0 right-0 z-10 w-2 ${activeTool === 'slip' ? 'cursor-default' : 'cursor-ew-resize'} opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100`}
             style={{
               background: 'linear-gradient(270deg, rgba(255,255,255,.45), transparent)',
             }}

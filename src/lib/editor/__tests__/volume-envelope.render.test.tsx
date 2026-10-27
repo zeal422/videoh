@@ -117,24 +117,16 @@ function yFor(gain: number, top = 10, height = 20): number {
 function EnvelopeHarness({
   id = 'clip-a',
   selected = true,
-  razorActive = false,
+  inert = false,
 }: {
   id?: string
   selected?: boolean
-  razorActive?: boolean
+  inert?: boolean
 }) {
   const doc = useEditorStore((s) => s.doc)
   const clip = findClip(doc, id)?.clip
   if (!clip) return null
-  return (
-    <VolumeEnvelope
-      clip={clip}
-      widthPx={200}
-      height={36}
-      selected={selected}
-      razorActive={razorActive}
-    />
-  )
+  return <VolumeEnvelope clip={clip} widthPx={200} height={36} selected={selected} inert={inert} />
 }
 
 beforeEach(() => {

@@ -903,6 +903,7 @@ function zoomToFitSequence(store: ReturnType<typeof useEditorStore.getState>): v
 /** Help > Keyboard Shortcuts… — mirrors useEditorKeyboard.ts (single source). */
 const SHORTCUT_ROWS: [string, string][] = [
   ['V / C', 'Selection tool / Razor tool (Escape returns to V)'],
+  ['B / Y', 'Ripple trim tool (one track) / Slip tool'],
   ['Space', 'Play / pause'],
   ['J / K / L', 'Shuttle stop / stop / play'],
   ['← / →', 'Step 1 frame (Shift: 5 frames)'],

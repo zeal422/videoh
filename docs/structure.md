@@ -142,12 +142,14 @@ src/lib/editor/
 ├── constants.ts          # all tuning constants and limits
 ├── factories.ts          # uid + create* constructors, finders, compatibility checks, sourceTimeAt
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
-├── commands.ts           # the 59 EditorCommand variants + applyCommand(s), direction-aware split spans, LOCK_RULES
+├── commands.ts           # the 60 EditorCommand variants + applyCommand(s), direction-aware split spans, LOCK_RULES
 ├── trim.ts               # pure trim/split math: source-fitting bisection, timeScale curve rebases
 ├── snap.ts               # snap-point computation and application
 ├── srt.ts                # SRT parse/serialize + the caption cue collector (pure)
 ├── vtt.ts                # WebVTT serialize (escape, timestamps, document) over shared SrtCue (pure)
 ├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
+├── ripple-trim.ts        # pure same-track ripple planner: anchored-start head trim, shared end delta, transition overlap
+├── slip.ts               # pure Slip planner: source-window bounds, shared linked-pair delta
 ├── sequence-ops.ts       # insert/overwrite placement planner + source in/out range helpers (pure)
 ├── marquee.ts            # marquee (box) selection: lane-space rect math + group resolution (pure)
 ├── markers.ts            # markers: source-anchored clip mapping, navigation, colors, selection (pure)
@@ -197,7 +199,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 85 test files (1823 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 88 test files (1880 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ````

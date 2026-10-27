@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.15.0',
+    date: '2026-10-27',
+    highlights: [
+      'Ripple Trim (B) trims a clip edge and shifts every later clip on the same track, closing or opening the gap while preserving an existing transition overlap',
+      'Slip (Y) drags a clip body to change which part of its source it shows without moving the clip or changing its duration, with a live in/out readout',
+      'Both tools commit one undo entry per gesture, refuse locked lanes before a drag starts, and cancel cleanly on pointercancel',
+      'Ripple trim is same-track by decision: linked partners on other tracks stay put, and the toolbar tooltip says so',
+    ],
+  },
+  {
     version: '0.14.0',
     date: '2026-10-27',
     highlights: [

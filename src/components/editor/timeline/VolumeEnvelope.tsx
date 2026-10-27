@@ -43,22 +43,22 @@ const MAX_SAMPLES = 600
  * `pointer-events-none`, so an empty click still selects/drags the clip. Only
  * the dots and the 10px line hit path opt into pointer events. The dots sit
  * below the clip label and the z-10 trim handles, so a trim always wins an
- * overlap. With the razor active the whole envelope is inert.
+ * overlap. With a modal edit tool active the whole envelope is inert.
  */
 export function VolumeEnvelope({
   clip,
   widthPx,
   height,
   selected,
-  razorActive,
+  inert,
 }: {
   clip: Clip
   widthPx: number
   height: number
   /** Selected clips show a flat line even before a curve exists. */
   selected: boolean
-  /** Razor tool: the envelope must not intercept the cut. */
-  razorActive: boolean
+  /** A modal edit tool is active: the envelope must not intercept the pointer. */
+  inert: boolean
 }) {
   const apply = useEditorStore((s) => s.apply)
   const [hud, setHud] = useState<{ gain: number } | null>(null)
@@ -177,7 +177,7 @@ export function VolumeEnvelope({
    * under the threshold, and a threshold crossing neither removes nor drags.
    */
   const beginDotGesture = (e: React.PointerEvent, index: number) => {
-    if (razorActive || e.button !== 0) return
+    if (inert || e.button !== 0) return
     e.preventDefault()
     e.stopPropagation()
     if (refuseIfLocked()) return
@@ -300,7 +300,7 @@ export function VolumeEnvelope({
   }
 
   const onDotKeyDown = (e: React.KeyboardEvent, index: number) => {
-    if (razorActive) return
+    if (inert) return
     const key = e.key
     if (key === 'Delete' || key === 'Backspace') {
       e.preventDefault()
@@ -385,7 +385,7 @@ export function VolumeEnvelope({
             stroke="transparent"
             strokeWidth={10}
             vectorEffect="non-scaling-stroke"
-            style={{ pointerEvents: razorActive ? 'none' : 'stroke' }}
+            style={{ pointerEvents: inert ? 'none' : 'stroke' }}
             onPointerDown={(e) => e.stopPropagation()}
             onDoubleClick={(e) => {
               e.preventDefault()
@@ -405,7 +405,7 @@ export function VolumeEnvelope({
               key={i}
               data-testid={`volume-dot-${i}`}
               role="slider"
-              tabIndex={razorActive ? -1 : 0}
+              tabIndex={inert ? -1 : 0}
               aria-label={`Volume keyframe ${i + 1}`}
               aria-valuemin={DB_FLOOR}
               aria-valuemax={DB_CEIL}
@@ -413,13 +413,13 @@ export function VolumeEnvelope({
               aria-valuetext={`${formatDb(k.value)} at ${k.time.toFixed(2)} seconds`}
               className={cn(
                 'absolute z-[1] flex -translate-x-1/2 translate-y-1/2 items-center justify-center rounded-full',
-                razorActive
+                inert
                   ? 'pointer-events-none'
                   : 'pointer-events-auto cursor-ns-resize focus-visible:ring-2 focus-visible:ring-white focus-visible:outline-none',
               )}
               style={{ left: `${left}%`, bottom: `${bottom}%`, width: DOT_HIT, height: DOT_HIT }}
-              onPointerDown={razorActive ? undefined : (e) => beginDotGesture(e, i)}
-              onKeyDown={razorActive ? undefined : (e) => onDotKeyDown(e, i)}
+              onPointerDown={inert ? undefined : (e) => beginDotGesture(e, i)}
+              onKeyDown={inert ? undefined : (e) => onDotKeyDown(e, i)}
             >
               <span aria-hidden="true" className="block size-1.5 rounded-full bg-white shadow-sm" />
             </div>

@@ -5,6 +5,81 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] - 2026-10-27
+
+### Added
+
+- **Ripple Trim (`B`).** Drag a clip edge to trim it and shift every later clip on the same track by
+  one shared end delta. The edited clip's start stays anchored. A head trim changes the duration,
+  and on a forward clip it also moves the in point; a reversed clip keeps its low in point anchor
+  because its head shows the high source end. A tail trim changes only the duration. A tail
+  extension pushes the run right, a tail shrink pulls it left, a head shrink pulls the end left, and
+  a head extension pushes it right.
+  Later clips keep their mutual spacing. A transition overlap is preserved because its partner is in
+  the shifted run and moves by the same delta; an overlap that no `transitionOut` explains, or a
+  shift that would start a clip below 0, refuses with the planner's message. The tool is same-track
+  by decision: linked partners on other tracks do not shift, the pair may diverge, and the toolbar
+  tooltip names the limitation. This is the recorded Invariant 14 exception.
+- **Slip (`Y`).** Drag a clip body horizontally to change which part of its source it shows. `start`
+  and `duration` stay fixed; only `inPoint` moves, bounded by the asset window. The pointer delta is
+  converted with the current px/s and the clip's speed, and inverted for a reversed clip. A linked
+  pair that reads the same source window slips both halves by the same delta; a mixed-window group,
+  an image, a text clip, a compound clip, and a time-remapped clip refuse with a message. A live
+  readout shows the source in and out and the actual delta, and `data-in-point` exposes the value on
+  the clip element.
+- **One atomic transient batch.** `store.applyTransientBatch` validates a whole command batch on one
+  clone and installs it once. A later refusal discards the clone, so a ripple frame can never leave
+  the trim without its shifts or half the run moved. `store.resetTransient` restores the gesture base
+  without ending the slot, so a no-op frame cannot leave a stale edit for the commit.
+- **`setClipInPoint`.** A dedicated command for an in-point-only change. It refuses an out-of-bounds
+  source window, an image/text/compound/missing-media clip, a mixed-window linked group, a locked
+  member lane, and hostile values. It writes the whole linked group that shares the window and never
+  touches `start` or `duration`.
+
+### Changed
+
+- `EditorTool` grows from select/razor to select/razor/ripple/slip. The toolbar adds the Ripple Trim
+  and Slip buttons with pressed state, the shortcuts dialog and README list `B` and `Y`, and the
+  clip body and edge cursors follow the active tool.
+- The volume envelope is inert under every modal tool (razor, ripple, slip), not only the razor, so a
+  body drag reaches the tool instead of editing a keyframe.
+- `trimClip` keeps a caller-supplied in point when a head trim leaves `start` anchored. The
+  constant-rate rebase now runs only when the head actually moved.
+- V, C, B, Y, and Escape no longer switch the tool while a gesture is live; the gesture finishes on
+  its own pointerup or pointercancel.
+
+### Fixed
+
+- **Speed-changed ripple head trim.** A start-anchored head trim at a speed other than 1 silently
+  kept the old in point and shortened the clip from its tail. The constant-rate rebase assumed the
+  head move lived in `start`; it is now gated on that move, and a red-first planner test pins the
+  speed-2 case.
+- **Tool switch mid-gesture.** A tool shortcut pressed during a live slip or ripple drag changed the
+  toolbar under a gesture whose closures still ran the old tool. The tool keys now wait for the
+  gesture to end.
+- **Pointercancel committed the new tools.** The shared pointerup and pointercancel handler
+  committed a ripple or slip drag on cancel. The new tools now restore the base doc and add no
+  history entry; select and razor keep their existing commit-on-pointercancel behavior, as the plan
+  required.
+- **Stale no-op frame.** Returning a ripple or slip drag to its origin left the last applied frame in
+  the doc, so releasing committed a change the pointer no longer asked for. No-op slip and ripple
+  frames now call `resetTransient`, which restores the base without ending the gesture; the slip
+  readout clears as well.
+
+### Tests and docs
+
+- The suite moves to 88 files and 1,880 tests, with coverage at 94.77 statements, 90.35 branches,
+  96.53 functions, and 96.87 lines. `ripple-trim.test.ts` covers the planner matrix,
+  `slip.test.ts` covers the planner and the command trust boundary, `editing-tools-ui.test.tsx`
+  proves the toolbar, keyboard, pointer routing, one undo per gesture, the Alt rate-stretch shift,
+  returning either tool to its origin with no history, pointercancel and foreign commit, collision
+  refusals that write nothing, and the live-gesture Escape rule. The store tests cover the atomic
+  batch and `resetTransient`. Coverage adds
+  `ripple-trim.ts` and `slip.ts` to the include list.
+- Docs updated: architecture, flows, design system, structure, testing, README, roadmap, plan index,
+  and the implementation notes. Browser proof covers a ripple tail and head, the same-track link
+  divergence, slip with a fixed clip position, locked-lane refusals, and a clean console.
+
 ## [0.14.0] - 2026-10-27
 
 ### Added

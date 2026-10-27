@@ -245,9 +245,11 @@ describe('A/V linked clips (Premiere-style split + unlink)', () => {
     expect(keyboard).toMatch(
       /commandsToPasteClips\(\s*doc,\s*playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
     )
-    // Tools: V selection / C razor / Escape back.
-    expect(keyboard).toMatch(/setActiveTool\('razor'\)/)
-    expect(keyboard).toMatch(/setActiveTool\('select'\)/)
+    // Tools: V selection / C razor / B ripple / Y slip / Escape back.
+    expect(keyboard).toMatch(/switchTool\('razor'\)/)
+    expect(keyboard).toMatch(/switchTool\('ripple'\)/)
+    expect(keyboard).toMatch(/switchTool\('slip'\)/)
+    expect(keyboard).toMatch(/store\.setActiveTool\('select'\)/)
     // Add Edit (Ctrl+K): split selection, or ALL tracks with no selection.
     expect(keyboard).toMatch(/commandsToSplitClipsAt\(doc, selectedIds, playhead\)/)
     expect(keyboard).toMatch(
@@ -333,7 +335,7 @@ describe('track operations are reachable from the timeline UI', () => {
     // committing would move the clip to a new time while the toast says the drop
     // was invalid. Cancel restores the base doc instead.
     const clip = read('src/components/editor/timeline/ClipView.tsx')
-    expect(clip).toMatch(/if \(g\.blockedLane\) store\.cancelTransient\(\)/)
+    expect(clip).toMatch(/if \(cancelled \|\| g\.blockedLane\) store\.cancelTransient\(\)/)
     expect(clip).toMatch(/else store\.commitTransient\(\)/)
   })
 

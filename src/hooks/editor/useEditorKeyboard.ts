@@ -27,7 +27,7 @@ import {
 import { toast } from '@/hooks/use-toast'
 import { FRAME_STEPS, PPS_MAX, PPS_MIN, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
-import { useEditorStore } from '@/lib/editor/store'
+import { isTransientActive, useEditorStore } from '@/lib/editor/store'
 
 /**
  * Global keyboard shortcuts (skipped while typing in inputs/textareas).
@@ -40,6 +40,8 @@ import { useEditorStore } from '@/lib/editor/store'
  * |------------------------|----------------------------------------------------|
  * | V                      | Selection tool                                     |
  * | C                      | Razor tool (click a clip to cut it)                |
+ * | B                      | Ripple trim tool (shifts only the same track)      |
+ * | Y                      | Slip tool (changes the source window, not the clip)|
  * | Escape                 | Back to the selection tool                         |
  * | Space                  | Play / pause (not on a focused button)             |
  * | J / K / L              | Shuttle stop / stop / play                         |
@@ -213,19 +215,41 @@ export function useEditorKeyboard(onSave: () => void): void {
       }
 
       // ————— single keys —————
+      // A live gesture owns the tool. Switching mid-drag would change the
+      // toolbar under a gesture whose closures still run the old tool, and the
+      // 0.15.0 contract says Escape does not cancel a live gesture. The tool
+      // keys wait for pointerup/pointercancel.
+      const switchTool = (tool: 'select' | 'razor' | 'ripple' | 'slip') => {
+        if (isTransientActive()) return
+        store.setActiveTool(tool)
+      }
       switch (e.key) {
         case 'v':
         case 'V': {
-          store.setActiveTool('select')
+          switchTool('select')
           break
         }
         case 'c':
         case 'C': {
           // Premiere razor tool: click a clip to cut it (ClipView handles it).
-          store.setActiveTool('razor')
+          switchTool('razor')
+          break
+        }
+        case 'b':
+        case 'B': {
+          // Ripple trim: edge drags trim and shift the SAME track's later
+          // clips. Linked partners on other tracks stay put (0.15.0).
+          switchTool('ripple')
+          break
+        }
+        case 'y':
+        case 'Y': {
+          // Slip: a body drag moves the source window, never the clip.
+          switchTool('slip')
           break
         }
         case 'Escape': {
+          if (isTransientActive()) break
           store.setActiveTool('select')
           store.selectMarker(null)
           break

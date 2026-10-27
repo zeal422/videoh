@@ -23,16 +23,16 @@ describe('timeline envelope wiring', () => {
     expect(envelopeIndex).toBeLessThan(clipView.indexOf('{/* trim handles */}'))
     // The clip root is inset-y-1, so the overlay gets its real content height.
     expect(clipView).toMatch(/height=\{height - 8\}/)
-    expect(clipView).toMatch(/razorActive=\{activeTool === 'razor'\}/)
+    expect(clipView).toMatch(/inert=\{activeTool !== 'select'\}/)
   })
 
   it('keeps pointer events off the empty space and on the dots and line only', () => {
     expect(envelope).toMatch(/pointer-events-none absolute inset-0/)
     expect(envelope).toMatch(/data-testid="volume-envelope-plot"/)
     expect(envelope).toMatch(/className="pointer-events-none absolute"/)
-    expect(envelope).toMatch(/pointerEvents: razorActive \? 'none' : 'stroke'/)
+    expect(envelope).toMatch(/pointerEvents: inert \? 'none' : 'stroke'/)
     expect(envelope).toMatch(/pointer-events-auto cursor-ns-resize/)
-    expect(envelope).toMatch(/razorActive\s*\? 'pointer-events-none'/)
+    expect(envelope).toMatch(/inert\s*\? 'pointer-events-none'/)
     // The curve is white, never the selection rose.
     expect(envelope).toMatch(/className="stroke-white\/90"/)
     expect(envelope).not.toMatch(/stroke-rose/)
@@ -40,7 +40,8 @@ describe('timeline envelope wiring', () => {
     expect(envelope).toMatch(/const TRIM_INSET = 8/)
     expect(envelope).toMatch(/left: TRIM_INSET, right: TRIM_INSET/)
     // Trim handles are z-10; the dot layer is below them.
-    expect(clipView).toMatch(/left-0 z-10 w-2 cursor-ew-resize/)
+    expect(clipView).toMatch(/left-0 z-10 w-2/)
+    expect(clipView).toMatch(/activeTool === 'slip' \? 'cursor-default' : 'cursor-ew-resize'/)
     expect(envelope).toMatch(/z-\[1\]/)
   })
 

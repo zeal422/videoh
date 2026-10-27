@@ -154,7 +154,7 @@ Stable hooks used across flows and tests:
   or sub-floor range (`out <= in`, or an effective span under `MIN_CLIP_DURATION - EPS`) is refused
   with one toast and places nothing. No source selected is a no-op.
 
-## Select, link, and razor
+## Select, link, and edit tools
 
 - Plain click selects a clip's link group; **Shift+click adds** another group; **Ctrl+click toggles**;
   **Ctrl+A** selects all; **Ctrl+Shift+A** deselects.
@@ -169,6 +169,18 @@ Stable hooks used across flows and tests:
 - **Ctrl+L** is a smart toggle: unlinks when the selection is linked, otherwise links it. `Link` needs
   ≥2 non-text clips from ≥2 distinct groups.
 - **Razor tool (`C`)** cuts the clicked clip's group exactly at the pointer; `V` returns to select.
+- **Ripple trim (`B`)** trims one clip edge and shifts every later clip on the SAME track by the
+  same end delta. The edited clip's start stays anchored. A head trim changes the duration, and on a
+  forward clip it also moves the in point; a reversed clip keeps its low in point anchor because its
+  head shows the high source end. A tail trim changes only the duration. Linked partners on other
+  tracks do not shift; this is the recorded Invariant 14 exception, and the toolbar tooltip says so. An existing
+  transition overlap is preserved by shifting its partner with the same delta; any other overlap
+  refuses. A locked lane refuses before the drag starts.
+- **Slip (`Y`)** drags a clip body to change which part of its source it shows. `start` and
+  `duration` never move; only `inPoint` changes. A linked pair that reads the same source window
+  slips both halves by the same delta; a mixed-window group, a text/compound clip, an image, and a
+  time-remapped clip refuse with a message. The readout shows the source in/out and the actual
+  delta, and `data-in-point` exposes the value for browser proof.
 
 ## Edit clips
 
@@ -186,6 +198,17 @@ Stable hooks used across flows and tests:
 - **Empty lanes do not linger** — the edit that takes a lane's last clip removes the lane with it, in the
   same history entry, so one undo restores both. A lane that was already empty is kept, and the last lane
   always survives ([architecture.md](architecture.md#invariants), rule 17).
+- **Ripple trim** — with `B` active, drag either edge. The same source bounds and rate-stretch
+  decision apply, but the shift set is every later clip on the edited track. The clip does not move;
+  its end does. A forward clip's head trim moves its in point; a reversed clip keeps that low anchor
+  and lets the duration carry the change. A tail extension pushes the run right, a tail shrink pulls
+  it left, a head shrink pulls the end left, and a head extension pushes it right. Later clips keep their mutual spacing.
+  The planner commits the trim and every shift as one validated transient batch, so a refused
+  shift writes nothing.
+- **Slip** — with `Y` active, drag the body horizontally. The pointer delta is converted with the
+  current px/s and the clip's speed, and inverted for a reversed clip. The command layer validates
+  the source window against the asset and writes the whole linked group only when every member
+  reads the same window.
 - **Trim** — drag either edge; video/audio clips are bounded by their source, with the consumed source
   span (not the timeline duration) required to fit; a `timeScale` ramp that over-consumes is clamped
   to the last readable frame. Images and text are unbounded. A reversed clip keeps the same two-sided

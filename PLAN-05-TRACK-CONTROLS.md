@@ -1,6 +1,6 @@
 # PLAN 05: Track solo and lock
 
-Status: implemented, awaiting commit
+Status: done
 Depends on: [PLAN 02](PLAN-02-GEOMETRY-AND-CHROME.md), [PLAN 04](PLAN-04-VOLUME-AUTOMATION.md)
 Release: `0.14.0`
 Goal: add real audio-track solo and real track lock, with both behaviors enforced in the command and

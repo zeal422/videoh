@@ -1,19 +1,24 @@
-# PLAN 06: Ripple trim, slip, and the keyframe Pen
+# PLAN 06A: Ripple trim and slip
 
-Status: planned
+Status: implemented, awaiting commit
 Depends on: [PLAN 04](PLAN-04-VOLUME-AUTOMATION.md), [PLAN 05](PLAN-05-TRACK-CONTROLS.md)
 Release: `0.15.0`
-Goal: make the reference's ripple, slip, and Pen tools real. Every toolbar icon has a mode, a
-shortcut, a cursor, a documented behavior, and tests.
+Split: [PLAN 06B](PLAN-06B-KEYFRAME-PEN.md) carries the keyframe Pen and releases as `0.16.0`.
+Plan 06 split at its own gate (more than 15 changed files or 500 changed lines) before coding, as
+the original plan required.
+Goal: make the reference's ripple and slip tools real. Every toolbar icon has a mode, a shortcut, a
+cursor, a documented behavior, and tests.
 
 ## Scope
 
-1. Extend the editor tool state from select/razor to ripple, slip, and Pen.
+1. Extend the editor tool state from select/razor to ripple and slip.
 2. Add a pure ripple-trim planner and gesture.
 3. Add a pure slip planner and gesture.
-4. Add the keyframe Pen over the Plan 04 envelope.
-5. Add toolbar buttons, shortcuts, tooltips, and cursors.
-6. Tests, browser proof, and the `0.15.0` release tasks.
+4. Add toolbar buttons, shortcuts, tooltips, and cursors.
+5. Tests, browser proof, and the `0.15.0` release tasks.
+
+The keyframe Pen, and the generalized automation envelope it needs, are
+[PLAN 06B](PLAN-06B-KEYFRAME-PEN.md).
 
 ## Non-goals
 
@@ -21,6 +26,7 @@ shortcut, a cursor, a documented behavior, and tests.
 - No rolling edit, slide, or slide tool.
 - No new transition or effect behavior.
 - No new keyframe property.
+- No keyframe Pen in this plan. 06B owns it, and its button does not land here.
 - No all-track ripple. Same-track is the recorded `0.15.0` decision. It does not shift unrelated
   tracks; it is an explicit link-group exception described in section 2.
 - No mobile-specific tool UI beyond the existing toolbar overflow.
@@ -44,24 +50,22 @@ shortcut, a cursor, a documented behavior, and tests.
 - `src/lib/editor/factories.ts`: `sourceTimeAt`, `clampSourceTime`.
 - `src/lib/editor/commands.ts`: `moveClip`, `trimClip`, `setClipSpeed`, `setClipReverse`,
   `setClipKeyframes`.
-- `src/components/editor/timeline/VolumeEnvelope.tsx` from Plan 04: the envelope surface the Pen
-  edits.
 
 ## 1. Tool state and shortcuts
 
-Extend `EditorTool` to `'select' | 'razor' | 'ripple' | 'slip' | 'pen'`.
+Extend `EditorTool` to `'select' | 'razor' | 'ripple' | 'slip'`.
 
-Shortcuts. B, Y, and P are unused in the current keyboard map, so use them:
+Shortcuts. B and Y are unused in the current keyboard map, so use them:
 
 - V: select.
 - C: razor.
 - B: ripple trim.
 - Y: slip.
-- P: Pen.
 - Escape: select.
 
-Check every existing shortcut before landing. If the map has changed and one of B, Y, or P is taken,
-stop and update this plan rather than silently choosing a different key. Update:
+Check every existing shortcut before landing. If the map has changed and B or Y is taken, stop and
+update this plan rather than silently choosing a different key. Ctrl+Y is redo, but the modifier
+branch returns before the single-key switch, so plain Y is free. Update:
 
 - `useEditorKeyboard.ts`.
 - The shortcuts dialog in `MenuBar.tsx`.
@@ -83,11 +87,11 @@ Rules:
 
 Toolbar:
 
-- Add three buttons after the razor, grouped with the edit tools.
-- Use `BetweenHorizontalStart` for ripple, `MoveHorizontal` for slip, and `PenTool` for Pen.
-- Bottom-side tooltips with the name and shortcut.
-- The buttons must not appear until their behavior exists.
-- If Plan 06 splits, land the buttons with their behavior in the same sub-plan.
+- Add two buttons after the razor, grouped with the edit tools.
+- Use `BetweenHorizontalStart` for ripple and `MoveHorizontal` for slip.
+- Bottom-side tooltips with the name and shortcut. The ripple tooltip names the same-track
+  limitation: "Ripple trim works on one track. Linked partners on other tracks do not shift."
+- The buttons must not appear until their behavior exists. The Pen button waits for 06B.
 
 ## 2. Ripple trim
 
@@ -137,9 +141,10 @@ Create `src/lib/editor/ripple-trim.ts`:
   this holds for reversed, speed-changed, and time-remapped clips; if the command refuses, the
   planner refuses with the same message.
 - Compute the end delta. For a tail trim, the start and in point stay anchored, the duration changes,
-  and the end moves by the duration delta. For a head trim, the start stays anchored, the in point
-  changes, the duration changes inversely, and the end moves by the same delta. The edited clip's
-  start does not move in either case.
+  and the end moves by the duration delta. For a head trim, the start stays anchored, the duration
+  changes inversely, and the end moves by the same delta. A forward clip's in point moves with the
+  head; a reversed clip keeps its low in point anchor because its head shows the high source end.
+  The edited clip's start does not move in either case.
 - Resolve the affected set as the trimmed clip's immediate next clip by start order plus every clip
   after it. Shift that whole run by the same end delta. For an adjacent edit point this is the set
   of clips that start at or after the old end. It also includes a transition partner, whose start
@@ -163,10 +168,11 @@ Create `src/lib/editor/ripple-trim.ts`:
   `{ status: 'refused', message }` when validation fails. Do not use `null` for both a no-op and a
   refusal.
 - Never produce a non-transition overlap on the same track.
-- Handle a head trim that extends the clip: the start stays anchored, the in point moves earlier,
-  the duration grows, and the end moves right. If the asset lacks source, refuse.
-- Handle a head trim that shortens the clip: the start stays anchored, the in point moves later,
-  the duration shrinks, and the end moves left.
+- Handle a forward head trim that extends the clip: the start stays anchored, the in point moves
+  earlier, the duration grows, and the end moves right. If the asset lacks source, refuse.
+- Handle a forward head trim that shortens the clip: the start stays anchored, the in point moves
+  later, the duration shrinks, and the end moves left. A reversed head trim keeps the low in point
+  anchor and lets the duration carry either direction.
 - Handle a tail trim that extends right: later clips shift right, even if they were adjacent.
 - A clip with a transition that overlaps the next clip keeps that overlap. The partner is in the
   affected set and shifts by the same delta, so the transition span and stored duration are
@@ -191,8 +197,8 @@ Gesture:
 Tests:
 
 - Pure planner: head and tail trims, positive and negative end deltas, later clips shift, earlier
-  clips do not move, a head trim keeps the clip start anchored while in point and duration change,
-  reversed clips on both edges, speed 0.5 and 2, Alt rate stretch, transitions, markers, keyframes,
+  clips do not move, a head trim keeps the clip start anchored while the duration changes and a
+  forward clip's in point moves, reversed clips on both edges, speed 0.5 and 2, Alt rate stretch, transitions, markers, keyframes,
   link ids, left shift crossing 0 refusal, collision refusal, no-op, locked track refusal. A left
   shift that would cross 0 refuses before the batch; the doc is unchanged and no history entry is
   added.
@@ -272,80 +278,16 @@ Tests:
   change. The clip position and duration do not move. Confirm the linked audio stays in sync. Do not
   rely on a browser store handle that does not exist.
 
-## 4. Keyframe Pen
-
-Definition:
-
-- The Pen tool edits keyframes on the selected clip's visible automation curve.
-- Audio clips expose volume. Video, image, and text clips expose opacity. A compound clip exposes
-  opacity. Do not add mask or roto editing.
-- The curve surface is the Plan 04 `VolumeEnvelope` generalized to an `AutomationEnvelope` that can
-  render volume or opacity. Reuse it. Do not create a second overlay.
-- When the Pen is active, the selected clip shows its automation curve even if it has no keyframes,
-  so the user can add the first point. When the Pen is not active, a visual clip shows its opacity
-  curve only when opacity keyframes exist; it does not add a flat line to every selected video.
-  Volume keeps the Plan 04 visibility rule.
-- A solo video with embedded audio is a visual clip for the Pen: the Pen edits opacity. Its volume
-  envelope remains directly draggable through its dots. Do not expose two Pen curves on one clip.
-- Clicking the curve adds a keyframe at that local time with the interpolated value. Dragging a dot
-  edits time and value. Alt-click or Delete removes.
-- The Pen does not move or trim the clip. Clicking the clip body selects it. Dragging the body does
-  not move the clip while the Pen is active.
-- The Pen is a mode, not a modifier on the select tool.
-- A locked track refuses edits (Plan 05).
-- The keyframe commands are existing `setClipKeyframes`; no new automation store.
-
-Pure helpers:
-
-Create `src/lib/editor/pen.ts` with these functions:
-
-- `automationPropertyForClip(clip, trackKind)` returns `'volume'` when
-  `trackKind === 'audio' || clip.audioOnly`, otherwise `'opacity'`. A visual clip that also carries
-  audio still edits opacity with the Pen; its volume is the envelope dots.
-- `automationValueAt(clip, property, local)` wraps `animatedValue`.
-- `addKeyframeAt(clip, property, local, value, fps)` returns a sorted curve with the new point, or
-  replaces an existing point within one frame at `fps`.
-- `removeKeyframeAt` and `nudgeKeyframe` for keyboard.
-- Reuse the Plan 04 dB mapping for volume and the 0 to 1 mapping for opacity.
-
-Gesture:
-
-- With the Pen active, clicking the curve adds a point. If the click is within the dot hit target,
-  select/focus it.
-- Use the same 3px screen-space (`clientX`/`clientY`) threshold as Plan 04. It is zoom-independent.
-  A press/release under it is a click: on the curve it adds one keyframe; on a dot it selects/focuses.
-  It does not start a drag. Crossing the threshold starts one transient drag. Alt-click uses the
-  Plan 04 arm-on-pointerdown, remove-on-pointerup rule; pointercancel clears it and leaves the doc
-  unchanged.
-- Dragging a point writes transient updates and commits once.
-- The overlay's hit path and dots are pointer-events auto; the rest of the clip remains selectable.
-- The Pen cursor is a crosshair over the curve and the normal pointer over the clip body.
-- Escape returns to select when no gesture is live; pointercancel cancels a live Pen drag or a
-  pending Alt-click removal.
-
-Tests:
-
-- Pure: property selection for audio/video/image/text/compound; a solo video selects opacity, not
-  volume; add, replace within one frame, remove, nudge; clamps; sorted output; no mutation.
-- Gesture: add on click, a 2px move is a click, a 4px move starts one drag, alt-click removes on
-  release, pointercancel leaves a pending alt-click removal unapplied, keyboard nudge/delete, one
-  undo, cancel, locked track refusal, no clip move while the Pen is active.
-- Render: the Pen shows the curve on a selected clip with no keyframes; the select tool shows an
-  opacity curve only when opacity keyframes exist; the overlay is behind the label and trim handles.
-- Browser: add a volume point to an audio clip and an opacity point to a video clip; undo; confirm
-  the clip did not move.
-
-## 5. Tool interaction matrix
+## 4. Tool interaction matrix
 
 Add a table and tests for every combination:
 
-| Tool   | Clip body drag     | Clip edge drag | Click empty lane | Click clip                     |
-| ------ | ------------------ | -------------- | ---------------- | ------------------------------ |
-| Select | Move               | Trim           | Clear selection  | Select                         |
-| Razor  | Cut on pointerdown | Trim (current) | Clear selection  | Cut                            |
-| Ripple | No move            | Ripple trim    | Clear selection  | Select                         |
-| Slip   | Slip source        | No trim        | Clear selection  | Select and slip                |
-| Pen    | No move            | No trim        | Clear selection  | Select, curve click adds point |
+| Tool   | Clip body drag     | Clip edge drag | Click empty lane | Click clip      |
+| ------ | ------------------ | -------------- | ---------------- | --------------- |
+| Select | Move               | Trim           | Clear selection  | Select          |
+| Razor  | Cut on pointerdown | Trim (current) | Clear selection  | Cut             |
+| Ripple | No move            | Ripple trim    | Clear selection  | Select          |
+| Slip   | Slip source        | No trim        | Clear selection  | Select and slip |
 
 The current razor intercepts only the clip body; the edge handles still trim. Preserve that in this
 plan. If cut-on-edge is wanted later, it is a deliberate behavior change with its own red-first
@@ -357,28 +299,27 @@ Modifiers:
   source-span decision as the select tool, then shifting later clips by the end delta. If the
   normal rate stretch refuses, the ripple gesture refuses too. Do not fall through to a normal trim
   silently.
-- Shift and Ctrl selection modifiers keep working in Select, Ripple, Slip, and Pen. Razor keeps its
+- Shift and Ctrl selection modifiers keep working in Select, Ripple, and Slip. Razor keeps its
   current cut-first behavior: it cuts before the selection code, so do not claim selection
   modifiers there.
 - Multi-touch: only the initiating pointer drives a gesture.
 
-## 6. Tests and proof
+## 5. Tests and proof
 
 Unit and render tests:
 
 - `tool-state` tests for the new tool union and shortcuts.
 - `ripple-trim.test.ts` pure planner.
 - `slip.test.ts` pure planner.
-- `pen.test.ts` pure keyframe helper.
 - `timeline-panel-ui.test.tsx` or new gesture tests for one undo, cancel, refusal, and tool matrix.
 - `useEditorKeyboard` tests for B, Y, P, V, C, Escape.
-- Toolbar render tests for the three buttons, active state, tooltips, and no dead icons.
-- Static locks for the tool matrix and the absence of a mask Pen.
+- Toolbar render tests for the two new buttons, active state, tooltips, and no dead icons.
+- Static locks for the tool matrix. No Pen control or mask behavior lands in 06a.
 
 Coverage:
 
-- Add `src/lib/editor/ripple-trim.ts`, `src/lib/editor/slip.ts`, and `src/lib/editor/pen.ts` to the
-  coverage include list in `vitest.config.ts`.
+- Add `src/lib/editor/ripple-trim.ts` and `src/lib/editor/slip.ts` to the coverage include list in
+  `vitest.config.ts`.
 - Add them to the coverage-scope sentence in `docs/testing.md`.
 - Run `bun run test:coverage` once in this plan. New pure modules outside the include list are
   unmeasured.
@@ -388,7 +329,6 @@ Browser proof:
 - Wait for `data-filmstrips-ready` on the timeline root before screenshots or clip checks.
 - Ripple trim closes a gap on the same track and leaves other tracks alone.
 - Slip changes the source frame at a fixed timeline time without moving the clip.
-- Pen adds and removes a volume point and an opacity point.
 - Each tool's shortcut and cursor work.
 - Locked tracks refuse each tool.
 - Undo once per gesture.
@@ -403,12 +343,11 @@ Flakiness controls:
 - Use the existing window-listener and transient-token patterns. Do not invent a second gesture
   system.
 - No fixed sleeps. Wait on the overlay or use fake timers.
-- Split trigger: if the change exceeds 15 changed files or 500 changed lines, split at the gate:
-  - `06a`: tool state, ripple trim, slip, released as `0.15.0`.
-  - `06b`: keyframe Pen and the generalized automation envelope, released as `0.16.0`.
-    The split is a mechanical plan change. Do not hide it inside one giant commit.
+- This document is `06a`. `06b` owns the keyframe Pen and the generalized automation envelope.
+  Do not grow this plan into the Pen. If the change exceeds its own remaining surface, stop and
+  report before expanding it.
 
-## 7. Release tasks for `0.15.0` (`0.16.0` for `06b` if split)
+## 6. Release tasks for `0.15.0`
 
 - Atomic version bump: `package.json`, `src/lib/releases.ts`, `CHANGELOG.md`, and a new `0.15.0`
   row in the `ROADMAP.md` Shipped table. The user confirms the version before the bump.
@@ -419,26 +358,24 @@ Flakiness controls:
   `src/lib/editor/__tests__/public-pages.render.test.tsx`. Real capture only.
 - Update the shortcuts dialog and the README shortcut list.
 - Update test counts through `docs-drift.test.ts`.
-- Add battery steps for ripple, slip, and Pen if jsdom cannot prove the user-visible result. Update
-  both `e2e/battery.sh` and `e2e/battery.timing.sh`, and the documented counts.
+- The full dev and production batteries remain the Plan 07 gate. Manual browser proof covers
+  ripple and slip for this release; add battery steps in Plan 07 if jsdom cannot prove the final
+  user-visible result.
 
 ## Acceptance criteria
 
-- Ripple trim, slip, and Pen each work from the toolbar, shortcut, and pointer.
+- Ripple trim and slip each work from the toolbar, shortcut, and pointer.
 - Ripple trim shifts only the edited track and never creates an invalid overlap. An existing
   transition overlap is preserved by shifting its partner with the same delta; only an overlap not
   explained by a transition is refused. The plan explicitly documents and tests the Invariant 14
   exception; it does not claim linked-group sync.
 - Slip never moves the clip or changes its duration; linked pairs stay in sync or the gesture is
   refused.
-- Pen edits volume on audio-only clips and opacity on visual clips, using the existing keyframe
-  commands. A solo video edits opacity with the Pen; its volume envelope stays directly draggable.
-- No mask or roto behavior is present.
 - Every tool respects locked tracks.
 - Every gesture is one undo entry and cancels cleanly.
 - The tool matrix tests are complete.
 - `bun run check` is green.
-- The `0.15.0` version bump and docs are complete (`0.16.0` for `06b` if split).
+- The `0.15.0` version bump and docs are complete.
 
 ## Risks
 
@@ -451,7 +388,73 @@ Flakiness controls:
   before coding. Slip refuses when a linked pair cannot share the delta.
 - **Gesture complexity.** Reuse the existing transient and window-listener patterns; do not add a
   second gesture engine.
-- **Pen overlap with Plan 04.** Generalize the envelope, do not copy it.
-- **Scope growth.** Split Plan 06 if the change exceeds 15 changed files or 500 changed lines.
-- **Shortcut conflicts.** B, Y, and P are free in the current map. If that changes before
-  implementation, stop and update the plan.
+- **Scope growth.** The Pen and the generalized automation envelope belong to 06B. Do not fold them
+  into this release.
+- **Shortcut conflicts.** B and Y are free in the current map. If that changes before implementation,
+  stop and update the plan.
+
+## Implementation notes
+
+Recorded after the build, so the plan matches what shipped:
+
+- **Split.** The original Plan 06 crossed its own gate (more than 15 changed files or 500 changed
+  lines), so it split into 06A and 06B before coding. 06A owns the tool state, ripple trim, slip,
+  and `0.15.0`; 06B owns the Pen and `0.16.0`.
+- **`applyTransientBatch`.** The store method validates the whole batch through `applyCommands` (the
+  same guard as a committed batch) and installs the resulting doc once. The ripple gesture passes a
+  frozen pre-gesture doc to the planner every frame, so an absolute proposal does not compose over
+  the live, already-trimmed doc.
+- **Rate stretch.** The Alt ripple path reuses `decideRateStretch` and then calls `planRippleShift`
+  with the end delta the decision produced; a head stretch anchors the end and shifts nothing. The UI
+  test pins the tail case (4s to 5s at 0.8x, later clip +1s).
+- **Head trim anchoring.** `trimClip`'s constant-rate rebase assumed the head move lived in `start`.
+  A ripple head trim leaves `start` anchored and supplies its own in point for a forward clip (a
+  reversed clip keeps the low anchor), so the rebase now runs only when `start` actually moved. The
+  speed-2 planner test failed before the gate and passes after.
+- **`setClipInPoint`.** The command expands to the sequence-local link group that shares the source
+  window and refuses a mixed-window group, so a direct caller cannot desync a pair. The lock rule
+  checks every member lane.
+- **Same-track link exception.** Ripple shifts only the edited track's later clips. The test asserts
+  the linked partner on the other track stays put and the halves diverge on start. This is the
+  recorded exception, not a sync claim.
+- **Tool switching.** V, C, B, Y, and Escape wait while a transient gesture is active, so a live slip
+  or ripple cannot be switched out from under its closures.
+- **Pointercancel.** The first draft routed pointercancel through the same commit handler as
+  pointerup, which is the existing select/razor behavior but wrong for the new tools. Ripple and slip
+  now cancel and restore the base; select and razor keep their commit-on-pointercancel behavior. The
+  UI test failed before the split and passes after.
+- **No-op origin.** A slip or ripple drag that returned to its origin left the previous frame in the
+  doc, so the release committed a change the pointer no longer asked for. `resetTransient` restores
+  the frozen base without ending the gesture; no-op slip, ripple, and Alt rate-stretch frames use it.
+  The slip readout clears on the slip no-op. The UI tests cover all three returns.
+- **Volume envelope.** The prop renamed from `razorActive` to `inert`; every modal tool sets it.
+- **Batteries.** The full dev and production batteries remain the Plan 07 gate, as recorded in the
+  epic. This release uses unit tests plus manual browser proof.
+
+## Trigger audit (implementation-discipline)
+
+- **Baseline.** Clean tree at `06bf6b8`; `bun run check` green at 85 files and 1,823 tests; coverage
+  95.07 / 90.62 / 96.73 / 96.98. No pre-existing failures.
+- **Ladder.** `ripple-trim.ts` and `slip.ts` reuse `trimRooms`, `applyCommand`, `applyCommands`,
+  `linkedClips`, `findMedia`, and the existing lock helpers. `applyTransientBatch` reuses
+  `applyCommands` on one clone instead of a second commit path. `setClipInPoint` is a command variant,
+  not a second automation store. The envelope prop rename reuses the Plan 04 component. Nothing new
+  was added where an existing helper held.
+- **Red-first.** The start-anchored speed-2 head trim test failed on the ungated `trimClip` rebase
+  (`inPoint` stayed 4 instead of 6) and passes with the gate. The pointercancel test failed because
+  the new tools shared the old commit-on-cancel handler; the cancel path fixed it. The no-op return
+  tests and the store `resetTransient` test fail when `resetTransient` is disabled (the doc keeps the
+  previous frame) and pass with it. The new command and planners had no prior behavior to fail
+  against; their tests pin the new contract, including hostile inputs.
+- **Final gate.** `bun run check` green at 88 files, 1,880 tests, 11 routes, and the production
+  build. `bun run test:coverage` reports 94.77 / 90.35 / 96.53 / 96.87.
+- **Browser proof.** At 1600x1000 on the bundled sample: a ripple tail drag took the video
+  from 0..6 to 0..5.5 and moved the image from 14 to 13.5 while the linked audio twin stayed at
+  0..6 (the recorded divergence); a ripple head drag kept the video start at 0, moved its in point
+  to 0.5, shortened it to 5.0, and moved the image to 13.0; a slip drag on the trimmed audio clip
+  read `In 1.00 / Out 8.00 (+1.00s)` and changed `data-in-point` from 0 to 1 while start and
+  duration stayed 6 and 7; a locked V1 refused the ripple drag with a "Track locked" toast and no
+  label changes. The B/Y/V/C shortcuts and the body/edge cursors were checked, and the page error
+  and console logs were empty.
+- **Findings.** None before implementation. No review round was run for this plan.
+- **Lessons.** None appended to `LESSONS.md`; no scratch worktree was created.

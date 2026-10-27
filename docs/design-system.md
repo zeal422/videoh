@@ -227,6 +227,11 @@ captions)` on the left, with the inspector as a full-height right column. Panel 
   on/off posture sits where every other session toggle lives.
 - **Scrollbars.** Editor scroll containers use the `.editor-scroll` class (thin dark thumb).
   `[data-timeline-scroll]` disables text selection while dragging clips.
+- **Tool cursors.** The razor sets `cursor-crosshair` on the clip body. Slip sets
+  `cursor-ew-resize` on the body and falls the edge handles back to the default cursor, because
+  they do not trim. Ripple keeps `cursor-ew-resize` on the edge handles; the body does not move.
+  Ripple and slip make the volume envelope inert, exactly like the razor, so the modal tool owns
+  the pointer.
 - **Blocked drop target.** `[data-drop-blocked='true']` outlines a lane in `--destructive` with a
   `not-allowed` cursor — set by `ClipView` for the duration of a drag whose clip cannot land on that
   lane. It is the only lane-level state style; the outline is drawn inside the lane (`outline-offset:

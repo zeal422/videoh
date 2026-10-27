@@ -52,20 +52,22 @@ locally for the duration of this epic and retired when the real editor capture r
 
 ## Plan index
 
-| #   | Plan                                                          | Status                       | Depends on | Release gate                    |
-| --- | ------------------------------------------------------------- | ---------------------------- | ---------- | ------------------------------- |
-| 00  | [This orchestrator](PLAN-EDITOR-PARITY.md)                    | in progress                  | none       | none                            |
-| 01  | [Reference and spec](PLAN-01-REFERENCE-AND-SPEC.md)           | done                         | 00         | none                            |
-| 02  | [Geometry and chrome](PLAN-02-GEOMETRY-AND-CHROME.md)         | done                         | 01         | internal commit, no release     |
-| 03  | [Filmstrips](PLAN-03-FILMSTRIPS.md)                           | done                         | 01, 02     | `0.12.0`                        |
-| 04  | [Volume automation](PLAN-04-VOLUME-AUTOMATION.md)             | done                         | 01, 02, 03 | `0.13.0`                        |
-| 05  | [Track controls](PLAN-05-TRACK-CONTROLS.md)                   | implemented, awaiting commit | 02, 04     | `0.14.0`                        |
-| 06  | [Editing tools](PLAN-06-EDITING-TOOLS.md)                     | planned                      | 04, 05     | `0.15.0`                        |
-| 07  | [Integration and release](PLAN-07-INTEGRATION-AND-RELEASE.md) | planned                      | all        | final gate for the last release |
+| #   | Plan                                                          | Status                       | Depends on  | Release gate                |
+| --- | ------------------------------------------------------------- | ---------------------------- | ----------- | --------------------------- |
+| 00  | [This orchestrator](PLAN-EDITOR-PARITY.md)                    | in progress                  | none        | none                        |
+| 01  | [Reference and spec](PLAN-01-REFERENCE-AND-SPEC.md)           | done                         | 00          | none                        |
+| 02  | [Geometry and chrome](PLAN-02-GEOMETRY-AND-CHROME.md)         | done                         | 01          | internal commit, no release |
+| 03  | [Filmstrips](PLAN-03-FILMSTRIPS.md)                           | done                         | 01, 02      | `0.12.0`                    |
+| 04  | [Volume automation](PLAN-04-VOLUME-AUTOMATION.md)             | done                         | 01, 02, 03  | `0.13.0`                    |
+| 05  | [Track controls](PLAN-05-TRACK-CONTROLS.md)                   | done                         | 02, 04      | `0.14.0`                    |
+| 06A | [Ripple trim and slip](PLAN-06A-RIPPLE-SLIP.md)               | implemented, awaiting commit | 04, 05      | `0.15.0`                    |
+| 06B | [Keyframe Pen](PLAN-06B-KEYFRAME-PEN.md)                      | planned                      | 04, 05, 06A | `0.16.0`                    |
+| 07  | [Integration and release](PLAN-07-INTEGRATION-AND-RELEASE.md) | planned                      | all         | final gate for `0.16.0`     |
 
-The plan count is 1 orchestrator plus 7 execution plans. Plan 06 may split into `06a` ripple/slip
-and `06b` Pen if its diff or test surface grows too large. If it splits, the document count becomes
-nine, `06a` releases as `0.15.0`, `06b` as `0.16.0`, and Plan 07 targets `0.16.0`.
+The plan count is 1 orchestrator plus 8 execution plans. Plan 06 split at its own gate before
+coding: `06A` carries the tool state, ripple trim, and slip, and releases as `0.15.0`; `06B` carries
+the keyframe Pen and the generalized automation envelope, and releases as `0.16.0`. Plan 07 targets
+`0.16.0`.
 
 The version numbers are proposals. The user confirms each one at the gate. The repo rule stands:
 a version bump is one atomic change across `package.json`, `src/lib/releases.ts`, `CHANGELOG.md`,
@@ -73,14 +75,15 @@ the roadmap, and every doc that records the running version.
 
 ## Release map
 
-| Release  | Plans  | User-visible change                                                                                                |
-| -------- | ------ | ------------------------------------------------------------------------------------------------------------------ |
-| none     | 01, 02 | Spec, geometry, chrome                                                                                             |
-| `0.12.0` | 03     | Sampled filmstrips and the matching hero screenshot                                                                |
-| `0.13.0` | 04     | On-clip volume envelopes and the dB inspector graph                                                                |
-| `0.14.0` | 05     | Real track solo and lock                                                                                           |
-| `0.15.0` | 06     | Real ripple trim, slip, and keyframe Pen                                                                           |
-| final    | 07     | `0.15.0` QA gate (or `0.16.0` if Plan 06 splits), real hero capture, reference retired; post-tag fixes are a patch |
+| Release  | Plans  | User-visible change                                                                |
+| -------- | ------ | ---------------------------------------------------------------------------------- |
+| none     | 01, 02 | Spec, geometry, chrome                                                             |
+| `0.12.0` | 03     | Sampled filmstrips and the matching hero screenshot                                |
+| `0.13.0` | 04     | On-clip volume envelopes and the dB inspector graph                                |
+| `0.14.0` | 05     | Real track solo and lock                                                           |
+| `0.15.0` | 06A    | Real ripple trim and slip                                                          |
+| `0.16.0` | 06B    | The keyframe Pen over the generalized automation envelope                          |
+| final    | 07     | `0.16.0` QA gate, real hero capture, reference retired; post-tag fixes are a patch |
 
 Plan 02 is an internal commit so its geometry and chrome can be reviewed before the filmstrip work
 depends on it. It does not bump the version. Plan 03 completes `0.12.0`.
@@ -90,19 +93,19 @@ depends on it. It does not bump the version. Plan 03 completes `0.12.0`.
 This is the one-page map. Plan 01 expands it into a row-by-row checklist with current file
 evidence, target behavior, proof method, and owner plan.
 
-| Region            | Current                                                                 | Reference target                                                                                                   | Plan   | Type                     |
-| ----------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------ | ------------------------ |
-| Menu bar          | File through Help, full screen, version                                 | Same plus a compact `videoh` wordmark at the left                                                                  | 02     | restyle                  |
-| Toolbar           | Undo/redo, select, razor, placement, edit, text, tracks, snap, zoom, IO | Same density, grouped; Pen, ripple, and slip must work                                                             | 02, 06 | restyle and new behavior |
-| Media bin         | 40px square thumbnail, name, kind badge, duration                       | Wider card, larger thumbnail, name, kind and duration                                                              | 02     | restyle                  |
-| Program monitor   | Canvas, scopes strip, transport                                         | Same, larger share when Source is hidden, visible volume slider                                                    | 02     | restyle                  |
-| Inspector         | Clip and Effect Controls tabs, full property sections                   | Clip tab gains a dB volume summary and graph                                                                       | 04     | new behavior             |
-| Timeline ruler    | Compact seconds, playhead, snap guide                                   | Two-digit `mm:ss` labels, same playhead and snap guide                                                             | 02     | restyle                  |
-| Track headers     | 160px, kind, name, clip count, eye, mute, targeting in menu             | 168px, no clip count, eye, mute, M/S, lock, target in menu                                                         | 02, 05 | restyle and new behavior |
-| Video/image clips | Color block, label, linked badge, waveform, trim handles                | Sampled filmstrip frames behind the same overlays                                                                  | 03     | new behavior             |
-| Audio clips       | Waveform, label, trim handles                                           | Volume envelope line and keyframe dots over the waveform                                                           | 04     | new behavior             |
-| Status bar        | Project, format, duration, selection, px/s, undo steps, autosave        | Project, format, duration, selection, track counts, autosave                                                       | 02     | restyle                  |
-| Panel frame       | Resizable, collapsible, uppercase headers, token colors                 | Same with tighter spacing, target panel shares, media upper row, full-height inspector, lower left/center timeline | 02     | restyle                  |
+| Region            | Current                                                                 | Reference target                                                                                                   | Plan         | Type                     |
+| ----------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------ | ------------------------ |
+| Menu bar          | File through Help, full screen, version                                 | Same plus a compact `videoh` wordmark at the left                                                                  | 02           | restyle                  |
+| Toolbar           | Undo/redo, select, razor, placement, edit, text, tracks, snap, zoom, IO | Same density, grouped; ripple, slip, and Pen must work                                                             | 02, 06A, 06B | restyle and new behavior |
+| Media bin         | 40px square thumbnail, name, kind badge, duration                       | Wider card, larger thumbnail, name, kind and duration                                                              | 02           | restyle                  |
+| Program monitor   | Canvas, scopes strip, transport                                         | Same, larger share when Source is hidden, visible volume slider                                                    | 02           | restyle                  |
+| Inspector         | Clip and Effect Controls tabs, full property sections                   | Clip tab gains a dB volume summary and graph                                                                       | 04           | new behavior             |
+| Timeline ruler    | Compact seconds, playhead, snap guide                                   | Two-digit `mm:ss` labels, same playhead and snap guide                                                             | 02           | restyle                  |
+| Track headers     | 160px, kind, name, clip count, eye, mute, targeting in menu             | 168px, no clip count, eye, mute, M/S, lock, target in menu                                                         | 02, 05       | restyle and new behavior |
+| Video/image clips | Color block, label, linked badge, waveform, trim handles                | Sampled filmstrip frames behind the same overlays                                                                  | 03           | new behavior             |
+| Audio clips       | Waveform, label, trim handles                                           | Volume envelope line and keyframe dots over the waveform                                                           | 04           | new behavior             |
+| Status bar        | Project, format, duration, selection, px/s, undo steps, autosave        | Project, format, duration, selection, track counts, autosave                                                       | 02           | restyle                  |
+| Panel frame       | Resizable, collapsible, uppercase headers, token colors                 | Same with tighter spacing, target panel shares, media upper row, full-height inspector, lower left/center timeline | 02           | restyle                  |
 
 ## Quality gates
 
@@ -167,7 +170,7 @@ These rules exist so the plans can be executed without time-based or environment
 
 ## Definition of done
 
-- All execution plans in the plan index are `done`, including `06a` and `06b` if Plan 06 split.
+- All execution plans in the plan index are `done`, including `06A` and `06B`.
 - The local reference image is deleted. The hero screenshot is a real capture from the final build.
 - `public/screenshots/editor.png` and its alt text match the final editor.
 - `bun run check` is green.
@@ -206,3 +209,5 @@ This plan set was checked against the current tree on 2026-10-27:
 | 2026-10-27 | The demo project uses only the bundled sample media, arranged across 5 video and 4 audio tracks.                                                                                                                                               |
 | 2026-10-27 | Work is staged on `updates`, one plan at a time, with the user committing between plans.                                                                                                                                                       |
 | 2026-10-27 | Proposed releases: `0.12.0`, `0.13.0`, `0.14.0`, `0.15.0`, then the final gate.                                                                                                                                                                |
+| 2026-10-27 | Plan 06 split at its own gate before coding: `06A` is tool state, ripple trim, and slip (`0.15.0`); `06B` is the keyframe Pen and the generalized automation envelope (`0.16.0`). Plan 07 targets `0.16.0`.                                    |
+| 2026-10-27 | Ripple trim stays same-track. The owner confirmed the Invariant 14 exception: linked partners on other tracks do not shift, and the tooltip says so.                                                                                           |

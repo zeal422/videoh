@@ -35,7 +35,7 @@ import type { Doc, Track } from './types'
 export type AutosaveStatus = 'idle' | 'pending' | 'saved' | 'error'
 
 /** Timeline editing tools (Premiere: V = selection, C = razor). */
-export type EditorTool = 'select' | 'razor'
+export type EditorTool = 'select' | 'razor' | 'ripple' | 'slip'
 
 export interface EditorState {
   doc: Doc
@@ -139,6 +139,18 @@ export interface EditorState {
   /** Begins a gesture slot and returns its token; pass the initiating pointerId when known. */
   beginTransient: (pointerId?: number) => number
   applyTransient: (command: EditorCommand) => void
+  /**
+   * Validates a whole command batch on a clone and installs it once. A later
+   * refusal discards the clone, so a multi-clip frame never leaves a partial
+   * edit behind. Gestures that shift several clips (ripple trim) use this.
+   */
+  applyTransientBatch: (commands: EditorCommand[]) => void
+  /**
+   * Restores the live doc to the gesture's base without ending the gesture.
+   * A no-op drag frame uses this, so returning to the origin cannot leave a
+   * stale edit for the commit to record.
+   */
+  resetTransient: () => void
   commitTransient: (label?: string) => void
   cancelTransient: () => void
 
@@ -424,6 +436,32 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // Transient (mid-drag) commands may transiently violate constraints;
       // the drag code clamps beforehand — swallow here to keep gestures smooth.
     }
+  },
+
+  applyTransientBatch: (commands) => {
+    // `applyCommands` validates every command against the in-flight clone and
+    // discards the whole clone when one command refuses, so the live doc sees
+    // either the complete batch or no change. A transient frame may still be
+    // clamped by the caller; swallow errors exactly like `applyTransient`.
+    const { doc } = get()
+    try {
+      set({ doc: applyCommands(doc, commands) })
+    } catch {
+      // Mid-gesture frame invalid; the previous frame stays installed.
+    }
+  },
+
+  resetTransient: () => {
+    if (!transientBase) return
+    const base = transientBase
+    // Keep the gesture open: do NOT call `endTransient`, or the next frame's
+    // token check would fail and the release would have nothing to commit.
+    // Commands clone the live doc before mutating, so installing the base
+    // object here cannot mutate the snapshot itself.
+    set({
+      doc: base,
+      selectedMarker: normalizeMarkerSelection(base, get().selectedMarker),
+    })
   },
 
   commitTransient: () => {

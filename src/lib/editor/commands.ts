@@ -64,6 +64,7 @@ import {
 } from './effects'
 import { linkedClips } from './links'
 import { lutBudgetMessage, lutLibraryChars } from './lut'
+import { sharesSourceWindow } from './slip'
 import { clipGroupTracks, findLockedTrack } from './tracks'
 import { clamp } from './time'
 import {
@@ -214,6 +215,7 @@ export type EditorCommand =
       interpolation: KeyframeInterpolation
     }
   | { type: 'setClipSpeed'; clipId: string; speed: number }
+  | { type: 'setClipInPoint'; clipId: string; inPoint: number }
   | { type: 'setClipReverse'; clipId: string; reverse: boolean }
   | { type: 'setClipPan'; clipId: string; pan: number }
   | { type: 'setClipEq'; clipId: string; eq: { low: number; mid: number; high: number } | null }
@@ -458,6 +460,9 @@ const LOCK_RULES: LockRuleMap = {
   setClipOpacity: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setClipKeyframes: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setClipSpeed: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  // Slip writes the whole linked group that shares the source window, so every
+  // member's lane refuses, not only the clicked half.
+  setClipInPoint: { tracks: (doc, command) => clipGroupTracks(doc, [command.clipId]) },
   setClipReverse: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setClipPan: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setClipEq: { tracks: (doc, command) => clipRef(doc, command.clipId) },
@@ -863,8 +868,19 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       // gesture passes) must be scaled or the kept span re-cuts by
       // (speed - 1) * delta. Speed 1 needs no correction and a ramped clip
       // rebases from its curve below, so both keep the caller's anchor as-is.
+      // Only a head that actually MOVED through `start` re-anchors this way.
+      // A ripple head trim keeps the start anchored and supplies its own
+      // in point, which must survive: rescaling by a zero start delta would
+      // silently write the old in point and shorten the clip from its tail.
       const rate = clip.speed ?? 1
-      if (bounded && isHeadTrim && !clip.reverse && !hasTimeScaleCurve(clip) && rate !== 1) {
+      if (
+        bounded &&
+        isHeadTrim &&
+        !clip.reverse &&
+        !hasTimeScaleCurve(clip) &&
+        rate !== 1 &&
+        Math.abs(start - startBefore) > 1e-9
+      ) {
         const rebased = inPointBefore + (start - startBefore) * rate
         if (rebased < 0) {
           throw new EditorCommandError('Trim exceeds the start of the source')
@@ -1333,6 +1349,31 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
         clip.duration = Math.min(clip.duration, maxDuration)
       }
       clip.speed = speed
+      return
+    }
+
+    case 'setClipInPoint': {
+      const { clip } = requireClip(doc, command.clipId)
+      const asset = findMedia(doc, clip.mediaId)
+      if (!asset || asset.kind === 'image' || clip.text !== undefined || clip.sequenceId) {
+        throw new EditorCommandError('This clip has no source window to slip')
+      }
+      if (!Number.isFinite(command.inPoint) || command.inPoint < 0) {
+        throw new EditorCommandError('Invalid slip position')
+      }
+      // A linked group slips as one unit: every member must already read the
+      // same window, or writing one member's in point would desync the group.
+      const group = linkedClips(doc, clip.id)
+      if (group.some((member) => !sharesSourceWindow(clip, member))) {
+        throw new EditorCommandError(
+          'Linked clips do not share the same source window, so slipping would desync them',
+        )
+      }
+      const span = sourceConsumption(clip.keyframes?.timeScale, clip.duration, clip.speed ?? 1)
+      if (command.inPoint + span > asset.duration + 1e-6) {
+        throw new EditorCommandError('Slip exceeds the end of the source')
+      }
+      for (const member of group) member.inPoint = command.inPoint
       return
     }
 
