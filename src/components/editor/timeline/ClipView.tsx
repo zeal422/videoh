@@ -45,6 +45,7 @@ import {
   canLinkClips,
   canSplitAnySelectedAt,
   clipIsSelected,
+  hasLinkedAudioTwin,
   linkedClips,
   resolveSelectionGroups,
 } from '@/lib/editor/links'
@@ -54,6 +55,7 @@ import { toast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import { Waveform } from './Waveform'
 import { ClipMarkers } from './ClipMarkers'
+import { Filmstrip } from './Filmstrip'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -795,6 +797,10 @@ export function ClipView({
             if (e.key === 'Enter' || e.key === ' ') useEditorStore.getState().select(clip.id)
           }}
         >
+          {/* Filmstrip: sampled source cells under every overlay. Moving a
+              clip changes no key, so a move reuses its strip. */}
+          <Filmstrip clip={clip} asset={asset} widthPx={widthPx} height={height} />
+
           {/* fade-in overlay when the previous clip crossfades into this one */}
           {fadeIn > 0 ? (
             <div
@@ -814,8 +820,10 @@ export function ClipView({
             />
           ) : null}
 
-          {/* waveform (audio-bearing clips) */}
-          {asset?.waveformPeaks && asset.kind !== 'image' && (
+          {/* waveform (audio-bearing clips). A linked audio twin carries the
+              pair's sound, so the video half stays clean; a solo video keeps
+              its embedded-audio waveform. */}
+          {asset?.waveformPeaks && asset.kind !== 'image' && !hasLinkedAudioTwin(doc, clip) && (
             <Waveform
               peaks={asset.waveformPeaks}
               assetDuration={asset.duration || clip.duration}

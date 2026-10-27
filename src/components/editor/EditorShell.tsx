@@ -36,6 +36,7 @@ import {
 import { projectFileName, serializeDoc } from '@/lib/editor/serialization'
 import { hydrateSampleMedia, bumpProjectGeneration } from '@/lib/editor/project-io'
 import { revokeAllProxies } from '@/lib/editor/media/proxies'
+import { disposeAll, syncFilmstrips } from '@/lib/editor/media/filmstrip-cache'
 import { toast } from '@/hooks/use-toast'
 
 /**
@@ -242,6 +243,29 @@ export function EditorShell() {
   useEffect(() => {
     refreshPausedPreview()
   }, [doc])
+
+  // Filmstrip asset lifecycle: the store update that installs a project,
+  // removes media, or relinks a file runs this BEFORE React re-renders, so a
+  // stale strip or hidden element cannot survive into the new render. The
+  // first sync only seeds the project identity: it must not dispose requests
+  // the just-mounted clips already queued.
+  useEffect(() => {
+    const sync = (state: ReturnType<typeof useEditorStore.getState>) => {
+      syncFilmstrips(state.doc.media, state.doc.project.id)
+    }
+    sync(useEditorStore.getState())
+    const unsubscribe = useEditorStore.subscribe((state, previous) => {
+      if (
+        state.doc.media !== previous.doc.media ||
+        state.doc.project.id !== previous.doc.project.id
+      )
+        sync(state)
+    })
+    return () => {
+      unsubscribe()
+      disposeAll()
+    }
+  }, [])
 
   // Welcome: once per new version, AFTER the autosave scan finished AND the
   // restore prompt resolved, so two dialogs never stack. The restore banner is

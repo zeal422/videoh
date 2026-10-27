@@ -1,6 +1,6 @@
 # PLAN 02: Geometry and chrome
 
-Status: implemented, awaiting commit
+Status: done
 Depends on: [PLAN 01](PLAN-01-REFERENCE-AND-SPEC.md)
 Release: internal commit, no version bump
 Goal: make the editor frame, panel proportions, track rows, media cards, and status bar match the
@@ -336,7 +336,7 @@ Flakiness controls:
 
 ## Implementation record
 
-Implemented on 2026-10-27 on `updates`, uncommitted.
+Implemented on 2026-10-27 on `updates`, committed as `102e8da`.
 
 Measured at 1600x1000 with `e2e/fixtures/editor-parity.veproj.json`, Source and Captions hidden:
 

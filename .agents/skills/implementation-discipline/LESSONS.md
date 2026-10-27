@@ -374,3 +374,21 @@ Action: kept as a note; a layout change that shortens a scrollable panel gets a 
 What happened: a review asked to replace the `handleUpperRowLayout` source lock with a jsdom runtime test that hides the preview and asserts sizes are not persisted. Rendering `EditorShell`, hiding the preview and pumping the mock frames produced zero `onLayout`/`setSize` calls because `react-resizable-panels` cannot measure layout in jsdom.
 Would-have-caught: probing the observer with a mount-time spy before writing the test, then checking the repo's own flakiness rule that jsdom must not be asked to do real layout.
 Action: kept as a note; panel-layout persistence gets a static wiring lock plus a browser proof, not a jsdom layout test.
+
+## 2026-10-27 - a video asset on an audio-only clip still planned a filmstrip
+
+What happened: `filmstripSamples` gated on `asset.kind === 'video'` but not `clip.audioOnly`, so the audio twin of an A/V pair drew picture cells. The jsdom audio-clip test caught it.
+Would-have-caught: checking every media predicate against the pair's `audioOnly` flag, the way `hasLinkedAudioTwin` and `clipRendersAudio` already do.
+Action: kept as a note; the planner rejects `audioOnly` in both the video sampler and the image plan, and the pure test names the case.
+
+## 2026-10-27 - a failed strip stayed failed after relinking its asset
+
+What happened: a seek failure was recorded in `settledKeys`, and relink only disposed cached entries, not that failure marker. The relinked clip reused the same key and never retried.
+Would-have-caught: tracing every invalidation path through BOTH the entry map and the failure set, not just the entries.
+Action: kept as a note; `settledKeys` is keyed by asset id, `dropAsset` clears that asset's failures, and a relink-retry test locks it.
+
+## 2026-10-27 - a move re-requested the filmstrip through the plan object
+
+What happened: the component's request effect depended on the memoized plan object, which is recreated when the clip object changes on a move. The cache reused the entry, but the effect cleared the ready flag and re-requested after the debounce.
+Would-have-caught: depending on the cache key and asset URL, not on an object whose identity changes without the source window changing.
+Action: kept as a note; the effect keys on `plan.key` and `asset.url`, and the move-reuse render test fails on the object dependency.

@@ -32,6 +32,7 @@ export default defineConfig({
         'src/lib/editor/effects.ts',
         'src/lib/editor/lut.ts',
         'src/lib/editor/frame-blend.ts',
+        'src/lib/editor/filmstrip.ts',
         'src/lib/editor/playback/denoise.ts',
         'src/lib/editor/commands.ts',
         'src/lib/editor/trim.ts',

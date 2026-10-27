@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   Volume2,
   VolumeX,
@@ -33,6 +33,7 @@ import { toast } from '@/hooks/use-toast'
 import { Ruler } from './Ruler'
 import { ClipView, computeFadeIn } from './ClipView'
 import { SequenceMarkers } from './SequenceMarkers'
+import { filmstripsReady, subscribeFilmstripReadiness } from '@/lib/editor/media/filmstrip-cache'
 import {
   commandsToAddMedia,
   commandsToAddMediaInNewTrack,
@@ -172,6 +173,13 @@ export function TimelinePanel() {
   // never touches a root lane.
   const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
   const tracks = useMemo(() => activeTracks(doc, activeSequencePath), [doc, activeSequencePath])
+  // True only after every mounted video/image strip request has settled; the
+  // screenshot procedure waits on this root marker instead of a hand-picked clip.
+  const filmstripsSettled = useSyncExternalStore(
+    subscribeFilmstripReadiness,
+    filmstripsReady,
+    () => true,
+  )
   const activeSequence =
     activeSequencePath.length > 0
       ? findSequence(doc, activeSequencePath[activeSequencePath.length - 1])
@@ -653,7 +661,11 @@ export function TimelinePanel() {
   }, [tracks])
 
   return (
-    <section aria-label="Timeline" className="flex min-h-0 flex-1 flex-col bg-background">
+    <section
+      aria-label="Timeline"
+      data-filmstrips-ready={filmstripsSettled ? 'true' : 'false'}
+      className="flex min-h-0 flex-1 flex-col bg-background"
+    >
       <div
         ref={scrollRef}
         data-timeline-scroll

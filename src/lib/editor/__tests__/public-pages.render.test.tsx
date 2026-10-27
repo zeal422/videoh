@@ -56,7 +56,7 @@ import { FAQ_ITEMS, CONTACT_EMAIL, GITHUB_URL } from '@/lib/seo'
 
 const HERO_TITLE = 'Open-source video editing in your browser.'
 const SCREENSHOT_ALT =
-  'The videoh editor showing a night city street, an AFTER HOURS title, audio waveforms, markers, and a scale keyframe curve on a multi-track timeline'
+  'The videoh editor showing sampled filmstrip thumbnails across video clips, an image clip, audio waveforms, a captions panel, and a multi-track timeline with the inspector'
 
 /**
  * Public page locks: the hero is a real product page rather than the editor

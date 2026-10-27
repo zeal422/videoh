@@ -93,9 +93,9 @@ legal pages.
   decorative, 24px on mobile and 28px on desktop, with no separate accessible name.
 - **Screenshot.** The hero uses a real `public/screenshots/editor.png` capture at 1600x1000 with
   `next/image`, `preload`, explicit dimensions, `sizes`, and descriptive alt text. The demo project
-  shows a night city still, an AFTER HOURS title, waveforms, markers, a transition, and a scale
-  keyframe curve; the photo is by
-  [Jorik Kleen on Unsplash](https://unsplash.com/photos/cars-on-road-near-high-rise-buildings-during-night-time-gEQKilqT6bU).
+  uses the repository's own `public/samples` video and image, so it shows sampled filmstrips,
+  an image clip, waveforms, a transition badge, the captions panel, and the inspector with no
+  third-party credit.
   Recapture it when the editor chrome changes.
 - **Motion.** Every animation class is `motion-safe:`. The hero rises, clips settle with a stagger, and
   the playhead sweeps once in a loop. Reduced motion leaves the same composition static. There is no
@@ -122,6 +122,11 @@ them:
   - video → emerald, audio → amber, text → violet
   - selection ring and playhead → rose; snap guide → amber-300
   - drop indicators take the dragged media's kind colour (`+ V2` emerald, `+ A2` amber)
+- **Filmstrip layer.** Video and image clips paint a `Filmstrip` layer at the bottom of the clip
+  body: sampled source cells for video, the image itself for an image, and the poster behind while a
+  strip loads. A top and bottom black scrim keeps the label readable. The layer never takes pointer
+  events; the label, badges, waveform, trim handles, and markers stay above it, and the strip is
+  clipped by the clip's rounded border.
 - **Marker swatches** use the eight-colour Premiere palette (`MARKER_COLOR_VALUES` in
   `markers.ts`, Tailwind 500-family values) applied as an inline `backgroundColor`. They are content
   data (the colour the user picked) and stay fixed across themes.

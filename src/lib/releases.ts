@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.12.0',
+    date: '2026-10-27',
+    highlights: [
+      'The editor frame matches the reference: media over source and preview, a full-height inspector, 44/40/36 track rows, a denser toolbar, and a selection-and-track-count status bar',
+      'Video clips draw sampled source frames from the window they actually show, so trim, speed, reverse, and time remapping change the picture',
+      'Image clips show the image itself, and a linked video half stays clean while its audio twin carries the waveform',
+      'Filmstrips are runtime-only and bounded: a 4096px cap, a 16MP LRU cache, and no strip data in the project file',
+      'A 140ms debounce reuses a strip on a move or a small zoom, while a one-hour clip still asks for one 4096px backing canvas',
+    ],
+  },
+  {
     version: '0.11.0',
     date: '2026-10-25',
     highlights: [

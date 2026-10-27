@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] - 2026-10-27
+
+### Added
+
+- **Sampled filmstrips.** Video clips draw source frames across the window they actually show. Cell centers run through `sourceTimeAt`, so trimming, speed, reverse, and time remapping all change the strip; a move and a zoom inside one 64px bucket reuse it. Image clips draw the image itself once, and a linked video half no longer draws a waveform because its audio twin carries the pair's sound. A solo video keeps its embedded-audio waveform.
+- **Runtime-only strip cache.** Strips live in a browser cache, never in the Doc, autosave, or the project file. One hidden video element per asset seeks sequentially, one job runs at a time, and requests dedupe by key, queue FIFO, and retarget a queued same-clip key in place. A relink, asset removal, or project replacement disposes the old entry and element before the next render.
+- **Bounded memory.** Each strip is capped at 4096x64 pixels, the cache holds at most 40 entries and 16MP of backing pixels, and an over-budget or invalid request falls back to the poster. A one-hour clip at 400 px/s requests a 4096px canvas, not a 1,440,000px one.
+- **Timeline readiness marker.** The timeline root publishes `data-filmstrips-ready` only when every mounted strip request has settled, including a poster fallback, so screenshot procedures and the battery can wait on one marker.
+
+### Changed
+
+- **Editor chrome.** The reference layout now drives the editor: media sits over source and preview, the inspector is a full-height right column, the timeline spans the lower left and center under it, track rows are 44/40/36px, and the header is 168px with no clip count. The toolbar is denser, the project name stays readable at 1024, Export is icon-only below `xl`, media cards use a 64x40 thumbnail, the wordmark sits outside `role=menubar`, and the status bar reads the selected range plus duration and the active sequence's video/audio track counts.
+- **Time formats.** The transport clock uses padded total minutes, the ruler labels whole seconds in padded `mm:ss`, and the status bar keeps its compact padded range. The compact formatter stays on the other surfaces.
+- **Panel persistence.** Hiding the preview no longer overwrites the saved media/source shares with the forced or normalized row values.
+- **Tests and docs.** The suite moves to 81 files and 1,698 tests. The planner, cache, and render tests cover the invalidation matrix, the LRU budget, relink/removal/project replacement, the waveform rule, and the ready marker; coverage includes `filmstrip.ts`. Architecture, flows, design-system, structure, testing, the roadmap, and the README record the feature. The hero screenshot is a fresh capture with filmstrips from the bundled sample media.
+
 ## [0.11.0] - 2026-10-25
 
 ### Added

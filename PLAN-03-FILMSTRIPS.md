@@ -1,6 +1,6 @@
 # PLAN 03: Sampled filmstrip thumbnails
 
-Status: planned
+Status: implemented, awaiting commit
 Depends on: [PLAN 01](PLAN-01-REFERENCE-AND-SPEC.md), [PLAN 02](PLAN-02-GEOMETRY-AND-CHROME.md)
 Release: `0.12.0` with Plan 02's chrome
 Goal: draw sampled source frames inside video clips and the source image inside image clips, without
@@ -397,6 +397,72 @@ Because Plan 03 completes the first release, do the atomic version bump from `AG
   step is added, update both `e2e/battery.sh` and `e2e/battery.timing.sh`.
 
 If the version number or release grouping changes, the user confirms it before the bump.
+
+## Implementation record
+
+Implemented on 2026-10-27 on `updates`, uncommitted.
+
+New files:
+
+- `src/lib/editor/filmstrip.ts`: the pure planner, the capped buckets, the frame-count table, the
+  canvas-fit guard, the source identity, the cache key, and the one-plan helper for video and image
+  clips.
+- `src/lib/editor/media/filmstrip-cache.ts`: the runtime generation lane. One active job, a FIFO
+  queue, key dedupe, in-place same-clip retargeting, active-job cancellation, a 40-entry/16MP LRU,
+  one hidden video element per asset, sequential seeks, the image loader seam, asset sync, and
+  `disposeAll`.
+- `src/components/editor/timeline/Filmstrip.tsx`: the debounced component, the display canvas, the
+  poster fallback, the scrim, and the per-strip `data-filmstrip-ready` attribute.
+- `filmstrip.test.ts` (28 tests), `filmstrip-cache.test.ts` (24), `filmstrip-ui.test.tsx` (14).
+
+Wiring:
+
+- `ClipView` renders the strip below the fades, waveform, label, badges, trim handles, and markers.
+  Its waveform predicate now calls `hasLinkedAudioTwin(doc, clip)`, so the audio twin keeps the only
+  waveform on a linked pair and a solo video keeps its own.
+- `TimelinePanel` publishes `data-filmstrips-ready` through `useSyncExternalStore` over the cache's
+  pending-key subscription.
+- `EditorShell` synchronizes the asset lifecycle from the raw store subscription, so a relink,
+  removal, or project replacement disposes entries and hidden elements before React re-renders. The
+  first sync only seeds the project identity and never discards the requests the mounted clips just
+  queued. Unmount disposes the runtime cache.
+
+Measured with the Plan 01 fixture on the production artifact at 1600x1000:
+
+| Check                      | Result                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Strips at the default zoom | 13 mounted strips, all `data-filmstrip-ready="true"`, root marker true                                  |
+| Backing widths             | 192, 384, 320, 256 (64px buckets)                                                                       |
+| Distinct frames            | The 192px strip's four cell averages are all different                                                  |
+| Trim                       | V4 7.8s to 6.8s to 5.8s; canvas 384 to 320 to 256; pixel hash changed each time                         |
+| Reverse                    | Reverse badge appears; the strip hash changes                                                           |
+| Speed                      | 1.05x to 2.4x changed the strip; 2.2x kept a 192px strip inside the source window                       |
+| Zoom                       | Three zoom-ins left a 550px clip on a 576px canvas; the widest canvas was 896px, under the 4096px cap   |
+| Playback baseline          | 3s, one 54ms long task, none over 100ms                                                                 |
+| Playback + regeneration    | Zero long tasks; a zoom-in during playback regenerated a 512px strip                                    |
+| Narrow 1024x768            | The visible clip keeps its label, 8px trim handle, strip, and waveform; root marker true; console clean |
+
+`bun run test:coverage` is green: 94.94% statements, 90.32% branches, 96.74% functions, 96.63%
+lines. `filmstrip.ts` is 96.87 / 93.54 / 100 / 100. `bun run check` is green at 81 test files,
+1,698 tests, 11 routes, and the production build. The full dev and production batteries remain the
+Plan 07 final gate.
+
+Red runs captured for the three late-found locks: the planner's `audioOnly` rejection, the cache's
+relink retry after a failed strip, and the component's move reuse (the old effect deps re-requested
+on a move).
+
+Release tasks: `package.json` is `0.12.0`; `releases.ts` has the new head entry; `CHANGELOG.md` and
+`ROADMAP.md` record the release; the README feature list, test counts, architecture, flows, design
+system, structure, and testing docs are updated. `public/screenshots/editor.png` is a fresh
+1600x1000 production capture with filmstrips from the bundled samples. The hero alt text, the
+public-pages test, and the design-system screenshot note are updated, and the Unsplash credit is
+removed because the night-city source is no longer used.
+
+Review fixes: the plan index now reports the orchestrator as `in progress`, matching its header. The
+cache's `findJob` ignores cancelled active and queued jobs, `releaseFilmstrip` and `rekeyJob` act on
+the live job, and `settleJob` and `drainQueue` keep a key pending while a live replacement exists. A
+regression test releases an active request, re-requests the same key, and asserts that the second
+callback receives a strip.
 
 ## Acceptance criteria
 

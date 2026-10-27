@@ -11,6 +11,7 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/u
 ## Features
 
 - **Media import.** Video, audio, and image files come in through the media bin or drag and drop. Multi-select works in the bin. The app probes duration and size, makes JPEG thumbnails, normalizes waveform peaks, and detects audio tracks.
+- **Filmstrips.** Video clips draw sampled source frames across the window they actually show: trimming, speed, reverse, and time remapping change the picture, while a move or a small zoom reuses the strip. Image clips show the image itself. Strips are runtime-only, capped at 4096px, and held in a 16MP LRU cache, so no strip data enters the project file. A linked video half stays clean while its audio twin carries the waveform.
 - **Multi-track timeline.** Move a whole selection across compatible tracks, trim either edge, split at the playhead, duplicate, delete, and snap to clip edges, the playhead, or timeline bounds. Add tracks from the `+` button in the timeline corner, the toolbar `+`, or the menus. New tracks follow the text, video, audio order, and `tracks[0]` renders on top.
 - **Manageable layers.** Each track header has a context menu, or double-click the name, to rename, mute, or delete the layer. The last lane cannot be deleted. An edit that leaves a layer empty removes it in the same undo step, so a lane never lingers with nothing on it. A lane that was already empty stays, which is what makes "add a layer, then fill it" work. Drag a clip near the top or bottom of the tracks to scroll the timeline and reach an off-screen lane. A drop on the wrong kind of lane marks the lane and rolls the whole drop back, so the clip returns to where it started.
 - **Track targeting and select-by-lane.** Every track is targeted by default. Target Track toggles a lane and dims its kind icon; Select Track Clips selects the whole lane and expands A/V link groups. Targeting steers bin quick-add, Add Text, and paste to the first targeted compatible lane, including a video's audio twin. Paste keeps its original lane when that lane is still targeted and compatible. A drag, a duplicate, or a drop onto a compatible lane keeps the lane you pointed at. Targeting is session state, not part of the project file. If no lane of that kind is targeted, the old landing order applies.
@@ -346,7 +347,7 @@ The pure state modules run in a plain Node environment with no browser. The brow
 
 The public site at `/` is a server-rendered hero and information page. It shares the editor's dark tokens but never imports the editor store or browser engines. `/editor` is the client-only editor boot. The public pages live under `src/app/(site)`. The sitemap and social image are route files in `src/app`, and the site constants live in `src/lib/seo.ts`.
 
-Current state: **1632 tests across 78 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the Node-testable state modules. `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **1698 tests across 81 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the Node-testable state modules. `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -444,7 +445,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 78 test files (1632 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+│   └── __tests__/               # 81 test files (1698 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ├── app/
 │   ├── (site)/                  # public hero, About, Privacy, Terms, Contact, site layout
 │   ├── editor/page.tsx          # server wrapper with noindex metadata around EditorBoot

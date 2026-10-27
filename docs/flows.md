@@ -60,6 +60,17 @@ Stable hooks used across flows and tests:
   overlay names only assets the bin still has), the export refuses until it resolves, and undo is
   the recovery.
 
+## Filmstrips
+
+- A mounted video or image clip asks the runtime cache for a strip after a 140ms debounce. The pure
+  planner samples cell centers through `sourceTimeAt`, so trim, speed, reverse, and time remapping
+  change the frames; a move or a same-bucket zoom reuses the cached key.
+- One job runs at a time. Requests dedupe by key, queue FIFO, and a same-clip trim or zoom retargets
+  its queued job in place. A relink, asset removal, or project replacement disposes the old strip and
+  hidden element before React re-renders, and a stale job cannot install.
+- The timeline root publishes `data-filmstrips-ready` only when every mounted request has settled (a
+  poster fallback counts). No strip data enters the Doc, autosave, or the project file.
+
 ## LUT import (.cube)
 
 - The Inspector's **Color grade** section loads a `.cube` per clip (picture clips only: a 3D cube's
