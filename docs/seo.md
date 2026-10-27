@@ -87,8 +87,8 @@ GoatCounter is the only analytics service. It is cookieless and supports custom 
 
 ### Setup
 
-1. Create a site at `https://videoh.goatcounter.com` if the name is available. If not, use another slug and update the URL.
-2. Set `NEXT_PUBLIC_GOATCOUNTER_URL=https://videoh.goatcounter.com/count` in Vercel Production only.
+1. Create a site at `https://vmedia.goatcounter.com` if the name is available. If not, use another slug and update the URL.
+2. Set `NEXT_PUBLIC_GOATCOUNTER_URL=https://vmedia.goatcounter.com/count` in Vercel Production only.
 3. Leave Preview and Development empty so local and preview traffic do not pollute production data.
 4. Add the optional public variable to `.env.example`.
 
@@ -131,9 +131,9 @@ GitHub is a credibility and contribution channel, not the primary acquisition go
 
 - [x] `bun run check` is green.
 - [x] The dev and artifact batteries are 63/63 with a terminal `BATTERY_EXIT=0`.
-- [ ] `robots.txt`, `sitemap.xml`, and the verification file return 200 in production.
-- [ ] The production metadata check passes for `/` and `/editor`.
-- [ ] Preview returns `X-Robots-Tag`; production does not.
-- [ ] Search Console verifies the property and accepts the sitemap.
-- [ ] GoatCounter receives a test page view and a test event, or analytics is intentionally disabled.
+- [x] `robots.txt`, `sitemap.xml`, and the verification file return 200 in production.
+- [x] The production metadata check passes for `/` and `/editor`.
+- [x] Production returns no `X-Robots-Tag`; `site-seo.test.ts` locks the preview header.
+- [x] Search Console verifies the property and accepts the sitemap.
+- [x] GoatCounter receives a test page view and a test event, or analytics is intentionally disabled.
 - [x] Privacy and Terms copy is approved.

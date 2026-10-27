@@ -89,7 +89,7 @@ test locks that behavior.
 ## Environment
 
 - `NEXT_PUBLIC_GOATCOUNTER_URL` is optional and public. Set it in Vercel Production only, for example
-  `https://videoh.goatcounter.com/count`.
+  `https://vmedia.goatcounter.com/count`.
 - Leave Preview and Development empty so their traffic does not pollute production analytics.
 - Do not put secrets in `NEXT_PUBLIC_*` variables. The editor has no server-side secrets.
 - `.env.example` documents the optional variable.
