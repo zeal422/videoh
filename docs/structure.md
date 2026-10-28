@@ -100,7 +100,7 @@ src/components/
 │       ├── TimelinePanel.tsx     #   lanes, playhead, drop targets, zoom, track menu
 │       ├── Ruler.tsx             #   canvas time ruler + scrubbing
 │       ├── ClipView.tsx          #   clip: move/trim gestures, context menu, link badge, envelope layer
-│       ├── VolumeEnvelope.tsx    #   on-clip dB curve, draggable dots, add/remove/keyboard gestures
+│       ├── AutomationEnvelope.tsx #  on-clip volume/opacity curve, draggable dots, add/remove/keyboard gestures
 │       ├── Filmstrip.tsx         #   sampled source cells / image draw / poster fallback under the clip
 │       ├── SequenceMarkers.tsx   #   ruler marker tabs + drag/edit menu
 │       ├── ClipMarkers.tsx       #   clip marker tabs (source-anchored)
@@ -150,6 +150,7 @@ src/lib/editor/
 ├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
 ├── ripple-trim.ts        # pure same-track ripple planner: anchored-start head trim, shared end delta, transition overlap
 ├── slip.ts               # pure Slip planner: source-window bounds, shared linked-pair delta
+├── pen.ts                # pure keyframe Pen helpers: property selection, sampling, add/remove/nudge (0.16.0)
 ├── sequence-ops.ts       # insert/overwrite placement planner + source in/out range helpers (pure)
 ├── marquee.ts            # marquee (box) selection: lane-space rect math + group resolution (pure)
 ├── markers.ts            # markers: source-anchored clip mapping, navigation, colors, selection (pure)
@@ -199,7 +200,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 88 test files (1880 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 89 test files (1924 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ````

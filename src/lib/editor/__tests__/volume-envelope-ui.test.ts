@@ -10,29 +10,37 @@ import { join } from 'node:path'
 
 const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8')
 
-describe('timeline envelope wiring', () => {
+describe('automation envelope wiring', () => {
   const clipView = read('src/components/editor/timeline/ClipView.tsx')
-  const envelope = read('src/components/editor/timeline/VolumeEnvelope.tsx')
+  const envelope = read('src/components/editor/timeline/AutomationEnvelope.tsx')
 
-  it('draws the envelope above the waveform and below the label and trim handles', () => {
-    expect(clipView).toContain("from './VolumeEnvelope'")
-    const envelopeIndex = clipView.indexOf('<VolumeEnvelope')
-    expect(envelopeIndex).toBeGreaterThan(-1)
-    expect(envelopeIndex).toBeGreaterThan(clipView.indexOf('<Waveform'))
-    expect(envelopeIndex).toBeLessThan(clipView.indexOf('{/* label */}'))
-    expect(envelopeIndex).toBeLessThan(clipView.indexOf('{/* trim handles */}'))
-    // The clip root is inset-y-1, so the overlay gets its real content height.
-    expect(clipView).toMatch(/height=\{height - 8\}/)
-    expect(clipView).toMatch(/inert=\{activeTool !== 'select'\}/)
+  it('draws each envelope above the waveform and below the label and trim handles', () => {
+    expect(clipView).toContain("from './AutomationEnvelope'")
+    const opacityIndex = clipView.indexOf('property="opacity"')
+    const volumeIndex = clipView.indexOf('property="volume"')
+    expect(opacityIndex).toBeGreaterThan(-1)
+    expect(volumeIndex).toBeGreaterThan(opacityIndex)
+    expect(volumeIndex).toBeGreaterThan(clipView.indexOf('<Waveform'))
+    expect(volumeIndex).toBeLessThan(clipView.indexOf('{/* label */}'))
+    expect(volumeIndex).toBeLessThan(clipView.indexOf('{/* trim handles */}'))
+    // The clip root is inset-y-1, so each overlay gets its real content height.
+    expect(clipView.match(/height=\{height - 8\}/g)).toHaveLength(2)
+    // Razor, ripple, and slip are modal; the Pen keeps the envelope live.
+    expect(clipView).toMatch(
+      /activeTool === 'razor' \|\| activeTool === 'ripple' \|\| activeTool === 'slip'/,
+    )
+    expect(clipView).toMatch(/inert=\{automationInert\}/g)
+    expect(clipView).toMatch(/penTarget=\{penTarget\}/)
+    expect(clipView).toMatch(/dotsOnly=\{penActive && penProperty === 'opacity'\}/)
   })
 
   it('keeps pointer events off the empty space and on the dots and line only', () => {
     expect(envelope).toMatch(/pointer-events-none absolute inset-0/)
-    expect(envelope).toMatch(/data-testid="volume-envelope-plot"/)
+    expect(envelope).toMatch(/data-testid=\{`\$\{prefix\}-plot`\}/)
     expect(envelope).toMatch(/className="pointer-events-none absolute"/)
-    expect(envelope).toMatch(/pointerEvents: inert \? 'none' : 'stroke'/)
+    expect(envelope).toMatch(/pointerEvents: lineInteractive \? 'stroke' : 'none'/)
     expect(envelope).toMatch(/pointer-events-auto cursor-ns-resize/)
-    expect(envelope).toMatch(/inert\s*\? 'pointer-events-none'/)
+    expect(envelope).toMatch(/: 'pointer-events-none'/)
     // The curve is white, never the selection rose.
     expect(envelope).toMatch(/className="stroke-white\/90"/)
     expect(envelope).not.toMatch(/stroke-rose/)
@@ -41,25 +49,29 @@ describe('timeline envelope wiring', () => {
     expect(envelope).toMatch(/left: TRIM_INSET, right: TRIM_INSET/)
     // Trim handles are z-10; the dot layer is below them.
     expect(clipView).toMatch(/left-0 z-10 w-2/)
-    expect(clipView).toMatch(/activeTool === 'slip' \? 'cursor-default' : 'cursor-ew-resize'/)
+    expect(clipView).toMatch(
+      /activeTool === 'slip' \|\| activeTool === 'pen' \? 'cursor-default' : 'cursor-ew-resize'/,
+    )
     expect(envelope).toMatch(/z-\[1\]/)
   })
 
-  it('writes every edit through the existing volume keyframe command', () => {
+  it('writes every edit through the existing keyframe command', () => {
     expect(envelope).toMatch(/type: 'setClipKeyframes'/)
-    expect(envelope).toMatch(/property: 'volume'/)
+    expect(envelope).toMatch(/property,/)
     expect(envelope).toMatch(/beginTransient\(pointerId\)/)
     expect(envelope).toMatch(/currentTransientToken\(\) !== token/)
     expect(envelope).toMatch(/commitTransient\(\)/)
     expect(envelope).toMatch(/cancelTransient\(\)/)
     expect(envelope).toMatch(/DRAG_THRESHOLD_PX = 3/)
-    expect(envelope).toMatch(/addVolumeKeyframe/)
-    expect(envelope).toMatch(/removeVolumeKeyframe/)
-    expect(envelope).toMatch(/moveVolumeKeyframe/)
+    expect(envelope).toMatch(/addKeyframeAt/)
+    expect(envelope).toMatch(/removeKeyframeAt/)
+    expect(envelope).toMatch(/nudgeKeyframe/)
+    // One component renders both properties; there is no second overlay file.
+    expect(envelope).toMatch(/property: AutomationProperty/)
   })
 
-  it('never hides a curve on a muted clip', () => {
-    expect(envelope).toMatch(/clip\.muted && 'opacity-50'/)
+  it('never hides a volume curve on a muted clip and never dims opacity', () => {
+    expect(envelope).toMatch(/isVolume && clip\.muted && 'opacity-50'/)
     expect(envelope).not.toMatch(/clip\.muted\s*\)\s*return null/)
   })
 })

@@ -35,7 +35,7 @@ import type { Doc, Track } from './types'
 export type AutosaveStatus = 'idle' | 'pending' | 'saved' | 'error'
 
 /** Timeline editing tools (Premiere: V = selection, C = razor). */
-export type EditorTool = 'select' | 'razor' | 'ripple' | 'slip'
+export type EditorTool = 'select' | 'razor' | 'ripple' | 'slip' | 'pen'
 
 export interface EditorState {
   doc: Doc

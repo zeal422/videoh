@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.16.0',
+    date: '2026-10-28',
+    highlights: [
+      'The Pen (P) edits automation on the selected clip: volume on audio, opacity on picture',
+      'Click the curve to add a point, drag a dot to change time and value, and Alt-click or Delete to remove, with one undo per gesture',
+      'One generalized envelope draws volume in dB or opacity as a percentage, and a solo video keeps its volume dots directly draggable',
+      'The Pen never moves or trims a clip, refuses locked lanes, cancels cleanly on pointercancel, and keeps the clip body selectable',
+    ],
+  },
+  {
     version: '0.15.0',
     date: '2026-10-27',
     highlights: [

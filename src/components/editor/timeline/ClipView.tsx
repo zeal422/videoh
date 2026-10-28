@@ -26,6 +26,7 @@ import {
 } from '@/lib/editor/clip-gesture'
 import { planRippleShift, planRippleTrim } from '@/lib/editor/ripple-trim'
 import { planSlip } from '@/lib/editor/slip'
+import { automationPropertyForClip } from '@/lib/editor/pen'
 import { autoScrollStep } from '@/lib/editor/timeline-scroll'
 import {
   commandsToCreateCompoundClip,
@@ -60,7 +61,7 @@ import { cn } from '@/lib/utils'
 import { Waveform } from './Waveform'
 import { ClipMarkers } from './ClipMarkers'
 import { Filmstrip } from './Filmstrip'
-import { VolumeEnvelope } from './VolumeEnvelope'
+import { AutomationEnvelope } from './AutomationEnvelope'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -81,10 +82,11 @@ import {
  * it. Every group op (move/delete/cut/split/link…) runs on the WHOLE
  * selection.
  *
- * Tools (Premiere V/C/B/Y): with the razor active (C), pointer-down cuts the
+ * Tools (Premiere V/C/B/Y/P): with the razor active (C), pointer-down cuts the
  * clip. With ripple active (B), the edge handles trim AND shift the track's
  * later clips; the body only selects. With slip active (Y), a body drag moves
- * the source window and never the clip.
+ * the source window and never the clip. With the Pen active (P), the body and
+ * edges only select; the automation overlay owns the curve gestures.
  */
 export function ClipView({
   doc,
@@ -127,6 +129,13 @@ export function ClipView({
   const widthPx = Math.max(6, clip.duration * pxPerSec)
   const leftPx = clip.start * pxPerSec
   const isLinked = !!clip.linkId && linkedClips(doc, clip.id).length > 1
+  // The Pen edits one property per clip: volume on audio, opacity on picture.
+  // A solo video's opacity is the Pen curve; its volume envelope keeps direct
+  // dot gestures but leaves the line alone.
+  const penProperty = automationPropertyForClip(clip, track.kind)
+  const penActive = activeTool === 'pen'
+  const penTarget = penActive && isSelected
+  const automationInert = activeTool === 'razor' || activeTool === 'ripple' || activeTool === 'slip'
 
   // ————— gesture state —————
   const gesture = useRef<null | {
@@ -259,6 +268,9 @@ export function ClipView({
     // selected above; it just does not start an edit the tool cannot do.
     if (activeTool === 'ripple' && mode === 'move') return
     if (activeTool === 'slip' && mode !== 'move') return
+    // The Pen never moves or trims a clip. The selection above still ran; the
+    // automation overlay owns every edit this tool makes.
+    if (activeTool === 'pen') return
 
     const gestureMode = activeTool === 'slip' && mode === 'move' ? 'slip' : mode
     const lanes = readLanes()
@@ -1038,17 +1050,35 @@ export function ClipView({
             />
           )}
 
-          {/* volume automation: above the waveform, below the label and the
-              z-10 trim handles. Only the audible carrier of an A/V pair gets
-              one (a linked video half has none). The clip root is inset-y-1,
-              so its real height is `height - 8`. */}
-          {clipCarriesSound(doc, clip) && (
-            <VolumeEnvelope
+          {/* opacity automation: the Pen's curve on a picture clip. Without
+              the Pen it is display-only and appears only when keyframes exist.
+              The clip root is inset-y-1, so the overlay gets `height - 8`. */}
+          {penProperty === 'opacity' && (
+            <AutomationEnvelope
               clip={clip}
+              property="opacity"
               widthPx={widthPx}
               height={height - 8}
               selected={isSelected}
-              inert={activeTool !== 'select'}
+              inert={automationInert}
+              penTarget={penTarget}
+            />
+          )}
+
+          {/* volume automation: above the waveform, below the label and the
+              z-10 trim handles. Only the audible carrier of an A/V pair gets
+              one (a linked video half has none). Under the Pen on a picture
+              clip the dots stay direct while the line belongs to opacity. */}
+          {clipCarriesSound(doc, clip) && (
+            <AutomationEnvelope
+              clip={clip}
+              property="volume"
+              widthPx={widthPx}
+              height={height - 8}
+              selected={isSelected}
+              inert={automationInert}
+              penTarget={penTarget && penProperty === 'volume'}
+              dotsOnly={penActive && penProperty === 'opacity'}
             />
           )}
 
@@ -1134,7 +1164,7 @@ export function ClipView({
           {/* trim handles */}
           <div
             aria-label="Trim clip start"
-            className={`absolute inset-y-0 left-0 z-10 w-2 ${activeTool === 'slip' ? 'cursor-default' : 'cursor-ew-resize'} opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100`}
+            className={`absolute inset-y-0 left-0 z-10 w-2 ${activeTool === 'slip' || activeTool === 'pen' ? 'cursor-default' : 'cursor-ew-resize'} opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100`}
             style={{
               background: 'linear-gradient(90deg, rgba(255,255,255,.45), transparent)',
             }}
@@ -1142,7 +1172,7 @@ export function ClipView({
           />
           <div
             aria-label="Trim clip end"
-            className={`absolute inset-y-0 right-0 z-10 w-2 ${activeTool === 'slip' ? 'cursor-default' : 'cursor-ew-resize'} opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100`}
+            className={`absolute inset-y-0 right-0 z-10 w-2 ${activeTool === 'slip' || activeTool === 'pen' ? 'cursor-default' : 'cursor-ew-resize'} opacity-0 transition-opacity hover:opacity-100 group-hover:opacity-100`}
             style={{
               background: 'linear-gradient(270deg, rgba(255,255,255,.45), transparent)',
             }}

@@ -3,8 +3,9 @@
 Status: planned
 Depends on: [PLAN 01](PLAN-01-REFERENCE-AND-SPEC.md), [PLAN 02](PLAN-02-GEOMETRY-AND-CHROME.md),
 [PLAN 03](PLAN-03-FILMSTRIPS.md), [PLAN 04](PLAN-04-VOLUME-AUTOMATION.md),
-[PLAN 05](PLAN-05-TRACK-CONTROLS.md), [PLAN 06](PLAN-06-EDITING-TOOLS.md)
-Release: no-version QA gate for `0.15.0`; `0.16.0` if Plan 06 splits; any post-tag fix becomes `0.15.1` or `0.16.1`
+[PLAN 05](PLAN-05-TRACK-CONTROLS.md), [PLAN 06A](PLAN-06A-RIPPLE-SLIP.md),
+[PLAN 06B](PLAN-06B-KEYFRAME-PEN.md)
+Release: no-version QA gate for `0.16.0`; any post-tag fix becomes `0.16.1`
 Goal: prove the whole epic, capture the real hero screenshot, retire the local reference, and hand a
 release-ready tree to the user.
 

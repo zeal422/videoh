@@ -20,7 +20,7 @@ const FEATURES = [
 ]
 
 const SCREENSHOT_ALT =
-  'The videoh editor showing a color-bar video with filmstrip thumbnails, the ripple and slip tools in the toolbar, a multi-track timeline with mute, solo, and lock controls on its track headers, a white volume envelope with keyframe dots over the music waveform, and the inspector dB volume graph'
+  'The videoh editor showing a color-bar video with filmstrip thumbnails, the Pen tool active in the toolbar, a multi-track timeline with mute, solo, and lock controls on its track headers, an opacity keyframe curve with dots over the selected video, and the inspector opacity keyframe graph'
 
 export function Hero() {
   return (

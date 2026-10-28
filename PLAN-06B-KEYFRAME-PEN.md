@@ -1,6 +1,6 @@
 # PLAN 06B: The keyframe Pen
 
-Status: planned
+Status: done
 Depends on: [PLAN 04](PLAN-04-VOLUME-AUTOMATION.md), [PLAN 05](PLAN-05-TRACK-CONTROLS.md),
 [PLAN 06A](PLAN-06A-RIPPLE-SLIP.md)
 Release: `0.16.0`
@@ -29,11 +29,13 @@ automation curve, with one toolbar icon, one shortcut, one cursor, a documented 
 ## Current state to verify
 
 - `src/lib/editor/store.ts` after 06A: `EditorTool = 'select' | 'razor' | 'ripple' | 'slip'`,
-  `activeTool`, `setActiveTool`.
-- `src/hooks/editor/useEditorKeyboard.ts` after 06A: V, C, B, Y, and Escape are assigned. P is free.
-- `src/components/editor/Toolbar.tsx` after 06A: select, razor, ripple, and slip buttons.
+  `activeTool`, `setActiveTool`, `applyTransientBatch`, and `resetTransient`.
+- `src/hooks/editor/useEditorKeyboard.ts` after 06A: V, C, B, Y, and Escape are assigned. P is
+  still free (verified against the current map, including Ctrl+Y redo).
+- `src/components/editor/Toolbar.tsx` after 06A: select, razor, ripple, and slip buttons, with no
+  Pen control yet.
 - `src/components/editor/timeline/VolumeEnvelope.tsx` from Plan 04: the envelope surface to
-  generalize.
+  generalize. It already takes an `inert` prop and is inert under every non-select tool.
 - `src/lib/editor/volume-automation.ts`: the dB mapping, the curve sampling, and `clipCarriesSound`.
 - `src/lib/editor/keyframes.ts`: `animatedValue`, `evaluateKeyframes`, and the sorted-curve helpers.
 - `src/lib/editor/commands.ts`: `setClipKeyframes` and the `LOCK_RULES` inventory.
@@ -214,3 +216,67 @@ Flakiness controls:
   not draw both as Pen-editable curves.
 - **Shortcut conflicts.** P is free in the current map. If that changes before implementation, stop
   and update the plan.
+
+## Implementation notes
+
+Recorded after the build, so the plan matches what shipped:
+
+- **One envelope, two properties.** `VolumeEnvelope.tsx` became `AutomationEnvelope.tsx` with a
+  `property` prop. Volume keeps its test ids and behavior; opacity uses `opacity-envelope` and
+  `opacity-dot-*`. There is no second overlay implementation.
+- **Property rule.** `automationPropertyForClip` reads an audio lane or `audioOnly` as volume and
+  every picture clip, including a solo video and a compound, as opacity. A solo video under the
+  Pen sets the opacity instance as the target and the volume instance to `dotsOnly`, so the opacity
+  line is the one Pen curve and the volume dots stay directly draggable.
+- **Pure helpers.** `pen.ts` carries the property rule, sampling, the dB and 0..1 display mapping,
+  add with one-frame replacement, removal, and nudge. The plan's list grew by the mapping and
+  sampling helpers the one component needs, and `addKeyframeAt` takes an optional interpolation so
+  a new point carries the project's default easing. Both are mechanical extensions, not new
+  behavior.
+- **Gesture.** A selected clip shows its curve under the Pen; a line click adds at the interpolated
+  value, a dot drag uses the 3px threshold and one transient, Alt-click arms removal until release,
+  and Delete/Backspace or the arrows work on the focused dot. `ClipView` selects first, then returns
+  before any move or trim. Locked lanes refuse before a write; pointercancel restores the base.
+- **Pending-press Escape.** A dot press or armed Alt-click marks the envelope root with
+  `data-automation-gesture`; the keyboard hook reads it beside `isTransientActive()`, so Escape
+  cannot switch the tool before the 3px threshold starts a transient. The marker clears on
+  pointerup, pointercancel, an abandoned pointer, window blur, and unmount. Removing the keyboard
+  check made the new pending Alt-click test fail with `select` instead of `pen`; removing the blur
+  listener made the blur-marker test fail with the attribute still set.
+- **Keyboard delete.** Removal reads the LIVE sorted array by the focused point's time, so a crossing
+  nudge cannot delete a neighbour. Co-timed points are pathological and resolve to the first match.
+- **Review fix: drag time tracking.** The dot drag tracked the raw pointer time while
+  `nudgeKeyframe` writes `current.time + delta`; the two can differ by one floating-point unit, and
+  the next frame's exact lookup then missed the grabbed point and froze the drag. The drag now
+  computes the delta once, derives the exact stored time with `clampAutomationTime`, and tracks
+  that value. `setClipKeyframes` preserves keyframe times (it filters and sorts only), so no
+  read-back is needed. The new two-move test froze at `1.2999999999999998` before the fix and
+  reaches `0.7` after it.
+- **Review fix: double-click history.** A Pen double-click fired two click events; the second
+  replaced the point the first added and pushed an extra history entry with no visible change. The
+  click handler now ignores `detail > 1`, so a double-click adds one point and one undo entry. The
+  new regression test failed with two history entries before the guard and passes with one after.
+- **Test placement.** The shortcut matrix lives in `editing-tools-ui.test.tsx`, which already mounts
+  the toolbar and keyboard hook, instead of a new `tool-shortcuts.test.tsx`; the existing
+  `volume-envelope.*` filenames remain as the regression suite for the generalized component. This
+  is a naming deviation only, logged so the plan and the tree agree.
+- **Red-first.** Before the Pen existed, four toolbar/shortcut/routing tests failed. With the
+  `ClipView` Pen return removed, the body-drag and edge-drag tests failed (the clip moved and the
+  edge trimmed); with the line click disabled, the two opacity click tests failed (no point added).
+  All restored and green.
+- **Final gate.** `bun run check` green at 89 files, 1,924 tests, 11 routes, and the production
+  build. `bun run test:coverage` reports 94.87 / 90.5 / 96.65 / 96.92; `pen.ts` is 100% statements,
+  100% functions, 100% lines, and 98.18% branches.
+- **Browser proof.** At 1600x1000 on the bundled samples: `P` activated the Pen and its button; the
+  audio sample exposed volume only, a line click added a dot at 50% with the clip label unchanged,
+  and one Ctrl+Z removed it; the video exposed opacity only, a click added a dot at 50%, a drag moved
+  it to 67.5% with the clip label unchanged, and one Ctrl+Z restored 50%; V/C/B/Y/P/Escape pressed
+  states and body/edge/curve cursors matched; a locked V1 refused the opacity click with a "Track
+  V1 is locked" toast and no dot; page errors and console error lines were empty. The hero was
+  recaptured with the Pen active, opacity points on the selected video, the Effect Controls opacity
+  graph, and Captions hidden; the alt text changed in `Hero.tsx` and its render-test mirror.
+- **Battery.** Not run here. The full dev and production batteries remain the Plan 07 gate. No
+  battery step was added because the jsdom gestures and the browser proof cover the user-visible
+  result; Plan 07 will add the Pen steps with the rest of the epic.
+- **Findings.** None before implementation. No review round was run for this plan.
+- **Lessons.** None appended to `LESSONS.md`; no scratch worktree was created.

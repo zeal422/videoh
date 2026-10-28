@@ -93,8 +93,9 @@ legal pages.
   decorative, 24px on mobile and 28px on desktop, with no separate accessible name.
 - **Screenshot.** The hero uses a real `public/screenshots/editor.png` capture at 1600x1000 with
   `next/image`, `preload`, explicit dimensions, `sizes`, and descriptive alt text. The demo project
-  uses the repository's own `public/samples` video and image, so it shows sampled filmstrips,
-  an image clip, waveforms, a transition badge, the captions panel, and the inspector with no
+  uses the repository's own `public/samples` video, audio, and image, so the media bin shows all
+  three sample assets while the timeline shows sampled filmstrips, waveforms, the Pen tool active
+  on the selected video's opacity curve, and the inspector's opacity keyframe graph, with no
   third-party credit.
   Recapture it when the editor chrome changes.
 - **Motion.** Every animation class is `motion-safe:`. The hero rises, clips settle with a stagger, and
@@ -127,13 +128,15 @@ them:
   strip loads. A top and bottom black scrim keeps the label readable. The layer never takes pointer
   events; the label, badges, waveform, trim handles, and markers stay above it, and the strip is
   clipped by the clip's rounded border.
-- **Volume envelope.** Audio-bearing clips paint the volume automation as a 1.5px white line with
-  `stroke-white/90` and 6px white dots inside 12px hit targets. The curve is deliberately not the
-  selection rose: rose stays the selection/playhead signal. The plot is inset 8px from the trim
-  handles, sits above the waveform and below the label and z-10 trim handles, and only the dots and
-  the 10px transparent hit path take pointer events. A muted clip dims the whole layer to 50% but
-  keeps it editable. The shared `KeyframeGraph` draws the same curve in its dB mode on an 80px box,
-  with 7px `-inf`, `-6 dB`, and `0 dB` labels over the muted graph background.
+- **Automation envelopes.** Audio-bearing clips paint volume as a 1.5px white line with
+  `stroke-white/90` and 6px white dots inside 12px hit targets; picture clips use the same component
+  for opacity, mapped 0..100% instead of the dB domain. The curve is deliberately not the selection
+  rose: rose stays the selection/playhead signal. The plot is inset 8px from the trim handles, sits
+  above the waveform and below the label and z-10 trim handles, and only the dots and the 10px
+  transparent hit path take pointer events. A muted clip dims the volume layer to 50% but keeps it
+  editable; opacity is not an audio property and never dims on mute. The shared `KeyframeGraph`
+  draws the same volume curve in its dB mode on an 80px box, with 7px `-inf`, `-6 dB`, and `0 dB`
+  labels over the muted graph background.
 - **Marker swatches** use the eight-colour Premiere palette (`MARKER_COLOR_VALUES` in
   `markers.ts`, Tailwind 500-family values) applied as an inline `backgroundColor`. They are content
   data (the colour the user picked) and stay fixed across themes.
@@ -230,8 +233,10 @@ captions)` on the left, with the inspector as a full-height right column. Panel 
 - **Tool cursors.** The razor sets `cursor-crosshair` on the clip body. Slip sets
   `cursor-ew-resize` on the body and falls the edge handles back to the default cursor, because
   they do not trim. Ripple keeps `cursor-ew-resize` on the edge handles; the body does not move.
-  Ripple and slip make the volume envelope inert, exactly like the razor, so the modal tool owns
-  the pointer.
+  The Pen keeps the normal pointer over the clip body and falls the edge handles back to the default
+  cursor, because it only selects; its line hit path shows `cursor-crosshair`. Razor, ripple, and
+  slip make the automation envelope inert, so the modal tool owns the pointer. The Pen keeps its
+  target curve live and leaves a solo video's volume dots directly draggable.
 - **Blocked drop target.** `[data-drop-blocked='true']` outlines a lane in `--destructive` with a
   `not-allowed` cursor — set by `ClipView` for the duration of a drag whose clip cannot land on that
   lane. It is the only lane-level state style; the outline is drawn inside the lane (`outline-offset:

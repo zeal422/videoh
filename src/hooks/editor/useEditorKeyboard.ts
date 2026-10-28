@@ -42,6 +42,7 @@ import { isTransientActive, useEditorStore } from '@/lib/editor/store'
  * | C                      | Razor tool (click a clip to cut it)                |
  * | B                      | Ripple trim tool (shifts only the same track)      |
  * | Y                      | Slip tool (changes the source window, not the clip)|
+ * | P                      | Pen tool (keyframes on the selected clip)          |
  * | Escape                 | Back to the selection tool                         |
  * | Space                  | Play / pause (not on a focused button)             |
  * | J / K / L              | Shuttle stop / stop / play                         |
@@ -219,8 +220,13 @@ export function useEditorKeyboard(onSave: () => void): void {
       // toolbar under a gesture whose closures still run the old tool, and the
       // 0.15.0 contract says Escape does not cancel a live gesture. The tool
       // keys wait for pointerup/pointercancel.
-      const switchTool = (tool: 'select' | 'razor' | 'ripple' | 'slip') => {
-        if (isTransientActive()) return
+      // A pending automation press (a dot down before the 3px drag threshold,
+      // or an armed Alt-click) owns the tool keys too, even though no transient
+      // has started yet. The envelope marks the gesture on its root.
+      const automationGestureLive = () =>
+        isTransientActive() || !!document.querySelector('[data-automation-gesture="true"]')
+      const switchTool = (tool: 'select' | 'razor' | 'ripple' | 'slip' | 'pen') => {
+        if (automationGestureLive()) return
         store.setActiveTool(tool)
       }
       switch (e.key) {
@@ -248,8 +254,15 @@ export function useEditorKeyboard(onSave: () => void): void {
           switchTool('slip')
           break
         }
+        case 'p':
+        case 'P': {
+          // Pen: add, drag, or remove keyframes on the selected clip's
+          // automation curve (volume on audio, opacity on picture).
+          switchTool('pen')
+          break
+        }
         case 'Escape': {
-          if (isTransientActive()) break
+          if (automationGestureLive()) break
           store.setActiveTool('select')
           store.selectMarker(null)
           break

@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 
 import { TimelinePanel } from '@/components/editor/timeline/TimelinePanel'
 import { InspectorPanel } from '@/components/editor/InspectorPanel'
-import { VolumeEnvelope } from '@/components/editor/timeline/VolumeEnvelope'
+import { AutomationEnvelope } from '@/components/editor/timeline/AutomationEnvelope'
 import { findClip, createClip, createMediaAsset, createTrack } from '@/lib/editor/factories'
 import { computeDuckingKeyframes } from '@/lib/editor/ducking'
 import { isTransientActive, useEditorStore } from '@/lib/editor/store'
@@ -82,6 +82,22 @@ function audioDoc(
   return projectDoc([track], [AUDIO])
 }
 
+function videoDoc(
+  keyframes?: Keyframe[],
+  options: { opacity?: number; selected?: boolean } = {},
+): Doc {
+  const clip = createClip({
+    id: 'clip-v',
+    mediaId: VIDEO_NO_AUDIO.id,
+    start: 0,
+    duration: 4,
+    opacity: options.opacity,
+    keyframes: keyframes ? { opacity: keyframes } : undefined,
+  })
+  const track = createTrack('video', 1, { clips: [clip] })
+  return projectDoc([track], [VIDEO_NO_AUDIO])
+}
+
 function seedStore(doc: Doc, clipId: string) {
   useEditorStore.setState({
     ...useEditorStore.getInitialState(),
@@ -93,8 +109,14 @@ function seedStore(doc: Doc, clipId: string) {
   })
 }
 
-function stubPlot(left = 0, top = 10, width = 200, height = 20): HTMLElement {
-  const plot = screen.getByTestId('volume-envelope-plot')
+function stubPlot(
+  prefix = 'volume-envelope',
+  left = 0,
+  top = 10,
+  width = 200,
+  height = 20,
+): HTMLElement {
+  const plot = screen.getByTestId(`${prefix}-plot`)
   plot.getBoundingClientRect = () =>
     ({
       left,
@@ -116,17 +138,34 @@ function yFor(gain: number, top = 10, height = 20): number {
 
 function EnvelopeHarness({
   id = 'clip-a',
+  property = 'volume',
   selected = true,
   inert = false,
+  penTarget = false,
+  dotsOnly = false,
 }: {
   id?: string
+  property?: 'volume' | 'opacity'
   selected?: boolean
   inert?: boolean
+  penTarget?: boolean
+  dotsOnly?: boolean
 }) {
   const doc = useEditorStore((s) => s.doc)
   const clip = findClip(doc, id)?.clip
   if (!clip) return null
-  return <VolumeEnvelope clip={clip} widthPx={200} height={36} selected={selected} inert={inert} />
+  return (
+    <AutomationEnvelope
+      clip={clip}
+      property={property}
+      widthPx={200}
+      height={36}
+      selected={selected}
+      inert={inert}
+      penTarget={penTarget}
+      dotsOnly={dotsOnly}
+    />
+  )
 }
 
 beforeEach(() => {
@@ -141,6 +180,11 @@ afterEach(() => {
 const TWO_POINTS: Keyframe[] = [
   { time: 1, value: 1, interpolation: 'linear' },
   { time: 3, value: 1, interpolation: 'linear' },
+]
+
+const OPACITY_POINTS: Keyframe[] = [
+  { time: 0, value: 1, interpolation: 'linear' },
+  { time: 4, value: 0.25, interpolation: 'linear' },
 ]
 
 describe('volume envelope rendering', () => {
@@ -790,6 +834,337 @@ describe('Clip tab volume summary', () => {
     const after = useEditorStore.getState().doc
     expect(after.project.tracks[0].clips[0].gain).toBe(1)
     expect(after.project.tracks[1].clips[0].gain).toBeCloseTo(0.55, 5)
+  })
+})
+
+describe('opacity envelope and the Pen (0.16.0)', () => {
+  function yForOpacity(value: number, top = 10, height = 20): number {
+    return top + (1 - value) * height
+  }
+
+  it('shows opacity only for existing keyframes or the Pen target', () => {
+    seedStore(videoDoc(), 'clip-v')
+    const { rerender } = render(<EnvelopeHarness id="clip-v" property="opacity" selected />)
+    expect(screen.queryByTestId('opacity-envelope')).not.toBeInTheDocument()
+
+    rerender(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    expect(screen.getByTestId('opacity-envelope-curve')).toBeInTheDocument()
+    expect(screen.queryByTestId('opacity-dot-0')).not.toBeInTheDocument()
+    const hit = screen.getByTestId('opacity-envelope-hit')
+    expect(hit.style.pointerEvents).toBe('stroke')
+    expect(hit.style.cursor).toBe('crosshair')
+  })
+
+  it('renders an existing opacity curve display-only outside the Pen', () => {
+    seedStore(videoDoc(OPACITY_POINTS), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected={false} />)
+    expect(screen.getByTestId('opacity-envelope-curve')).toBeInTheDocument()
+    const dot = screen.getByTestId('opacity-dot-0')
+    expect(dot).toHaveAttribute('tabindex', '-1')
+    expect(dot).toHaveAttribute('aria-disabled', 'true')
+    expect(dot.className).toContain('pointer-events-none')
+    expect(screen.getByTestId('opacity-envelope-hit').style.pointerEvents).toBe('none')
+  })
+
+  it('a Pen click adds an interpolated opacity point and one undo entry', () => {
+    seedStore(videoDoc(OPACITY_POINTS), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    stubPlot('opacity-envelope')
+    const pastBefore = useEditorStore.getState().past.length
+
+    fireEvent.click(screen.getByTestId('opacity-envelope-hit'), { clientX: 100 })
+
+    const curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(curve).toHaveLength(3)
+    expect(curve?.[1].time).toBe(2)
+    expect(curve?.[1].value).toBeCloseTo(0.625, 6)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+  })
+
+  it('a Pen click seeds the first opacity point from the static value', () => {
+    seedStore(videoDoc(undefined, { opacity: 0.5 }), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    stubPlot('opacity-envelope')
+
+    fireEvent.click(screen.getByTestId('opacity-envelope-hit'), { clientX: 100 })
+
+    const curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(curve).toEqual([{ time: 2, value: 0.5, interpolation: 'linear' }])
+  })
+
+  it('a Pen double-click adds one point and one undo entry', () => {
+    seedStore(videoDoc(), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    stubPlot('opacity-envelope')
+    const pastBefore = useEditorStore.getState().past.length
+    const hit = screen.getByTestId('opacity-envelope-hit')
+
+    fireEvent.click(hit, { clientX: 100, detail: 1 })
+    fireEvent.click(hit, { clientX: 100, detail: 2 })
+
+    const curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(curve).toEqual([{ time: 2, value: 1, interpolation: 'linear' }])
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+  })
+
+  it('drags an opacity dot in time and value with one undo entry and a readout', () => {
+    seedStore(videoDoc(OPACITY_POINTS), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    stubPlot('opacity-envelope')
+    const pastBefore = useEditorStore.getState().past.length
+
+    fireEvent.pointerDown(screen.getByTestId('opacity-dot-1'), {
+      bubbles: true,
+      pointerId: 7,
+      clientX: 200,
+      clientY: yForOpacity(0.25),
+      button: 0,
+    })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 150, clientY: yForOpacity(0.5) })
+    expect(screen.getByTestId('opacity-envelope-hud')).toHaveTextContent('50%')
+    fireEvent.pointerUp(window, { pointerId: 7 })
+
+    const curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(curve?.map((k) => k.time)).toEqual([0, 3])
+    expect(curve?.[1].value).toBeCloseTo(0.5, 6)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+    expect(screen.queryByTestId('opacity-envelope-hud')).not.toBeInTheDocument()
+  })
+
+  it('keeps the grabbed opacity point tracking the pointer across frames', () => {
+    seedStore(videoDoc(OPACITY_POINTS), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    stubPlot('opacity-envelope')
+
+    fireEvent.pointerDown(screen.getByTestId('opacity-dot-1'), {
+      bubbles: true,
+      pointerId: 7,
+      clientX: 200,
+      clientY: yForOpacity(0.25),
+      button: 0,
+    })
+    // 1.3s is a deterministic one-ULP mismatch: the stored time becomes
+    // 1.2999999999999998, so an exact dragTime of 1.3 would miss it.
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 65, clientY: yForOpacity(0.5) })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 35, clientY: yForOpacity(0.25) })
+    fireEvent.pointerUp(window, { pointerId: 7 })
+
+    const curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(curve?.[1].time).toBeCloseTo(0.7, 6)
+  })
+
+  it('removes an opacity point by Alt-click and by Delete, one undo each', () => {
+    seedStore(videoDoc(OPACITY_POINTS), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    stubPlot('opacity-envelope')
+    const pastBefore = useEditorStore.getState().past.length
+
+    fireEvent.pointerDown(screen.getByTestId('opacity-dot-0'), {
+      bubbles: true,
+      pointerId: 8,
+      clientX: 0,
+      clientY: yForOpacity(1),
+      button: 0,
+      altKey: true,
+    })
+    fireEvent.pointerUp(window, { pointerId: 8 })
+    let curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(curve).toHaveLength(1)
+    expect(curve?.[0].time).toBe(4)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+
+    fireEvent.keyDown(screen.getByTestId('opacity-dot-0'), { key: 'Delete' })
+    curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(curve).toBeUndefined()
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 2)
+  })
+
+  it('nudges opacity time by one frame and value by 5%', () => {
+    seedStore(videoDoc(OPACITY_POINTS), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    const dot = screen.getByTestId('opacity-dot-0')
+
+    fireEvent.keyDown(dot, { key: 'ArrowRight' })
+    let curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(curve?.[0].time).toBeCloseTo(frameToTime(1, 30), 6)
+
+    fireEvent.keyDown(screen.getByTestId('opacity-dot-0'), { key: 'ArrowDown' })
+    curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(curve?.[0].value).toBeCloseTo(0.95, 6)
+
+    fireEvent.keyDown(screen.getByTestId('opacity-dot-0'), { key: 'ArrowUp' })
+    curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity
+    expect(curve?.[0].value).toBeCloseTo(1, 6)
+  })
+
+  it('cancels a live opacity drag and keeps the curve unchanged', () => {
+    seedStore(videoDoc(OPACITY_POINTS), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    stubPlot('opacity-envelope')
+    const pastBefore = useEditorStore.getState().past.length
+
+    fireEvent.pointerDown(screen.getByTestId('opacity-dot-0'), {
+      bubbles: true,
+      pointerId: 7,
+      clientX: 0,
+      clientY: yForOpacity(1),
+      button: 0,
+    })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 100, clientY: yForOpacity(0.5) })
+    expect(isTransientActive()).toBe(true)
+    fireEvent.pointerCancel(window, { pointerId: 7 })
+
+    expect(isTransientActive()).toBe(false)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity).toEqual(
+      OPACITY_POINTS,
+    )
+  })
+
+  it('clears a pending Pen gesture marker on window blur', () => {
+    seedStore(videoDoc(OPACITY_POINTS), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    stubPlot('opacity-envelope')
+    const root = screen.getByTestId('opacity-envelope')
+    const before = useEditorStore.getState().past.length
+
+    fireEvent.pointerDown(screen.getByTestId('opacity-dot-0'), {
+      bubbles: true,
+      pointerId: 7,
+      clientX: 0,
+      clientY: yForOpacity(1),
+      button: 0,
+    })
+    expect(root).toHaveAttribute('data-automation-gesture', 'true')
+    fireEvent.blur(window)
+    expect(root).not.toHaveAttribute('data-automation-gesture')
+    fireEvent.pointerUp(window, { pointerId: 7 })
+
+    expect(useEditorStore.getState().past.length).toBe(before)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity).toEqual(
+      OPACITY_POINTS,
+    )
+  })
+
+  it('refuses opacity edits on a locked track', () => {
+    const doc = videoDoc(OPACITY_POINTS)
+    doc.project.tracks[0].locked = true
+    seedStore(doc, 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    stubPlot('opacity-envelope')
+    const pastBefore = useEditorStore.getState().past.length
+
+    fireEvent.click(screen.getByTestId('opacity-envelope-hit'), { clientX: 100 })
+    fireEvent.pointerDown(screen.getByTestId('opacity-dot-0'), {
+      bubbles: true,
+      pointerId: 9,
+      clientX: 0,
+      clientY: yForOpacity(1),
+      button: 0,
+    })
+    fireEvent.pointerMove(window, { pointerId: 9, clientX: 100, clientY: yForOpacity(0.5) })
+    fireEvent.pointerUp(window, { pointerId: 9 })
+    fireEvent.keyDown(screen.getByTestId('opacity-dot-0'), { key: 'ArrowUp' })
+
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity).toEqual(
+      OPACITY_POINTS,
+    )
+    expect(useEditorStore.getState().past.length).toBe(pastBefore)
+    expect(isTransientActive()).toBe(false)
+  })
+
+  it('is inert under a modal tool', () => {
+    seedStore(videoDoc(OPACITY_POINTS), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected inert />)
+    expect(screen.getByTestId('opacity-envelope-hit').style.pointerEvents).toBe('none')
+    expect(screen.getByTestId('opacity-dot-0').className).toContain('pointer-events-none')
+  })
+
+  it('a Pen target makes a single click add a volume point too', () => {
+    seedStore(audioDoc(), 'clip-a')
+    render(<EnvelopeHarness penTarget />)
+    stubPlot()
+    const before = useEditorStore.getState().doc.project.tracks[0].clips[0]
+
+    fireEvent.click(screen.getByTestId('volume-envelope-hit'), { clientX: 100 })
+
+    const after = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(after.keyframes?.volume).toHaveLength(1)
+    expect(after.keyframes?.volume?.[0]).toMatchObject({ time: 2, value: 1 })
+    expect(after).toMatchObject({ start: before.start, duration: before.duration })
+  })
+
+  it('a dots-only volume overlay leaves the line and keeps the dots live', () => {
+    seedStore(audioDoc(TWO_POINTS), 'clip-a')
+    render(<EnvelopeHarness dotsOnly />)
+    stubPlot()
+    const pastBefore = useEditorStore.getState().past.length
+
+    expect(screen.getByTestId('volume-envelope-hit').style.pointerEvents).toBe('none')
+    expect(screen.getByTestId('volume-dot-0').className).toContain('pointer-events-auto')
+
+    fireEvent.pointerDown(screen.getByTestId('volume-dot-0'), {
+      bubbles: true,
+      pointerId: 7,
+      clientX: 50,
+      clientY: yFor(1),
+      button: 0,
+    })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 100, clientY: yFor(0.5) })
+    fireEvent.pointerUp(window, { pointerId: 7 })
+
+    const curve = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.volume
+    expect(curve?.[0].time).toBe(2)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+  })
+
+  it('a solo video under the Pen edits opacity while its volume dots stay live', () => {
+    const clip = createClip({
+      id: 'clip-loud',
+      mediaId: VIDEO_WITH_AUDIO.id,
+      start: 0,
+      duration: 4,
+      keyframes: { volume: TWO_POINTS },
+    })
+    const doc = projectDoc([createTrack('video', 1, { clips: [clip] })], [VIDEO_WITH_AUDIO])
+    useEditorStore.setState({
+      ...useEditorStore.getInitialState(),
+      doc,
+      selections: ['clip-loud'],
+      selection: 'clip-loud',
+      playhead: 0,
+      pxPerSec: 100,
+      activeTool: 'pen',
+    })
+    render(<TimelinePanel />)
+
+    const clipEl = screen.getByTestId('clip-clip-loud')
+    expect(within(clipEl).getByTestId('opacity-envelope')).toBeInTheDocument()
+    expect(within(clipEl).getByTestId('volume-envelope')).toBeInTheDocument()
+    expect(within(clipEl).getByTestId('opacity-envelope-hit').style.pointerEvents).toBe('stroke')
+    expect(within(clipEl).getByTestId('volume-envelope-hit').style.pointerEvents).toBe('none')
+    expect(within(clipEl).getByTestId('volume-dot-0').className).toContain('pointer-events-auto')
+
+    stubPlot('opacity-envelope')
+    fireEvent.click(within(clipEl).getByTestId('opacity-envelope-hit'), { clientX: 100 })
+    const stored = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(stored.keyframes?.opacity).toHaveLength(1)
+    expect(stored.keyframes?.opacity?.[0]).toMatchObject({ time: 2, value: 1 })
+    expect(stored.keyframes?.volume).toEqual(TWO_POINTS)
+
+    fireEvent.pointerDown(within(clipEl).getByTestId('volume-dot-0'), {
+      bubbles: true,
+      pointerId: 11,
+      clientX: 50,
+      clientY: yFor(1),
+      button: 0,
+      altKey: true,
+    })
+    fireEvent.pointerUp(window, { pointerId: 11 })
+    const afterVolume = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(afterVolume.keyframes?.volume).toHaveLength(1)
+    expect(afterVolume.keyframes?.opacity).toHaveLength(1)
+    expect(afterVolume).toMatchObject({ start: 0, duration: 4, inPoint: 0 })
   })
 })
 

@@ -5,6 +5,66 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] - 2026-10-28
+
+### Added
+
+- **Keyframe Pen (`P`).** The Pen edits the selected clip's automation curve directly on the
+  timeline. Audio clips expose volume; video, image, text, and compound clips expose opacity. Click
+  the curve to add a point at the interpolated value, drag a dot to change its time and value,
+  Alt-click or press Delete/Backspace to remove, and nudge time by a frame or value by one step with
+  the arrow keys. A press only becomes a drag after 3px, every gesture is one undo entry, and
+  pointercancel restores the base document. The Pen never moves or trims the clip: body and edge
+  presses only select.
+- **`AutomationEnvelope`.** The Plan 04 `VolumeEnvelope` is generalized into one property-driven
+  component. Volume keeps the dB domain, opacity uses 0..1, and both share the same sampling, hit
+  path, 12px dot target, trim inset, lazy threshold and transient protocol. There is no second
+  overlay implementation.
+- **`pen.ts`.** Pure helpers for property selection, value sampling, display mapping, add (with
+  one-frame replacement), remove and nudge. They clamp hostile times and values, treat a hostile
+  fps as exact-time dedupe, and never mutate the clip; `setClipKeyframes` remains the only write
+  path.
+- **Pen render rules.** A selected clip shows a flat curve while the Pen is active so the first
+  point can be added. Without the Pen, opacity appears only when opacity keyframes already exist;
+  volume keeps the Plan 04 visibility rule. A solo video with embedded audio edits opacity with the
+  Pen, while its volume envelope stays directly draggable through its dots. Locked lanes refuse.
+
+### Changed
+
+- `EditorTool` grows from select/razor/ripple/slip to include `pen`. The toolbar adds the Pen
+  button after Slip, the shortcuts dialog and README list `P`, and the Pen's curve shows a
+  crosshair while the clip body keeps the normal pointer. The trim handles fall back to the default
+  cursor under the Pen because they do not trim.
+- `src/components/editor/timeline/VolumeEnvelope.tsx` becomes `AutomationEnvelope.tsx`. Volume test
+  ids and behavior are unchanged; opacity uses `opacity-envelope` and `opacity-dot-*`.
+- Ripple and slip keep the envelope inert; the Pen is the only modal tool that keeps an automation
+  curve live.
+
+### Fixed
+
+- **Pen drag could freeze on a one-ULP time mismatch.** `AutomationEnvelope` tracked the raw pointer
+  time while `nudgeKeyframe` writes `current.time + delta`, and the next frame's exact lookup could
+  miss the grabbed point when the two differed by a floating-point unit. The drag now computes the
+  delta once, derives the exact stored time with the same clamp, and tracks that value. A two-move
+  regression test froze at `1.2999999999999998` before the fix and reaches `0.7` after it.
+- **Pen double-click recorded an empty undo step.** A double-click on the curve in Pen mode fired
+  two click events; the second replaced the point the first added and pushed a second history
+  snapshot with no visible change. The Pen click handler now ignores the second click of a
+  double-click, so one gesture adds one point and one undo entry.
+
+### Tests and docs
+
+- The suite moves to 89 files and 1,924 tests, with coverage at 94.87 statements, 90.5 branches,
+  96.65 functions, and 96.92 lines. `pen.test.ts` covers the pure helper contract and hostile input;
+  `editing-tools-ui.test.tsx` covers the toolbar, P/V/C/B/Y/Escape, the Pen body/edge no-op matrix,
+  click-add on volume and opacity, dot drags, selection modifiers, the live-gesture Escape rule and
+  locked-lane refusal; the envelope render tests cover opacity visibility, click-add, drag, remove,
+  nudge, cancel, lock, dots-only volume, and the solo-video dual overlay.
+- Docs updated: architecture, flows, design system, structure, testing, README, roadmap, plan index,
+  and the implementation notes. Browser proof covers a volume point on an audio clip and an opacity
+  point on a video clip, undo, a fixed clip position, every tool shortcut and cursor, a locked-lane
+  refusal, one undo per gesture, and a clean console.
+
 ## [0.15.0] - 2026-10-27
 
 ### Added

@@ -11,6 +11,7 @@ import {
   MonitorPlay,
   MousePointer2,
   MoveHorizontal,
+  PenTool,
   Plus,
   Redo2,
   Save,
@@ -207,6 +208,12 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
           onClick={() => setActiveTool('slip')}
           active={activeTool === 'slip'}
           icon={<MoveHorizontal className="size-4" />}
+        />
+        <ToolButton
+          label="Pen tool (P). Click the curve to add a keyframe, drag a dot to edit it, Alt-click or Delete to remove. Edits volume on audio clips and opacity on picture clips."
+          onClick={() => setActiveTool('pen')}
+          active={activeTool === 'pen'}
+          icon={<PenTool className="size-4" />}
         />
 
         <Separator orientation="vertical" className="mx-0.5 h-6" />

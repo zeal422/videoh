@@ -70,6 +70,70 @@ function clipEl(id: string): HTMLElement {
   return screen.getByTestId(`clip-${id}`)
 }
 
+function opacityDoc(points = true): { doc: Doc; a: Clip; media: MediaAsset } {
+  const media = asset()
+  const track = createTrack('video', 1, { id: 'v1' })
+  const a = createClip({
+    id: 'a',
+    mediaId: media.id,
+    start: 0,
+    duration: 2,
+    inPoint: 0,
+    keyframes: points
+      ? {
+          opacity: [
+            { time: 0, value: 1, interpolation: 'linear' },
+            { time: 2, value: 0.25, interpolation: 'linear' },
+          ],
+        }
+      : undefined,
+  })
+  track.clips = [a]
+  const doc: Doc = {
+    project: { tracks: [track], id: 'p_tools', name: 'tools', width: 1920, height: 1080, fps: 30 },
+    media: [media],
+  }
+  return { doc, a, media }
+}
+
+function audioToolDoc(): { doc: Doc; a: Clip; media: MediaAsset } {
+  const media = createMediaAsset({ kind: 'audio', name: 'sound.mp3', duration: 30 })
+  const track = createTrack('audio', 1, { id: 'a1' })
+  const a = createClip({ id: 'a', mediaId: media.id, start: 0, duration: 2, inPoint: 0 })
+  track.clips = [a]
+  const doc: Doc = {
+    project: { tracks: [track], id: 'p_tools', name: 'tools', width: 1920, height: 1080, fps: 30 },
+    media: [media],
+  }
+  return { doc, a, media }
+}
+
+function stubPlot(clipId: string, prefix: 'opacity-envelope' | 'volume-envelope') {
+  const plot = within(clipEl(clipId)).getByTestId(`${prefix}-plot`)
+  plot.getBoundingClientRect = () =>
+    ({
+      left: 0,
+      top: 10,
+      right: 400,
+      bottom: 30,
+      width: 400,
+      height: 20,
+      x: 0,
+      y: 10,
+      toJSON: () => ({}),
+    }) as DOMRect
+  return plot
+}
+
+function yForOpacity(value: number, top = 10, height = 20): number {
+  return top + (1 - value) * height
+}
+
+function Keys() {
+  useEditorKeyboard(() => {})
+  return null
+}
+
 function downAt(el: Element, clientX: number) {
   fireEvent.pointerDown(el, {
     button: 0,
@@ -110,18 +174,22 @@ function docClip(id: string): Clip {
 }
 
 describe('toolbar tools', () => {
-  it('renders select, razor, ripple, and slip, with no Pen button yet', () => {
+  it('renders select, razor, ripple, slip, and Pen with live controls', () => {
     render(<Toolbar onOpenExport={() => {}} />)
     expect(screen.getByRole('button', { name: /Selection tool/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Razor tool/ })).toBeInTheDocument()
     const ripple = screen.getByRole('button', { name: /Ripple trim tool/ })
     expect(ripple).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Slip tool/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Pen tool/ })).toBeNull()
+    const pen = screen.getByRole('button', { name: /Pen tool/ })
+    expect(pen).toBeInTheDocument()
     // The limitation is named in the control the user hovers.
     expect(ripple.getAttribute('aria-label')).toContain(
       'linked partners on other tracks do not shift',
     )
+    // The Pen names its scope: keyframes, not masks or roto.
+    expect(pen.getAttribute('aria-label')).toMatch(/keyframe/i)
+    expect(pen.getAttribute('aria-label')).not.toMatch(/mask|roto/i)
   })
 
   it('pressing a tool sets the active tool and its pressed state', () => {
@@ -135,6 +203,11 @@ describe('toolbar tools', () => {
     fireEvent.click(slip)
     expect(useEditorStore.getState().activeTool).toBe('slip')
     expect(slip).toHaveAttribute('aria-pressed', 'true')
+    const pen = screen.getByRole('button', { name: /Pen tool/ })
+    fireEvent.click(pen)
+    expect(useEditorStore.getState().activeTool).toBe('pen')
+    expect(pen).toHaveAttribute('aria-pressed', 'true')
+    expect(slip).toHaveAttribute('aria-pressed', 'false')
   })
 })
 
@@ -144,13 +217,14 @@ describe('tool shortcuts', () => {
     return null
   }
 
-  it('V, C, B, Y, and Escape select the five tool modes', () => {
+  it('V, C, B, Y, P, and Escape select the six tool modes', () => {
     render(<Keys />)
     for (const [key, tool] of [
       ['v', 'select'],
       ['c', 'razor'],
       ['b', 'ripple'],
       ['y', 'slip'],
+      ['p', 'pen'],
       ['Escape', 'select'],
     ] as const) {
       fireEvent.keyDown(window, { key })
@@ -509,17 +583,231 @@ describe('slip tool pointer routing', () => {
   })
 })
 
+describe('Pen tool pointer routing', () => {
+  it('a body drag only selects; it never moves the clip', () => {
+    const { doc } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    useEditorStore.getState().setActiveTool('pen')
+    render(<TimelinePanel />)
+
+    downAt(clipEl('a'), 100)
+    moveTo(180)
+    upAt(180)
+
+    expect(docClip('a')).toMatchObject({ start: 0, duration: 2 })
+    expect(useEditorStore.getState().selections).toEqual(['a'])
+    expect(useEditorStore.getState().past).toHaveLength(0)
+  })
+
+  it('an edge drag only selects; it never trims', () => {
+    const { doc } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    useEditorStore.getState().setActiveTool('pen')
+    render(<TimelinePanel />)
+
+    const handle = within(clipEl('a')).getByLabelText('Trim clip end')
+    downAt(handle, 200)
+    moveTo(280)
+    upAt(280)
+
+    expect(docClip('a')).toMatchObject({ start: 0, duration: 2, inPoint: 0 })
+    expect(useEditorStore.getState().past).toHaveLength(0)
+  })
+
+  it('a curve click adds an opacity point without moving the clip, one undo entry', () => {
+    const { doc } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    useEditorStore.getState().setActiveTool('pen')
+    render(<TimelinePanel />)
+
+    downAt(clipEl('a'), 100)
+    upAt(100)
+    stubPlot('a', 'opacity-envelope')
+    fireEvent.click(within(clipEl('a')).getByTestId('opacity-envelope-hit'), { clientX: 200 })
+
+    const edited = docClip('a')
+    expect(edited.keyframes?.opacity).toEqual([{ time: 1, value: 1, interpolation: 'linear' }])
+    expect(edited).toMatchObject({ start: 0, duration: 2, inPoint: 0 })
+    expect(useEditorStore.getState().past).toHaveLength(1)
+
+    useEditorStore.getState().undo()
+    expect(docClip('a').keyframes?.opacity).toBeUndefined()
+    expect(docClip('a')).toMatchObject({ start: 0, duration: 2, inPoint: 0 })
+  })
+
+  it('a curve click adds a volume point on an audio clip', () => {
+    const { doc } = audioToolDoc()
+    useEditorStore.setState({ doc })
+    useEditorStore.getState().setActiveTool('pen')
+    render(<TimelinePanel />)
+
+    downAt(clipEl('a'), 100)
+    upAt(100)
+    stubPlot('a', 'volume-envelope')
+    fireEvent.click(within(clipEl('a')).getByTestId('volume-envelope-hit'), { clientX: 200 })
+
+    const edited = docClip('a')
+    expect(edited.keyframes?.volume).toEqual([{ time: 1, value: 1, interpolation: 'linear' }])
+    expect(edited).toMatchObject({ start: 0, duration: 2, inPoint: 0 })
+  })
+
+  it('a dot drag edits opacity with one undo entry and does not move the clip', () => {
+    const { doc } = opacityDoc()
+    useEditorStore.setState({ doc, selections: ['a'], selection: 'a' })
+    useEditorStore.getState().setActiveTool('pen')
+    render(<TimelinePanel />)
+    stubPlot('a', 'opacity-envelope')
+    const before = useEditorStore.getState().past.length
+
+    fireEvent.pointerDown(within(clipEl('a')).getByTestId('opacity-dot-1'), {
+      bubbles: true,
+      pointerId: 1,
+      clientX: 400,
+      clientY: yForOpacity(0.25),
+      button: 0,
+    })
+    fireEvent.pointerMove(window, {
+      pointerId: 1,
+      clientX: 300,
+      clientY: yForOpacity(0.5),
+    })
+    fireEvent.pointerUp(window, { pointerId: 1 })
+
+    const edited = docClip('a')
+    expect(edited.keyframes?.opacity?.[1].value).toBeCloseTo(0.5, 6)
+    expect(edited).toMatchObject({ start: 0, duration: 2, inPoint: 0 })
+    expect(useEditorStore.getState().past).toHaveLength(before + 1)
+  })
+
+  it('Shift keeps adding to the selection and the clip still does not move', () => {
+    const { doc } = twoClipDoc()
+    useEditorStore.setState({ doc })
+    useEditorStore.getState().setActiveTool('pen')
+    render(<TimelinePanel />)
+
+    downAt(clipEl('a'), 100)
+    upAt(100)
+    fireEvent.pointerDown(clipEl('b'), {
+      button: 0,
+      pointerId: 2,
+      clientX: 300,
+      clientY: RULER_HEIGHT + LANE_Y,
+      shiftKey: true,
+    })
+    fireEvent.pointerUp(window, {
+      pointerId: 2,
+      clientX: 300,
+      clientY: RULER_HEIGHT + LANE_Y,
+    })
+
+    expect(useEditorStore.getState().selections).toEqual(expect.arrayContaining(['a', 'b']))
+    expect(docClip('a')).toMatchObject({ start: 0, duration: 2 })
+    expect(docClip('b')).toMatchObject({ start: 3, duration: 2 })
+  })
+
+  it('Escape does not cancel a live Pen drag or switch the tool under it', () => {
+    const { doc } = opacityDoc()
+    useEditorStore.setState({ doc, selections: ['a'], selection: 'a' })
+    useEditorStore.getState().setActiveTool('pen')
+    render(
+      <>
+        <Keys />
+        <TimelinePanel />
+      </>,
+    )
+    stubPlot('a', 'opacity-envelope')
+    const before = useEditorStore.getState().past.length
+
+    fireEvent.pointerDown(within(clipEl('a')).getByTestId('opacity-dot-0'), {
+      bubbles: true,
+      pointerId: 1,
+      clientX: 0,
+      clientY: yForOpacity(1),
+      button: 0,
+    })
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 200, clientY: yForOpacity(0.5) })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(useEditorStore.getState().activeTool).toBe('pen')
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 300, clientY: yForOpacity(0.4) })
+    fireEvent.pointerUp(window, { pointerId: 1 })
+
+    expect(docClip('a').keyframes?.opacity?.[0].value).toBeCloseTo(0.4, 6)
+    expect(useEditorStore.getState().past).toHaveLength(before + 1)
+    expect(useEditorStore.getState().activeTool).toBe('pen')
+  })
+
+  it('Escape does not switch under a pending Alt-click removal', () => {
+    const { doc } = opacityDoc()
+    useEditorStore.setState({ doc, selections: ['a'], selection: 'a' })
+    useEditorStore.getState().setActiveTool('pen')
+    render(
+      <>
+        <Keys />
+        <TimelinePanel />
+      </>,
+    )
+    stubPlot('a', 'opacity-envelope')
+    const before = useEditorStore.getState().past.length
+
+    fireEvent.pointerDown(within(clipEl('a')).getByTestId('opacity-dot-0'), {
+      bubbles: true,
+      pointerId: 1,
+      clientX: 0,
+      clientY: yForOpacity(1),
+      button: 0,
+      altKey: true,
+    })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(useEditorStore.getState().activeTool).toBe('pen')
+    fireEvent.pointerUp(window, { pointerId: 1 })
+
+    expect(useEditorStore.getState().activeTool).toBe('pen')
+    expect(docClip('a').keyframes?.opacity).toHaveLength(1)
+    expect(useEditorStore.getState().past).toHaveLength(before + 1)
+  })
+
+  it('refuses a locked lane before an add or a dot drag', () => {
+    const { doc } = opacityDoc()
+    doc.project.tracks[0].locked = true
+    useEditorStore.setState({ doc, selections: ['a'], selection: 'a' })
+    useEditorStore.getState().setActiveTool('pen')
+    render(<TimelinePanel />)
+    stubPlot('a', 'opacity-envelope')
+    const before = structuredClone(useEditorStore.getState().doc)
+
+    fireEvent.click(within(clipEl('a')).getByTestId('opacity-envelope-hit'), { clientX: 100 })
+    fireEvent.pointerDown(within(clipEl('a')).getByTestId('opacity-dot-0'), {
+      bubbles: true,
+      pointerId: 1,
+      clientX: 0,
+      clientY: yForOpacity(1),
+      button: 0,
+    })
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 200, clientY: yForOpacity(0.5) })
+    fireEvent.pointerUp(window, { pointerId: 1 })
+
+    expect(useEditorStore.getState().doc).toEqual(before)
+    expect(useEditorStore.getState().past).toHaveLength(0)
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Track locked' }))
+  })
+})
+
 describe('tool routing locks in source', () => {
-  it('the tool matrix branches are present and the Pen has no dead control', () => {
+  it('the full tool matrix is present and the Pen is keyframes only', () => {
     const clipView = read('src/components/editor/timeline/ClipView.tsx')
     expect(clipView).toMatch(/activeTool === 'ripple' && mode === 'move'/)
     expect(clipView).toMatch(/activeTool === 'slip' && mode !== 'move'/)
+    expect(clipView).toMatch(/activeTool === 'pen'/)
     expect(clipView).toMatch(/planRippleTrim\(/)
     expect(clipView).toMatch(/planSlip\(/)
 
     const toolbar = read('src/components/editor/Toolbar.tsx')
     expect(toolbar).toMatch(/setActiveTool\('ripple'\)/)
     expect(toolbar).toMatch(/setActiveTool\('slip'\)/)
-    expect(toolbar).not.toMatch(/setActiveTool\('pen'\)/)
+    expect(toolbar).toMatch(/setActiveTool\('pen'\)/)
+    expect(toolbar).toMatch(/PenTool/)
+    // The Pen edits keyframes; no mask or roto control is mounted.
+    expect(toolbar).not.toMatch(/mask|roto/i)
+    expect(clipView).not.toMatch(/mask|roto/i)
   })
 })

@@ -904,6 +904,7 @@ function zoomToFitSequence(store: ReturnType<typeof useEditorStore.getState>): v
 const SHORTCUT_ROWS: [string, string][] = [
   ['V / C', 'Selection tool / Razor tool (Escape returns to V)'],
   ['B / Y', 'Ripple trim tool (one track) / Slip tool'],
+  ['P', 'Pen tool: keyframes on the selected clip'],
   ['Space', 'Play / pause'],
   ['J / K / L', 'Shuttle stop / stop / play'],
   ['← / →', 'Step 1 frame (Shift: 5 frames)'],

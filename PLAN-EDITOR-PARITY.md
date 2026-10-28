@@ -52,17 +52,17 @@ locally for the duration of this epic and retired when the real editor capture r
 
 ## Plan index
 
-| #   | Plan                                                          | Status                       | Depends on  | Release gate                |
-| --- | ------------------------------------------------------------- | ---------------------------- | ----------- | --------------------------- |
-| 00  | [This orchestrator](PLAN-EDITOR-PARITY.md)                    | in progress                  | none        | none                        |
-| 01  | [Reference and spec](PLAN-01-REFERENCE-AND-SPEC.md)           | done                         | 00          | none                        |
-| 02  | [Geometry and chrome](PLAN-02-GEOMETRY-AND-CHROME.md)         | done                         | 01          | internal commit, no release |
-| 03  | [Filmstrips](PLAN-03-FILMSTRIPS.md)                           | done                         | 01, 02      | `0.12.0`                    |
-| 04  | [Volume automation](PLAN-04-VOLUME-AUTOMATION.md)             | done                         | 01, 02, 03  | `0.13.0`                    |
-| 05  | [Track controls](PLAN-05-TRACK-CONTROLS.md)                   | done                         | 02, 04      | `0.14.0`                    |
-| 06A | [Ripple trim and slip](PLAN-06A-RIPPLE-SLIP.md)               | implemented, awaiting commit | 04, 05      | `0.15.0`                    |
-| 06B | [Keyframe Pen](PLAN-06B-KEYFRAME-PEN.md)                      | planned                      | 04, 05, 06A | `0.16.0`                    |
-| 07  | [Integration and release](PLAN-07-INTEGRATION-AND-RELEASE.md) | planned                      | all         | final gate for `0.16.0`     |
+| #   | Plan                                                          | Status      | Depends on  | Release gate                |
+| --- | ------------------------------------------------------------- | ----------- | ----------- | --------------------------- |
+| 00  | [This orchestrator](PLAN-EDITOR-PARITY.md)                    | in progress | none        | none                        |
+| 01  | [Reference and spec](PLAN-01-REFERENCE-AND-SPEC.md)           | done        | 00          | none                        |
+| 02  | [Geometry and chrome](PLAN-02-GEOMETRY-AND-CHROME.md)         | done        | 01          | internal commit, no release |
+| 03  | [Filmstrips](PLAN-03-FILMSTRIPS.md)                           | done        | 01, 02      | `0.12.0`                    |
+| 04  | [Volume automation](PLAN-04-VOLUME-AUTOMATION.md)             | done        | 01, 02, 03  | `0.13.0`                    |
+| 05  | [Track controls](PLAN-05-TRACK-CONTROLS.md)                   | done        | 02, 04      | `0.14.0`                    |
+| 06A | [Ripple trim and slip](PLAN-06A-RIPPLE-SLIP.md)               | done        | 04, 05      | `0.15.0`                    |
+| 06B | [Keyframe Pen](PLAN-06B-KEYFRAME-PEN.md)                      | done        | 04, 05, 06A | `0.16.0`                    |
+| 07  | [Integration and release](PLAN-07-INTEGRATION-AND-RELEASE.md) | planned     | all         | final gate for `0.16.0`     |
 
 The plan count is 1 orchestrator plus 8 execution plans. Plan 06 split at its own gate before
 coding: `06A` carries the tool state, ripple trim, and slip, and releases as `0.15.0`; `06B` carries

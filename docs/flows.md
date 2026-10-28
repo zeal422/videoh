@@ -181,6 +181,14 @@ Stable hooks used across flows and tests:
   slips both halves by the same delta; a mixed-window group, a text/compound clip, an image, and a
   time-remapped clip refuse with a message. The readout shows the source in/out and the actual
   delta, and `data-in-point` exposes the value for browser proof.
+- **Pen (`P`)** edits the selected clip's automation curve on the timeline. Audio clips expose
+  volume; video, image, text, and compound clips expose opacity. Click the curve to add a point at
+  the interpolated value, drag a dot to change its time and value, Alt-click or press
+  Delete/Backspace to remove one, and use the arrow keys to nudge time by a frame or value by one
+  step. The Pen never moves or trims the clip: body and edge presses only select. A selected clip
+  shows a flat curve under the Pen; without it, opacity appears only when opacity keyframes already
+  exist. A solo video with embedded audio edits opacity with the Pen while its volume dots stay
+  directly draggable. Locked lanes refuse, and every gesture is one undo entry.
 
 ## Edit clips
 
@@ -259,10 +267,12 @@ Stable hooks used across flows and tests:
   twin; the video half stays clean. A solo video with embedded audio shows it, while text, image, and
   compound clips without sound do not (a compound is checked through its sequence). A muted clip keeps
   its curve and dims it, so unmuting reveals the same automation.
-- The curve is a white line above the waveform and below the label and trim handles. It samples
-  `animatedValue` every ~2px, so an eased segment draws its real shape. A selected clip with no curve
-  shows a flat line; an idle clip shows nothing. The plot is inset 8px from the trim handles, and each
-  visible 6px dot sits inside a 12px hit target.
+- The curve is one `AutomationEnvelope` instance per property, a white line above the waveform and
+  below the label and trim handles. It samples `animatedValue` every ~2px, so an eased segment draws
+  its real shape. A selected clip with no volume curve shows a flat line; an idle clip shows nothing.
+  Opacity is the same component on a picture clip, drawn 0..1, and appears without the Pen only when
+  opacity keyframes already exist. The plot is inset 8px from the trim handles, and each visible 6px
+  dot sits inside a 12px hit target.
 - A press on a dot starts no transient until the pointer moves 3px in screen space. A shorter
   press/release is a click. Once the threshold is crossed, vertical movement edits gain in dB
   (converted back to linear and clamped 0..2), horizontal movement edits time (clamped to
@@ -272,8 +282,10 @@ Stable hooks used across flows and tests:
 - Double-clicking the line adds a point at the interpolated value (the first point seeds the curve at
   the click time with the static gain). Alt-click removes a dot on release while under the threshold;
   a moved Alt-press neither removes nor drags. Delete/Backspace on a focused dot removes it, Left/Right
-  nudge one frame, and Up/Down change gain by 0.5 dB. The razor tool makes the whole envelope inert so
-  a razor click still cuts.
+  nudge one frame, and Up/Down change gain by 0.5 dB. Razor, ripple, and slip make the whole envelope
+  inert so the modal tool owns the pointer. The Pen keeps its target curve live: single-click add,
+  crosshair over the line, and a solo video's volume dots remain directly draggable while opacity is
+  the Pen curve.
 - The Clip tab replaces the old linear Audio section with a dB Volume summary: the current level at
   the playhead, mute, the static gain slider, and the shared `KeyframeGraph` on the dB scale. A
   selected video half targets its linked twin and labels which clip is being edited. The Effect
@@ -282,6 +294,32 @@ Stable hooks used across flows and tests:
   at the floor and reads `-inf dB`, and rounding happens only in the formatter. The preview mixer and
   the export schedule still read `animatedValue(clip, 'volume', local)`, so an edit changes the same
   curve the engines play.
+
+## Keyframe Pen
+
+- The Pen is a mode, not a modifier. `P` selects it, the toolbar button shows the pressed state, and
+  `Escape` returns to select only when no gesture is live. The active tool is session state and is
+  not stored in the project.
+- The property is structural: an audio lane or an `audioOnly` clip exposes volume; everything with
+  picture, including text, image, a compound, and a solo video, exposes opacity. A visual clip that
+  carries embedded audio still edits opacity with the Pen; its volume envelope is the Plan 04
+  direct-drag surface.
+- A selected clip shows its curve even with no keyframes, so the first point can be added. A click on
+  the 10px line hit path adds one point at the clicked local time with the curve's interpolated
+  value; an existing point within one frame of the click is replaced at its own time, and a
+  double-click does not add a second point or a second undo entry. A dot drag
+  changes time and value, clamps to the clip and the property's bounds, re-sorts a crossing, and
+  commits one undo entry. Alt-click removes on release while under the 3px threshold; a moved
+  Alt-press neither removes nor drags. Delete/Backspace removes the focused point, Left/Right nudges
+  one frame, Up/Down changes volume by 0.5 dB or opacity by 5%.
+- The Pen never moves or trims. A body drag only selects, an edge drag only selects, and the trim
+  handles fall back to the default cursor. Shift and Ctrl selection modifiers keep working. A locked
+  lane refuses the add, drag, removal and keyboard edits before anything is written. Pointercancel
+  cancels a live drag or a pending Alt-click removal and leaves the document unchanged.
+- The overlay is pointer-transparent except for its dots and line hit path, so empty clip space still
+  selects the clip, the label stays readable, and the z-10 trim handles win any overlap. On a solo
+  video under the Pen the opacity curve is rendered first and the volume dots second, so a volume dot
+  keeps pointer priority while the line belongs to opacity.
 
 ## Markers
 
