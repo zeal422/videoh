@@ -10,7 +10,7 @@ How the editor is verified. Sibling docs: [docs index](README.md) ·
 bun run test            # vitest run — single pass (NOT bare `bun test`)
 bun run test:watch      # watch mode
 bun run test:coverage   # v8 coverage with enforced thresholds
-bun run battery         # scripted 63-step UI battery against a live server
+bun run battery         # scripted 66-step UI battery against a live server
 bun run check           # full gate: format:check → lint → typecheck → test → build
 ```
 
@@ -224,14 +224,17 @@ source-read approach.
 
 ## End-to-end battery
 
-`e2e/battery.sh` drives the real UI through every product feature in 63 steps (public hero and
+`e2e/battery.sh` drives the real UI through every product feature in 66 steps (public hero and
 editor link, then welcome-modal dismissal, sample import plus a real non-bundled file upload, quick-add, a keyboard-only
 insert of a marked source range at the playhead (bin selection, `I`/`O`, `,`, one Ctrl+Z), marquee box
 selection, the welcome modal (Help > What's new opens it; a recorded version stays silent on
 reload), markers (sequence add/drag/navigate/delete + clip add/edit/delete), playback +
 compositing, split/undo/redo, trim, rate stretch on a relinked-shorter asset (the over-consuming
 window recovers, with the clamped span's rate on the badge), duplicate, copy/paste, unlink, ripple
-delete, crossfade, text, captions (an SRT import creating timed flagged clips, then an
+delete, ripple trim (the later clip shifts while a linked audio twin on another track stays), slip
+on a standalone audio clip (the source in point moves while start and duration do not), the Pen
+(a curve click adds one opacity point, one undo removes it, and the clip geometry is unchanged),
+crossfade, text, captions (an SRT import creating timed flagged clips, then an
 export downloading the cues back in start order with the equal-start tiebreak intact,
 plus a VTT download of the same cue list),
 audio plus the reverse switch and a seeded time-remapping curve (the reversed-clip trim's frame
@@ -278,7 +281,7 @@ to mean the child started, NOT that the run passed; it refuses to launch at all 
 log cannot be written. The run's outcome is the terminal
 `BATTERY_EXIT=<code>` line every exit path writes to that log, so a detached caller polls the log for
 it (0 = every step passed). A failed step records `FAIL` and the run continues to a full
-63-result verdict; no step aborts the script (the e06 dirty-timeline guard used to `exit 1`
+66-result verdict; no step aborts the script (the e06 dirty-timeline guard used to `exit 1`
 and turned one effects flake into an INCOMPLETE run, and now returns 1 like every other
 guard). The raw script still runs
 on its own (`BASE_URL=... OUT=results.txt bash e2e/battery.sh`); the runner just adds the lifecycle and
@@ -292,6 +295,9 @@ header, or the app footer) instead of the control — which is how `f03 crossfad
 steps used to fail on a short viewport. Every step scrolls its target into view first (`insp()` for
 Inspector controls, `click_clip()` / `delete_clip()` for clips), which keeps results independent of the
 window height. **When you add a step that clicks or fills an element, scroll it into view first.**
+Project-size edits read the Inspector-scoped spinbuttons (`insp_spinrefs`) because the hidden export
+dialog also contributes numeric inputs, and the relink step scrolls its media card into view and
+requires a new clip before it saves the project.
 
 ### Against the production build
 
@@ -304,10 +310,9 @@ bun run build && bun run start   # standalone server on :3000
 bun run battery                  # reuses the server above and starts nothing
 ```
 
-Recorded at 0.9.0 on 2026-10-22, 0.10.1 on 2026-10-24, 0.10.2 on 2026-10-24, 0.10.3 on
-2026-10-25, and 0.11.0 on 2026-10-26: 63 passed, 0 failed on both the dev server and the standalone
-artifact build. The 0.11.0 runs started at the public hero and completed with terminal
-`BATTERY_EXIT=0`.
+Recorded at 0.9.0 through 0.11.0 at their then-current step count, and at 0.16.1 on 2026-10-28:
+66 passed, 0 failed on both the dev server and the standalone artifact build. The 0.16.1 runs started
+at the public hero and completed with terminal `BATTERY_EXIT=0`.
 
 ### Two trees (A/B)
 

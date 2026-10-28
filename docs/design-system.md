@@ -94,9 +94,9 @@ legal pages.
 - **Screenshot.** The hero uses a real `public/screenshots/editor.png` capture at 1600x1000 with
   `next/image`, `preload`, explicit dimensions, `sizes`, and descriptive alt text. The demo project
   uses the repository's own `public/samples` video, audio, and image, so the media bin shows all
-  three sample assets while the timeline shows sampled filmstrips, waveforms, the Pen tool active
-  on the selected video's opacity curve, and the inspector's opacity keyframe graph, with no
-  third-party credit.
+  three sample assets while the nine-track timeline shows sampled filmstrips, linked A/V badges,
+  the `A2` volume envelope, and the selected `V1` clip's opacity curve, with the Pen active and the
+  inspector's opacity keyframe graph visible. There is no third-party credit.
   Recapture it when the editor chrome changes.
 - **Motion.** Every animation class is `motion-safe:`. The hero rises, clips settle with a stagger, and
   the playhead sweeps once in a loop. Reduced motion leaves the same composition static. There is no

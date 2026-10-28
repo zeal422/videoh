@@ -15,7 +15,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── robots.txt           # allow all plus the sitemap URL
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
-│   ├── battery.sh           # scripted UI battery (63 steps) driven by agent-browser
+│   ├── battery.sh           # scripted UI battery (66 steps) driven by agent-browser
 │   ├── battery.timing.sh    # battery copy that records per-step timing
 │   └── run-battery.sh       # runner: dev server, session cleanup, strict verdict
 ├── docs/                    # this documentation set, including seo.md

@@ -130,6 +130,10 @@ ab() { agent-browser --session "$SESSION" "$@"; }
 snap() { ab snapshot -i -c 2>/dev/null; }
 refs() { snap | grep -E "$1" | grep -oE 'ref=e[0-9]+' | cut -d= -f2; }
 spinrefs() { snap | grep -- '- spinbutton' | grep -oE 'ref=e[0-9]+' | cut -d= -f2; }
+# Inspector-scoped spinbuttons. The global snapshot also lists the hidden export
+# dialog's numeric inputs after that dialog has mounted, so project Width is not
+# the first ref there. Scope the snapshot to the Inspector and dedupe.
+insp_spinrefs() { ab snapshot -i -c -s 'aside[aria-label=Inspector]' 2>/dev/null | grep -- '- spinbutton' | grep -oE 'ref=e[0-9]+' | cut -d= -f2 | awk '!seen[$0]++'; }
 firstref() { refs "$1" | head -1; }
 evaln() { ab eval "$1" 2>/dev/null | tr -d '"'; }
 # Timeline clips only. Counting by aria-label (the old form, `[aria-label^="Clip "]`)
@@ -858,11 +862,11 @@ f06_scopes_fill() {
   # The project width/height spinbuttons the settings step just used (Inspector's
   # project section; the first two spinbuttons in the snapshot at this point).
   local w h
-  w=$(spinrefs | sed -n '1p')
+  w=$(insp_spinrefs | sed -n '1p')
   [ -n "$w" ] || { echo "f06_scopes_fill: no project width spinbutton" >&2; return 1; }
   ab scrollintoview "@$w" >/dev/null 2>&1 && sleeps 0.2
   ab fill "@$w" '1080' >/dev/null && ab press Enter >/dev/null && sleeps 0.6
-  h=$(spinrefs | sed -n '2p')
+  h=$(insp_spinrefs | sed -n '2p')
   [ -n "$h" ] || { echo "f06_scopes_fill: no project height spinbutton" >&2; return 1; }
   ab scrollintoview "@$h" >/dev/null 2>&1 && sleeps 0.2
   ab fill "@$h" '1080' >/dev/null && ab press Enter >/dev/null && sleeps 0.6
@@ -1956,11 +1960,13 @@ f05_gain() {
   # denoise switch, and the tab is component state: it persists across steps and
   # selections. Without switching back, the FIRST role=slider in the Inspector
   # is the Effect Controls Volume row, so the Clip-tab Gain slider this step is
-  # named for was never exercised (the assertion still passed, since Volume also
-  # tops out at 200%). f07_export switches back for the same reason.
+  # named for was never exercised. f07_export switches back for the same reason.
   ab eval 'document.querySelector("[data-testid=inspector-tab-clip]").click()' >/dev/null 2>&1
   sleeps 0.4
-  insp '[role=slider]'
+  # The short battery viewport puts the Gain slider below the fold. Scroll the
+  # NAMED thumb, not the first slider, or the click lands on whatever is painted
+  # at those coordinates (the class the header note describes).
+  insp '[aria-label="Clip gain percent"]'
   # Target by role+name. Radix reads a thumb's accessible name from the THUMB's
   # own props, and shadcn's Slider spread the caller's `aria-label` onto the
   # root, where it named nothing: the snapshot showed the slider unnamed, so this
@@ -1968,7 +1974,9 @@ f05_gain() {
   # thumb, which makes this step the regression proof for the naming fix.
   ab find role slider click --name 'Clip gain percent' >/dev/null 2>&1 || return 1
   ab press End >/dev/null 2>&1 && sleeps 0.4
-  [ "$(evaln 'document.querySelector("aside[aria-label=Inspector]").innerText.includes("200%")')" = "true" ]
+  # The Clip tab shows the gain in dB since 0.13.0 (200% linear reads 6.0 dB),
+  # so assert the slider's own value, not the rendered percentage.
+  [ "$(evaln 'document.querySelector("aside[aria-label=Inspector] [role=slider][aria-label=\"Clip gain percent\"]").getAttribute("aria-valuenow")')" = "200" ]
 }
 
 # ----- F5 reverse + time remapping (the picture-only rows) -----
@@ -3087,7 +3095,11 @@ export_rgb_sums() {
 # ————— settings —————
 settings_width() {
   sleep 0.5
-  local r; r=$(spinrefs | sed -n '1p')
+  # The export round leaves a selection behind, and a selected clip makes the
+  # Inspector show Timing spinbuttons, not Project Settings. Deselect first so
+  # the first two spinbuttons really are Width and Height.
+  ab press Control+Shift+a >/dev/null 2>&1 && sleep 0.4
+  local r; r=$(insp_spinrefs | sed -n '1p')
   [ -n "$r" ] || return 1
   ab scrollintoview "@$r" >/dev/null 2>&1 && sleeps 0.2
   ab fill "@$r" '960' >/dev/null && ab press Enter >/dev/null && sleep 0.8
@@ -3155,14 +3167,21 @@ f02_ratestretch_relinked() {
     clean_relink
     return 1
   }
+  # The media bin is a scroll area and the card can be below the fold on a short
+  # viewport. Scroll it in first, then require a NEW clip: this step runs on a
+  # project that already has clips, so "count >= 1" can pass without adding the
+  # WAV.
+  local before n=0 deadline
+  before=$(clipcount)
+  ab scrollintoview "[data-testid=$item]" >/dev/null 2>&1
   ab click "[data-testid=$item] button[aria-label=\"Add to timeline\"]" >/dev/null 2>&1
-  local n=0 deadline=$((SECONDS + 5))
-  while [ "$n" -lt 1 ] && [ "$SECONDS" -lt "$deadline" ]; do
+  deadline=$((SECONDS + 5))
+  while [ "$n" -le "$before" ] && [ "$SECONDS" -lt "$deadline" ]; do
     n=$(clipcount)
-    [ "$n" -lt 1 ] && sleep 0.25
+    [ "$n" -le "$before" ] && sleep 0.25
   done
-  [ "$n" -ge 1 ] || {
-    echo "f02_ratestretch_relinked: quick-add produced no clip" >&2
+  [ "$n" -gt "$before" ] || {
+    echo "f02_ratestretch_relinked: quick-add produced no new clip (before=$before after=$n)" >&2
     clean_relink
     return 1
   }
@@ -3208,6 +3227,22 @@ f02_ratestretch_relinked() {
   # still hold its 2s window (the relink leaves clips untouched).
   [ "$item" != "none" ] || {
     echo "f02_ratestretch_relinked: the reopened WAV is not offline with a relink button" >&2
+    clean_relink
+    return 1
+  }
+  # The media card can paint before the reopened doc installs its clips. Poll
+  # the clip itself (the same class as f07_open_project's clip-count poll); a
+  # single read here used to race the install on a slow dev server.
+  local reopened="none" deadline=$((SECONDS + 8))
+  while [ "$reopened" = "none" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    reopened=$(evaln '(() => {
+      const c = document.querySelector("[data-testid^=clip-][aria-label^=\"Clip battery-long-\"]");
+      return c ? c.getAttribute("aria-label") : "none";
+    })()')
+    [ "$reopened" = "none" ] && sleep 0.25
+  done
+  [ "$reopened" != "none" ] || {
+    echo "f02_ratestretch_relinked: the reopened project has no WAV clip" >&2
     clean_relink
     return 1
   }
@@ -3321,6 +3356,158 @@ f02_ratestretch_relinked() {
   true
 }
 
+# ----- F12 tool battery: ripple trim, slip, and the keyframe Pen -----
+# The tool plans are unit-tested; this block proves the real pointer routes in
+# the browser. It runs last so its project reset cannot disturb earlier steps.
+# Setup: quick-add two videos and one standalone audio. The videos bring linked
+# audio twins; the standalone audio is trimmed to 12.00-16.00 so slip has source
+# room and is not part of a linked pair.
+f12_setup() {
+  ab find role menuitem click --name 'File' >/dev/null 2>&1 && sleeps 0.4
+  ab find role menuitem click --name 'New Project' >/dev/null 2>&1 && sleeps 0.8
+  ab wait --text 'New project created' --timeout 5000 >/dev/null 2>&1 || {
+    echo "f12: New Project did not confirm" >&2
+    return 1
+  }
+  [ "$(clipcount)" = "0" ] || { echo "f12: New Project left clips behind" >&2; return 1; }
+  ab find role button click --name 'Load sample media' >/dev/null 2>&1 && sleep 2.5
+  [ "$(ab get count '[aria-label="Add to timeline"]')" = "3" ] || {
+    echo "f12: sample media did not load" >&2
+    return 1
+  }
+}
+f12_add_media() { # <name> <count>
+  local name=$1 count=$2 id i=0
+  id=$(evaln "(() => { const c = [...document.querySelectorAll('[data-testid^=media-item-]')].find((e) => e.textContent.includes('$name')); return c ? c.dataset.testid : 'none'; })()")
+  [ "$id" != "none" ] || { echo "f12: media card $name missing" >&2; return 1; }
+  while [ "$i" -lt "$count" ]; do
+    ab scrollintoview "[data-testid=$id]" >/dev/null 2>&1
+    ab click "[data-testid=$id] button[aria-label=\"Add to timeline\"]" >/dev/null 2>&1 || {
+      echo "f12: add $name failed" >&2
+      return 1
+    }
+    sleeps 0.4
+    i=$((i + 1))
+  done
+}
+f12_clip_ranges() {
+  evaln '(() => {
+    const header = (name) => [...document.querySelectorAll("[data-testid^=track-header-]")].find((e) => e.textContent.trim().startsWith(name));
+    const read = (e) => { const m = /from ([\d.]+) to ([\d.]+) seconds/.exec(e.getAttribute("aria-label")); return m ? `${Number(m[1]).toFixed(2)}-${Number(m[2]).toFixed(2)}` : ""; };
+    const lane = (name) => { const h = header(name); return h ? h.dataset.testid.replace("track-header-", "") : ""; };
+    const clips = (name) => { const id = lane(name); return id ? [...document.querySelectorAll(`[data-lane-id="${id}"] [data-testid^=clip-][role=button]`)].map(read) : []; };
+    return `${clips("V1").join("|")}/${clips("A1").join("|")}`;
+  })()'
+}
+f12_ripple() {
+  f12_setup || return 1
+  f12_add_media 'sample-video' 2 || return 1
+  f12_add_media 'sample-audio' 1 || return 1
+  local n=0 deadline=$((SECONDS + 8))
+  while [ "$(clipcount)" -lt 5 ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.25; done
+  [ "$(clipcount)" = "5" ] || { echo "f12: expected 5 clips, got $(clipcount)" >&2; return 1; }
+
+  # Trim the standalone audio to 4s so slip has 4s of source room. It is not
+  # linked, so a slip here cannot be refused by a mixed-window group.
+  click_clip 'sample-audio.mp3 from 12.00' || { echo "f12: standalone audio did not select" >&2; return 1; }
+  ab eval 'document.querySelector("[data-testid=inspector-tab-clip]")?.click()' >/dev/null 2>&1
+  sleeps 0.2
+  fill_timing 12 4 || return 1
+
+  click_clip 'sample-video.mp4 from 0.00 to' || { echo "f12: first video did not select" >&2; return 1; }
+  ab press b >/dev/null 2>&1 && sleeps 0.3
+  local dragged
+  dragged=$(evaln '(() => {
+    const h = [...document.querySelectorAll("[data-testid^=track-header-]")].find((e) => e.textContent.trim().startsWith("V1"));
+    if (!h) return "no-header";
+    const lane = h.dataset.testid.replace("track-header-", "");
+    const c = document.querySelector(`[data-lane-id="${lane}"] [data-testid^=clip-][role=button]`);
+    if (!c) return "no-clip";
+    const m = /from ([\d.]+) to ([\d.]+) seconds/.exec(c.getAttribute("aria-label"));
+    const scale = c.getBoundingClientRect().width / (Number(m[2]) - Number(m[1]));
+    const handle = [...c.querySelectorAll("[aria-label=\"Trim clip end\"]")][0];
+    if (!handle) return "no-handle";
+    const r = handle.getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    const ev = (type, cx, buttons, target) => target.dispatchEvent(new PointerEvent(type, { pointerId: 71, pointerType: "mouse", isPrimary: true, bubbles: true, cancelable: true, composed: true, button: 0, buttons, clientX: cx, clientY: y }));
+    ev("pointerdown", x, 1, handle);
+    ev("pointermove", x - scale / 2, 1, window);
+    ev("pointermove", x - scale, 1, window);
+    ev("pointerup", x - scale, 0, window);
+    return "ok";
+  })()')
+  [ "$dragged" = "ok" ] || { echo "f12: ripple drag failed ($dragged)" >&2; return 1; }
+
+  local ranges
+  ranges=$(f12_clip_ranges)
+  [ "$ranges" = "0.00-5.00|5.00-11.00/0.00-6.00|6.00-12.00|12.00-16.00" ] || {
+    echo "f12: ripple result mismatch ($ranges)" >&2
+    return 1
+  }
+}
+f12_slip() {
+  click_clip 'sample-audio.mp3 from 12.00' || { echo "f12: standalone audio did not select" >&2; return 1; }
+  ab press y >/dev/null 2>&1 && sleeps 0.3
+  local dragged
+  dragged=$(evaln '(() => {
+    const c = document.querySelector("[data-testid^=clip-][role=button][aria-label^=\"Clip sample-audio\"]");
+    if (!c) return "no-clip";
+    const m = /from ([\d.]+) to ([\d.]+) seconds/.exec(c.getAttribute("aria-label"));
+    const scale = c.getBoundingClientRect().width / (Number(m[2]) - Number(m[1]));
+    const r = c.getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    const ev = (type, cx, buttons, target) => target.dispatchEvent(new PointerEvent(type, { pointerId: 72, pointerType: "mouse", isPrimary: true, bubbles: true, cancelable: true, composed: true, button: 0, buttons, clientX: cx, clientY: y }));
+    ev("pointerdown", x, 1, c);
+    ev("pointermove", x - scale / 2, 1, window);
+    ev("pointermove", x - scale, 1, window);
+    ev("pointerup", x - scale, 0, window);
+    return "ok";
+  })()')
+  [ "$dragged" = "ok" ] || { echo "f12: slip drag failed ($dragged)" >&2; return 1; }
+
+  local result
+  result=$(evaln '(() => {
+    const c = document.querySelector("[data-testid^=clip-][role=button][aria-label^=\"Clip sample-audio\"]");
+    const m = /from ([\d.]+) to ([\d.]+) seconds/.exec(c.getAttribute("aria-label"));
+    return `${c.dataset.inPoint}/${Number(m[1]).toFixed(2)}-${Number(m[2]).toFixed(2)}`;
+  })()')
+  awk -v s="$result" 'BEGIN { split(s, a, "/"); split(a[2], b, "-"); exit !(a[1] > 0.98 && a[1] < 1.02 && b[1] == "12.00" && b[2] == "16.00") }' || {
+    echo "f12: slip result mismatch ($result)" >&2
+    return 1
+  }
+}
+f12_pen() {
+  click_clip 'sample-video.mp4 from 0.00 to' || { echo "f12: first video did not select" >&2; return 1; }
+  ab press p >/dev/null 2>&1 && sleeps 0.3
+  local added
+  added=$(evaln '(() => {
+    const c = document.querySelector("[data-testid^=clip-][role=button][aria-label^=\"Clip sample-video.mp4 from 0.00\"]");
+    if (!c) return "no-clip";
+    const hit = c.querySelector("[data-testid=opacity-envelope-hit]");
+    const plot = c.querySelector("[data-testid=opacity-envelope-plot]");
+    if (!hit || !plot) return "no-envelope";
+    const before = c.querySelectorAll("[data-testid^=opacity-dot-]").length;
+    const r = plot.getBoundingClientRect();
+    hit.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true, clientX: r.left + (2 / 5) * r.width, clientY: r.top + 2, detail: 1 }));
+    return String(before);
+  })()')
+  [ "$added" = "0" ] || { echo "f12: expected no starting opacity points ($added)" >&2; return 1; }
+
+  local dots
+  dots=$(evaln '(() => { const c = document.querySelector("[data-testid^=clip-][role=button][aria-label^=\"Clip sample-video.mp4 from 0.00\"]"); return String(c.querySelectorAll("[data-testid^=opacity-dot-]").length); })()')
+  [ "$dots" = "1" ] || { echo "f12: Pen add produced $dots points" >&2; return 1; }
+  ab press Control+z >/dev/null 2>&1 && sleeps 0.4
+  dots=$(evaln '(() => { const c = document.querySelector("[data-testid^=clip-][role=button][aria-label^=\"Clip sample-video.mp4 from 0.00\"]"); return String(c.querySelectorAll("[data-testid^=opacity-dot-]").length); })()')
+  [ "$dots" = "0" ] || { echo "f12: Pen undo left $dots points" >&2; return 1; }
+
+  local label
+  label=$(evaln '(() => { const c = document.querySelector("[data-testid^=clip-][role=button][aria-label^=\"Clip sample-video.mp4 from 0.00\"]"); return c.getAttribute("aria-label"); })()')
+  [ "$label" = "Clip sample-video.mp4 from 0.00 to 5.00 seconds" ] || {
+    echo "f12: Pen changed clip geometry ($label)" >&2
+    return 1
+  }
+}
+
 console_clean() {
   local errs; errs=$(ab errors 2>/dev/null | grep -c "Error" || true)
   [ "${errs:-0}" = "0" ]
@@ -3389,6 +3576,9 @@ step "settings: width change resizes canvas"       settings_width
 step "f06 scopes: waveform tiles the meter canvas on a square project" f06_scopes_fill
 step "f02 rate stretch: relinked-shorter asset recovers" f02_ratestretch_relinked
 step "f06 LUT: an imported .cube grades the monitor" f06_lut
+step "f12 ripple: tail trim shifts the later clip, not the linked audio" f12_ripple
+step "f12 slip: body drag moves the source window, not the clip" f12_slip
+step "f12 pen: click adds an opacity point, one undo removes it" f12_pen
 step "console: zero page errors across battery"    console_clean
 
 passed=$(grep -c '^PASS' "$OUT"); failed=$(grep -c '^FAIL' "$OUT")

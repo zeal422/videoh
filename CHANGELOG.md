@@ -5,6 +5,44 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.16.1] - 2026-10-28
+
+### Changed
+
+- **Public hero capture.** `public/screenshots/editor.png` is a fresh 1600x1000 capture of the full
+  parity demo instead of the default sample project. It shows nine tracks with sampled filmstrips,
+  linked A/V badges, the `A2` volume envelope, the selected `V1` clip's opacity keyframes, the Pen
+  active, and the Effect Controls opacity graph. Source and Captions are hidden, playback is paused,
+  and the playhead sits at 2.7s, matching the Plan 01 capture state. The hero alt text and the
+  design-system description match the new image.
+- **End-to-end coverage.** `e2e/battery.sh` grows from 63 to 66 steps. The new steps reset to a sample
+  project and prove ripple trim (the later clip shifts, the linked audio twin on `A1` does not), slip
+  on a standalone audio clip (the in point moves, start and duration do not), and the Pen (a curve
+  click adds one opacity point, one undo removes it, and the clip geometry is unchanged).
+- **Final parity audit.** The 1600x1000, 1280x800, 1024x768, and 390x844 layouts were checked against
+  the local reference. No open visual gap remains outside the intentionally different media content.
+  The local reference folder is retired.
+
+### Fixed
+
+- The previous hero capture showed the default sample project with the Source monitor visible, while
+  the design-system doc described the parity demo and an opacity graph. The new capture matches the
+  documented state, so the image, alt text, and doc no longer disagree.
+
+### Tests and docs
+
+- The suite stays at 89 files and 1,924 tests. The full `bun run check` passes, coverage is 94.87
+  statements, 90.5 branches, 96.65 functions, and 96.92 lines, and the 66-step battery passes 66/66
+  with terminal `BATTERY_EXIT=0` on both the dev server and the standalone artifact.
+- Four pre-existing battery reds on the short headless viewport are fixed at their cause: the
+  Clip-tab gain step reads the slider's `aria-valuenow` instead of a `200%` label that became a dB
+  readout in 0.13.0, the project-settings steps scope their spinbuttons to the Inspector instead of
+  the hidden export dialog, and the relink step scrolls its media card into view, requires a new
+  clip, and polls for the reopened clip.
+- Docs updated: AGENTS, roadmap, design system, structure, testing, SEO, deployment, the plan index,
+  and Plan 07's audit results. The version atomically moves to `0.16.1` in `package.json`,
+  `src/lib/releases.ts`, and this changelog.
+
 ## [0.16.0] - 2026-10-28
 
 ### Added

@@ -1,6 +1,6 @@
 # PLAN: Editor parity with the reference
 
-Status: in progress
+Status: done
 Branch: `updates`
 Baseline: `0.11.0`, 77 test files, 1,603 tests, 63-step UI battery
 Reference: local only at `.design/editor-parity/editor-target.png` (never committed)
@@ -52,22 +52,23 @@ locally for the duration of this epic and retired when the real editor capture r
 
 ## Plan index
 
-| #   | Plan                                                          | Status      | Depends on  | Release gate                |
-| --- | ------------------------------------------------------------- | ----------- | ----------- | --------------------------- |
-| 00  | [This orchestrator](PLAN-EDITOR-PARITY.md)                    | in progress | none        | none                        |
-| 01  | [Reference and spec](PLAN-01-REFERENCE-AND-SPEC.md)           | done        | 00          | none                        |
-| 02  | [Geometry and chrome](PLAN-02-GEOMETRY-AND-CHROME.md)         | done        | 01          | internal commit, no release |
-| 03  | [Filmstrips](PLAN-03-FILMSTRIPS.md)                           | done        | 01, 02      | `0.12.0`                    |
-| 04  | [Volume automation](PLAN-04-VOLUME-AUTOMATION.md)             | done        | 01, 02, 03  | `0.13.0`                    |
-| 05  | [Track controls](PLAN-05-TRACK-CONTROLS.md)                   | done        | 02, 04      | `0.14.0`                    |
-| 06A | [Ripple trim and slip](PLAN-06A-RIPPLE-SLIP.md)               | done        | 04, 05      | `0.15.0`                    |
-| 06B | [Keyframe Pen](PLAN-06B-KEYFRAME-PEN.md)                      | done        | 04, 05, 06A | `0.16.0`                    |
-| 07  | [Integration and release](PLAN-07-INTEGRATION-AND-RELEASE.md) | planned     | all         | final gate for `0.16.0`     |
+| #   | Plan                                                          | Status | Depends on  | Release gate                |
+| --- | ------------------------------------------------------------- | ------ | ----------- | --------------------------- |
+| 00  | [This orchestrator](PLAN-EDITOR-PARITY.md)                    | done   | none        | none                        |
+| 01  | [Reference and spec](PLAN-01-REFERENCE-AND-SPEC.md)           | done   | 00          | none                        |
+| 02  | [Geometry and chrome](PLAN-02-GEOMETRY-AND-CHROME.md)         | done   | 01          | internal commit, no release |
+| 03  | [Filmstrips](PLAN-03-FILMSTRIPS.md)                           | done   | 01, 02      | `0.12.0`                    |
+| 04  | [Volume automation](PLAN-04-VOLUME-AUTOMATION.md)             | done   | 01, 02, 03  | `0.13.0`                    |
+| 05  | [Track controls](PLAN-05-TRACK-CONTROLS.md)                   | done   | 02, 04      | `0.14.0`                    |
+| 06A | [Ripple trim and slip](PLAN-06A-RIPPLE-SLIP.md)               | done   | 04, 05      | `0.15.0`                    |
+| 06B | [Keyframe Pen](PLAN-06B-KEYFRAME-PEN.md)                      | done   | 04, 05, 06A | `0.16.0`                    |
+| 07  | [Integration and release](PLAN-07-INTEGRATION-AND-RELEASE.md) | done   | all         | `0.16.1` final gate         |
 
 The plan count is 1 orchestrator plus 8 execution plans. Plan 06 split at its own gate before
 coding: `06A` carries the tool state, ripple trim, and slip, and releases as `0.15.0`; `06B` carries
-the keyframe Pen and the generalized automation envelope, and releases as `0.16.0`. Plan 07 targets
-`0.16.0`.
+the keyframe Pen and the generalized automation envelope, and releases as `0.16.0`. Plan 07 is the
+final QA gate, hero capture, and reference retirement, released as `0.16.1` after the owner
+confirmed the patch version.
 
 The version numbers are proposals. The user confirms each one at the gate. The repo rule stands:
 a version bump is one atomic change across `package.json`, `src/lib/releases.ts`, `CHANGELOG.md`,
@@ -75,15 +76,15 @@ the roadmap, and every doc that records the running version.
 
 ## Release map
 
-| Release  | Plans  | User-visible change                                                                |
-| -------- | ------ | ---------------------------------------------------------------------------------- |
-| none     | 01, 02 | Spec, geometry, chrome                                                             |
-| `0.12.0` | 03     | Sampled filmstrips and the matching hero screenshot                                |
-| `0.13.0` | 04     | On-clip volume envelopes and the dB inspector graph                                |
-| `0.14.0` | 05     | Real track solo and lock                                                           |
-| `0.15.0` | 06A    | Real ripple trim and slip                                                          |
-| `0.16.0` | 06B    | The keyframe Pen over the generalized automation envelope                          |
-| final    | 07     | `0.16.0` QA gate, real hero capture, reference retired; post-tag fixes are a patch |
+| Release  | Plans  | User-visible change                                                  |
+| -------- | ------ | -------------------------------------------------------------------- |
+| none     | 01, 02 | Spec, geometry, chrome                                               |
+| `0.12.0` | 03     | Sampled filmstrips and the matching hero screenshot                  |
+| `0.13.0` | 04     | On-clip volume envelopes and the dB inspector graph                  |
+| `0.14.0` | 05     | Real track solo and lock                                             |
+| `0.15.0` | 06A    | Real ripple trim and slip                                            |
+| `0.16.0` | 06B    | The keyframe Pen over the generalized automation envelope            |
+| `0.16.1` | 07     | Final QA gate, real hero capture, reference retired, 66-step battery |
 
 Plan 02 is an internal commit so its geometry and chrome can be reviewed before the filmstrip work
 depends on it. It does not bump the version. Plan 03 completes `0.12.0`.

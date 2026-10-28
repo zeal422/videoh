@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.16.1',
+    date: '2026-10-28',
+    highlights: [
+      'The public hero is a fresh 1600x1000 capture of the full parity demo: nine tracks, filmstrips, linked audio, volume automation, opacity keyframes, and the Pen active',
+      'The end-to-end UI battery grows to 66 steps and now exercises ripple trim, slip, and the keyframe Pen in a real browser',
+      'Ripple trim is verified to shift only later clips on the same track, leaving linked partners on other tracks in place',
+      'The 0.16.0 editing, render, and export paths pass the final release gate; no editing behavior changed in this patch',
+    ],
+  },
+  {
     version: '0.16.0',
     date: '2026-10-28',
     highlights: [
