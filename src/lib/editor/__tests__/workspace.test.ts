@@ -84,9 +84,9 @@ describe('defaults and catalog', () => {
   })
 
   it('defaults to the reference panel shares', () => {
-    // Media is a share of the media+preview upper row; inspector and timeline
-    // are root/left-workspace shares. 32% of the 74% upper row is about 24% of
-    // the full viewport.
+    // Media is a share of the media+preview workspace row; the inspector is a
+    // share of the top row, and the timeline is a vertical share of the stacked
+    // root. 32% of the 74% workspace row is about 24% of the full viewport.
     expect(PANEL_BOUNDS.media.default).toBe(32)
     expect(PANEL_BOUNDS.inspector.default).toBe(26)
     expect(PANEL_BOUNDS.timeline.default).toBe(50)

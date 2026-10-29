@@ -2522,6 +2522,24 @@ panels_collapse() {
   snap | grep -q 'Expand Media panel' # stays collapsed: keeps workspace dirty for reset
 }
 panels_collapse_pair() {
+  # A solo panel has no collapse control: react-resizable-panels needs a
+  # neighbour to absorb the freed space, and a one-panel group has no pivot.
+  # Hide Captions, prove the Timeline chevron is gone, then restore the row.
+  ab find role menuitem click --name 'Window' >/dev/null && sleep 0.3
+  ab find role menuitemcheckbox click --name 'Captions' >/dev/null || {
+    echo "panels: could not hide Captions" >&2; return 1; }
+  sleep 0.5
+  if snap | grep -q 'Collapse Timeline panel'; then
+    echo "panels: solo timeline still offers collapse" >&2
+    return 1
+  fi
+  ab find role menuitem click --name 'Window' >/dev/null && sleep 0.3
+  ab find role menuitemcheckbox click --name 'Captions' >/dev/null || {
+    echo "panels: could not show Captions" >&2; return 1; }
+  sleep 0.5
+  snap | grep -q 'Collapse Timeline panel' || {
+    echo "panels: timeline collapse control missing after Captions returns" >&2
+    return 1; }
   ab find role button click --name 'Collapse Source Monitor panel' >/dev/null && sleep 0.5
   ab find role button click --name 'Collapse Inspector panel' >/dev/null && sleep 0.5
   # BOTH strips must be thin at the same time. Before the fix the Source Monitor
@@ -3542,7 +3560,7 @@ step "f08 ripple: Shift+Delete removes the pasted copy" f08_ripple_delete
 step "menus: all 9 application menus open"         menus_open
 step "menus: View > Snapping toggles off"          menu_snapping
 step "panels: collapse Media panel (strip shown)"  panels_collapse
-step "panels: collapse Source and Inspector (both strips, no reopen)" panels_collapse_pair
+step "panels: solo guard + collapse Source and Inspector" panels_collapse_pair
 step "panels: Window > Reset Workspace Layout"     panels_reset
 step "panels: reset expanded Media again"          panels_expand_after_reset
 step "f08 autosave: reload -> restore session"     f08_autosave

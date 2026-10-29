@@ -65,7 +65,10 @@ export function InspectorPanel({ className }: { className?: string }) {
   const selected = selection ? findClip(doc, selection)?.clip : undefined
   const selectedTrack = selected ? findClip(doc, selected.id)?.track : undefined
   return (
-    <aside aria-label="Inspector" className={cn('flex min-w-0 flex-col bg-card', className)}>
+    <aside
+      aria-label="Inspector"
+      className={cn('flex min-h-0 min-w-0 flex-col bg-card', className)}
+    >
       {selected && selectedTrack ? (
         <ClipPanel key={selected.id} clip={selected} trackKind={selectedTrack.kind} />
       ) : (

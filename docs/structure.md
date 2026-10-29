@@ -124,12 +124,13 @@ src/hooks/
 
 ## `src/lib/`: outside the editor core
 
-````text
+```text
 src/lib/
 ├── releases.ts           # hand-curated release notes for the welcome modal (version-locked to package.json)
 ├── seo.ts                # site constants, canonical, pageMetadata, INDEXABLE_ROUTES, JSON-LD
 ├── analytics.ts          # GoatCounter custom events, click beacon, first-export marker
 └── utils.ts              # shadcn `cn()` class-merge helper
+```
 
 ## `src/lib/editor/` — the editor core
 
@@ -200,10 +201,10 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 89 test files (1924 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 89 test files (1926 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
-````
+```
 
 `src/lib/utils.ts` holds the shadcn `cn()` class-merge helper.
 

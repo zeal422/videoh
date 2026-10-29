@@ -280,6 +280,11 @@ media 376px (23.5% of 1600), inspector 414px (25.9%), and timeline 443px (49.7% 
 height). No value moved, so this table stands. The panel tree is now media/source/preview over
 timeline/captions on the left, with the inspector as the full-height right column.
 
+0.16.2 supersedes the inspector placement: the owner asked for the inspector above the timeline, so
+the current tree is `(media | source | preview | inspector) over (timeline | captions)`. The
+inspector's width and the media/source shares are unchanged; only its height and the timeline's
+width changed.
+
 The Source monitor stays visible by default. The demo project hides it through the existing
 workspace state, exactly as a user would. Do not change the default workspace just to make the
 screenshot easier.

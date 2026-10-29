@@ -96,8 +96,8 @@ legal pages.
   uses the repository's own `public/samples` video, audio, and image, so the media bin shows all
   three sample assets while the nine-track timeline shows sampled filmstrips, linked A/V badges,
   the `A2` volume envelope, and the selected `V1` clip's opacity curve, with the Pen active and the
-  inspector's opacity keyframe graph visible. There is no third-party credit.
-  Recapture it when the editor chrome changes.
+  inspector's opacity keyframe graph visible above the full-width timeline. There is no third-party
+  credit. Recapture it when the editor chrome changes.
 - **Motion.** Every animation class is `motion-safe:`. The hero rises, clips settle with a stagger, and
   the playhead sweeps once in a loop. Reduced motion leaves the same composition static. There is no
   bare animation fallback.
@@ -160,7 +160,8 @@ them:
   hides the slider rather than clipping the transport buttons.
 - **Responsive shell.** At ≥768 px the shell is the resizable panel workspace; below 768 px it falls
   back to a fixed stacked layout. Panel sizes, collapsed state, and visibility persist via
-  `workspace.ts`.
+  `workspace.ts`. A panel alone in its row has no collapse control because the freed space has no
+  neighbour to absorb it; the Window menu hides it instead.
 - **The Source monitor is one of the six workspace panels** (`panel-source`, the upper row is
   `media | source | preview`), built exactly like the inspector: a `PanelShell` plus a
   `HandleWithReset` inside the upper `ResizablePanelGroup`. The Source Monitor sits before the
@@ -174,16 +175,17 @@ them:
   singleton `<video data-testid="source-preview">`; a still renders as
   `<img data-testid="source-image">` inside the same `aspect-video` black host instead, because a
   `<video>` cannot decode a PNG (left alone it showed a black box with a demuxer error).
-- **The bottom row is timeline plus captions, inside the left workspace.** The Captions panel docks
+- **The bottom row is timeline plus captions, below the top row.** The Captions panel docks
   to the right of the timeline (`panel-captions`, `side="bottom"`, same flex chain as every other
   panel). The timeline fills the horizontal remainder with no stored width (like the Program Monitor
   upstairs); only the captions width persists, while `sizes.timeline` keeps meaning the bottom
-  group's vertical share. The root right column is the inspector, full height, so the timeline can
-  span under the media panel and end at the inspector edge. It follows the flex-chain rule above.
-- **Reference geometry.** The desktop panel tree is `(media | source | preview) over (timeline |
-captions)` on the left, with the inspector as a full-height right column. Panel defaults are
-  `PANEL_BOUNDS` shares of their own group: media 32 (about 24% of the full viewport beside the 26%
-  inspector), source 24, inspector 26 (root), timeline 50 (left workspace height), captions 24.
+  group's vertical share. The inspector shares the top row with the workspace, so the bottom row
+  spans the full width below it; the timeline fills that row and gives up width only while Captions
+  is open. It follows the flex-chain rule above.
+- **Reference geometry.** The desktop panel tree is `(media | source | preview | inspector) over
+(timeline | captions)`, with the inspector in the top row. Panel defaults are `PANEL_BOUNDS` shares
+  of their own group: media 32 (about 24% of the full viewport beside the 26% inspector), source 24,
+  inspector 26 (top row), timeline 50 (stacked workspace height), captions 24.
   Track rows are 44px video, 40px audio, and 36px text, with a 168px sticky header. The header holds
   the kind icon, the truncated name, and three 24px controls: visibility/mute on video and text lanes,
   or `M`/`S` text buttons on audio lanes, plus the lock button everywhere. The clip count and a header

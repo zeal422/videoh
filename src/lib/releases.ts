@@ -22,6 +22,18 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.16.2',
+    date: '2026-10-29',
+    highlights: [
+      'The Inspector now sits above the timeline instead of spanning the full editor height, so the bottom row spans the full width; the timeline fills it and only gives up width while Captions is open',
+      'Clip and Effect Controls scroll inside the Inspector, so every section stays reachable on a shorter window',
+      'The Inspector keeps its left resize handle, collapse strip, persisted width, and Window menu toggle; panel sizes and Reset Workspace Layout behave as before',
+      'A panel alone in its row no longer offers collapse, so hiding Captions before collapsing the Timeline cannot throw; a persisted collapse clears when a panel becomes solo',
+      'Short sequences now paint the ruler and track lanes all the way to the timeline right edge instead of ending in a black strip',
+      'The public hero is recaptured at 1600x1000 with the new stacked layout, the nine-track parity demo, and the opacity graph visible',
+    ],
+  },
+  {
     version: '0.16.1',
     date: '2026-10-28',
     highlights: [

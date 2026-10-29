@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { playbackRef } from '../playback/engine-ref'
 import { isTransientActive, useEditorStore } from '../store'
+import { useWorkspaceStore } from '../workspace-store'
 import { downloadBlob } from '../export/mp4'
 import {
   createClip,
@@ -35,6 +36,7 @@ vi.mock('../export/mp4', async (importOriginal) => {
  */
 
 let h: MockHarness
+const initialWorkspace = useWorkspaceStore.getInitialState()
 
 beforeEach(() => {
   h = installBrowserMocks()
@@ -51,6 +53,7 @@ beforeEach(() => {
   }))
   document.body.innerHTML = ''
   useEditorStore.setState(useEditorStore.getInitialState())
+  useWorkspaceStore.setState(initialWorkspace, true)
 })
 
 afterEach(() => {
@@ -510,7 +513,9 @@ describe('EditorShell bottom-row wiring (static)', () => {
     // summing far under 100 gets normalized and the strip breaks at
     // minSize, while an auto member absorbs the slack instead).
     expect(src).toContain('hidden.timeline || collapsed.timeline ? undefined : sizes.captions')
-    expect(src).toContain('if (!hidden.timeline && !hidden.captions) {')
+    expect(src).toMatch(
+      /if \(\s*!hidden\.timeline &&\s*!hidden\.captions &&\s*!collapsed\.timeline &&\s*!collapsed\.captions\s*\)/,
+    )
     // Persisted bottom collapse is enforced post-layout: a collapsed mount
     // cannot survive nested-group init, so the shells mount expanded and
     // the enforcer collapses flagged panels once layout settles. It reruns
@@ -550,23 +555,52 @@ describe('EditorShell reference panel tree', () => {
     expect(screen.getByTestId('preview-canvas')).toBeInTheDocument()
   })
 
-  it('keeps media in the upper row and the inspector as the root right column', () => {
+  it('hides collapse for a panel alone in its row and clears a stale collapse', async () => {
+    window.localStorage.setItem('releases:lastSeen', CURRENT_VERSION)
+    const workspace = useWorkspaceStore.getState()
+    useWorkspaceStore.setState({
+      ...workspace,
+      hidden: { ...workspace.hidden, captions: true },
+      collapsed: { ...workspace.collapsed, timeline: true },
+    })
+    render(<EditorShell />)
+
+    expect(
+      screen.queryByRole('button', { name: 'Collapse Timeline panel' }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Expand Timeline panel' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Collapse Media panel' })).toBeInTheDocument()
+    await waitFor(() => expect(useWorkspaceStore.getState().collapsed.timeline).toBe(false))
+  })
+
+  it('stacks the inspector above the bottom row', () => {
     const src = readFileSync('src/components/editor/EditorShell.tsx', 'utf8')
-    const workspace = src.indexOf('id="panel-workspace"')
-    const inspector = src.indexOf('id="inspector"')
     const upper = src.indexOf('id="panel-upper"')
+    const workspace = src.indexOf('id="panel-workspace"')
     const media = src.indexOf('id="media"')
     const preview = src.indexOf('id="panel-preview"')
+    const inspector = src.indexOf('id="inspector"')
     const bottom = src.indexOf('id="panel-bottom"')
-    expect(workspace).toBeGreaterThan(-1)
-    expect(upper).toBeGreaterThan(workspace)
-    expect(media).toBeGreaterThan(upper)
+    expect(upper).toBeGreaterThan(-1)
+    expect(workspace).toBeGreaterThan(upper)
+    expect(media).toBeGreaterThan(workspace)
     expect(preview).toBeGreaterThan(media)
-    expect(bottom).toBeGreaterThan(upper)
-    // The inspector renders after the whole left workspace panel, so it spans
-    // the full height instead of sharing the upper row.
-    expect(inspector).toBeGreaterThan(bottom)
-    expect(src).toContain('!hidden.media || !hidden.preview || !hidden.source')
+    expect(inspector).toBeGreaterThan(preview)
+    expect(bottom).toBeGreaterThan(inspector)
+    // The root stacks the top row over the timeline; the inspector shares the
+    // top row with the workspace column instead of spanning the full height.
+    expect(src).toMatch(/direction="vertical"[\s\S]*?id="panel-upper"/)
+    expect(src).toMatch(
+      /id="panel-upper"[\s\S]*?direction="horizontal"[\s\S]*?id="panel-workspace"/,
+    )
+    // The shorter top-row height must keep every inspector section reachable.
+    const inspectorPanel = readFileSync('src/components/editor/InspectorPanel.tsx', 'utf8')
+    expect(inspectorPanel).toContain('editor-scroll')
+    expect(inspectorPanel).toContain('overflow-y-auto')
+    // A panel alone in its row has no collapse control; the counts guard both
+    // the shared-row chevron and the library's one-panel collapse path.
+    expect(src).toContain('collapsible={upperRowPanelCount > 1}')
+    expect(src).toContain('collapsible={bottomRowPanelCount > 1}')
     // Hiding the preview removes the auto remainder and normalizes the fixed
     // panels, so the layout observer must not persist those forced sizes.
     expect(src).toMatch(/handleUpperRowLayout[\s\S]*?if \(hidden\.preview\) return/)

@@ -42,13 +42,15 @@ import { toast } from '@/hooks/use-toast'
 /**
  * App shell — Premiere-style workspace layout:
  *
- *   menubar (top) · toolbar · [ (media | source | preview) over (timeline | captions) | inspector ] · status bar
+ *   menubar (top) · toolbar · [ (media | source | preview | inspector) over (timeline | captions) ] · status bar
  *
  * Desktop (≥768px): every region is a resizable, collapsible panel
  * (react-resizable-panels). Sizes persist to localStorage; the Window menu
  * shows/hides panels; double-clicking a resize handle resets its neighbor.
- * Mobile: fixed stacked layout (panels fall back to their pre-workspace form).
- * The status bar acts as the always-pinned footer of the application.
+ * The inspector shares the top row, so the timeline spans the full width
+ * below it. Mobile: fixed stacked layout (panels fall back to their
+ * pre-workspace form). The status bar acts as the always-pinned footer of the
+ * application.
  */
 export function EditorShell() {
   const [exportOpen, setExportOpen] = useState(false)
@@ -65,6 +67,9 @@ export function EditorShell() {
   const collapsed = useWorkspaceStore((s) => s.collapsed)
   const setSize = useWorkspaceStore((s) => s.setSize)
   const resetWorkspace = useWorkspaceStore((s) => s.resetWorkspace)
+  const upperRowPanelCount =
+    Number(!hidden.media) + Number(!hidden.source) + Number(!hidden.preview)
+  const bottomRowPanelCount = Number(!hidden.timeline) + Number(!hidden.captions)
 
   // Imperative handles for "double-click handle → reset neighbor to default".
   const panelRefs = useRef<Partial<Record<PanelId, ImperativePanelHandle | null>>>({})
@@ -92,6 +97,16 @@ export function EditorShell() {
       // The timeline's height lives on the bottom group panel (its own size
       // is a horizontal share now), so it resets with the group below.
       if (id === 'timeline') continue
+      // A panel that was alone in its row cannot be resized until its hidden
+      // siblings mount again. Calling resize now hits the library's one-panel
+      // pivot and throws; the remounted siblings supply the defaults.
+      const wasSolo =
+        id === 'media' || id === 'source'
+          ? upperRowPanelCount < 2
+          : id === 'captions'
+            ? bottomRowPanelCount < 2
+            : false
+      if (wasSolo) continue
       const bounds = PANEL_BOUNDS[id as keyof typeof PANEL_BOUNDS]
       const ref = panelRefs.current[id]
       if (!bounds || !ref) continue
@@ -99,14 +114,14 @@ export function EditorShell() {
       ref.resize(bounds.default)
     }
     bottomPanelRef.current?.resize(PANEL_BOUNDS.timeline.default)
-  }, [resetWorkspace])
+  }, [bottomRowPanelCount, resetWorkspace, upperRowPanelCount])
 
   // Layout observers. Only persist while the measured panel is actually
   // rendered — otherwise group indices shift and would store the wrong panel.
-  const handleRootLayout = useCallback(
+  const handleTopRowLayout = useCallback(
     (layout: number[]) => {
-      // Root: left workspace | inspector. The inspector is always second when
-      // it is rendered.
+      // Top row: workspace | inspector. The inspector is always second when it
+      // is rendered.
       if (!hidden.inspector && layout[1] !== undefined) setSize('inspector', layout[1])
     },
     [hidden.inspector, setSize],
@@ -132,12 +147,14 @@ export function EditorShell() {
       // The timeline fills the remainder (like the preview upstairs) and only
       // the captions width is stored — and only while both panels share the
       // row. Alone, a panel fills the group past its maxSize, so recording
-      // that constrained size would persist a lie.
-      if (!hidden.timeline && !hidden.captions) {
+      // that constrained size would persist a lie. A collapsed neighbour is
+      // the same lie: its survivor takes the freed width, and persisting that
+      // would reopen the panel at its maximum.
+      if (!hidden.timeline && !hidden.captions && !collapsed.timeline && !collapsed.captions) {
         if (layout[1] !== undefined) setSize('captions', layout[1])
       }
     },
-    [hidden.captions, hidden.timeline, setSize],
+    [collapsed.captions, collapsed.timeline, hidden.captions, hidden.timeline, setSize],
   )
   /** Double-click on the vertical timeline handle resets the bottom height. */
   const resetBottomRow = useCallback(() => {
@@ -410,22 +427,24 @@ export function EditorShell() {
       {isMobile ? (
         <CompactLayout />
       ) : (
-        /* Root: left workspace | inspector */
+        /* Root: top row (workspace | inspector) over the bottom row
+           (timeline | captions). The inspector shares the top row, so the
+           timeline spans the full width below it. */
         <ResizablePanelGroup
-          direction="horizontal"
+          direction="vertical"
           className="min-h-0 flex-1"
-          onLayout={handleRootLayout}
+          onLayout={handleTimelineLayout}
         >
-          {/* Left workspace: upper row (media | source | preview) over the
-              bottom row (timeline | captions). The inspector is a full-height
-              root column, so the timeline can span under the media panel. */}
-          <ResizablePanel id="panel-workspace" order={1} className="min-h-0 min-w-0">
+          <ResizablePanel id="panel-upper" order={1} className="min-h-0">
             <ResizablePanelGroup
-              direction="vertical"
+              direction="horizontal"
               className="min-h-0"
-              onLayout={handleTimelineLayout}
+              onLayout={handleTopRowLayout}
             >
-              <ResizablePanel id="panel-upper" order={1} className="min-h-0">
+              {/* Workspace column: the upper row (media | source | preview).
+                  The inspector's width comes out of this row, not the timeline
+                  below. */}
+              <ResizablePanel id="panel-workspace" order={1} className="min-h-0 min-w-0">
                 {showUpperRow ? (
                   /* Upper row: media pool | source monitor | program monitor */
                   <ResizablePanelGroup
@@ -445,6 +464,7 @@ export function EditorShell() {
                           defaultSize={sizes.media}
                           registerRef={registerRef}
                           className="bg-card"
+                          collapsible={upperRowPanelCount > 1}
                         >
                           <MediaBin heading={false} className="min-h-0 flex-1" />
                         </PanelShell>
@@ -467,6 +487,7 @@ export function EditorShell() {
                         defaultSize={sizes.source}
                         registerRef={registerRef}
                         className="bg-card"
+                        collapsible={upperRowPanelCount > 1}
                       >
                         <SourcePanel className="flex-1" />
                       </PanelShell>
@@ -492,96 +513,97 @@ export function EditorShell() {
                 )}
               </ResizablePanel>
 
-              {(!hidden.timeline || !hidden.captions) && (
+              {!hidden.inspector && (
                 <>
                   <HandleWithReset
-                    ariaLabel="Resize timeline panel (double-click to reset)"
-                    onReset={resetBottomRow}
+                    ariaLabel="Resize inspector panel (double-click to reset)"
+                    onReset={() => resetPanel('inspector')}
                   />
-                  <ResizablePanel
-                    id="panel-bottom"
+                  <PanelShell
+                    id="inspector"
+                    title="Inspector"
+                    side="right"
                     order={2}
-                    ref={bottomPanelRef}
-                    defaultSize={sizes.timeline}
-                    className="min-h-0"
+                    minSize={PANEL_BOUNDS.inspector.min}
+                    maxSize={PANEL_BOUNDS.inspector.max}
+                    defaultSize={sizes.inspector}
+                    registerRef={registerRef}
+                    className="bg-card"
                   >
-                    {/* Bottom row: timeline | captions. The timeline fills the
-                        remainder horizontally (no defaultSize, like the preview
-                        upstairs); sizes.timeline keeps meaning the bottom
-                        group's vertical share. */}
-                    <ResizablePanelGroup
-                      direction="horizontal"
-                      className="min-h-0"
-                      onLayout={handleBottomRowLayout}
-                    >
-                      {!hidden.timeline && (
-                        <PanelShell
-                          id="timeline"
-                          title="Timeline"
-                          side="bottom"
-                          order={1}
-                          minSize={PANEL_BOUNDS.timeline.min}
-                          registerRef={registerRef}
-                        >
-                          <TimelinePanel />
-                        </PanelShell>
-                      )}
-                      {!hidden.timeline && !hidden.captions && (
-                        <HandleWithReset
-                          ariaLabel="Resize captions panel (double-click to reset)"
-                          onReset={() => resetPanel('captions')}
-                        />
-                      )}
-                      {!hidden.captions && (
-                        <PanelShell
-                          id="captions"
-                          title="Captions"
-                          side="bottom"
-                          order={2}
-                          minSize={PANEL_BOUNDS.captions.min}
-                          // No maxSize: either panel collapsing must fit
-                          // inside the other, and a cap refuses the collapse
-                          // (leaving a dead chevron and a persisted lie).
-                          // Alone, the panel fills the row instead of its
-                          // stored width (mirrors the timeline above). With a
-                          // collapsed timeline it mounts auto for the same
-                          // reason: a fixed pair summing far under 100 gets
-                          // normalized and the 2.5 strip breaks at minSize,
-                          // while an auto member absorbs the slack instead.
-                          defaultSize={
-                            hidden.timeline || collapsed.timeline ? undefined : sizes.captions
-                          }
-                          registerRef={registerRef}
-                        >
-                          <CaptionsPanel />
-                        </PanelShell>
-                      )}
-                    </ResizablePanelGroup>
-                  </ResizablePanel>
+                    <InspectorPanel className="flex-1" />
+                  </PanelShell>
                 </>
               )}
             </ResizablePanelGroup>
           </ResizablePanel>
 
-          {!hidden.inspector && (
+          {(!hidden.timeline || !hidden.captions) && (
             <>
               <HandleWithReset
-                ariaLabel="Resize inspector panel (double-click to reset)"
-                onReset={() => resetPanel('inspector')}
+                ariaLabel="Resize timeline panel (double-click to reset)"
+                onReset={resetBottomRow}
               />
-              <PanelShell
-                id="inspector"
-                title="Inspector"
-                side="right"
+              <ResizablePanel
+                id="panel-bottom"
                 order={2}
-                minSize={PANEL_BOUNDS.inspector.min}
-                maxSize={PANEL_BOUNDS.inspector.max}
-                defaultSize={sizes.inspector}
-                registerRef={registerRef}
-                className="bg-card"
+                ref={bottomPanelRef}
+                defaultSize={sizes.timeline}
+                className="min-h-0"
               >
-                <InspectorPanel className="flex-1" />
-              </PanelShell>
+                {/* Bottom row: timeline | captions. The timeline fills the
+                    remainder horizontally (no defaultSize, like the preview
+                    upstairs); sizes.timeline keeps meaning the bottom group's
+                    vertical share. */}
+                <ResizablePanelGroup
+                  direction="horizontal"
+                  className="min-h-0"
+                  onLayout={handleBottomRowLayout}
+                >
+                  {!hidden.timeline && (
+                    <PanelShell
+                      id="timeline"
+                      title="Timeline"
+                      side="bottom"
+                      order={1}
+                      minSize={PANEL_BOUNDS.timeline.min}
+                      registerRef={registerRef}
+                      collapsible={bottomRowPanelCount > 1}
+                    >
+                      <TimelinePanel />
+                    </PanelShell>
+                  )}
+                  {!hidden.timeline && !hidden.captions && (
+                    <HandleWithReset
+                      ariaLabel="Resize captions panel (double-click to reset)"
+                      onReset={() => resetPanel('captions')}
+                    />
+                  )}
+                  {!hidden.captions && (
+                    <PanelShell
+                      id="captions"
+                      title="Captions"
+                      side="bottom"
+                      order={2}
+                      minSize={PANEL_BOUNDS.captions.min}
+                      // No maxSize: either panel collapsing must fit inside
+                      // the other, and a cap refuses the collapse (leaving a
+                      // dead chevron and a persisted lie). Alone, the panel
+                      // fills the row instead of its stored width (mirrors the
+                      // timeline above). With a collapsed timeline it mounts
+                      // auto for the same reason: a fixed pair summing far
+                      // under 100 gets normalized and the 2.5 strip breaks at
+                      // minSize, while an auto member absorbs the slack instead.
+                      defaultSize={
+                        hidden.timeline || collapsed.timeline ? undefined : sizes.captions
+                      }
+                      registerRef={registerRef}
+                      collapsible={bottomRowPanelCount > 1}
+                    >
+                      <CaptionsPanel />
+                    </PanelShell>
+                  )}
+                </ResizablePanelGroup>
+              </ResizablePanel>
             </>
           )}
         </ResizablePanelGroup>

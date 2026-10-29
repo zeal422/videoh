@@ -42,7 +42,7 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/u
 - **Save and load project JSON.** `.veproj.json` files preserve media references; object URLs do not survive.
 - **Autosave and restore.** Debounced localStorage writes with a restore-or-discard banner on the next visit.
 - **Premiere-style menu bar.** File, Edit, Clip, Sequence, Marker, Graphics, View, Window, and Help, driven by a pure, unit-tested menu model. Items whose preconditions are unmet render disabled, so there are no dead entries. A compact full screen button sits beside the version label.
-- **Resizable workspace.** The Media, Source Monitor, Program Monitor, Inspector, Timeline, and Captions panels are resizable and collapsible. Sizes, collapsed strips, and panel visibility persist across sessions. The Window menu toggles panels, double-clicking a resize handle resets its neighbor, and small screens fall back to a fixed stacked layout.
+- **Resizable workspace.** The Media, Source Monitor, Program Monitor, Inspector, Timeline, and Captions panels are resizable, and panels that share a row can collapse to a narrow strip. A panel alone in its row has no collapse control; use the Window menu to hide it. The Inspector shares the top row, so the bottom row spans the full width. The timeline fills that row and gives up width only while Captions is open. Sizes, collapsed strips, and panel visibility persist across sessions. The Window menu toggles panels, double-clicking a resize handle resets its neighbor, and small screens fall back to a fixed stacked layout.
 - **Appearance palettes.** View > Appearance offers Default and thirteen tinted dark palettes, ordered by hue from Garnet to Orchid, in a two-column picker that scrolls on short windows. A selection applies through the CSS token layer and persists per browser under its own storage key, so Reset Workspace Layout cannot change it. Clip kinds, markers, the monitor, scopes, and the boot splash keep their fixed colors.
 
 ## Quick start
@@ -353,7 +353,7 @@ The pure state modules run in a plain Node environment with no browser. The brow
 
 The public site at `/` is a server-rendered hero and information page. It shares the editor's dark tokens but never imports the editor store or browser engines. `/editor` is the client-only editor boot. The public pages live under `src/app/(site)`. The sitemap and social image are route files in `src/app`, and the site constants live in `src/lib/seo.ts`.
 
-Current state: **1924 tests across 89 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the Node-testable state modules. `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
+Current state: **1926 tests across 89 files, all passing**. Coverage is enforced at 70/60/75/70 (statements/branches/functions/lines) over the Node-testable state modules. `menus.ts` and `workspace.ts` are at 100% across all metrics. [docs/testing.md](docs/testing.md) has the file-by-file inventory, the mocked browser harness, and the E2E battery.
 
 ## Menu bar and workspace
 
@@ -371,7 +371,7 @@ Item availability comes from the editor context. Undo and Redo follow history de
 On screens at least 768px wide, the shell is a resizable panel workspace using `react-resizable-panels` through the shadcn Resizable wrappers:
 
 - **Resize.** Drag any handle. Keyboard resizing works out of the box: focus a handle and use the arrow keys. Sizes persist to `localStorage`, debounced while dragging.
-- **Collapse.** Each panel header has a chevron. Dragging a handle past the panel minimum also collapses. A collapsed panel becomes a slim strip with its rotated title; click it to expand again.
+- **Collapse.** A panel that shares its row with another panel has a chevron. Dragging a handle past the panel minimum also collapses. A collapsed panel becomes a slim strip with its rotated title; click it to expand again. A panel alone in its row has no chevron: there is no neighbour to take the freed space, so use the Window menu to hide it.
 - **Show and hide.** The Window menu checkboxes close and reopen panels entirely.
 - **Reset.** Double-click a resize handle to reset its neighbor to the default size, or use Window › Reset Workspace Layout. It is enabled whenever the layout deviates from the default.
 
@@ -451,7 +451,7 @@ src/
 │   ├── export/
 │   │   ├── offline.ts           # pure frame/audio export plan (Node-testable)
 │   │   └── mp4.ts               # WebCodecs MP4 pipeline, downloadBlob
-│   └── __tests__/               # 89 test files (1924 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+│   └── __tests__/               # 89 test files (1926 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ├── app/
 │   ├── (site)/                  # public hero, About, Privacy, Terms, Contact, site layout
 │   ├── editor/page.tsx          # server wrapper with noindex metadata around EditorBoot

@@ -103,6 +103,12 @@ reset-layout tests must still pass. The Source panel keeps its current default a
 
 ### Panel tree
 
+Superseded at 0.16.2: the owner asked for the inspector above the timeline, so the current tree is
+`(media | source | preview | inspector) over (timeline | captions)`. The inspector shares the top
+row with the workspace, the bottom row spans the full width below it, the timeline fills that row
+beside Captions, and the inspector scrolls inside the shorter top-row height. The text below is kept
+as the 0.12.0 record.
+
 The reference's proportions come partly from the panel tree, not only from the percentage values:
 
 - Media sits in the upper row, not as a full-height root column.

@@ -5,6 +5,47 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.16.2] - 2026-10-29
+
+### Changed
+
+- **Inspector above the timeline.** The desktop workspace now stacks the inspector in the top row
+  beside the media, source, and program monitor panels. The timeline and Captions share the
+  full-width bottom row, so the inspector no longer shortens every timeline lane. The inspector's
+  height follows the top row, and its Clip and Effect Controls content scrolls inside the panel.
+  Its left resize handle, collapse strip, persisted width, Window menu toggle, and Reset Workspace
+  Layout behavior are unchanged. The timeline gives up width only while Captions is open.
+- **Hero capture.** `public/screenshots/editor.png` is recaptured at 1600x1000 from the standalone
+  build with the new stacked layout. It keeps the nine-track parity demo, the selected `V1` clip's
+  opacity graph, the Pen active, and the `A2` volume envelope. The hero alt text and the design
+  system description now name the inspector above the full-width timeline.
+
+### Fixed
+
+- **Solo panel collapse crash.** A panel alone in its row no longer offers a collapse control and no
+  longer calls the library's one-panel collapse path. That path threw
+  `Previous layout not found for panel index -1` when the Timeline was collapsed with Captions
+  hidden. A persisted collapsed flag is cleared when a panel becomes solo, and the bottom-row
+  observer no longer stores a forced Captions width while either bottom panel is collapsed.
+- **Short timeline lanes.** When the sequence is shorter than the timeline panel, the ruler and the
+  track lane backgrounds now extend to the visible right edge instead of ending in a black strip.
+  The content width is raised to the measured lane viewport, so a wide window fills correctly at
+  every zoom level.
+
+### Tests and docs
+
+- The suite moves to 89 files and 1,926 tests. The layout lock now asserts the inspector renders
+  between the top-row workspace and the full-width bottom row, that the inspector keeps its scroll
+  containers, and that a solo panel loses its collapse control while a stale collapse flag clears.
+  The timeline geometry test stubs a wide viewport and asserts the lane and content widths reach it.
+- `bun run check` passes. Coverage is 94.87 statements, 90.47 branches, 96.65 functions, and 96.92
+  lines. The full dev and standalone artifact batteries pass 66/66 with terminal `BATTERY_EXIT=0`.
+- Docs updated: README, architecture, design system, testing, deployment, roadmap, the parity index
+  and its decision log, and the Plan 01 and Plan 02 notes that record the superseded inspector
+  placement.
+  The version atomically moves to `0.16.2` in `package.json`, `src/lib/releases.ts`, and this
+  changelog.
+
 ## [0.16.1] - 2026-10-28
 
 ### Changed

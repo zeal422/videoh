@@ -19,6 +19,9 @@ import { useWorkspaceStore } from '@/lib/editor/workspace-store'
  * minimum) collapses the panel to a slim strip that shows the title rotated
  * (vertical panels) or inline (bottom panel); clicking it expands the panel
  * again. Collapse/expand state lives in the workspace store and is persisted.
+ * A panel alone in its row is not collapsible: a one-panel group always fills
+ * and has no pivot for the library's collapse math. The Window menu hides a
+ * solo panel instead.
  *
  * A collapsible panel only collapses cleanly when the space it frees can be
  * absorbed by the panel to its right: `react-resizable-panels` flows the
@@ -43,6 +46,7 @@ export function PanelShell({
   children,
   registerRef,
   className,
+  collapsible = true,
 }: {
   id: PanelId
   title: string
@@ -58,6 +62,13 @@ export function PanelShell({
   children: React.ReactNode
   registerRef?: (id: PanelId, ref: ImperativePanelHandle | null) => void
   className?: string
+  /**
+   * False when this panel is alone in its row. The layout library needs a
+   * neighbour to absorb the freed space; a one-panel group always fills, and
+   * its collapse math has no pivot. A solo panel is hidden through the Window
+   * menu instead.
+   */
+  collapsible?: boolean
 }) {
   const collapsed = useWorkspaceStore((s) => s.collapsed[id])
   const setCollapsed = useWorkspaceStore((s) => s.setCollapsed)
@@ -65,8 +76,10 @@ export function PanelShell({
   // Tracks the previous store value so the imperative call only runs on change
   // (calling collapse() during mount with a persisted collapsed state is a no-op).
   const prevCollapsed = useRef<boolean | null>(null)
+  // A solo panel mounts expanded even if an old layout persisted it collapsed.
+  const effectiveCollapsed = collapsible && collapsed
   // Mount directly at the collapsed size when restored collapsed — no flash.
-  const initialSize = collapsed ? COLLAPSED_SIZE_PCT : defaultSize
+  const initialSize = effectiveCollapsed ? COLLAPSED_SIZE_PCT : defaultSize
 
   useEffect(() => {
     registerRef?.(id, panelRef.current)
@@ -74,6 +87,13 @@ export function PanelShell({
   }, [id, registerRef])
 
   useEffect(() => {
+    if (!collapsible) {
+      // A solo panel has no neighbour to receive its freed space. Keep the
+      // persisted flag honest and never call the library's collapse/expand.
+      if (collapsed) setCollapsed(id, false)
+      prevCollapsed.current = false
+      return
+    }
     if (prevCollapsed.current === collapsed) return
     // On the mount pass the panel already mounts at the right size via
     // `initialSize`, so there is nothing to reconcile, and the library has no
@@ -92,7 +112,7 @@ export function PanelShell({
     // and correct ours, or the store claims a collapse that never happened.
     const actuallyCollapsed = panelRef.current?.isCollapsed() === true
     if (actuallyCollapsed !== collapsed) setCollapsed(id, actuallyCollapsed)
-  }, [collapsed, id, setCollapsed])
+  }, [collapsed, collapsible, id, setCollapsed])
 
   const expand = () => {
     setCollapsed(id, false)
@@ -114,14 +134,14 @@ export function PanelShell({
       ref={panelRef}
       id={`panel-${id}`}
       order={order}
-      collapsible
+      collapsible={collapsible}
       collapsedSize={COLLAPSED_SIZE_PCT}
       minSize={minSize}
       maxSize={maxSize}
       defaultSize={initialSize}
       className={cn('min-h-0 min-w-0', className)}
     >
-      {collapsed ? (
+      {effectiveCollapsed ? (
         <button
           type="button"
           onClick={expand}
@@ -150,16 +170,18 @@ export function PanelShell({
             </h2>
             <div className="flex items-center gap-0.5">
               {headerActions}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-5"
-                aria-label={`Collapse ${title} panel`}
-                title={`Collapse ${title}`}
-                onClick={() => setCollapsed(id, true)}
-              >
-                <CollapseIcon className="size-3.5" />
-              </Button>
+              {collapsible && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-5"
+                  aria-label={`Collapse ${title} panel`}
+                  title={`Collapse ${title}`}
+                  onClick={() => setCollapsed(id, true)}
+                >
+                  <CollapseIcon className="size-3.5" />
+                </Button>
+              )}
             </div>
           </div>
           {/* `flex flex-col` is required: react-resizable-panels renders a plain

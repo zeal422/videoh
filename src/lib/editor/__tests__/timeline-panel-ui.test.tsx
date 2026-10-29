@@ -125,6 +125,29 @@ describe('timeline geometry contract', () => {
     expect(TRACK_HEADER_WIDTH).toBe(168)
   })
 
+  it('paints a short sequence to the visible lane edge', () => {
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get() {
+        return this.hasAttribute('data-timeline-scroll') ? 2400 : 0
+      },
+    })
+    try {
+      useEditorStore.setState({ doc: createDoc() })
+      render(<TimelinePanel />)
+      const scroll = document.querySelector('[data-timeline-scroll]') as HTMLElement
+      const content = scroll.firstElementChild as HTMLElement
+      const lane = document.querySelector('[data-lane-id]') as HTMLElement
+      // 2400px scroll viewport - 168px header = a 2232px lane.
+      expect(content.style.width).toBe('2400px')
+      expect(lane.style.width).toBe('2232px')
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'clientWidth', original)
+      else delete (HTMLElement.prototype as { clientWidth?: number }).clientWidth
+    }
+  })
+
   it('locks the geometry constants in source', () => {
     const timeline = read('src/components/editor/timeline/TimelinePanel.tsx')
     expect(timeline).toMatch(/video:\s*44,/)

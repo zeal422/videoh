@@ -140,6 +140,20 @@ export function TimelinePanel() {
   const contentRef = useRef<HTMLDivElement>(null)
   const scrubbingRef = useRef(false)
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null)
+  /** Visible lane width (scroll viewport minus the sticky header). A short
+   *  sequence must still paint its rows and ruler to the panel edge instead of
+   *  ending in a black strip. */
+  const [viewportLaneWidth, setViewportLaneWidth] = useState(0)
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const measure = () => setViewportLaneWidth(Math.max(0, el.clientWidth - TRACK_HEADER_WIDTH))
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
 
   // Marquee (box) selection: the live rect while dragging, null when idle.
   // Deliberately component state, not store state: a drag in flight is not
@@ -192,7 +206,11 @@ export function TimelinePanel() {
   // reach them or a marker would be parked off-screen with no way to scroll
   // to it. Markers are root-scoped, so a child sequence shows none.
   const markerEnd = useMemo(() => markersEnd(doc.project), [doc.project])
-  const contentWidth = Math.max(600, (Math.max(duration, markerEnd) + TAIL_PADDING_SEC) * pxPerSec)
+  const contentWidth = Math.max(
+    600,
+    (Math.max(duration, markerEnd) + TAIL_PADDING_SEC) * pxPerSec,
+    viewportLaneWidth,
+  )
   // Total pixel height of the track rows — bounds the playhead line and snap
   // guide so they never render in the empty strip below the last row.
   const tracksHeight = useMemo(() => tracks.reduce((h, t) => h + TRACK_HEIGHT[t.kind], 0), [tracks])
