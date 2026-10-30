@@ -15,7 +15,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── robots.txt           # allow all plus the sitemap URL
 │   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
 ├── e2e/
-│   ├── battery.sh           # scripted UI battery (66 steps) driven by agent-browser
+│   ├── battery.sh           # scripted UI battery (67 steps) driven by agent-browser
 │   ├── battery.timing.sh    # battery copy that records per-step timing
 │   └── run-battery.sh       # runner: dev server, session cleanup, strict verdict
 ├── docs/                    # this documentation set, including seo.md
@@ -118,6 +118,7 @@ any of them. The editor's own components live in `src/components/editor/`.
 ```text
 src/hooks/
 ├── editor/useEditorKeyboard.ts   # global keyboard map (Premiere-verified); see README
+├── editor/gesture-state.ts       # isAutomationGestureLive: the tool-change guard shared with the toolbar
 ├── use-mobile.ts                 # responsive breakpoint hook (shadcn)
 └── use-toast.ts                  # toast store (shadcn)
 ```
@@ -143,7 +144,7 @@ src/lib/editor/
 ├── constants.ts          # all tuning constants and limits
 ├── factories.ts          # uid + create* constructors, finders, compatibility checks, sourceTimeAt
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
-├── commands.ts           # the 60 EditorCommand variants + applyCommand(s), direction-aware split spans, LOCK_RULES
+├── commands.ts           # the 60 EditorCommand variants + applyCommand(s, options), the relink patch boundary, direction-aware split spans, LOCK_RULES
 ├── trim.ts               # pure trim/split math: source-fitting bisection, timeScale curve rebases
 ├── snap.ts               # snap-point computation and application
 ├── srt.ts                # SRT parse/serialize + the caption cue collector (pure)
@@ -187,7 +188,7 @@ src/lib/editor/
 ├── media/
 │   ├── probe.ts          # importFile: probe duration/size, thumbnail, waveform peaks, hasAudio
 │   ├── filmstrip-cache.ts # runtime-only strip cache: one job, LRU budget, hidden video per asset
-│   ├── relink.ts         # relinkPatchFrom: patch fields a relink carries (file handle included)
+│   ├── relink.ts         # isNativeFile guard + relinkPatchFrom: patch fields a relink carries (file handle included)
 │   ├── elements.ts       # ClipMediaPool: per-clip media elements, source nodes, the parked blend partner
 │   └── proxies.ts        # session proxy build/revoke and effective media URL
 ├── playback/
@@ -201,7 +202,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 89 test files (1926 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 89 test files (1967 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

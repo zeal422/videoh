@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.16.3',
+    date: '2026-10-29',
+    highlights: [
+      'The volume graph plots its dots on the same dB axis as the curve, so a unity keyframe sits on the 0 dB line',
+      'Ctrl/Meta shortcuts no longer fall through to tool keys, and the toolbar waits for a live gesture before switching tools',
+      'Hiding the Program Monitor after collapsing Media no longer leaves a ghost strip or a dead chevron',
+      "Relinked media validates its patch and native file handle, so a project file cannot overwrite an asset's identity or install a broken source",
+      'A locked drop destination reports the lock and rolls the whole drag back, and time readouts no longer undercount a computed tenth',
+    ],
+  },
+  {
     version: '0.16.2',
     date: '2026-10-29',
     highlights: [

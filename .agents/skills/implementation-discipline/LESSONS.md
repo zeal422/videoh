@@ -40,7 +40,7 @@ no checklist rule needs it.
 
 ## 2026-10-10 - plan review (fixing one defect introduced another)
 
-What happened: fixing the "proxy drops preview audio" finding, `PLAN-0.8.0-tier2.md` described the proxy
+What happened: fixing the "proxy drops preview audio" finding, the 0.8.0 proxy plan described the proxy
 audio decode as `Input -> getPrimaryAudioTrack() ... the exact pattern mp4.ts:160,505 already uses`.
 `mp4.ts` never calls `getPrimaryAudioTrack` (grep is empty); it decodes with `ctx.decodeAudioData` on the
 file (`mp4.ts:308`), and `toAudioBuffer()` is on a decoded `AudioSample` (`sample.d.ts:569`), not on an

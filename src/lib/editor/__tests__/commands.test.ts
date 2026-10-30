@@ -3,7 +3,15 @@
  * Every command is validated: happy path + rejection + immutability of the input doc.
  */
 import { describe, expect, it } from 'vitest'
-import { applyCommand, applyCommands, EditorCommandError, firstFreeCaptionsName } from '../commands'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import {
+  applyCommand,
+  applyCommands,
+  EditorCommand,
+  EditorCommandError,
+  firstFreeCaptionsName,
+} from '../commands'
 import {
   clipFitsTrack,
   createCaptionStyle,
@@ -20,8 +28,9 @@ import { decideTrimStart, trimRooms } from '../clip-gesture'
 import { resolveMatteTrack } from '../effects'
 import { evaluateKeyframes, integrateKeyframes } from '../keyframes'
 import { LUT_LIBRARY_MAX_CHARS, lutLibraryChars, parseCubeLut } from '../lut'
+import { relinkPatchFrom } from '../media/relink'
 import type { Clip, Doc, EffectEntry, Keyframe, MediaAsset, ProjectLut, Track } from '../types'
-import { MIN_CLIP_DURATION } from '../constants'
+import { MIN_CLIP_DURATION, WAVEFORM_BUCKETS } from '../constants'
 
 /** A 2-cube in `.cube` row order (red fastest): enough to exercise the model. */
 const CUBE_3D = [
@@ -112,6 +121,309 @@ describe('addMediaAsset / removeMediaAsset / relinkMedia', () => {
     expect(next.media[0].url).toBe('blob:new')
     expect(next.media[0].missing).toBe(false)
     expect(next.media[0].duration).toBe(12)
+  })
+})
+
+describe('relinkMedia patch boundary', () => {
+  type RelinkOptions = { validateRelinkFile?: (value: unknown) => boolean }
+  const applyWithOptions = applyCommand as unknown as (
+    doc: Doc,
+    command: EditorCommand,
+    options?: RelinkOptions,
+  ) => Doc
+  const applyBatchWithOptions = applyCommands as unknown as (
+    doc: Doc,
+    commands: EditorCommand[],
+    options?: RelinkOptions,
+  ) => Doc
+  const relinkCommand = (mediaId: string, patch: unknown): EditorCommand => ({
+    type: 'relinkMedia',
+    mediaId,
+    patch: patch as Partial<MediaAsset>,
+  })
+  const densePeaks = () => Array.from({ length: WAVEFORM_BUCKETS }, (_, i) => i / WAVEFORM_BUCKETS)
+
+  it('refuses identity fields, so a relink writes media details only', () => {
+    const { doc, videoAsset } = makeDoc()
+    for (const patch of [{ id: 'hacked' }, { kind: 'audio' }, { name: 'renamed' }]) {
+      expect(() => applyCommand(doc, relinkCommand(videoAsset.id, patch))).toThrow(
+        EditorCommandError,
+      )
+    }
+  })
+
+  it('refuses a null, array, string, or undefined patch', () => {
+    const { doc, videoAsset } = makeDoc()
+    for (const patch of [null, ['x'], 'x', undefined]) {
+      expect(() => applyCommand(doc, relinkCommand(videoAsset.id, patch))).toThrow(
+        'Invalid relink patch',
+      )
+    }
+  })
+
+  it('refuses symbol keys and accessor properties', () => {
+    const { doc, videoAsset } = makeDoc()
+    expect(() =>
+      applyCommand(
+        doc,
+        relinkCommand(videoAsset.id, { url: 'blob:new', [Symbol('id')]: 'hacked' }),
+      ),
+    ).toThrow(EditorCommandError)
+
+    const accessor: Record<string, unknown> = {}
+    Object.defineProperty(accessor, 'url', { get: () => 'blob:new', enumerable: true })
+    expect(() => applyCommand(doc, relinkCommand(videoAsset.id, accessor))).toThrow(
+      EditorCommandError,
+    )
+  })
+
+  it('refuses hostile scalar values', () => {
+    const { doc, videoAsset } = makeDoc()
+    const patches = [
+      { duration: Number.NaN },
+      { duration: undefined },
+      { duration: Infinity },
+      { width: -1 },
+      { height: -0.5 },
+      { url: 42 },
+      { thumbnail: 7 },
+      { hasAudio: 'yes' },
+    ]
+    for (const patch of patches) {
+      expect(() => applyCommand(doc, relinkCommand(videoAsset.id, patch))).toThrow(
+        EditorCommandError,
+      )
+    }
+  })
+
+  it('validates waveform peaks as a dense WAVEFORM_BUCKETS array in 0..1', () => {
+    const { doc, videoAsset } = makeDoc()
+    const good = densePeaks()
+    const withPeak = (i: number, value: number) => good.map((v, j) => (j === i ? value : v))
+    const sparse = new Array<number>(WAVEFORM_BUCKETS)
+    for (let i = 0; i < 10; i++) sparse[i] = 0.5
+    const sparseWithBad = new Array<number>(WAVEFORM_BUCKETS)
+    for (let i = 0; i < WAVEFORM_BUCKETS; i++) sparseWithBad[i] = i === 3 ? Number.NaN : 0.5
+
+    for (const peaks of [
+      good.slice(0, WAVEFORM_BUCKETS - 1),
+      [...good, 0.5],
+      withPeak(3, 1.1),
+      withPeak(3, -0.1),
+      withPeak(3, Number.NaN),
+      withPeak(3, Infinity),
+      withPeak(3, -Infinity),
+      sparse,
+      sparseWithBad,
+    ]) {
+      expect(() =>
+        applyCommand(doc, relinkCommand(videoAsset.id, { url: 'blob:new', waveformPeaks: peaks })),
+      ).toThrow(EditorCommandError)
+    }
+  })
+
+  it('copies a valid peaks array instead of aliasing the command payload', () => {
+    const { doc, videoAsset } = makeDoc()
+    const peaks = densePeaks()
+    const next = applyCommand(
+      doc,
+      relinkCommand(videoAsset.id, { url: 'blob:new', waveformPeaks: peaks }),
+    )
+    const stored = next.media[0].waveformPeaks as number[]
+    expect(stored).toEqual(peaks)
+    expect(stored).not.toBe(peaks)
+    peaks[0] = 0.99
+    expect(next.media[0].waveformPeaks?.[0]).toBe(0)
+  })
+
+  it('requires a non-empty resulting URL before clearing missing', () => {
+    const { doc, videoAsset } = makeDoc()
+    const offline: Doc = {
+      ...doc,
+      media: [{ ...structuredClone(videoAsset), url: '', missing: true }],
+    }
+    // Omitting url cannot rescue an offline asset: the old URL is empty.
+    expect(() => applyCommand(offline, relinkCommand(videoAsset.id, { duration: 12 }))).toThrow(
+      EditorCommandError,
+    )
+    expect(() => applyCommand(offline, relinkCommand(videoAsset.id, { url: '' }))).toThrow(
+      EditorCommandError,
+    )
+    // Whitespace is not a usable URL, but `length > 0` alone would accept it,
+    // clear `missing`, and leave an unplayable asset with no offline prompt.
+    expect(() => applyCommand(offline, relinkCommand(videoAsset.id, { url: '   ' }))).toThrow(
+      EditorCommandError,
+    )
+
+    const next = applyCommand(offline, relinkCommand(videoAsset.id, { url: 'blob:new' }))
+    expect(next.media[0].url).toBe('blob:new')
+    expect(next.media[0].missing).toBe(false)
+
+    // An online asset keeps its URL when the patch omits it.
+    const online = applyCommand(doc, relinkCommand(videoAsset.id, { duration: 12 }))
+    expect(online.media[0].url).toBe('blob:video')
+    expect(online.media[0].duration).toBe(12)
+  })
+
+  it('accepts a real File only through the injected validator', () => {
+    const { doc, videoAsset } = makeDoc()
+    const file = new File(['bytes'], 'clip.mp4', { type: 'video/mp4' })
+    const command = relinkCommand(videoAsset.id, { file })
+
+    // The default is fail-closed: a direct two-argument dispatch cannot put an
+    // unvalidated handle into the document.
+    expect(() => applyCommand(doc, command)).toThrow('Invalid relink file')
+    expect(() => applyWithOptions(doc, command, { validateRelinkFile: () => false })).toThrow(
+      'Invalid relink file',
+    )
+    expect(() =>
+      applyWithOptions(doc, command, {
+        validateRelinkFile: () => {
+          throw new Error('validator exploded')
+        },
+      }),
+    ).toThrow(EditorCommandError)
+
+    const next = applyWithOptions(doc, command, {
+      validateRelinkFile: (value) => value === file,
+    })
+    // Node's structuredClone(File) returns a Blob, so assert the handle on the
+    // doc the relink itself returned, never after a second command clone.
+    expect(next.media[0].file).toBe(file)
+  })
+
+  it('treats undefined as a clear and null as invalid', () => {
+    const { doc, videoAsset } = makeDoc()
+    const file = new File(['bytes'], 'clip.mp4')
+    const withHandle: Doc = {
+      ...doc,
+      media: [{ ...structuredClone(videoAsset), file }],
+    }
+
+    expect(() => applyCommand(withHandle, relinkCommand(videoAsset.id, { file: null }))).toThrow(
+      'Invalid relink file',
+    )
+    const cleared = applyCommand(withHandle, relinkCommand(videoAsset.id, { file: undefined }))
+    expect(cleared.media[0].file).toBeUndefined()
+  })
+
+  it('forwards the validator through a batched relink', () => {
+    const { doc, videoAsset } = makeDoc()
+    const file = new File(['bytes'], 'clip.mp4')
+    const next = applyBatchWithOptions(
+      doc,
+      [relinkCommand(videoAsset.id, { url: 'blob:batch', file })],
+      { validateRelinkFile: (value) => value === file },
+    )
+    expect(next.media[0].url).toBe('blob:batch')
+    expect(next.media[0].file).toBe(file)
+  })
+
+  it('relinks an audio asset whose fresh probe has zero geometry', () => {
+    const { doc, audioAsset } = makeDoc()
+    const offline: Doc = {
+      ...doc,
+      media: [{ ...structuredClone(audioAsset), url: '', missing: true }],
+    }
+    const file = new File(['bytes'], 'song.mp3', { type: 'audio/mpeg' })
+    const fresh: MediaAsset = {
+      ...createMediaAsset({ kind: 'audio', name: 'song.mp3', duration: 30, url: 'blob:audio' }),
+      file,
+      hasAudio: true,
+    }
+    // An audio probe carries 0/0 geometry, not absent fields. The command's
+    // required width/height therefore accept the real audio relink path.
+    expect(fresh.width).toBe(0)
+    expect(fresh.height).toBe(0)
+
+    const next = applyWithOptions(
+      offline,
+      relinkCommand(audioAsset.id, relinkPatchFrom(fresh, 'manual')),
+      { validateRelinkFile: (value) => value === file },
+    )
+    expect(next.media[0]).toMatchObject({
+      url: 'blob:audio',
+      duration: 30,
+      width: 0,
+      height: 0,
+      missing: false,
+    })
+    expect(next.media[0].file).toBe(file)
+  })
+
+  it('clears optional metadata with the manual-mode undefined patch', () => {
+    const { doc, videoAsset } = makeDoc()
+    const file = new File(['bytes'], 'clip.mp4')
+    const withMeta: Doc = {
+      ...doc,
+      media: [
+        {
+          ...structuredClone(videoAsset),
+          thumbnail: 'data:image/jpeg;base64,AAAA',
+          hasAudio: true,
+          waveformPeaks: densePeaks(),
+        },
+      ],
+    }
+    const next = applyWithOptions(
+      withMeta,
+      relinkCommand(videoAsset.id, {
+        url: 'blob:new',
+        duration: 10,
+        width: 640,
+        height: 360,
+        file,
+        thumbnail: undefined,
+        hasAudio: undefined,
+        waveformPeaks: undefined,
+      }),
+      { validateRelinkFile: (value) => value === file },
+    )
+    expect(next.media[0].file).toBe(file)
+    expect(next.media[0].thumbnail).toBeUndefined()
+    expect(next.media[0].hasAudio).toBeUndefined()
+    expect(next.media[0].waveformPeaks).toBeUndefined()
+  })
+
+  it('keeps the command core free of platform globals', () => {
+    const src = readFileSync(join(process.cwd(), 'src/lib/editor/commands.ts'), 'utf8')
+    expect(src).not.toMatch(/typeof File|typeof Blob|instanceof File|instanceof Blob|media\/relink/)
+  })
+})
+
+describe('setClipInPoint (slip command)', () => {
+  function slipDoc(keyframes?: Clip['keyframes']): Doc {
+    const { doc, videoAsset } = makeDoc()
+    return applyCommand(doc, {
+      type: 'addClip',
+      trackId: videoTrack(doc).id,
+      clip: createClip({
+        id: 'slip-1',
+        mediaId: videoAsset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        keyframes,
+      }),
+    })
+  }
+
+  it('refuses a time-remapped clip exactly like the slip planner', () => {
+    const doc = slipDoc({
+      timeScale: [
+        { time: 0, value: 1, interpolation: 'linear' },
+        { time: 4, value: 2, interpolation: 'linear' },
+      ],
+    })
+    expect(() =>
+      applyCommand(doc, { type: 'setClipInPoint', clipId: 'slip-1', inPoint: 1 }),
+    ).toThrow('A time-remapped clip cannot be slipped')
+  })
+
+  it('still slips a clip without a time-remap curve', () => {
+    const doc = slipDoc()
+    const next = applyCommand(doc, { type: 'setClipInPoint', clipId: 'slip-1', inPoint: 1 })
+    expect(videoTrack(next).clips[0].inPoint).toBe(1)
   })
 })
 

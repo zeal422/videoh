@@ -85,7 +85,6 @@ function currentSurface(): string[] {
     .split('\n')
     .filter(Boolean)
     .filter((path) => !EXCLUDED.has(path))
-    .filter((path) => !/^PLAN-.*\.md$/.test(path))
     .filter((path) => !EXCLUDED_PREFIXES.some((prefix) => path.startsWith(prefix)))
     .filter((path) => !isLocalEnvFile(path))
     .filter((path) => {

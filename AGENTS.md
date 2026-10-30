@@ -85,7 +85,7 @@ Running the suite (these are the steps agents get wrong):
   and GoatCounter script. It never imports the editor store or browser engines.
 - `src/lib/seo.ts` — site constants, canonical URLs, page metadata, sitemap routes, and JSON-LD.
 - `src/lib/editor/__tests__/`: all tests (`*.test.ts(x)`), plus the mocked browser harness in `mocks/`.
-- `e2e/battery.sh`: 66-step UI battery, first step loads the public hero and its editor link (needs the
+- `e2e/battery.sh`: 67-step UI battery, first step loads the public hero and its editor link (needs the
   dev server + `agent-browser`). Drive it through `e2e/run-battery.sh` (`bun run battery`), which owns
   the server, the session, and the strict verdict.
 - `public/samples/` — bundled demo media used by "Load sample media".
@@ -150,7 +150,7 @@ Running the suite (these are the steps agents get wrong):
 
 ## Workflow
 
-For implementation work (a `PLAN-*.md`, a bug fix, any multi-step change), load the repo skill
+For implementation work (a bug fix, any multi-step change), load the repo skill
 `implementation-discipline` (`.agents/skills/implementation-discipline/SKILL.md`) first. It carries the
 working order and gates, the trigger audit to record with the change, and the failure-adaptation loop
 that appends lessons beside it in `LESSONS.md`. It complements the rules above and `bun run check`; it

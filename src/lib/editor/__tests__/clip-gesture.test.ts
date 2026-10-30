@@ -26,13 +26,18 @@ const clip = (over: Partial<Clip> = {}): Clip =>
 const lanes = (over: Partial<LaneBox>[] = []): LaneBox[] => [
   { id: 't1', kind: 'video', top: 0, bottom: 50, ...over[0] },
   { id: 't2', kind: 'video', top: 50, bottom: 100, ...over[1] },
-  { id: 'a1', kind: 'audio', top: 100, bottom: 150, ...over[2] },
+  { id: 't3', kind: 'video', top: 100, bottom: 150, ...over[2] },
+  { id: 'a1', kind: 'audio', top: 150, bottom: 200, ...over[3] },
 ]
 
+// Extra fields are on a VARIABLE, not a fresh literal, so this fixture still
+// compiles against the old `TrackView` (the failing-first run) while carrying
+// the name and lock the new decision reads.
 const tracks = [
-  { id: 't1', kind: 'video' },
-  { id: 't2', kind: 'video' },
-  { id: 'a1', kind: 'audio' },
+  { id: 't1', kind: 'video', name: 'V1' },
+  { id: 't2', kind: 'video', name: 'V2' },
+  { id: 't3', kind: 'video', name: 'V3', locked: true },
+  { id: 'a1', kind: 'audio', name: 'A1' },
 ]
 
 describe('snapThreshold', () => {
@@ -55,8 +60,8 @@ describe('resolveLaneDrop', () => {
     expect(r.blocked).toBeNull()
   })
   it('an incompatible lane is reported blocked', () => {
-    const r = resolveLaneDrop(lanes(), 125, 't1', 'video')
-    expect(r.blocked).toEqual({ id: 'a1', kind: 'audio' })
+    const r = resolveLaneDrop(lanes(), 175, 't1', 'video')
+    expect(r.blocked).toEqual({ reason: 'kind', id: 'a1', kind: 'audio' })
   })
   it('video clips may land on video lanes only (audio is blocked)', () => {
     expect(resolveLaneDrop(lanes(), 75, 't1', 'video').blocked).toBeNull()
@@ -101,9 +106,32 @@ describe('decideMove', () => {
   })
 
   it('reports a blocked lane instead of moving to it', () => {
+    const d = decideMove({ ...base, clientX: 100, clientY: 175, lanes: lanes() })
+    expect(d.targetTrackId).toBe('t1')
+    expect(d.blockedLane).toEqual({ reason: 'kind', id: 'a1', kind: 'audio' })
+  })
+
+  it('a locked destination refuses the whole drop and names the lane', () => {
     const d = decideMove({ ...base, clientX: 100, clientY: 125, lanes: lanes() })
     expect(d.targetTrackId).toBe('t1')
-    expect(d.blockedLane).toEqual({ id: 'a1', kind: 'audio' })
+    expect(d.blockedLane).not.toBeNull()
+    expect(d.blockedLane).toMatchObject({ reason: 'locked', id: 't3', name: 'V3' })
+    expect(d.partnerUpdates).toEqual([])
+  })
+
+  it('a locked partner destination blocks the drop and names that lane', () => {
+    const d = decideMove({
+      ...base,
+      clientX: 100,
+      clientY: 75, // primary destination t2 (unlocked)
+      lanes: lanes(),
+      // t3 is the partner's destination: the +1 offset has no matching lane,
+      // so the partner keeps its own lane, which is locked.
+      partners: [{ id: 'p1', trackIndex: 2, kind: 'video', origStart: 5 }],
+    })
+    expect(d.targetTrackId).toBe('t1')
+    expect(d.blockedLane).toMatchObject({ reason: 'locked', id: 't3', name: 'V3' })
+    expect(d.partnerUpdates).toEqual([])
   })
 
   it('drags the whole selection: same time delta, same track-index offset', () => {
@@ -124,7 +152,7 @@ describe('decideMove', () => {
     const d = decideMove({
       ...base,
       clientX: 160,
-      clientY: 125, // blocked drop: no lane change
+      clientY: 175, // blocked drop: no lane change
       lanes: lanes(),
       partners: [{ id: 'p1', trackIndex: 9, kind: 'audio', origStart: 5 }],
     })

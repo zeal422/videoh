@@ -981,7 +981,7 @@ function TextFields({ clip }: { clip: Clip }) {
 /**
  * Title preset library (0.8.3): apply a built-in or user preset to this
  * clip, save this clip's style under a new name, rename or delete a user
- * preset. The only management surface (plan decision 7): it renders only
+ * preset. The only management surface: it renders only
  * with a text clip selected, so no selection means no preset UI.
  */
 function TextPresetFields({ clip }: { clip: Clip }) {

@@ -208,13 +208,15 @@ export function EditorShell() {
       // full row, and a lone panel is forced to fill it. Neither value is the
       // user's chosen width, so do not persist either while the preview is
       // hidden. This keeps media/source at their saved shares when the preview
-      // returns. The per-panel guards mirror handleBottomRowLayout for the
-      // single-panel case.
+      // returns. The preview's auto remainder is what makes the fixed shares
+      // meaningful; while it is hidden the pair fills the row, so the observer
+      // stores nothing. That is intentional: a media/source divider resize is
+      // not persisted while the preview is hidden.
       if (hidden.preview) return
-      if (!hidden.media && (!hidden.source || !hidden.preview)) {
+      if (!hidden.media) {
         if (layout[0] !== undefined) setSize('media', layout[0])
       }
-      if (!hidden.source && (!hidden.media || !hidden.preview)) {
+      if (!hidden.source) {
         const sourceIndex = hidden.media ? 0 : 1
         if (layout[sourceIndex] !== undefined) setSize('source', layout[sourceIndex])
       }
@@ -448,6 +450,16 @@ export function EditorShell() {
                 {showUpperRow ? (
                   /* Upper row: media pool | source monitor | program monitor */
                   <ResizablePanelGroup
+                    // The library keeps the previous layout array when the
+                    // auto-sized preview panel unmounts. Hiding it after
+                    // collapsing Media left a stale 3-panel layout and crashed
+                    // in callPanelCallbacks ("Panel data not found for index 2")
+                    // at the battery's short viewport. Remount on the preview
+                    // flag only, so the layout is rebuilt from the persisted
+                    // default sizes; Media/Source hides keep the group mounted
+                    // (verified at the battery viewport), and collapse/expand
+                    // does not change the key.
+                    key={`upper-${Number(!hidden.preview)}`}
                     direction="horizontal"
                     className="min-h-0"
                     onLayout={handleUpperRowLayout}
@@ -464,7 +476,7 @@ export function EditorShell() {
                           defaultSize={sizes.media}
                           registerRef={registerRef}
                           className="bg-card"
-                          collapsible={upperRowPanelCount > 1}
+                          collapsible={!hidden.preview && upperRowPanelCount > 1}
                         >
                           <MediaBin heading={false} className="min-h-0 flex-1" />
                         </PanelShell>
@@ -487,7 +499,7 @@ export function EditorShell() {
                         defaultSize={sizes.source}
                         registerRef={registerRef}
                         className="bg-card"
-                        collapsible={upperRowPanelCount > 1}
+                        collapsible={!hidden.preview && upperRowPanelCount > 1}
                       >
                         <SourcePanel className="flex-1" />
                       </PanelShell>

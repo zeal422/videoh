@@ -1475,4 +1475,70 @@ describe('track solo and lock controls (0.14.0)', () => {
     expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Track locked' }))
     fireEvent.pointerUp(window, { pointerId: 12 })
   })
+
+  it('a locked destination refuses the drop and rolls back an earlier time shift', () => {
+    const asset = createMediaAsset({ kind: 'video', duration: 30, name: 'demo.mp4' })
+    const v1 = createTrack('video', 1, { id: 'dv1' })
+    v1.clips = [createClip({ id: 'dc1', mediaId: asset.id, start: 2, duration: 2, inPoint: 0 })]
+    const v2 = createTrack('video', 2, { id: 'dv2', locked: true })
+    const doc: Doc = {
+      project: {
+        tracks: [v1, v2],
+        id: 'p_dest',
+        name: 'dest',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      },
+      media: [asset],
+    }
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    // jsdom has no layout: give the two lanes real boxes so the drag can cross.
+    const stubLane = (id: string, top: number, bottom: number) => {
+      const el = document.querySelector(`[data-lane-id="${id}"]`) as HTMLElement
+      el.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          right: 800,
+          top,
+          bottom,
+          width: 800,
+          height: bottom - top,
+          x: 0,
+          y: top,
+          toJSON: () => ({}),
+        }) as DOMRect
+    }
+    stubLane('dv1', 0, 40)
+    stubLane('dv2', 40, 80)
+
+    vi.mocked(toast).mockClear()
+    const clipStart = () => useEditorStore.getState().doc.project.tracks[0].clips[0].start
+
+    fireEvent.pointerDown(screen.getByTestId('clip-dc1'), {
+      button: 0,
+      pointerId: 21,
+      clientX: 100,
+      clientY: 10,
+    })
+    // A horizontal move on the ORIGINAL lane applies a transient time shift.
+    fireEvent.pointerMove(window, { pointerId: 21, clientX: 140, clientY: 10 })
+    expect(clipStart()).not.toBe(2)
+    // Crossing the locked second video lane refuses the whole drop.
+    fireEvent.pointerMove(window, { pointerId: 21, clientX: 140, clientY: 50 })
+    fireEvent.pointerUp(window, { pointerId: 21 })
+
+    // The earlier legal half of the gesture is rolled back, not committed.
+    expect(clipStart()).toBe(2)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips.map((c) => c.id)).toEqual(['dc1'])
+    expect(useEditorStore.getState().doc.project.tracks[1].clips).toEqual([])
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Track locked',
+        description: 'Track V2 is locked. Unlock it to edit its clips.',
+      }),
+    )
+  })
 })

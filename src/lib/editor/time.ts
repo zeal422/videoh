@@ -7,12 +7,18 @@ export function clamp(value: number, min: number, max: number): number {
 const pad2 = (n: number) => n.toString().padStart(2, '0')
 
 /**
- * Whole tenths in a non-negative time, floored from the clamped total.
- * Splitting the total once avoids the binary-subtraction underflow that made
- * 2.3 read as 2.2 (2.3 - 2 = 0.2999999999999998, whose tenth floors to 2).
+ * Whole tenths in a non-negative time, floored from the clamped total with a
+ * fixed 1e-9 second tolerance. Splitting the total once avoids the
+ * binary-subtraction underflow that made 2.3 read as 2.2, but a computed total
+ * can still land a few ULPs below a tenth (0.3 - 0.1 is 0.19999999999999998).
+ * The epsilon is `1e-8` in the tenths domain, which is 1e-9 seconds: a fixed
+ * tolerance for a computed total, not an ULP-relative correction. A value more
+ * than 1e-9 seconds below a tenth stays a real sub-tenth. At very large times
+ * the fixed epsilon can fall below one ULP; media times under a few hours keep
+ * it far above one.
  */
 function toTenths(seconds: number): number {
-  return Math.floor(Math.max(0, seconds) * 10)
+  return Math.floor(Math.max(0, seconds) * 10 + 1e-8)
 }
 
 /**

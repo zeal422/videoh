@@ -209,6 +209,39 @@ describe('toolbar tools', () => {
     expect(pen).toHaveAttribute('aria-pressed', 'true')
     expect(slip).toHaveAttribute('aria-pressed', 'false')
   })
+
+  it('a live transient gesture blocks a toolbar tool change', () => {
+    render(<Toolbar onOpenExport={() => {}} />)
+    useEditorStore.getState().setActiveTool('select')
+    const pen = screen.getByRole('button', { name: /Pen tool/ })
+
+    useEditorStore.getState().beginTransient(1)
+    fireEvent.click(pen)
+    expect(useEditorStore.getState().activeTool).toBe('select')
+
+    // The positive control runs after the gesture is gone.
+    useEditorStore.getState().cancelTransient()
+    fireEvent.click(pen)
+    expect(useEditorStore.getState().activeTool).toBe('pen')
+  })
+
+  it('the automation gesture marker blocks a toolbar tool change', () => {
+    render(<Toolbar onOpenExport={() => {}} />)
+    useEditorStore.getState().setActiveTool('select')
+    const pen = screen.getByRole('button', { name: /Pen tool/ })
+    const marker = document.createElement('div')
+    marker.setAttribute('data-automation-gesture', 'true')
+    document.body.appendChild(marker)
+
+    fireEvent.click(pen)
+    expect(useEditorStore.getState().activeTool).toBe('select')
+
+    // The marker must be gone before the positive-control click, or the guard
+    // blocks it too.
+    marker.remove()
+    fireEvent.click(pen)
+    expect(useEditorStore.getState().activeTool).toBe('pen')
+  })
 })
 
 describe('tool shortcuts', () => {
@@ -237,6 +270,47 @@ describe('tool shortcuts', () => {
     render(<Keys />)
     fireEvent.keyDown(window, { key: 'y', ctrlKey: true })
     expect(useEditorStore.getState().activeTool).toBe('razor')
+  })
+
+  it('Ctrl/Meta-modified keys never reach the single-key tool map', () => {
+    render(<Keys />)
+    useEditorStore.getState().setActiveTool('select')
+
+    for (const key of ['p', 'b']) {
+      fireEvent.keyDown(window, { key, ctrlKey: true })
+      expect(useEditorStore.getState().activeTool).toBe('select')
+      fireEvent.keyDown(window, { key, metaKey: true })
+      expect(useEditorStore.getState().activeTool).toBe('select')
+    }
+
+    // One non-tool fall-through: Ctrl+D must not duplicate the selection.
+    const { doc } = twoClipDoc()
+    useEditorStore.setState({
+      doc,
+      selections: ['a'],
+      selection: 'a',
+      activeTool: 'select',
+    })
+    const before = doc.project.tracks[0].clips.length
+    fireEvent.keyDown(window, { key: 'd', ctrlKey: true })
+    expect(useEditorStore.getState().doc.project.tracks[0].clips).toHaveLength(before)
+  })
+
+  it('plain and Shift+letter keys still select their tools', () => {
+    render(<Keys />)
+    for (const [key, tool] of [
+      ['p', 'pen'],
+      ['b', 'ripple'],
+      ['P', 'pen'],
+      ['B', 'ripple'],
+      ['V', 'select'],
+      ['C', 'razor'],
+      ['Y', 'slip'],
+    ] as const) {
+      useEditorStore.getState().setActiveTool('select')
+      fireEvent.keyDown(window, { key, shiftKey: key === key.toUpperCase() })
+      expect(useEditorStore.getState().activeTool).toBe(tool)
+    }
   })
 })
 
@@ -802,9 +876,12 @@ describe('tool routing locks in source', () => {
     expect(clipView).toMatch(/planSlip\(/)
 
     const toolbar = read('src/components/editor/Toolbar.tsx')
-    expect(toolbar).toMatch(/setActiveTool\('ripple'\)/)
-    expect(toolbar).toMatch(/setActiveTool\('slip'\)/)
-    expect(toolbar).toMatch(/setActiveTool\('pen'\)/)
+    // Every tool button goes through the gesture guard, never the raw setter.
+    expect(toolbar).toMatch(/chooseTool\('ripple'\)/)
+    expect(toolbar).toMatch(/chooseTool\('slip'\)/)
+    expect(toolbar).toMatch(/chooseTool\('pen'\)/)
+    expect(toolbar).toMatch(/isAutomationGestureLive/)
+    expect(toolbar).not.toMatch(/setActiveTool\('(?:select|razor|ripple|slip|pen)'\)/)
     expect(toolbar).toMatch(/PenTool/)
     // The Pen edits keyframes; no mask or roto control is mounted.
     expect(toolbar).not.toMatch(/mask|roto/i)

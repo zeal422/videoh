@@ -25,6 +25,22 @@ describe('formatTime', () => {
   })
 })
 
+describe('tenths tolerance for a computed total', () => {
+  it('absorbs a total just below a tenth but keeps a real sub-tenth', () => {
+    // The original underflow: 0.3 - 0.1 is about 2e-17 below 0.2.
+    expect(formatTime(0.3 - 0.1)).toBe('0:00.2')
+    // Inside the fixed 1e-9 second tolerance.
+    expect(formatTime(0.2 - 1e-10)).toBe('0:00.2')
+    // Outside it: this is a real sub-tenth and must not round up.
+    expect(formatTime(0.2 - 1e-8)).toBe('0:00.1')
+    // Coarse boundary guard, 1e-6 below the tenth.
+    expect(formatTime(0.199999)).toBe('0:00.1')
+
+    expect(formatDurationSeconds(0.3 - 0.1)).toBe('0.2s')
+    expect(formatRangeTime(0.3 - 0.1)).toBe('00:00.2')
+  })
+})
+
 describe('formatTransportTime', () => {
   it.each([
     [0, '00:00.0'],

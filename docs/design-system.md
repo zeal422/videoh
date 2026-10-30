@@ -134,9 +134,12 @@ them:
   rose: rose stays the selection/playhead signal. The plot is inset 8px from the trim handles, sits
   above the waveform and below the label and z-10 trim handles, and only the dots and the 10px
   transparent hit path take pointer events. A muted clip dims the volume layer to 50% but keeps it
-  editable; opacity is not an audio property and never dims on mute. The shared `KeyframeGraph`
-  draws the same volume curve in its dB mode on an 80px box, with 7px `-inf`, `-6 dB`, and `0 dB`
-  labels over the muted graph background.
+  editable; opacity is not an audio property and never dims on mute. On a solo video under the Pen
+  the opacity instance owns the line and the volume overlay sets `dotsOnly`: the visible volume path
+  is hidden and only its dots stay live. The shared `KeyframeGraph` draws the same volume curve in
+  its dB mode on an 80px box, with 7px `-inf`, `-6 dB`, and `0 dB` labels over the muted graph
+  background. Its dots and easing handles read the same dB mapping as the curve, so a unity point
+  sits on the 0 dB line.
 - **Marker swatches** use the eight-colour Premiere palette (`MARKER_COLOR_VALUES` in
   `markers.ts`, Tailwind 500-family values) applied as an inline `backgroundColor`. They are content
   data (the colour the user picked) and stay fixed across themes.
@@ -161,7 +164,11 @@ them:
 - **Responsive shell.** At ≥768 px the shell is the resizable panel workspace; below 768 px it falls
   back to a fixed stacked layout. Panel sizes, collapsed state, and visibility persist via
   `workspace.ts`. A panel alone in its row has no collapse control because the freed space has no
-  neighbour to absorb it; the Window menu hides it instead.
+  neighbour to absorb it; the Window menu hides it instead. With the preview hidden the media/source
+  pair fills the row, so neither panel offers a collapse control either: the survivor cannot absorb
+  the freed space, and a persisted collapse would render a ghost strip with a dead chevron.
+  Double-click a resize handle to reset its neighbor, or use Window > Reset Workspace Layout; the
+  action is enabled whenever the layout deviates from the default.
 - **The Source monitor is one of the six workspace panels** (`panel-source`, the upper row is
   `media | source | preview`), built exactly like the inspector: a `PanelShell` plus a
   `HandleWithReset` inside the upper `ResizablePanelGroup`. The Source Monitor sits before the

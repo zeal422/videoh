@@ -280,7 +280,7 @@ function hydrateTracks(rawTracks: unknown, media: MediaAsset[]): Track[] {
       id: typeof t.id === 'string' ? t.id : `track_${Math.random().toString(36).slice(2)}`,
       kind,
       name: typeof t.name === 'string' ? t.name : 'Track',
-      muted: !!t.muted,
+      muted: t.muted === true,
       // Absent means visible; only an explicit false survives, so hydrated
       // docs (and the files saved from them) stay clean.
       ...(t.visible === false ? { visible: false as const } : {}),

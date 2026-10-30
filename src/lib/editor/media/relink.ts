@@ -22,6 +22,47 @@ import type { MediaAsset } from '../types'
  */
 export type RelinkMode = 'manual' | 'sample'
 
+/**
+ * The command boundary's native-handle check, kept here because the pure
+ * command core may not read `File`/`Blob` (AGENTS rule 2).
+ *
+ * A relink handle must be a real `File`, not just something that quacks like
+ * one:
+ * - the File-specific `name` getter returns a string (a plain `Blob` fails
+ *   here; it is the clean isolate for this check because it passes every other
+ *   one),
+ * - `Blob.prototype.slice` accepts it, proving the Blob internal slot,
+ * - `size` is finite and non-negative,
+ * - `arrayBuffer` is callable. `mp4.ts` decodes the export audio mix through
+ *   `file.arrayBuffer()`, and its catch returns no audio, so a native `File`
+ *   with a shadowed non-function handle would silently lose sound.
+ *
+ * `instanceof File` is deliberately not used: in Bun it is a brand check that
+ * rejects a prototype spoof before the getter can run, which would hide which
+ * check refused. `arrayBuffer` is not invoked: the check is a shape guard, not
+ * a decode probe.
+ *
+ * This is a structural check against the host's Web `File`/`Blob`
+ * implementations. The editor is client-only; a non-browser host with a
+ * different `File` implementation would need this guard re-examined rather
+ * than assumed compatible.
+ */
+export function isNativeFile(value: unknown): boolean {
+  if (typeof File === 'undefined' || typeof Blob === 'undefined') return false
+  const nameGetter = Object.getOwnPropertyDescriptor(File.prototype, 'name')?.get
+  if (!nameGetter) return false
+  try {
+    if (typeof nameGetter.call(value) !== 'string') return false
+    Blob.prototype.slice.call(value, 0, 0)
+    const size = (value as Blob).size
+    if (!Number.isFinite(size) || size < 0) return false
+    if (typeof (value as Blob).arrayBuffer !== 'function') return false
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function relinkPatchFrom(fresh: MediaAsset, mode: RelinkMode): Partial<MediaAsset> {
   const clearStale = mode === 'manual'
   return {

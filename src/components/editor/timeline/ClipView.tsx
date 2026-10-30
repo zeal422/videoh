@@ -23,6 +23,7 @@ import {
   decideTrimEnd,
   decideTrimStart,
   trimRooms,
+  type BlockedLane,
 } from '@/lib/editor/clip-gesture'
 import { planRippleShift, planRippleTrim } from '@/lib/editor/ripple-trim'
 import { planSlip } from '@/lib/editor/slip'
@@ -148,7 +149,7 @@ export function ClipView({
     origTrackId: string
     lanes: { id: string; kind: string; top: number; bottom: number; el: HTMLElement }[]
     /** Lane under the pointer that cannot host this clip (shown blocked). */
-    blockedLane: { id: string; kind: string } | null
+    blockedLane: BlockedLane | null
     /** Latest pointer position. The auto-scroll tick replays the move from here,
      *  because a scroll produces no further pointermove events. */
     lastX: number
@@ -334,8 +335,7 @@ export function ClipView({
       // foreign cancel is ignored for the same reason.
       if (ev.pointerId !== gesture.current?.pointerId) return
       // The new modal tools cancel on pointercancel. Select and razor keep
-      // their existing commit-on-pointercancel behavior; the plan explicitly
-      // leaves those gestures alone.
+      // their existing commit-on-pointercancel behavior.
       const modalGesture =
         gesture.current?.mode === 'slip' ||
         (activeTool === 'ripple' && gesture.current?.mode !== 'move')
@@ -822,17 +822,28 @@ export function ClipView({
     // snapping back is explained rather than silent. A pointercancel is not a
     // release and says nothing.
     if (!cancelled && g.blockedLane) {
-      const what =
-        clip.text !== undefined
-          ? 'Text clips'
-          : asset?.kind === 'audio' || clip.audioOnly
-            ? 'Audio clips'
-            : 'Video and image clips'
-      toast({
-        title: 'Not a valid drop target',
-        description: `${what} cannot be placed on a ${g.blockedLane.kind} track`,
-        variant: 'destructive',
-      })
+      const blocked = g.blockedLane
+      if (blocked.reason === 'locked') {
+        // A locked destination is refused for the same reason a locked source
+        // is, and names the same lane the source pre-check would.
+        toast({
+          title: 'Track locked',
+          description: trackLockMessage({ id: blocked.id, name: blocked.name }),
+          variant: 'destructive',
+        })
+      } else {
+        const what =
+          clip.text !== undefined
+            ? 'Text clips'
+            : asset?.kind === 'audio' || clip.audioOnly
+              ? 'Audio clips'
+              : 'Video and image clips'
+        toast({
+          title: 'Not a valid drop target',
+          description: `${what} cannot be placed on a ${blocked.kind} track`,
+          variant: 'destructive',
+        })
+      }
     }
     for (const l of g.lanes) l.el.removeAttribute('data-drop-blocked')
     // A refused drop is refused in full. While the pointer sat over the blocked

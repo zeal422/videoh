@@ -24,11 +24,18 @@ export interface LaneBox {
   bottom: number
 }
 
-/** A minimal track view: the only fields the gesture math needs. */
+/** A minimal track view: the fields the gesture math needs. */
 export interface TrackView {
   id: string
   kind: string
+  name: string
+  locked?: boolean
 }
+
+/** A lane the drop cannot use, with the reason the release toast reports. */
+export type BlockedLane =
+  | { reason: 'kind'; id: string; kind: string }
+  | { reason: 'locked'; id: string; kind: string; name: string }
 
 /** Another selected clip that follows the dragged clip (whole link groups). */
 export interface GesturePartner {
@@ -41,8 +48,8 @@ export interface GesturePartner {
 /** What a MOVE gesture wants applied for the dragged clip and its partners. */
 export interface MoveDecision {
   targetTrackId: string
-  /** The lane under the pointer that cannot host this clip, if any. */
-  blockedLane: { id: string; kind: string } | null
+  /** The lane that refuses the drop, under the pointer or a partner destination. */
+  blockedLane: BlockedLane | null
   start: number
   /** The snap guide time to show, or null. */
   snapped: number | null
@@ -60,14 +67,14 @@ export function resolveLaneDrop(
   clientY: number,
   origTrackId: string,
   origTrackKind: string,
-): { laneId: string | null; blocked: { id: string; kind: string } | null } {
+): { laneId: string | null; blocked: BlockedLane | null } {
   const lane = lanes.find((l) => clientY >= l.top && clientY <= l.bottom)
   if (!lane) return { laneId: null, blocked: null }
   if (lane.id === origTrackId) return { laneId: origTrackId, blocked: null }
   const sameFamily = (a: string, b: string) =>
     a === b || (a === 'image' && b === 'video') || (b === 'image' && a === 'video')
   if (sameFamily(lane.kind, origTrackKind)) return { laneId: lane.id, blocked: null }
-  return { laneId: null, blocked: { id: lane.id, kind: lane.kind } }
+  return { laneId: null, blocked: { reason: 'kind', id: lane.id, kind: lane.kind } }
 }
 
 /**
@@ -163,6 +170,33 @@ export function decideMove(args: {
       trackId: partnerTrackId,
       start: Math.max(0, p.origStart + delta),
     })
+  }
+
+  // A locked destination refuses the whole drop. The source pre-check cannot
+  // see it: the destination is only known once the pointer moves. Check the
+  // primary target first, then every partner destination, and name the FIRST
+  // locked lane (a partner can map to a different lane than the pointer).
+  if (!blockedLane) {
+    const byId = new Map(tracks.map((track) => [track.id, track]))
+    const destinations = [targetTrackId, ...partnerUpdates.map((update) => update.trackId)]
+    for (const id of destinations) {
+      const destination = byId.get(id)
+      if (destination?.locked !== true) continue
+      blockedLane = {
+        reason: 'locked',
+        id: destination.id,
+        kind: destination.kind,
+        name: destination.name,
+      }
+      break
+    }
+    if (blockedLane) {
+      // No half move: the dragged clip returns to its lane and the partners
+      // plan nothing. ClipView cancels the transient on release, so an earlier
+      // legal time shift is rolled back too.
+      targetTrackId = origTrackId
+      partnerUpdates.length = 0
+    }
   }
 
   return { targetTrackId, blockedLane, start, snapped, partnerUpdates }

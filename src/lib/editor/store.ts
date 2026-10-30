@@ -4,6 +4,7 @@ import { clearClipboard } from './clipboard'
 import { applyCommand, applyCommands, EditorCommand, TrackLockedError } from './commands'
 import { activeTracks, createDoc, findClip, findSequence, findTrack } from './factories'
 import { linkedClips } from './links'
+import { isNativeFile } from './media/relink'
 import { markerSelectionExists, type MarkerSelection } from './markers'
 import type { PlacementMode } from './sequence-ops'
 import { pruneEmptiedTracks, pruneOrphanSequences } from './tracks'
@@ -32,9 +33,18 @@ import type { Doc, Track } from './types'
  * away when its marker stops existing (undo/redo, deletes).
  */
 
-export type AutosaveStatus = 'idle' | 'pending' | 'saved' | 'error'
+/**
+ * The browser-side wiring for the pure command core: the store owns the one
+ * native File check (`isNativeFile`), so `commands.ts` never reads platform
+ * globals. One stable object, reused by committed and transient dispatches.
+ */
+const COMMAND_OPTIONS = { validateRelinkFile: isNativeFile }
 
-/** Timeline editing tools (Premiere: V = selection, C = razor). */
+export type AutosaveStatus =
+  | 'idle'
+  | 'pending'
+  | 'saved'
+  | 'error' /** Timeline editing tools (Premiere: V = selection, C = razor). */
 export type EditorTool = 'select' | 'razor' | 'ripple' | 'slip' | 'pen'
 
 export interface EditorState {
@@ -372,7 +382,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { doc, past } = get()
     let next: Doc
     try {
-      next = Array.isArray(command) ? applyCommands(doc, command) : applyCommand(doc, command)
+      next = Array.isArray(command)
+        ? applyCommands(doc, command, COMMAND_OPTIONS)
+        : applyCommand(doc, command, COMMAND_OPTIONS)
     } catch (error) {
       // A locked track refuses the whole dispatch at the command layer: no
       // doc write, no history entry. Surface it through the shell's one
@@ -431,7 +443,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // lock before `beginTransient`, so a refused drag never starts.
     const { doc } = get()
     try {
-      set({ doc: applyCommand(doc, command) })
+      set({ doc: applyCommand(doc, command, COMMAND_OPTIONS) })
     } catch {
       // Transient (mid-drag) commands may transiently violate constraints;
       // the drag code clamps beforehand — swallow here to keep gestures smooth.
@@ -445,7 +457,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // clamped by the caller; swallow errors exactly like `applyTransient`.
     const { doc } = get()
     try {
-      set({ doc: applyCommands(doc, commands) })
+      set({ doc: applyCommands(doc, commands, COMMAND_OPTIONS) })
     } catch {
       // Mid-gesture frame invalid; the previous frame stays installed.
     }

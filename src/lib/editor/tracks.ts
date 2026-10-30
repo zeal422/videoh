@@ -41,7 +41,7 @@ export function findLockedTrack(tracks: readonly Track[]): Track | undefined {
 }
 
 /** The one user-facing lock message, shared by the command layer and the UI. */
-export function trackLockMessage(track: Track): string {
+export function trackLockMessage(track: Pick<Track, 'id' | 'name'>): string {
   return `Track ${track.name} is locked. Unlock it to edit its clips.`
 }
 

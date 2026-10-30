@@ -58,6 +58,8 @@ import {
   clipTransform,
   EXPORT_AUDIO_BITRATE,
   EXPORT_VIDEO_BITRATES,
+  exportAudioSampleCount,
+  exportFrameCount,
   flattenDraws,
   planVideoFrame,
   type ClipDraw,
@@ -816,9 +818,10 @@ interface BlendSample {
 export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioBuffer | null> {
   if (duration <= 0 || !docHasAudibleClips(doc)) return null
 
+  const length = exportAudioSampleCount(duration, AUDIO_SAMPLE_RATE)
   const offline = new OfflineAudioContext({
     numberOfChannels: 2,
-    length: Math.ceil(duration * AUDIO_SAMPLE_RATE),
+    length,
     sampleRate: AUDIO_SAMPLE_RATE,
   })
   const master = offline.createGain()
@@ -1144,7 +1147,7 @@ export async function exportTimeline(
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Canvas 2D context unavailable')
 
-    const totalFrames = Math.max(0, Math.round(duration * fps))
+    const totalFrames = exportFrameCount(duration, fps)
 
     const videoSource = new CanvasSource(canvas, {
       codec: 'avc',

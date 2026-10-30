@@ -31,6 +31,7 @@ import {
   TINT_MIN,
   TRANSITION_MAX,
   TRANSITION_MIN,
+  WAVEFORM_BUCKETS,
 } from './constants'
 import {
   clipFitsTrack,
@@ -65,7 +66,7 @@ import {
 import { linkedClips } from './links'
 import { lutBudgetMessage, lutLibraryChars } from './lut'
 import { sharesSourceWindow } from './slip'
-import { clipGroupTracks, findLockedTrack } from './tracks'
+import { clipGroupTracks, findLockedTrack, trackLockMessage } from './tracks'
 import { clamp } from './time'
 import {
   hasTimeScaleCurve,
@@ -126,13 +127,24 @@ export class EditorCommandError extends Error {
 }
 
 /**
+ * Options threaded from the browser-side wiring into the pure command core.
+ *
+ * `validateRelinkFile` is the only platform-aware check a command needs. The
+ * core never names `File` or `Blob` (AGENTS rule 2), so a direct dispatch that
+ * does not inject a validator fails closed on a non-undefined file handle.
+ */
+export interface ApplyCommandOptions {
+  validateRelinkFile?: (value: unknown) => boolean
+}
+
+/**
  * A command refused because it would edit a locked track (0.14.0). Carries the
  * track id so the store can surface one notice without parsing the message.
  */
 export class TrackLockedError extends EditorCommandError {
   readonly trackId: string
-  constructor(track: { id: string; name: string }) {
-    super(`Track ${track.name} is locked. Unlock it to edit its clips.`)
+  constructor(track: Pick<Track, 'id' | 'name'>) {
+    super(trackLockMessage(track))
     this.name = 'TrackLockedError'
     this.trackId = track.id
   }
@@ -303,15 +315,19 @@ export type EditorCommand =
  * Throws {@link EditorCommandError} for invalid commands — callers decide whether
  * to surface the message (toasts) or ignore.
  */
-export function applyCommand(doc: Doc, command: EditorCommand): Doc {
+export function applyCommand(doc: Doc, command: EditorCommand, options?: ApplyCommandOptions): Doc {
   assertCommandAllowed(doc, command)
   const next = structuredClone(doc) as Doc
-  mutateDoc(next, command)
+  mutateDoc(next, command, options)
   return next
 }
 
 /** Applies a sequence of commands as one unit (single clone). */
-export function applyCommands(doc: Doc, commands: EditorCommand[]): Doc {
+export function applyCommands(
+  doc: Doc,
+  commands: EditorCommand[],
+  options?: ApplyCommandOptions,
+): Doc {
   const next = structuredClone(doc) as Doc
   for (const command of commands) {
     // Validate against the state this command will ACTUALLY see. A batch can
@@ -321,7 +337,7 @@ export function applyCommands(doc: Doc, commands: EditorCommand[]): Doc {
     // clone is discarded when any command throws, so the caller still sees no
     // partial write and no history entry.
     assertCommandAllowed(next, command)
-    mutateDoc(next, command)
+    mutateDoc(next, command, options)
   }
   return next
 }
@@ -482,7 +498,7 @@ const LOCK_RULES: LockRuleMap = {
 
   // Text and captions. Property edits hit the clip's lane; a new cue hits the
   // text lane it names. `importCaptions` always creates a NEW text track, so it
-  // cannot touch a locked one and needs no refusal (noted in the plan report).
+  // cannot touch a locked one and needs no refusal.
   setTextContent: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setTextStyle: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   importCaptions: { exempt: true },
@@ -527,7 +543,140 @@ export function assertCommandAllowed(doc: Doc, command: EditorCommand): void {
   if (locked) throw new TrackLockedError(locked)
 }
 
-function mutateDoc(doc: Doc, command: EditorCommand): void {
+/**
+ * The media details a relink may write. Identity (`id`, `kind`, `name`) is
+ * immutable through a relink, and `missing` is the command's own write.
+ */
+const RELINK_PATCH_KEYS = [
+  'url',
+  'duration',
+  'width',
+  'height',
+  'file',
+  'thumbnail',
+  'hasAudio',
+  'waveformPeaks',
+] as const
+type RelinkPatchKey = (typeof RELINK_PATCH_KEYS)[number]
+const RELINK_PATCH_KEY_SET = new Set<string>(RELINK_PATCH_KEYS)
+/** Fields the asset cannot lose: omitting keeps the old value, `undefined` throws. */
+const RELINK_REQUIRED_KEYS = new Set<RelinkPatchKey>(['url', 'duration', 'width', 'height'])
+
+function invalidRelinkFile(): EditorCommandError {
+  return new EditorCommandError('Invalid relink file')
+}
+
+/** A dense WAVEFORM_BUCKETS array of finite 0..1 numbers. */
+function isValidWaveformPeaks(value: unknown): value is number[] {
+  if (!Array.isArray(value) || value.length !== WAVEFORM_BUCKETS) return false
+  for (let i = 0; i < WAVEFORM_BUCKETS; i++) {
+    // `every` skips holes, so a sparse array would slip through; an explicit
+    // own-index check makes a missing entry fail.
+    if (!Object.prototype.hasOwnProperty.call(value, i)) return false
+    const peak = value[i]
+    if (typeof peak !== 'number' || !Number.isFinite(peak) || peak < 0 || peak > 1) return false
+  }
+  return true
+}
+
+/**
+ * Build the patch a relink is allowed to write. The caller's object is never
+ * assigned directly: symbol keys, accessors, identity fields, and `missing`
+ * are rejected, the values are validated, and `waveformPeaks` is copied so a
+ * later mutation of the payload cannot change document state.
+ */
+export function sanitizeRelinkPatch(
+  asset: MediaAsset,
+  patch: unknown,
+  options?: ApplyCommandOptions,
+): Partial<MediaAsset> {
+  if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
+    throw new EditorCommandError('Invalid relink patch')
+  }
+  const proto = Object.getPrototypeOf(patch)
+  if (proto !== Object.prototype && proto !== null) {
+    throw new EditorCommandError('Invalid relink patch')
+  }
+  const source = patch as Record<PropertyKey, unknown>
+  const sanitized: Partial<MediaAsset> = {}
+  for (const key of Reflect.ownKeys(source)) {
+    if (typeof key !== 'string' || !RELINK_PATCH_KEY_SET.has(key)) {
+      throw new EditorCommandError('Invalid relink patch')
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(source, key)
+    if (!descriptor || !('value' in descriptor)) {
+      throw new EditorCommandError('Invalid relink patch')
+    }
+    const value = descriptor.value
+    const field = key as RelinkPatchKey
+    if (value === undefined) {
+      if (RELINK_REQUIRED_KEYS.has(field)) {
+        throw new EditorCommandError('Invalid relink patch')
+      }
+      // `undefined` is the one CLEAR signal for the optional media details.
+      // `null` is rejected everywhere.
+      ;(sanitized as Record<string, unknown>)[field] = undefined
+      continue
+    }
+    switch (field) {
+      case 'url': {
+        if (typeof value !== 'string' || value.trim().length === 0) {
+          throw new EditorCommandError('Invalid relink patch')
+        }
+        sanitized.url = value
+        break
+      }
+      case 'duration':
+      case 'width':
+      case 'height': {
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+          throw new EditorCommandError('Invalid relink patch')
+        }
+        sanitized[field] = value
+        break
+      }
+      case 'thumbnail': {
+        if (typeof value !== 'string') throw new EditorCommandError('Invalid relink patch')
+        sanitized.thumbnail = value
+        break
+      }
+      case 'hasAudio': {
+        if (typeof value !== 'boolean') throw new EditorCommandError('Invalid relink patch')
+        sanitized.hasAudio = value
+        break
+      }
+      case 'waveformPeaks': {
+        if (!isValidWaveformPeaks(value)) throw new EditorCommandError('Invalid relink patch')
+        sanitized.waveformPeaks = [...value]
+        break
+      }
+      case 'file': {
+        if (value === null) throw invalidRelinkFile()
+        const validate = options?.validateRelinkFile
+        let accepted = false
+        if (validate) {
+          try {
+            accepted = validate(value) === true
+          } catch {
+            throw invalidRelinkFile()
+          }
+        }
+        if (!accepted) throw invalidRelinkFile()
+        // A browser handle, not document data: keep the reference.
+        sanitized.file = value as MediaAsset['file']
+        break
+      }
+    }
+  }
+  // A relink always clears `missing`, so the RESULT must be playable. An
+  // offline asset hydrates with an empty URL; omitting url cannot rescue it.
+  if (sanitized.url === undefined && !asset.url.trim()) {
+    throw new EditorCommandError('Invalid relink patch')
+  }
+  return sanitized
+}
+
+function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptions): void {
   switch (command.type) {
     case 'addMediaAsset': {
       if (doc.media.some((m) => m.id === command.asset.id)) {
@@ -549,7 +698,7 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
     case 'relinkMedia': {
       const asset = doc.media.find((m) => m.id === command.mediaId)
       if (!asset) throw new EditorCommandError('Unknown media asset')
-      Object.assign(asset, command.patch, { missing: false })
+      Object.assign(asset, sanitizeRelinkPatch(asset, command.patch, options), { missing: false })
       return
     }
 
@@ -1357,6 +1506,12 @@ function mutateDoc(doc: Doc, command: EditorCommand): void {
       const asset = findMedia(doc, clip.mediaId)
       if (!asset || asset.kind === 'image' || clip.text !== undefined || clip.sequenceId) {
         throw new EditorCommandError('This clip has no source window to slip')
+      }
+      // The slip planner refuses a time-remapped clip, and the command mirrors
+      // it. Without this the group check below would refuse the same clip with
+      // a linked-window message that misdescribes the cause.
+      if (hasTimeScaleCurve(clip)) {
+        throw new EditorCommandError('A time-remapped clip cannot be slipped')
       }
       if (!Number.isFinite(command.inPoint) || command.inPoint < 0) {
         throw new EditorCommandError('Invalid slip position')

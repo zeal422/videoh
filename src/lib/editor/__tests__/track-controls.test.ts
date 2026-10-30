@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import {
   applyCommand,
@@ -203,6 +205,13 @@ describe('audibility helper', () => {
 })
 
 describe('lock command inventory', () => {
+  it('the command layer shares the one lock message helper', () => {
+    const src = readFileSync(join(process.cwd(), 'src/lib/editor/commands.ts'), 'utf8')
+    expect(src).toContain('super(trackLockMessage(track))')
+    // A second hardcoded sentence can drift from tracks.ts.
+    expect(src).not.toContain('is locked. Unlock it to edit its clips.')
+  })
+
   it('refuses every clip-editing command on a locked lane, naming the track', () => {
     const doc = lockDoc()
     const blocked: EditorCommand[] = [
@@ -566,7 +575,7 @@ describe('store lock behavior', () => {
     expect(useEditorStore.getState().doc).toEqual(before)
   })
 
-  it('Plan 04 envelope frames (move, add, remove) are refused as transients', () => {
+  it('volume envelope frames (move, add, remove) are refused as transients', () => {
     const doc = lockDoc()
     // Give the locked audio clip a curve so a "remove" has something to remove.
     doc.project.tracks.find((t) => t.id === 'a1')!.clips[0].keyframes = {

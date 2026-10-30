@@ -764,6 +764,27 @@ describe('Clip tab volume summary', () => {
     expect(screen.getAllByRole('heading', { name: 'Volume' })).toHaveLength(1)
   })
 
+  it('plots keyframe dots on the same dB axis as the curve', () => {
+    renderInspector(
+      audioDoc([
+        { time: 1, value: 1, interpolation: 'linear' },
+        { time: 3, value: 0.5, interpolation: 'linear' },
+      ]),
+      'clip-a',
+    )
+
+    // Unity gain is 0 dB, which sits at (0 + 60) / 66 of the -60..+6 dB box.
+    // The unfixed dot used the linear 0..2 gain box and read 50.
+    expect(parseFloat(screen.getByTestId('kf-dot-volume-0').style.bottom)).toBeCloseTo(90.909, 3)
+    // Gain 0.5 is -6.02 dB, slightly below the -6 dB label at 81.818.
+    expect(parseFloat(screen.getByTestId('kf-dot-volume-1').style.bottom)).toBeCloseTo(81.787, 3)
+
+    // The segment endpoints read the same mapping: 100 - percentForValue.
+    const d = screen.getByTestId('kf-seg-volume-0').getAttribute('d') ?? ''
+    expect(d.startsWith('M 25.000,9.091')).toBe(true)
+    expect(d.endsWith('75.000,18.213')).toBe(true)
+  })
+
   it('shows a dB summary even before the first keyframe, with an add hint', () => {
     renderInspector(audioDoc(undefined, { gain: 0.5 }), 'clip-a')
     expect(screen.getByTestId('clip-volume-db')).toHaveTextContent('-6.0 dB')
@@ -1100,6 +1121,9 @@ describe('opacity envelope and the Pen (0.16.0)', () => {
     stubPlot()
     const pastBefore = useEditorStore.getState().past.length
 
+    // The line belongs to opacity under the Pen: the volume overlay keeps only
+    // its points, so a solo video never shows two curves at once.
+    expect(screen.queryByTestId('volume-envelope-curve')).not.toBeInTheDocument()
     expect(screen.getByTestId('volume-envelope-hit').style.pointerEvents).toBe('none')
     expect(screen.getByTestId('volume-dot-0').className).toContain('pointer-events-auto')
 

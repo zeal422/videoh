@@ -10,6 +10,7 @@ import {
   useEditorStore,
 } from '../store'
 import { copyClips, hasClipboardContent } from '../clipboard'
+import { EditorCommandError } from '../commands'
 import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 import type { Doc } from '../types'
 
@@ -918,5 +919,45 @@ describe('replaceDoc clears the clipboard (0.8.1)', () => {
 
     useEditorStore.getState().replaceDoc(createDoc())
     expect(hasClipboardContent()).toBe(false)
+  })
+})
+
+describe('relinkMedia file validation (store wiring)', () => {
+  function offlineAsset() {
+    const asset = createMediaAsset({ kind: 'video', name: 'clip.mp4', duration: 10, url: '' })
+    const doc = createDoc()
+    doc.media = [{ ...asset, missing: true }]
+    useEditorStore.setState({ ...useEditorStore.getInitialState(), doc })
+    return asset
+  }
+
+  it('stores a real File handle by reference through store.apply', () => {
+    const asset = offlineAsset()
+    const file = new File(['bytes'], 'clip.mp4', { type: 'video/mp4' })
+    const ok = useEditorStore.getState().apply({
+      type: 'relinkMedia',
+      mediaId: asset.id,
+      patch: { url: 'blob:new', duration: 10, width: 640, height: 360, file },
+    })
+    expect(ok).toBe(true)
+    expect(useEditorStore.getState().doc.media[0].file).toBe(file)
+  })
+
+  it('refuses a prototype-spoofed File and leaves the asset unchanged', () => {
+    const asset = offlineAsset()
+    const before = structuredClone(useEditorStore.getState().doc.media[0])
+    const spoof = Object.create(File.prototype) as File
+    Object.defineProperty(spoof, 'size', { value: 5 })
+    Object.defineProperty(spoof, 'arrayBuffer', { value: () => new ArrayBuffer(0) })
+
+    expect(() =>
+      useEditorStore.getState().apply({
+        type: 'relinkMedia',
+        mediaId: asset.id,
+        patch: { url: 'blob:new', duration: 10, file: spoof },
+      }),
+    ).toThrow(EditorCommandError)
+    expect(useEditorStore.getState().doc.media[0]).toEqual(before)
+    expect(useEditorStore.getState().past).toHaveLength(0)
   })
 })

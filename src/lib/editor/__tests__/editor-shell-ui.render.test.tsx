@@ -573,6 +573,59 @@ describe('EditorShell reference panel tree', () => {
     await waitFor(() => expect(useWorkspaceStore.getState().collapsed.timeline).toBe(false))
   })
 
+  it('hides collapse for Media and Source while the preview is hidden and clears stale flags', async () => {
+    window.localStorage.setItem('releases:lastSeen', CURRENT_VERSION)
+    const workspace = useWorkspaceStore.getState()
+    useWorkspaceStore.setState({
+      ...workspace,
+      hidden: { ...workspace.hidden, preview: true },
+    })
+    render(<EditorShell />)
+
+    // With no auto-sized preview, the survivor cannot absorb a collapse, so
+    // neither panel offers a chevron in either direction.
+    expect(screen.queryByRole('button', { name: 'Collapse Media panel' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Expand Media panel' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Collapse Source Monitor panel' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Expand Source Monitor panel' }),
+    ).not.toBeInTheDocument()
+
+    // A stale persisted collapse must not turn into a ghost strip: the panel
+    // clears the flag without calling the library's collapse path.
+    act(() => {
+      const current = useWorkspaceStore.getState()
+      useWorkspaceStore.setState({
+        collapsed: { ...current.collapsed, media: true, source: true },
+      })
+    })
+    await waitFor(() => {
+      expect(useWorkspaceStore.getState().collapsed.media).toBe(false)
+      expect(useWorkspaceStore.getState().collapsed.source).toBe(false)
+    })
+    expect(screen.queryByRole('button', { name: 'Expand Media panel' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Expand Source Monitor panel' }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('the upper-row observer has no tautological preview guards', () => {
+    const src = readFileSync('src/components/editor/EditorShell.tsx', 'utf8')
+    const observer = src.slice(
+      src.indexOf('const handleUpperRowLayout'),
+      src.indexOf('// Autosave lifecycle'),
+    )
+    expect(observer).toContain('if (hidden.preview) return')
+    expect(observer).toContain('if (!hidden.media) {')
+    expect(observer).toContain('if (!hidden.source) {')
+    // The early return is the ONLY preview guard; the old conditions repeated
+    // `!hidden.preview` after it, which was always true and read as if a
+    // per-panel guard existed.
+    expect(observer).not.toContain('!hidden.preview')
+  })
+
   it('stacks the inspector above the bottom row', () => {
     const src = readFileSync('src/components/editor/EditorShell.tsx', 'utf8')
     const upper = src.indexOf('id="panel-upper"')
@@ -598,8 +651,10 @@ describe('EditorShell reference panel tree', () => {
     expect(inspectorPanel).toContain('editor-scroll')
     expect(inspectorPanel).toContain('overflow-y-auto')
     // A panel alone in its row has no collapse control; the counts guard both
-    // the shared-row chevron and the library's one-panel collapse path.
-    expect(src).toContain('collapsible={upperRowPanelCount > 1}')
+    // the shared-row chevron and the library's one-panel collapse path. With
+    // the preview hidden the media/source pair fills the row and has no
+    // auto-sized neighbour to absorb a collapse, so neither is collapsible.
+    expect(src).toContain('collapsible={!hidden.preview && upperRowPanelCount > 1}')
     expect(src).toContain('collapsible={bottomRowPanelCount > 1}')
     // Hiding the preview removes the auto remainder and normalizes the fixed
     // panels, so the layout observer must not persist those forced sizes.

@@ -418,11 +418,45 @@ export function clipCrossfadeSchedule(clip: Clip, track: Track): GainEvent[] {
   return events
 }
 
+/**
+ * Frames an export renders. A finite duration is not enough: a hand-edited
+ * project can carry an enormous value, and `duration * fps` can overflow to
+ * Infinity, which would make the render loop never finish. Cap the count so a
+ * bad file fails with a clear error instead of hanging the tab.
+ */
+export const EXPORT_MAX_FRAMES = 1_000_000
+
+export function exportFrameCount(duration: number, fps: number): number {
+  const total = Math.max(0, Math.round(duration * fps))
+  if (!Number.isFinite(total) || total > EXPORT_MAX_FRAMES) {
+    throw new Error(`Timeline is too long to export (over ${EXPORT_MAX_FRAMES} frames)`)
+  }
+  return total
+}
+
+/**
+ * Audio sample frames an export may mix per channel. The mix is stereo
+ * Float32, so 30 minutes at 48 kHz is about 691 MB. The frame cap alone would
+ * allow a 9-hour 30fps timeline, whose mix buffer would be several GB; reject
+ * before `OfflineAudioContext` allocates it.
+ */
+export const EXPORT_MAX_AUDIO_SAMPLES = 48_000 * 60 * 30
+
+export function exportAudioSampleCount(duration: number, sampleRate: number): number {
+  const total = Math.max(0, Math.ceil(duration * sampleRate))
+  if (!Number.isFinite(total) || total > EXPORT_MAX_AUDIO_SAMPLES) {
+    throw new Error(
+      `Timeline audio is too long to export (over ${EXPORT_MAX_AUDIO_SAMPLES} samples per channel)`,
+    )
+  }
+  return total
+}
+
 /** All frame times the export renders (frame-quantized). */
 export function exportFrameTimes(doc: Doc): number[] {
   const duration = docDuration(doc)
   const fps = doc.project.fps
-  const total = Math.max(0, Math.round(duration * fps))
+  const total = exportFrameCount(duration, fps)
   const times: number[] = []
   for (let i = 0; i < total; i++) times.push(i / fps)
   return times

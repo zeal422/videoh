@@ -1,12 +1,12 @@
 ---
 name: implementation-discipline
-description: Working checklist and gates for executing any change in this repo, distilled from the drill and ponytail mentalities plus AGENTS.md. Load when implementing a PLAN-*.md, resolving a reported problem, or running any multi-step change. Covers baseline and reproduction, the minimal-code ladder, non-vacuous locks, action-and-result proof, untrusted findings, the trigger audit, and a failure-adaptation loop that improves the checklist itself.
+description: Working checklist and gates for executing any change in this repo, distilled from the drill and ponytail mentalities plus AGENTS.md. Load when implementing a multi-step change, resolving a reported problem, or running a fix list. Covers baseline and reproduction, the minimal-code ladder, non-vacuous locks, action-and-result proof, untrusted findings, the trigger audit, and a failure-adaptation loop that improves the checklist itself.
 ---
 
 # Implementation discipline
 
 A repo-local checklist for any implementation or fix. It does not replace
-`AGENTS.md` (rules, commands, doc and count locks) or the plan being executed.
+`AGENTS.md` (rules, commands, doc and count locks) or the change being executed.
 It is the working order and the gates for carrying either out.
 
 Load it before the first edit. Follow the triggers below. Record the audit at
@@ -72,7 +72,7 @@ run starts smarter than the last.
    boundaries, error handling that prevents data loss, security, accessibility
    basics, or anything the user explicitly asked for.
 10. **Scope discipline, when the work grows.** An extra file or symbol is a
-    mechanical deviation: update the plan, log it, continue. If the chosen
+    mechanical deviation: record it with the change, log it, continue. If the chosen
     approach cannot work, re-plan before expanding scope. If the request is
     wrong, ambiguous, or unnecessary, say so with evidence instead of forcing
     a wrong-shaped change.

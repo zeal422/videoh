@@ -17,8 +17,8 @@ import {
  * The Pen edits ONE automation curve on the selected clip: volume on audio
  * clips, opacity on anything with picture. The property rule is structural
  * (`audio` track or `audioOnly`), not about whether the clip happens to carry
- * sound: a solo video with embedded audio edits opacity, while its Plan 04
- * volume envelope stays directly draggable through its dots.
+ * sound: a solo video with embedded audio edits opacity, while its volume
+ * envelope stays directly draggable through its dots.
  *
  * Times are clip-local seconds, values are stored units (linear gain 0..2,
  * opacity 0..1). Every function returns a new sorted array and never mutates
@@ -77,7 +77,7 @@ export interface AutomationSample {
 
 /**
  * Evenly spaced samples across the clip for the timeline overlay. Volume
- * reuses the Plan 04 dB sampler; opacity samples `animatedValue` directly.
+ * reuses the shared dB sampler; opacity samples `animatedValue` directly.
  * The last sample is at the clip's duration inclusive.
  */
 export function sampleAutomationCurve(

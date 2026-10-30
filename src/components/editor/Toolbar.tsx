@@ -54,6 +54,7 @@ import { openProjectFile } from '@/lib/editor/project-io'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { useEditorStore } from '@/lib/editor/store'
 import type { TextStyle } from '@/lib/editor/types'
+import { isAutomationGestureLive } from '@/hooks/editor/gesture-state'
 
 /** Top toolbar: tools (V/C), edit history, edit tools, zoom, project name, project IO, export. */
 export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
@@ -70,6 +71,13 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
   const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
   const { apply, undo, redo, toggleSnap, setPxPerSec, setActiveTool, setDropMode } =
     useEditorStore.getState()
+
+  // A live gesture owns the tool: switching mid-drag would show one tool while
+  // the in-flight closures still run the old one. Same rule as the keyboard.
+  const chooseTool = (tool: 'select' | 'razor' | 'ripple' | 'slip' | 'pen') => {
+    if (isAutomationGestureLive()) return
+    setActiveTool(tool)
+  }
 
   const loadInputRef = useRef<HTMLInputElement>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -187,31 +195,31 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
         {/* Tools (Premiere: V selection / C razor) */}
         <ToolButton
           label="Selection tool (V)"
-          onClick={() => setActiveTool('select')}
+          onClick={() => chooseTool('select')}
           active={activeTool === 'select'}
           icon={<MousePointer2 className="size-4" />}
         />
         <ToolButton
           label="Razor tool (C) — click a clip to cut it"
-          onClick={() => setActiveTool('razor')}
+          onClick={() => chooseTool('razor')}
           active={activeTool === 'razor'}
           icon={<Slice className="size-4" />}
         />
         <ToolButton
           label="Ripple trim tool (B). Drag a clip edge to shift later clips on this track; linked partners on other tracks do not shift."
-          onClick={() => setActiveTool('ripple')}
+          onClick={() => chooseTool('ripple')}
           active={activeTool === 'ripple'}
           icon={<BetweenHorizontalStart className="size-4" />}
         />
         <ToolButton
           label="Slip tool (Y). Drag a clip to change which part of its source it shows, without moving it."
-          onClick={() => setActiveTool('slip')}
+          onClick={() => chooseTool('slip')}
           active={activeTool === 'slip'}
           icon={<MoveHorizontal className="size-4" />}
         />
         <ToolButton
           label="Pen tool (P). Click the curve to add a keyframe, drag a dot to edit it, Alt-click or Delete to remove. Edits volume on audio clips and opacity on picture clips."
-          onClick={() => setActiveTool('pen')}
+          onClick={() => chooseTool('pen')}
           active={activeTool === 'pen'}
           icon={<PenTool className="size-4" />}
         />

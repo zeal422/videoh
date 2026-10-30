@@ -14,7 +14,7 @@ import { createClip, createDoc, createMediaAsset, createTrack } from '../factori
 import type { Doc, MediaAsset, Track } from '../types'
 
 /**
- * Plan 02 chrome render tests: media cards, the status bar, and the padded
+ * Chrome render tests: media cards, the status bar, and the padded
  * transport clock. Geometry that jsdom cannot measure (track rows, panel
  * widths) is locked separately in the timeline and shell suites.
  */

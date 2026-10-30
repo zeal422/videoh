@@ -2,7 +2,8 @@
 
 import { toast } from '@/hooks/use-toast'
 
-import { relinkPatchFrom, type RelinkMode } from './media/relink'
+import { sanitizeRelinkPatch } from './commands'
+import { isNativeFile, relinkPatchFrom, type RelinkMode } from './media/relink'
 import { importFile } from './media/probe'
 import { buildProxy, revokeAllProxies } from './media/proxies'
 import { shouldProxy } from './proxy'
@@ -265,7 +266,15 @@ export async function hydrateSampleMedia(doc: Doc): Promise<SampleHydration> {
     const fresh = probes.get(asset.name)
     if (!fresh) return asset
     relinked += 1
-    return { ...asset, ...relinkPatchFrom(fresh, 'sample'), missing: false }
+    // The same patch boundary the relink command uses, with the browser-side
+    // File guard. Merging the sanitized patch here (rather than dispatching
+    // relinkMedia commands after install) keeps the load one undo step.
+    const patch = sanitizeRelinkPatch(asset, relinkPatchFrom(fresh, 'sample'), {
+      validateRelinkFile: isNativeFile,
+    })
+    // `missing` is the trusted final write, not a patch field: the sanitizer
+    // rejects it by design, so it is applied after the sanitized merge.
+    return { ...asset, ...patch, missing: false }
   })
   return {
     doc: { ...doc, media },

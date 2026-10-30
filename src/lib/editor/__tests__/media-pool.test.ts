@@ -1,9 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { SAMPLES, planSampleLoad, sampleImportAction } from '../sample-media'
-import { relinkPatchFrom } from '../media/relink'
+import { isNativeFile, relinkPatchFrom } from '../media/relink'
 import type { MediaAsset } from '../types'
 
 /**
@@ -196,6 +196,74 @@ describe('relinkPatchFrom (a relink keeps everything the exporter needs)', () =>
       hasAudio: true,
       waveformPeaks: [0.5],
     })
+  })
+})
+
+describe('isNativeFile (the relink handle boundary)', () => {
+  it('accepts a real File', () => {
+    expect(isNativeFile(new File(['bytes'], 'clip.mp4', { type: 'video/mp4' }))).toBe(true)
+  })
+
+  it('rejects a prototype spoof', () => {
+    const spoof = Object.create(File.prototype) as Record<string, unknown>
+    Object.defineProperty(spoof, 'size', { value: 5 })
+    Object.defineProperty(spoof, 'arrayBuffer', { value: () => new ArrayBuffer(0) })
+    expect(isNativeFile(spoof)).toBe(false)
+  })
+
+  it('rejects a plain Blob, the isolated proof of the File name check', () => {
+    // A plain Blob passes the Blob slice, size, and arrayBuffer checks and
+    // fails only the File-specific name getter. Bun returns undefined there;
+    // Node throws a TypeError.
+    expect(isNativeFile(new Blob(['bytes']))).toBe(false)
+  })
+
+  it('rejects a structural stub', () => {
+    expect(isNativeFile({ size: 5, arrayBuffer: () => new ArrayBuffer(0) })).toBe(false)
+  })
+
+  it('rejects a File with a hostile size', () => {
+    for (const size of [Number.NaN, Infinity, -1]) {
+      const file = new File(['bytes'], 'clip.mp4')
+      Object.defineProperty(file, 'size', { value: size })
+      expect(isNativeFile(file)).toBe(false)
+    }
+  })
+
+  it('rejects a native File whose arrayBuffer is shadowed with a non-function', () => {
+    // The MP4 audio path calls file.arrayBuffer() and fails soft to no audio,
+    // so a handle that cannot produce bytes must not enter the document.
+    const file = new File(['bytes'], 'clip.mp4')
+    Object.defineProperty(file, 'arrayBuffer', { value: 5 })
+    expect(isNativeFile(file)).toBe(false)
+  })
+
+  it('rejects a real File when the Blob internal-slot check throws', () => {
+    const file = new File(['bytes'], 'clip.mp4')
+    const slice = vi.spyOn(Blob.prototype, 'slice').mockImplementation(() => {
+      throw new Error('no Blob slot')
+    })
+    try {
+      expect(isNativeFile(file)).toBe(false)
+    } finally {
+      slice.mockRestore()
+    }
+  })
+
+  it('fails closed when File or Blob is absent', () => {
+    const file = new File(['bytes'], 'clip.mp4')
+    vi.stubGlobal('File', undefined)
+    try {
+      expect(isNativeFile(file)).toBe(false)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    vi.stubGlobal('Blob', undefined)
+    try {
+      expect(isNativeFile(file)).toBe(false)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 

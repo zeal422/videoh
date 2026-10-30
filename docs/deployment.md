@@ -119,7 +119,8 @@ bun run battery                  # reuses the server above and starts nothing
 ```
 
 The 0.16.2 dev and artifact runs on 2026-10-28 were both 66 passed, 0 failed with terminal
-`BATTERY_EXIT=0`. Earlier 0.9.0 through 0.11.0 records covered both the dev server and the
+`BATTERY_EXIT=0`. The 0.16.3 dev and artifact runs on 2026-10-29 were both 67 passed, 0 failed with
+terminal `BATTERY_EXIT=0`. Earlier 0.9.0 through 0.11.0 records covered both the dev server and the
 standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 
 See [testing.md](testing.md#end-to-end-battery) for the A/B two-tree recipe and the runner's full

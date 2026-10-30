@@ -4,6 +4,9 @@ import {
   clipCrossfadeSchedule,
   clipGainSchedule,
   estimateExportBytes,
+  EXPORT_MAX_AUDIO_SAMPLES,
+  EXPORT_MAX_FRAMES,
+  exportAudioSampleCount,
   exportFrameTimes,
   flattenDraws,
   needsReverse,
@@ -119,6 +122,27 @@ describe('exportFrameTimes', () => {
   it('an empty timeline renders no frames', () => {
     const d = doc([{ kind: 'video', clips: [] }], [])
     expect(exportFrameTimes(d)).toEqual([])
+  })
+
+  it('refuses a duration whose frame count is not finite or exceeds the cap', () => {
+    // A hand-edited project can carry a huge duration. `duration * fps`
+    // overflows to Infinity, and the old loop would never finish.
+    const huge = doc([{ kind: 'video', clips: [videoClip({ duration: 1e308 })] }], [])
+    expect(() => exportFrameTimes(huge)).toThrow(/too long to export/)
+
+    const overCap = doc(
+      [{ kind: 'video', clips: [videoClip({ duration: EXPORT_MAX_FRAMES / 30 + 1 })] }],
+      [],
+    )
+    expect(() => exportFrameTimes(overCap)).toThrow(/too long to export/)
+  })
+
+  it('refuses an audio mix over the sample budget', () => {
+    expect(exportAudioSampleCount(10, 48_000)).toBe(480_000)
+    expect(() => exportAudioSampleCount(EXPORT_MAX_AUDIO_SAMPLES / 48_000 + 1, 48_000)).toThrow(
+      /audio is too long to export/,
+    )
+    expect(() => exportAudioSampleCount(1e308, 48_000)).toThrow(/audio is too long to export/)
   })
 })
 

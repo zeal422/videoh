@@ -22,8 +22,8 @@ import { WORKSPACE_STORAGE_KEY } from '../workspace'
  * Appearance palettes ride on top of `.dark` as `:root[data-palette]` blocks.
  * The palette, token-set, and contrast assertions are intentionally static:
  * jsdom does not apply stylesheets, so the source contract is the only reliable
- * lock. The contrast math follows the same OKLCH to sRGB conversion the plan
- * records, including clipping the out-of-gamut destructive fills.
+ * lock. The contrast math follows the same OKLCH to sRGB conversion the palette
+ * tokens use, including clipping the out-of-gamut destructive fills.
  */
 
 /** Tests run from the project root (vitest cwd). */

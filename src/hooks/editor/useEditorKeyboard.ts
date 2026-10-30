@@ -27,7 +27,8 @@ import {
 import { toast } from '@/hooks/use-toast'
 import { FRAME_STEPS, PPS_MAX, PPS_MIN, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
-import { isTransientActive, useEditorStore } from '@/lib/editor/store'
+import { useEditorStore } from '@/lib/editor/store'
+import { isAutomationGestureLive } from './gesture-state'
 
 /**
  * Global keyboard shortcuts (skipped while typing in inputs/textareas).
@@ -223,12 +224,16 @@ export function useEditorKeyboard(onSave: () => void): void {
       // A pending automation press (a dot down before the 3px drag threshold,
       // or an armed Alt-click) owns the tool keys too, even though no transient
       // has started yet. The envelope marks the gesture on its root.
-      const automationGestureLive = () =>
-        isTransientActive() || !!document.querySelector('[data-automation-gesture="true"]')
       const switchTool = (tool: 'select' | 'razor' | 'ripple' | 'slip' | 'pen') => {
-        if (automationGestureLive()) return
+        if (isAutomationGestureLive()) return
         store.setActiveTool(tool)
       }
+      // Ctrl/Meta keys belong to the browser and the modifier combos above.
+      // Without this gate every unmatched combo fell through to the single-key
+      // map: Ctrl+P opened print AND selected the Pen, Ctrl+B ripple-trimmed,
+      // Ctrl+D duplicated. Shift is deliberately NOT gated: the uppercase case
+      // labels below are the Shift+letter shortcuts.
+      if (mod) return
       switch (e.key) {
         case 'v':
         case 'V': {
@@ -262,7 +267,7 @@ export function useEditorKeyboard(onSave: () => void): void {
           break
         }
         case 'Escape': {
-          if (automationGestureLive()) break
+          if (isAutomationGestureLive()) break
           store.setActiveTool('select')
           store.selectMarker(null)
           break
@@ -405,13 +410,13 @@ export function useEditorKeyboard(onSave: () => void): void {
           // Premiere: I marks the source In at the source monitor's playhead.
           // Ignored without a source selection (and inside form fields, like
           // every binding here).
-          if (mod || !store.sourceAssetId) break
+          if (!store.sourceAssetId) break
           store.markSourceIn()
           break
         }
         case 'o':
         case 'O': {
-          if (mod || !store.sourceAssetId) break
+          if (!store.sourceAssetId) break
           store.markSourceOut()
           break
         }
@@ -420,7 +425,6 @@ export function useEditorKeyboard(onSave: () => void): void {
           // Three-point editing: place the marked span (or the whole asset)
           // at the sequence playhead. `,` inserts, `.` overwrites. Independent
           // of the sticky drop-mode toggle, like Premiere's defaults.
-          if (mod) break
           const source = store.sourceAssetId
             ? doc.media.find((m) => m.id === store.sourceAssetId)
             : undefined

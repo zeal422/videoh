@@ -150,7 +150,7 @@ describe('adding keyframes', () => {
     expect(addKeyframeAt(clip, 'opacity', 2, 0.5, 0)).toHaveLength(3)
   })
 
-  it('keeps volume values inside the gain bounds and reuses the Plan 04 add path', () => {
+  it('keeps volume values inside the gain bounds and reuses the volume add path', () => {
     const clip = clipWith({ gain: 0.5, keyframes: { volume: VOLUME_CURVE } })
     const next = addKeyframeAt(clip, 'volume', 1, 9, 30)
     expect(next.map((k) => k.time)).toEqual([0, 1, 2, 4])
@@ -203,7 +203,7 @@ describe('nudging keyframes', () => {
     expect(next).toEqual(OPACITY_CURVE)
   })
 
-  it('reuses the Plan 04 move helper for volume', () => {
+  it('reuses the volume move helper', () => {
     const clip = clipWith({ keyframes: { volume: VOLUME_CURVE } })
     const next = nudgeKeyframe(clip, 'volume', 1, 0, 0.5)
     expect(next[1].value).toBe(1)

@@ -2562,6 +2562,27 @@ panels_expand_after_reset() {
   snap | grep -q 'Collapse Media panel'
 }
 
+panels_preview_hide() {
+  # Collapse Media, then hide the Program Monitor. With no auto-sized preview
+  # the pair fills the row, so neither panel may keep a collapse control: the
+  # stale collapsed flag used to re-render a 29px ghost strip with a dead
+  # "Expand Media panel" chevron.
+  ab find role button click --name 'Collapse Media panel' >/dev/null && sleep 0.5
+  ab find role menuitem click --name 'Window' >/dev/null && sleep 0.3
+  ab find role menuitemcheckbox click --name 'Program Monitor' >/dev/null || {
+    echo "panels: could not hide the Program Monitor" >&2; return 1; }
+  sleep 0.5
+  [ "$(evaln '(() => { const d = document; const labels = [...d.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") || ""); const chevron = labels.some((l) => /^(?:Expand|Collapse) (?:Media|Source Monitor) panel$/.test(l)); return chevron ? "chevron" : "clean"; })()')" = "clean" ] || {
+    echo "panels: preview-hidden pair still offers a collapse control" >&2; return 1; }
+  # Reset must restore the preview and Media's collapse control.
+  ab find role menuitem click --name 'Window' >/dev/null && sleep 0.4
+  ab find role menuitem click --name 'Reset Workspace Layout' >/dev/null && sleep 0.8
+  ab wait --text 'Workspace layout reset'
+  [ "$(evaln '(() => { const d = document; return d.querySelector("[data-panel-id=panel-preview]") ? "preview" : "no-preview"; })()')" = "preview" ] || {
+    echo "panels: preview did not return after reset" >&2; return 1; }
+  snap | grep -q 'Collapse Media panel'
+}
+
 # ————— F8 autosave + save —————
 f08_autosave() {
   # Autosave-settle poll (item 3): the debounced write (800ms, status set
@@ -3563,6 +3584,7 @@ step "panels: collapse Media panel (strip shown)"  panels_collapse
 step "panels: solo guard + collapse Source and Inspector" panels_collapse_pair
 step "panels: Window > Reset Workspace Layout"     panels_reset
 step "panels: reset expanded Media again"          panels_expand_after_reset
+step "panels: hide preview after a collapse (no ghost strip)" panels_preview_hide
 step "f08 autosave: reload -> restore session"     f08_autosave
 step "f08 save: capture the .veproj.json download"  f08_capture_project
 step "f08 save: project download toast"            f08_save

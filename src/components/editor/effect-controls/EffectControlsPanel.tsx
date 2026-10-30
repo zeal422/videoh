@@ -1012,7 +1012,10 @@ function KeyframeGraph({
       {keyframes.map((k, i) => {
         const left =
           (Math.max(0, Math.min(clip.duration, axis(k.time))) / Math.max(1e-6, clip.duration)) * 100
-        const bottom = ((k.value - bounds.min) / span) * 100
+        // The dot reads the SAME y mapping as the curve and the handles. A
+        // linear gain box under a dB graph plotted unity at 50 percent while
+        // its curve sat at 90.9. The clamp stays as a cheap belt and braces.
+        const bottom = percentForValue(k.value)
         const eased = segmentControls(k) !== undefined
         return (
           <div

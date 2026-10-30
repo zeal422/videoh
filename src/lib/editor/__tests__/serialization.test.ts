@@ -286,6 +286,21 @@ describe('deserializeDoc', () => {
     expect(doc.project.tracks[1].clips).toEqual([])
   })
 
+  it('hydrates track mute only from an explicit true, like solo and lock', () => {
+    const hydrate = (muted: unknown) =>
+      deserializeDoc({
+        version: 1,
+        project: { tracks: [{ kind: 'video', muted, clips: [] }] },
+      }).doc.project.tracks[0].muted
+
+    expect(hydrate(true)).toBe(true)
+    expect(hydrate(false)).toBe(false)
+    expect(hydrate(undefined)).toBe(false)
+    // Hostile values used to coerce to true through `!!`.
+    expect(hydrate('yes')).toBe(false)
+    expect(hydrate(2)).toBe(false)
+  })
+
   it('drops a foreign timeScale curve on picture-less clips, keeps the picture half', () => {
     // A hand-edited or imported file can put a timeScale curve on a clip that
     // carries no picture (the A/V twin or a clip of an audio asset). The

@@ -200,9 +200,11 @@ Stable hooks used across flows and tests:
 - **Reaching a lane** — holding a dragged clip within 24px of the top/bottom edge of the track area
   scrolls the timeline (1px → 14px per frame with depth), so a lane that is not among the visible rows
   can still be reached and dropped on.
-- **Refused drops** — dropping a clip over a lane of the wrong kind marks that lane
-  (`[data-drop-blocked="true"]`) while the pointer is over it and toasts the reason on release, instead
-  of snapping back silently. The document does not change.
+- **Refused drops** — dropping a clip over a lane of the wrong kind, or over a locked lane, marks that
+  lane (`[data-drop-blocked="true"]`) while the pointer is over it and toasts the reason on release,
+  instead of snapping back silently. A locked destination refuses the whole drop (partners included)
+  and rolls back any earlier time shift from the same drag, like a locked source. The document does
+  not change.
 - **Empty lanes do not linger** — the edit that takes a lane's last clip removes the lane with it, in the
   same history entry, so one undo restores both. A lane that was already empty is kept, and the last lane
   always survives ([architecture.md](architecture.md#invariants), rule 17).
@@ -285,11 +287,14 @@ Stable hooks used across flows and tests:
   nudge one frame, and Up/Down change gain by 0.5 dB. Razor, ripple, and slip make the whole envelope
   inert so the modal tool owns the pointer. The Pen keeps its target curve live: single-click add,
   crosshair over the line, and a solo video's volume dots remain directly draggable while opacity is
-  the Pen curve.
+  the Pen curve. That dots-only volume overlay hides the volume line and leaves only its points, so
+  the video never shows two curves at once.
 - The Clip tab replaces the old linear Audio section with a dB Volume summary: the current level at
-  the playhead, mute, the static gain slider, and the shared `KeyframeGraph` on the dB scale. A
-  selected video half targets its linked twin and labels which clip is being edited. The Effect
-  Controls volume row uses the same dB readout and graph.
+  the playhead, mute, the static gain slider, and the shared `KeyframeGraph` on the dB scale. The
+  graph's dots, curve, and easing handles all read the same dB mapping, so a unity point sits on the
+  0 dB line instead of halfway up a linear gain box. A selected video half targets its linked twin
+  and labels which clip is being edited. The Effect Controls volume row uses the same dB readout and
+  graph.
 - Storage stays linear. The display domain runs from -60 dB to +6 dB, a gain at or below -60 dB plots
   at the floor and reads `-inf dB`, and rounding happens only in the formatter. The preview mixer and
   the export schedule still read `animatedValue(clip, 'volume', local)`, so an edit changes the same
@@ -298,12 +303,14 @@ Stable hooks used across flows and tests:
 ## Keyframe Pen
 
 - The Pen is a mode, not a modifier. `P` selects it, the toolbar button shows the pressed state, and
-  `Escape` returns to select only when no gesture is live. The active tool is session state and is
-  not stored in the project.
+  `Escape` returns to select only when no gesture is live. Ctrl/Meta-modified keys never reach the
+  single-key tool map (the browser owns them), while Shift+letter shortcuts still do. A live drag or
+  a pending automation press owns the tool: both the toolbar buttons and the keyboard wait for it.
+  The active tool is session state and is not stored in the project.
 - The property is structural: an audio lane or an `audioOnly` clip exposes volume; everything with
   picture, including text, image, a compound, and a solo video, exposes opacity. A visual clip that
-  carries embedded audio still edits opacity with the Pen; its volume envelope is the Plan 04
-  direct-drag surface.
+  carries embedded audio still edits opacity with the Pen; its volume envelope is the direct-drag
+  surface.
 - A selected clip shows its curve even with no keyframes, so the first point can be added. A click on
   the 10px line hit path adds one point at the clicked local time with the curve's interpolated
   value; an existing point within one frame of the click is replaced at its own time, and a
@@ -457,7 +464,9 @@ Stable hooks used across flows and tests:
   the drag changes nothing and says why). The Inspector's Speed section does the same numerically and
   carries the Reverse toggle. A clip with a `timeScale` curve is skipped, because the curve (not the
   static rate) sets its speed: the drag falls through to a plain trim, and the Speed slider and the
-  clip's speed badge stay off while the curve exists.
+  clip's speed badge stay off while the curve exists. On a linked A/V pair, a rate stretch edits only
+  the half you drag; the twin keeps its rate, and the pair's audio is dropped while the rates disagree
+  ([architecture.md](architecture.md#av-link-groups)).
 - **Play / pause (Space)**, `J`/`K`/`L` shuttle (browsers cannot play backwards, so `J` stops like `K`),
   frame stepping, Home/End, and Up/Down edit-point navigation. Transport state mirrors into
   `[data-testid="play-pause"]` and `[data-testid="time-display"]`. A focused button owns Space and
@@ -542,7 +551,7 @@ Stable hooks used across flows and tests:
 - Export runs offline (no realtime capture) and does not need tab focus; wall time tracks source
   decode speed. HEVC and ProRes are deliberately not offered: ProRes has no shipping browser
   `VideoEncoder`, and HEVC is left out on value grounds (an encoder exists, and a probe could gate it
-  safely); see [README](../README.md).
+  safely); see [ROADMAP](../ROADMAP.md).
 - After a successful file or blob export, `ExportDialog` calls `trackExportSuccess()`. That sends
   `export-success` every time and `first-export` once per browser profile while the local marker
   persists. Cancelled and failed exports do not call it.
@@ -613,7 +622,10 @@ Stable hooks used across flows and tests:
   lands BEFORE the doc is installed, so the load is ONE undo step; relink commands applied afterwards
   would each push their own history entry, and one Ctrl+Z would drop a single sample back to offline
   and black out the preview again. Anything else relinks automatically on a matching re-import, or
-  manually per asset.
+  manually per asset. A relink writes only media details through a whitelist: the asset's identity is
+  immutable, a non-undefined source handle must pass the browser-side `isNativeFile` guard, and a
+  relink that clears `missing` must leave a usable URL. A whitespace-only URL is rejected, and the
+  bundled-sample hydration runs the same sanitizer before merging its patch into the loaded doc.
 - While the playhead sits on a clip whose media is offline, the monitor paints **Media offline** with
   the file names and a relink hint. The frame is genuinely black and silent; the overlay is what keeps
   that from reading as a broken preview.
@@ -625,7 +637,9 @@ Stable hooks used across flows and tests:
 ## Workspace and menus
 
 - Every panel is resizable; panels that share a row can also collapse to a strip. A panel alone in
-  its row has no collapse control and is hidden or shown through the Window menu. Sizes, collapsed
+  its row has no collapse control and is hidden or shown through the Window menu. With the preview
+  hidden the media/source pair fills the row and neither offers a collapse control: the survivor
+  cannot absorb the freed space, so the pair would otherwise keep a ghost strip and a dead chevron. Sizes, collapsed
   state, and visibility persist across sessions (`src/lib/editor/workspace.ts`), and a corrupt stored
   layout is sanitized instead of crashing.
 - The menu bar mirrors Premiere Pro's menus with **no dead items** and **no fake shortcuts**: item

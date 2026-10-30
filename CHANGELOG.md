@@ -5,6 +5,71 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.16.3] - 2026-10-29
+
+### Fixed
+
+- **Volume graph dots.** The Clip tab and Effect Controls volume graph now plots its dots with the
+  same dB mapping as the curve and the easing handles. A unity keyframe sits on the 0 dB line instead
+  of halfway up the old linear gain box, so the point and its curve can no longer disagree.
+- **Ctrl/Meta shortcut fall-through.** A Ctrl- or Meta-modified key that matches no editor combo no
+  longer reaches the single-key map. Ctrl+P no longer selects the Pen while the browser opens print,
+  Ctrl+B no longer switches to Ripple Trim, and Ctrl+D no longer duplicates. Shift+letter shortcuts
+  still work.
+- **Preview-hidden panel desync.** With the Program Monitor hidden, Media and Source are no longer
+  collapsible. The pair fills the row, so the survivor cannot absorb a collapse, and a stale
+  collapsed flag no longer renders a ghost strip or a dead chevron. Reset Workspace Layout restores
+  the preview and the chevrons.
+- **Tool changes during a gesture.** The toolbar now waits for a live transient or a pending
+  automation press before switching tools, matching the keyboard rule. A mid-drag click cannot show
+  one tool while the in-flight closures run another.
+- **Time-remapped slip.** `setClipInPoint` refuses a clip with a `timeScale` curve with the same
+  message as the slip planner, instead of reporting a linked-window mismatch.
+- **Dots-only volume line.** A solo video under the Pen keeps its volume dots live but hides the
+  volume line, so only the opacity curve is drawn.
+- **Relink patch boundary.** `relinkMedia` rebuilds its patch from a media-details whitelist, rejects
+  identity fields, symbol keys, accessors, `null`, hostile values, and a whitespace-only URL, copies
+  waveform peaks, and requires a usable resulting URL before clearing `missing`. A non-undefined
+  source handle must pass the browser-side `isNativeFile` guard, so a direct command dispatch cannot
+  install an unvalidated handle. The bundled-sample hydration uses the same sanitizer before merging
+  its patch, while still keeping a load one undo step.
+- **Export frame and audio caps.** A project with an enormous duration now fails the export with a
+  clear `Timeline is too long to export` error instead of looping forever. The frame count is capped
+  at `EXPORT_MAX_FRAMES`; the stereo audio mix is capped at `EXPORT_MAX_AUDIO_SAMPLES` (30 minutes at
+  48 kHz, about 691 MB) and rejected before `OfflineAudioContext` allocates the buffer.
+- **Hostile track mute.** Track `muted` hydrates only from an explicit `true`, matching solo and
+  lock. `"yes"` and `2` no longer read as muted.
+- **Locked drop destination.** A drop over a locked lane now refuses the whole drag with a
+  `Track locked` notice naming the lane, and rolls back any earlier transient time shift. A locked
+  partner destination refuses the same way.
+- **Tenths undercount.** Time formatting absorbs a computed total just below a tenth with a fixed
+  1e-9 second tolerance, so `0.3 - 0.1` reads `0:00.2` while a real sub-tenth stays `0:00.1`.
+
+### Changed
+
+- **Lock message.** `TrackLockedError` and the locked-drop toast share `trackLockMessage`, so the
+  command layer and the UI cannot drift.
+- **Upper-row layout observer.** Removed the tautological `!hidden.preview` terms after the early
+  return and corrected the comment. The preview's auto remainder is what makes the fixed shares
+  meaningful; a media/source divider resize is not persisted while it is hidden.
+
+### Tests and docs
+
+- The suite moves to 89 files and 1,967 tests. New tests cover the volume dot mapping, the Ctrl/Meta
+  gate, the toolbar gesture guard, the preview-hidden pair, the relink patch boundary and native
+  handle guard, strict mute hydration, the locked destination and its rollback, the tenths
+  tolerance, the export frame and audio caps, and the parity fixture's demo structure.
+- The UI battery grows to 67 steps with `panels_preview_hide`, and both the dev server and the
+  standalone artifact pass 67/67 with terminal `BATTERY_EXIT=0`.
+- `bun run check` passes. Coverage is 94.89 statements, 90.62 branches, 96.66 functions, and 96.89
+  lines.
+- Docs updated: README, architecture, design system, flows, structure, testing, deployment, AGENTS,
+  and the roadmap. The version atomically moves to `0.16.3` in `package.json`,
+  `src/lib/releases.ts`, and this changelog.
+- Planning docs retired: the `PLAN-*.md` set and the parity index were removed. Their durable
+  outcomes live in the release entries, the roadmap, and the docs set; AGENTS and the
+  implementation-discipline skill no longer point at plan files.
+
 ## [0.16.2] - 2026-10-29
 
 ### Changed
@@ -40,9 +105,8 @@ adheres to [Semantic Versioning](https://semver.org/).
   The timeline geometry test stubs a wide viewport and asserts the lane and content widths reach it.
 - `bun run check` passes. Coverage is 94.87 statements, 90.47 branches, 96.65 functions, and 96.92
   lines. The full dev and standalone artifact batteries pass 66/66 with terminal `BATTERY_EXIT=0`.
-- Docs updated: README, architecture, design system, testing, deployment, roadmap, the parity index
-  and its decision log, and the Plan 01 and Plan 02 notes that record the superseded inspector
-  placement.
+- Docs updated: README, architecture, design system, testing, deployment, roadmap, and the
+  inspector-placement notes.
   The version atomically moves to `0.16.2` in `package.json`, `src/lib/releases.ts`, and this
   changelog.
 
@@ -54,7 +118,7 @@ adheres to [Semantic Versioning](https://semver.org/).
   parity demo instead of the default sample project. It shows nine tracks with sampled filmstrips,
   linked A/V badges, the `A2` volume envelope, the selected `V1` clip's opacity keyframes, the Pen
   active, and the Effect Controls opacity graph. Source and Captions are hidden, playback is paused,
-  and the playhead sits at 2.7s, matching the Plan 01 capture state. The hero alt text and the
+  and the playhead sits at 2.7s, matching the reference capture state. The hero alt text and the
   design-system description match the new image.
 - **End-to-end coverage.** `e2e/battery.sh` grows from 63 to 66 steps. The new steps reset to a sample
   project and prove ripple trim (the later clip shifts, the linked audio twin on `A1` does not), slip
@@ -80,8 +144,8 @@ adheres to [Semantic Versioning](https://semver.org/).
   readout in 0.13.0, the project-settings steps scope their spinbuttons to the Inspector instead of
   the hidden export dialog, and the relink step scrolls its media card into view, requires a new
   clip, and polls for the reopened clip.
-- Docs updated: AGENTS, roadmap, design system, structure, testing, SEO, deployment, the plan index,
-  and Plan 07's audit results. The version atomically moves to `0.16.1` in `package.json`,
+- Docs updated: AGENTS, roadmap, design system, structure, testing, SEO, deployment, and the audit
+  results. The version atomically moves to `0.16.1` in `package.json`,
   `src/lib/releases.ts`, and this changelog.
 
 ## [0.16.0] - 2026-10-28
@@ -95,7 +159,7 @@ adheres to [Semantic Versioning](https://semver.org/).
   the arrow keys. A press only becomes a drag after 3px, every gesture is one undo entry, and
   pointercancel restores the base document. The Pen never moves or trims the clip: body and edge
   presses only select.
-- **`AutomationEnvelope`.** The Plan 04 `VolumeEnvelope` is generalized into one property-driven
+- **`AutomationEnvelope`.** The `VolumeEnvelope` is generalized into one property-driven
   component. Volume keeps the dB domain, opacity uses 0..1, and both share the same sampling, hit
   path, 12px dot target, trim inset, lazy threshold and transient protocol. There is no second
   overlay implementation.
@@ -105,7 +169,7 @@ adheres to [Semantic Versioning](https://semver.org/).
   path.
 - **Pen render rules.** A selected clip shows a flat curve while the Pen is active so the first
   point can be added. Without the Pen, opacity appears only when opacity keyframes already exist;
-  volume keeps the Plan 04 visibility rule. A solo video with embedded audio edits opacity with the
+  volume keeps its visibility rule. A solo video with embedded audio edits opacity with the
   Pen, while its volume envelope stays directly draggable through its dots. Locked lanes refuse.
 
 ### Changed
@@ -139,8 +203,8 @@ adheres to [Semantic Versioning](https://semver.org/).
   click-add on volume and opacity, dot drags, selection modifiers, the live-gesture Escape rule and
   locked-lane refusal; the envelope render tests cover opacity visibility, click-add, drag, remove,
   nudge, cancel, lock, dots-only volume, and the solo-video dual overlay.
-- Docs updated: architecture, flows, design system, structure, testing, README, roadmap, plan index,
-  and the implementation notes. Browser proof covers a volume point on an audio clip and an opacity
+- Docs updated: architecture, flows, design system, structure, testing, README, roadmap, and the
+  implementation notes. Browser proof covers a volume point on an audio clip and an opacity
   point on a video clip, undo, a fixed clip position, every tool shortcut and cursor, a locked-lane
   refusal, one undo per gesture, and a clean console.
 
@@ -198,7 +262,7 @@ adheres to [Semantic Versioning](https://semver.org/).
   gesture to end.
 - **Pointercancel committed the new tools.** The shared pointerup and pointercancel handler
   committed a ripple or slip drag on cancel. The new tools now restore the base doc and add no
-  history entry; select and razor keep their existing commit-on-pointercancel behavior, as the plan
+  history entry; select and razor keep their existing commit-on-pointercancel behavior, as
   required.
 - **Stale no-op frame.** Returning a ripple or slip drag to its origin left the last applied frame in
   the doc, so releasing committed a change the pointer no longer asked for. No-op slip and ripple
@@ -215,8 +279,8 @@ adheres to [Semantic Versioning](https://semver.org/).
   refusals that write nothing, and the live-gesture Escape rule. The store tests cover the atomic
   batch and `resetTransient`. Coverage adds
   `ripple-trim.ts` and `slip.ts` to the include list.
-- Docs updated: architecture, flows, design system, structure, testing, README, roadmap, plan index,
-  and the implementation notes. Browser proof covers a ripple tail and head, the same-track link
+- Docs updated: architecture, flows, design system, structure, testing, README, roadmap, and the
+  implementation notes. Browser proof covers a ripple tail and head, the same-track link
   divergence, slip with a fixed clip position, locked-lane refusals, and a clean console.
 
 ## [0.14.0] - 2026-10-27
@@ -863,7 +927,7 @@ adheres to [Semantic Versioning](https://semver.org/).
   only 1/60 s per output frame, and the coarser zone left the partner behind often enough to collapse
   the pair onto a single frame. A speed edit back to realtime releases the parked element instead of
   leaving a second decoder running.
-- The plan's blend math moved to `frame-blend.ts` (`blendWeight`, `blendPartnerTime`), so the preview
+- The blend math moved to `frame-blend.ts` (`blendWeight`, `blendPartnerTime`), so the preview
   and the export resolve the pair from one function; `offline.ts` re-exports the weight for the plan's
   own callers, and the exporter's pair-composition helpers now live beside the preview's drawing code
   in `playback/compositor.ts` (`beginBlendPair`, `addBlendLayer`, `drawBlendedContain`, plus the shared

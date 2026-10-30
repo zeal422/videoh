@@ -108,9 +108,10 @@ export function planRippleShift(args: {
     if (nextStart < -EPS) {
       return refused('The trim would move a later clip before the start of the timeline')
     }
-    // `moveClip` carries the clip's link group, so a locked partner refuses.
-    // Preflight it here: a transient batch swallows command errors, and a
-    // silent no-op would look like a broken gesture.
+    // `moveClip`'s lock rule includes the clip's link group and its destination
+    // lane, so a locked partner refuses the command. Preflight it here: a
+    // transient batch swallows command errors, and a silent no-op would look like
+    // a broken gesture.
     const locked = firstLockedTrackForClips(args.doc, [candidate.id])
     if (locked) return refused(trackLockMessage(locked))
     commands.push({

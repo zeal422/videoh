@@ -3,15 +3,15 @@
 Start with the [README](../README.md) for the product overview and quick start. These docs are the
 deeper references, and they cross-link to each other so you can move between them without guessing.
 
-| Doc                                  | Read it when you want…                                                                     |
-| ------------------------------------ | ------------------------------------------------------------------------------------------ |
-| [architecture.md](architecture.md)   | the module-by-module reference, data flow, undo/redo, A/V links, audio graph, invariants   |
-| [structure.md](structure.md)         | a filesystem map — what every folder and file is responsible for                           |
-| [flows.md](flows.md)                 | the behavior contracts for each user flow (import, edit, link, export, save/refresh)       |
-| [testing.md](testing.md)             | how to run tests, the test inventory, conventions, the mocked harness, and the E2E battery |
-| [design-system.md](design-system.md) | design tokens, theming, layout conventions, and UI/a11y rules                              |
-| [deployment.md](deployment.md)       | build, run, the standalone output, and the verification gate                               |
-| [seo.md](seo.md)                     | public routes, metadata, Search Console, GoatCounter, and the launch checklist             |
+| Doc                                  | Read it when you want…                                                                              |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| [architecture.md](architecture.md)   | the data model, command catalog, module reference, playback, undo/redo, audio graph, and invariants |
+| [structure.md](structure.md)         | a filesystem map — what every folder and file is responsible for                                    |
+| [flows.md](flows.md)                 | the behavior contracts for each user flow (import, edit, link, export, save/refresh)                |
+| [testing.md](testing.md)             | how to run tests, the test inventory, conventions, the mocked harness, and the E2E battery          |
+| [design-system.md](design-system.md) | design tokens, theming, layout conventions, and UI/a11y rules                                       |
+| [deployment.md](deployment.md)       | build, run, the standalone output, and the verification gate                                        |
+| [seo.md](seo.md)                     | public routes, metadata, Search Console, GoatCounter, and the launch checklist                      |
 
 Project-level files:
 

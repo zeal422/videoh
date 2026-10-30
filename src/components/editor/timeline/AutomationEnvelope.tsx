@@ -46,7 +46,7 @@ const OPACITY_KEY_STEP = 0.05
  * The Pen makes this curve its editing target: a selected clip shows a flat
  * line even before the first point, a single click on the line adds a point,
  * and the line cursor is a crosshair. With the select tool, volume keeps the
- * Plan 04 direct behavior (double-click adds); opacity is display-only unless
+ * direct behavior (double-click adds); opacity is display-only unless
  * the Pen owns it. A solo video under the Pen keeps opacity as its Pen curve,
  * while its volume envelope stays directly draggable through its dots: that
  * second instance sets `dotsOnly`, which leaves the line to the Pen curve.
@@ -123,14 +123,14 @@ export function AutomationEnvelope({
     [clip, property, sampleCount],
   )
 
-  // Volume is directly editable (Plan 04); opacity is editable only while the
+  // Volume is directly editable; opacity is editable only while the
   // Pen owns it, so an idle video shows its existing curve without handles.
   const editable = !inert && (isVolume || penTarget)
   const penEditing = editable && penTarget
   const directEditing = editable && isVolume && !penEditing
   const lineInteractive = (penEditing || directEditing) && !dotsOnly
 
-  // Volume keeps the Plan 04 rule (a selected clip shows a flat line); opacity
+  // Volume keeps its rule (a selected clip shows a flat line); opacity
   // shows a flat line only while the Pen owns it, so an idle video selection
   // does not grow a second line. A dots-only volume overlay (a solo video
   // under the Pen) exists only for its points.
@@ -443,16 +443,18 @@ export function AutomationEnvelope({
           viewBox="0 0 100 100"
           preserveAspectRatio="none"
         >
-          <path
-            data-testid={`${prefix}-curve`}
-            d={path}
-            fill="none"
-            strokeWidth={1.5}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-            className="stroke-white/90"
-          />
+          {!dotsOnly && (
+            <path
+              data-testid={`${prefix}-curve`}
+              d={path}
+              fill="none"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+              className="stroke-white/90"
+            />
+          )}
           {/* Transparent 10px hit path: a single click adds a point under the
               Pen; double-click adds under the select tool. A press is captured
               so it does not start a clip move. */}
