@@ -49,6 +49,7 @@ import {
 import { canSplitAnySelectedAt } from '@/lib/editor/links'
 import { activeSequenceDuration, createBuiltinTextPresets, uid } from '@/lib/editor/factories'
 import { PPS_MAX, PPS_MIN } from '@/lib/editor/constants'
+import { nextZoomPxPerSec } from '@/lib/editor/timeline-scroll'
 import { projectFileName, serializeDoc } from '@/lib/editor/serialization'
 import { openProjectFile } from '@/lib/editor/project-io'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
@@ -368,13 +369,13 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
         />
         <ToolButton
           label="Zoom out (−)"
-          onClick={() => setPxPerSec(Math.max(PPS_MIN, Math.round(pxPerSec / 1.4)))}
+          onClick={() => setPxPerSec(nextZoomPxPerSec(pxPerSec, 1 / 1.4))}
           disabled={pxPerSec <= PPS_MIN}
           icon={<ZoomOut className="size-4" />}
         />
         <ToolButton
           label="Zoom in (+)"
-          onClick={() => setPxPerSec(Math.min(PPS_MAX, Math.round(pxPerSec * 1.4)))}
+          onClick={() => setPxPerSec(nextZoomPxPerSec(pxPerSec, 1.4))}
           disabled={pxPerSec >= PPS_MAX}
           icon={<ZoomIn className="size-4" />}
         />

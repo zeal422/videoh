@@ -10,12 +10,13 @@ import {
 } from '../factories'
 import { blendPartnerTime, blendWeight } from '../frame-blend'
 import { denoiseFilters } from './denoise'
-import { EQ_DB_MAX, EQ_DB_MIN, SPEED_MAX, SPEED_MIN } from '../constants'
+import { EQ_DB_MAX, EQ_DB_MIN, KEYFRAME_TIMEOUT_MS, SPEED_MAX, SPEED_MIN } from '../constants'
 import { crossfadeFactor } from '../transition'
 import { hasLinkedAudioTwin, linkGroupChangesRate } from '../links'
 import { animatedValue, constantTimeScaleRate, hasTimeScaleRamp } from '../keyframes'
 import { ClipMediaPool } from '../media/elements'
-import { clamp } from '../time'
+import { clampedClipLocalTime } from '../markers'
+import { clamp, frameToTime } from '../time'
 import { audibleTrackIds } from '../tracks'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
 import { drawFrame, type FrameBlendSource } from './compositor'
@@ -53,9 +54,32 @@ export interface PlaybackCoreOptions {
    * root.
    */
   getActiveSequencePath?: () => readonly string[]
+  /** Project-replacement signal, bumped only by `replaceDoc`. */
+  getProjectEpoch?: () => number
+  /** Verified video keyframe lookup for decode recovery. */
+  nextKeyframe?: (url: string, sourceTime: number) => Promise<number | undefined>
+  /** Persistent decode-recovery status for the preview overlay. */
+  onMediaError?: (info: MediaErrorInfo | null, clipId?: string) => void
   onFrame?: (t: number) => void
   onEnd?: () => void
   onPlayingChange?: (playing: boolean) => void
+}
+
+export interface MediaErrorInfo {
+  clipId: string
+  code: number
+  time: number
+  skippedTo?: number
+  terminal: boolean
+}
+
+interface RecoveryState {
+  attempts: number
+  failedFrom: number
+  failedTo: number
+  terminal: boolean
+  /** True once a skip was committed; only those clear as playback passes. */
+  committed: boolean
 }
 
 /**
@@ -183,6 +207,13 @@ const PARTNER_SEEK_EPS = 0.002
  */
 const SEEK_FRAME_NUDGE = 1e-4
 
+/** How much source time the fallback skip crosses when no keyframe is used. */
+const DECODE_SKIP_SOURCE_SECONDS = 6
+/** Upper bound for a reload to become readable again. */
+const RELOAD_TIMEOUT_MS = 5_000
+/** Recovery attempts before the record becomes terminal. */
+const MAX_RECOVERY_ATTEMPTS = 3
+
 /**
  * The position an element is parked at for a read: the read itself, a hair
  * inside the frame it names (see SEEK_FRAME_NUDGE). Every park goes through
@@ -222,7 +253,7 @@ function shapingSignature(clip: Clip): string {
 
 export class PlaybackCore {
   private ctx2d: CanvasRenderingContext2D | null
-  private pool = new ClipMediaPool()
+  private pool: ClipMediaPool
   private imageCache = new Map<string, HTMLImageElement>()
 
   private audio: AudioContext | null = null
@@ -273,10 +304,33 @@ export class PlaybackCore {
   /** Elements already registered with requestVideoFrameCallback. */
   private watchingFrames = new WeakSet<HTMLMediaElement>()
 
+  /** Elements latched after a terminal decode error, one per failed range. */
+  private terminalElements = new WeakSet<HTMLMediaElement>()
+  /** Blend partners that errored; blending falls back to a single frame. */
+  private failedPartners = new WeakSet<HTMLMediaElement>()
+  private recoveryRecords = new Map<string, RecoveryState>()
+  /** The range of the last notice shown for a clip, kept after the record clears. */
+  private noticeRanges = new Map<string, { from: number; to: number }>()
+  private recoveryInFlight: string | null = null
+  /** The project epoch that owns the in-flight recovery. */
+  private recoveryProjectEpoch: number | null = null
+  /** The element and user-action epoch that own the in-flight recovery. */
+  private recoveryElement: HTMLMediaElement | null = null
+  private recoveryEpochOwner: number | null = null
+  /** True when the last user action was a pause, which discards deferred work. */
+  private recoveryCancelDiscard = false
+  private deferredErrors = new Map<string, HTMLMediaElement>()
+  private recoveryEpoch = 0
+  private playToken = 0
+  private refreshing = false
+  private lastProjectEpoch = 0
+
   constructor(private opts: PlaybackCoreOptions) {
     opts.canvas.width = opts.getDoc().project.width
     opts.canvas.height = opts.getDoc().project.height
     this.ctx2d = opts.canvas.getContext('2d')
+    this.pool = new ClipMediaPool((clipId, el) => this.handleElementError(clipId, el))
+    this.lastProjectEpoch = opts.getProjectEpoch?.() ?? 0
   }
 
   /** Audio output stream (a capture destination; export mixes offline instead). */
@@ -305,6 +359,23 @@ export class PlaybackCore {
   }
 
   async play(from?: number): Promise<void> {
+    this.recoveryEpoch++
+    this.playToken++
+    if (this.recoveryInFlight !== null) this.recoveryCancelDiscard = false
+    if (from !== undefined) this.clearRecoveryForSeek(from)
+    return this.startPlayback(from, this.playToken)
+  }
+
+  /**
+   * The shared start path. A public play passes no expected recovery epoch; a
+   * recovery passes the epoch it captured so a user pause or seek during
+   * `prepare()` wins.
+   */
+  private async startPlayback(
+    from: number | undefined,
+    token: number,
+    expectedRecoveryEpoch?: number,
+  ): Promise<void> {
     const doc = this.opts.getDoc()
     const duration = this.durationOf(doc)
     if (duration <= 0) return
@@ -313,6 +384,8 @@ export class PlaybackCore {
     if (this.time >= duration - 1e-4) this.time = 0 // restart at the end
 
     await this.prepare()
+    if (token !== this.playToken) return
+    if (expectedRecoveryEpoch !== undefined && expectedRecoveryEpoch !== this.recoveryEpoch) return
 
     this.anchorDoc = this.time
     this.anchorAudio = this.audio ? this.audio.currentTime : 0
@@ -323,6 +396,9 @@ export class PlaybackCore {
   }
 
   pause(): void {
+    this.recoveryEpoch++
+    this.playToken++
+    if (this.recoveryInFlight !== null) this.recoveryCancelDiscard = true
     if (!this.playingState) return
     this.playingState = false
     cancelAnimationFrame(this.raf)
@@ -336,6 +412,24 @@ export class PlaybackCore {
   }
 
   seek(t: number): void {
+    this.clearRecoveryForSeek(t)
+    this.recoveryEpoch++
+    if (this.recoveryInFlight !== null) this.recoveryCancelDiscard = false
+    this.applySeek(t)
+  }
+
+  /** Paused repaint for doc edits: no epoch bump, no recovery cancellation. */
+  refresh(t: number): void {
+    this.refreshing = true
+    try {
+      this.applySeek(t)
+    } finally {
+      this.refreshing = false
+    }
+  }
+
+  /** `forceSeek` makes a paused commit seek even inside the still dead zone. */
+  private applySeek(t: number, forceSeek = false): void {
     const duration = this.durationOf(this.opts.getDoc())
     this.time = clamp(t, 0, duration)
     if (this.playingState) {
@@ -344,7 +438,7 @@ export class PlaybackCore {
       this.anchorPerf = performance.now()
       this.syncMedia(this.time, true)
     } else {
-      this.drawStill(this.time)
+      this.drawStill(this.time, forceSeek)
     }
     this.opts.onFrame?.(this.time)
   }
@@ -400,6 +494,609 @@ export class PlaybackCore {
     const out: NestedClip[] = []
     walkClips(doc, this.activeTracks(doc), 0, [], out)
     return out
+  }
+
+  /** True when the clip is inside its own window and every ancestor window. */
+  private isClipActiveAt(clipId: string, t: number): boolean {
+    const doc = this.opts.getDoc()
+    const frame = frameToTime(1, doc.project.fps)
+    for (const entry of this.activeClipList(doc)) {
+      if (entry.clip.id !== clipId) continue
+      const start = entry.offset + entry.clip.start
+      const end = start + entry.clip.duration
+      return withinAncestorWindows(t, start - frame, end + frame, entry.ancestors)
+    }
+    return false
+  }
+
+  /** True when the in-flight recovery belongs to a replaced project. */
+  private recoveryIsStale(): boolean {
+    return (
+      this.recoveryInFlight !== null &&
+      this.recoveryProjectEpoch !== (this.opts.getProjectEpoch?.() ?? 0)
+    )
+  }
+
+  /** True while a terminal record's clip is on screen at `t`. */
+  private activeTerminalAt(t: number): boolean {
+    for (const [clipId, record] of this.recoveryRecords) {
+      if (record.terminal && this.isClipActiveAt(clipId, t)) return true
+    }
+    return false
+  }
+
+  /** Clears recovery state when the whole project is replaced, never on an edit. */
+  private checkProjectEpoch(): void {
+    const epoch = this.opts.getProjectEpoch?.() ?? 0
+    if (epoch === this.lastProjectEpoch) return
+    this.lastProjectEpoch = epoch
+    this.terminalElements = new WeakSet()
+    this.failedPartners = new WeakSet()
+    this.recoveryRecords.clear()
+    this.noticeRanges.clear()
+    this.deferredErrors.clear()
+    this.opts.onMediaError?.(null)
+  }
+
+  /** Releases one clip's element and its audio chain (recovery and cleanup share it). */
+  private releaseClip(clipId: string): void {
+    const el = this.pool.peek(clipId)
+    if (el) {
+      if (!el.paused) el.pause()
+      this.endSeek(el)
+    }
+    const entry = this.clipGains.get(clipId)
+    if (entry) {
+      if (this.audio && entry.el) {
+        try {
+          // Use the element the chain was built for: the pool entry may
+          // already be gone, but the old source node is still connected.
+          this.pool.getSourceNode(entry.el, this.audio).disconnect()
+        } catch {
+          // already detached, or audio closed mid-teardown
+        }
+      }
+      for (const n of entry.nodes) {
+        try {
+          n.disconnect()
+        } catch {
+          // already detached
+        }
+      }
+      try {
+        entry.gain.disconnect()
+      } catch {
+        // already detached
+      }
+      this.clipGains.delete(clipId)
+    }
+    this.pool.release(clipId)
+  }
+
+  /** Routes a media-element error into recovery, partner latch, or a deferral. */
+  private handleElementError(clipId: string, el: HTMLMediaElement): void {
+    if (this.terminalElements.has(el)) return
+    const primary = this.pool.peek(clipId) === el
+    const partner = this.pool.peekNext(clipId) === el
+    if (!primary && !partner) return
+    if (partner) {
+      this.failedPartners.add(el)
+      if (!el.paused) el.pause()
+      return
+    }
+    if (!this.isClipActiveAt(clipId, this.time)) return
+    if (this.activeTerminalAt(this.time)) {
+      this.deferredErrors.set(clipId, el)
+      return
+    }
+    const code = el.error?.code ?? 0
+    if (this.recoveryInFlight !== null) {
+      const owns =
+        this.recoveryInFlight === clipId &&
+        !this.recoveryIsStale() &&
+        this.recoveryElement === el &&
+        this.recoveryEpochOwner === this.recoveryEpoch
+      if (!owns) {
+        this.deferredErrors.set(clipId, el)
+        return
+      }
+      if (code === 3) return
+      if (code === 4) {
+        this.terminalizeRecovery(clipId, el, this.ensureTerminalRecord(clipId), this.time)
+      }
+      return
+    }
+    if (code === 4) {
+      this.terminalizeRecovery(clipId, el, this.ensureTerminalRecord(clipId), this.time)
+      return
+    }
+    if (code === 3) void this.recoverDecodeError(clipId, el)
+  }
+
+  /** Creates the exhausted record a code 4 needs, even mid-recovery. */
+  private ensureTerminalRecord(clipId: string): RecoveryState {
+    let record = this.recoveryRecords.get(clipId)
+    if (!record) {
+      record = {
+        attempts: MAX_RECOVERY_ATTEMPTS,
+        failedFrom: this.time,
+        failedTo: this.time,
+        terminal: false,
+        committed: false,
+      }
+      this.recoveryRecords.set(clipId, record)
+    }
+    return record
+  }
+
+  /** The one terminal path: stop, latch, seek to failedFrom, report once. */
+  private terminalizeRecovery(
+    clipId: string,
+    el: HTMLMediaElement,
+    record: RecoveryState,
+    extendTo?: number,
+  ): void {
+    record.terminal = true
+    record.attempts = MAX_RECOVERY_ATTEMPTS
+    if (extendTo !== undefined) {
+      // failedFrom/failedTo are timeline positions. The transport advances
+      // toward larger times even for a reversed clip, so a later error can
+      // only extend the range.
+      record.failedTo = Math.max(record.failedTo, extendTo)
+    }
+    const inFlight = this.recoveryInFlight === clipId
+    if (inFlight) this.haltForTerminal()
+    else this.pause()
+    this.terminalElements.add(el)
+    const partner = this.pool.peekNext(clipId)
+    if (partner) this.endSeek(partner)
+    this.pool.releaseNext(clipId)
+    this.applySeek(record.failedFrom)
+    if (!inFlight) {
+      // No recovery finally runs for this terminalization, so drop errors
+      // deferred behind the terminal, including ones requeued by the repaint.
+      this.deferredErrors.clear()
+    }
+    this.noticeRanges.set(clipId, { from: record.failedFrom, to: record.failedTo })
+    this.opts.onMediaError?.({
+      clipId,
+      code: el.error?.code ?? 3,
+      time: record.failedFrom,
+      terminal: true,
+    })
+  }
+
+  /** Emits one skip notice and remembers its range for clip-owned clearing. */
+  private emitSkipNotice(clipId: string, code: number, record: RecoveryState): void {
+    this.noticeRanges.set(clipId, { from: record.failedFrom, to: record.failedTo })
+    this.opts.onMediaError?.({
+      clipId,
+      code,
+      time: record.failedFrom,
+      skippedTo: record.failedTo,
+      terminal: false,
+    })
+  }
+
+  /** Stops playback without bumping the recovery epoch (not a user action). */
+  private haltForTerminal(): void {
+    this.playToken++
+    const wasPlaying = this.playingState
+    this.playingState = false
+    cancelAnimationFrame(this.raf)
+    this.pool.pauseAll()
+    if (wasPlaying) this.opts.onPlayingChange?.(false)
+  }
+
+  /** Drops a nonterminal record once playback has passed its skipped range. */
+  private clearPassedRecovery(t: number): void {
+    const frame = frameToTime(1, this.opts.getDoc().project.fps)
+    for (const [clipId, record] of [...this.recoveryRecords]) {
+      if (record.terminal) continue
+      const entry = this.activeClipList(this.opts.getDoc()).find((e) => e.clip.id === clipId)
+      if (!entry) {
+        this.recoveryRecords.delete(clipId)
+        continue
+      }
+      // A failed reload has no committed skip: its record is the attempt
+      // budget for the damaged range and must survive the resume, even though
+      // the playhead advances past failedTo. Only a committed skip clears.
+      if (!record.committed) continue
+      // failedTo is a timeline time, and the transport always advances toward
+      // larger sequence times, including for a reversed clip. Do not use the
+      // source-time direction here: it would keep a reverse clip's record
+      // forever.
+      if (t - record.failedTo > frame) {
+        // The attempt budget resets, but the notice stays until the user seeks
+        // outside its range, dismisses it, or replaces the project.
+        this.recoveryRecords.delete(clipId)
+      }
+    }
+  }
+
+  /** Releases any recovery record whose failed range no longer contains `t`. */
+  private clearRecoveryForSeek(t: number): void {
+    // A seek re-discovers active element errors through syncMedia/drawStill,
+    // so an entry deferred at the old position must not be replayed later.
+    this.deferredErrors.clear()
+    const frame = frameToTime(1, this.opts.getDoc().project.fps)
+    for (const [clipId, record] of [...this.recoveryRecords]) {
+      const lo = Math.min(record.failedFrom, record.failedTo) - frame
+      const hi = Math.max(record.failedFrom, record.failedTo) + frame
+      if (t >= lo && t <= hi) continue
+      const el = this.pool.peek(clipId)
+      if (el) this.terminalElements.delete(el)
+      const partner = this.pool.peekNext(clipId)
+      if (partner) {
+        this.failedPartners.delete(partner)
+        this.endSeek(partner)
+      }
+      this.releaseClip(clipId)
+      this.pool.releaseNext(clipId)
+      this.recoveryRecords.delete(clipId)
+      this.noticeRanges.delete(clipId)
+      this.opts.onMediaError?.(null, clipId)
+    }
+    for (const [clipId, range] of [...this.noticeRanges]) {
+      const lo = Math.min(range.from, range.to) - frame
+      const hi = Math.max(range.from, range.to) + frame
+      if (t >= lo && t <= hi) continue
+      this.noticeRanges.delete(clipId)
+      this.opts.onMediaError?.(null, clipId)
+    }
+  }
+
+  /** Bounded keyframe lookup with a backstop timeout for injected fakes. */
+  private async lookupKeyframe(url: string, sourceTime: number): Promise<number | undefined> {
+    const lookup = this.opts.nextKeyframe?.(url, sourceTime)
+    if (!lookup) return undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), KEYFRAME_TIMEOUT_MS)
+    })
+    try {
+      return await Promise.race([lookup.catch(() => undefined), timeout])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }
+
+  /** Reloads an errored element and waits for metadata/canplay, or a failure. */
+  private reloadElement(el: HTMLMediaElement): Promise<'ok' | 'error' | 'timeout'> {
+    return new Promise((resolve) => {
+      let done = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const finish = (result: 'ok' | 'error' | 'timeout'): void => {
+        if (done) return
+        done = true
+        el.removeEventListener('loadedmetadata', onReady)
+        el.removeEventListener('canplay', onReady)
+        el.removeEventListener('error', onError)
+        if (timer !== undefined) clearTimeout(timer)
+        resolve(result)
+      }
+      const onReady = (): void => finish('ok')
+      const onError = (): void => finish('error')
+      el.addEventListener('loadedmetadata', onReady)
+      el.addEventListener('canplay', onReady)
+      el.addEventListener('error', onError)
+      timer = setTimeout(() => finish('timeout'), RELOAD_TIMEOUT_MS)
+      try {
+        el.load()
+      } catch {
+        finish('error')
+      }
+    })
+  }
+
+  /** The bounded source-time nudge used when no verified keyframe is available. */
+  private fallbackSource(sourceAtError: number, direction: number, asset: MediaAsset): number {
+    return clampSourceTime(sourceAtError + direction * DECODE_SKIP_SOURCE_SECONDS, asset)
+  }
+
+  /** True when the target crosses at least one project frame of source time. */
+  private sourceAdvances(
+    target: number,
+    sourceAtError: number,
+    direction: number,
+    frameSource: number,
+    asset: MediaAsset,
+  ): boolean {
+    const clamped = clampSourceTime(target, asset)
+    return (clamped - sourceAtError) * direction >= frameSource - 1e-9
+  }
+
+  /** Maps a source target through the shared inverse and into sequence time. */
+  private mapSourceToTimeline(clip: Clip, offset: number, source: number): number {
+    const local = clampedClipLocalTime(clip, source)
+    return clamp(offset + clip.start + local, 0, this.durationOf(this.opts.getDoc()))
+  }
+
+  private async recoverDecodeError(clipId: string, el: HTMLMediaElement): Promise<void> {
+    if (this.recoveryInFlight !== null) return
+    this.recoveryInFlight = clipId
+    this.recoveryElement = el
+    this.recoveryEpochOwner = this.recoveryEpoch
+    this.recoveryCancelDiscard = false
+    // The error that starts this recovery must not be replayed from the
+    // deferred queue when the recovery's finally drains it.
+    this.deferredErrors.delete(clipId)
+    let recoveryEpochAtStart = this.recoveryEpoch
+    const projectEpoch = this.opts.getProjectEpoch?.() ?? 0
+    this.recoveryProjectEpoch = projectEpoch
+    try {
+      const doc = this.opts.getDoc()
+      const entry = this.activeClipList(doc).find((e) => e.clip.id === clipId)
+      if (!entry) return
+      const asset = findMedia(doc, entry.clip.mediaId)
+      if (!mediaPlayable(asset)) return
+      const wasPlaying = this.playingState
+      const t = this.time
+      this.pause()
+      const epoch = this.recoveryEpoch
+      recoveryEpochAtStart = epoch
+      this.recoveryEpochOwner = epoch
+      // The recovery's own pause must not look like a user pause.
+      this.recoveryCancelDiscard = false
+      let record = this.recoveryRecords.get(clipId)
+      if (!record) {
+        record = {
+          attempts: 0,
+          failedFrom: t,
+          failedTo: t,
+          terminal: false,
+          committed: false,
+        }
+        this.recoveryRecords.set(clipId, record)
+      }
+      if (record.attempts >= MAX_RECOVERY_ATTEMPTS) {
+        this.terminalizeRecovery(clipId, el, record)
+        return
+      }
+
+      const code = el.error?.code ?? 3
+      const frame = frameToTime(1, doc.project.fps)
+      const sourceAtErrorAtLookup = clampSourceTime(
+        this.sourceTime(entry.clip, t, entry.offset),
+        asset,
+      )
+      const sourceAtNextFrame = this.sourceTime(entry.clip, t + frame, entry.offset)
+      const direction = sourceAtNextFrame >= sourceAtErrorAtLookup ? 1 : -1
+      const canUseKeyframe =
+        !entry.clip.reverse && !hasTimeScaleRamp(entry.clip) && !(el instanceof HTMLAudioElement)
+
+      const stillCurrent = (): 'ok' | 'cancelled' | 'stale' | 'terminal' => {
+        if (this.recoveryEpoch !== epoch || (this.opts.getProjectEpoch?.() ?? 0) !== projectEpoch) {
+          return 'cancelled'
+        }
+        if (this.pool.peek(clipId) !== el) return 'stale'
+        if (!this.isClipActiveAt(clipId, this.time)) return 'stale'
+        if (record!.terminal || this.terminalElements.has(el)) return 'terminal'
+        return 'ok'
+      }
+      const currentEntry = (): NestedClip | undefined =>
+        this.activeClipList(this.opts.getDoc()).find((e) => e.clip.id === clipId)
+      const bail = (state: 'ok' | 'cancelled' | 'stale' | 'terminal'): boolean => state !== 'ok'
+
+      let sourceTarget: number
+      let keyframeTarget = false
+      if (canUseKeyframe) {
+        const keyframe = await this.lookupKeyframe(el.currentSrc || el.src, sourceAtErrorAtLookup)
+        if (bail(stillCurrent())) return
+        const now = currentEntry()
+        if (!now) return
+        const current = clampSourceTime(this.sourceTime(now.clip, this.time, now.offset), asset)
+        const next = this.sourceTime(now.clip, this.time + frame, now.offset)
+        const dirNow = next >= current ? 1 : -1
+        const frameSource = Math.abs(next - current)
+        // A verified keyframe only has to move at all: when the error lands on
+        // the keyframe boundary, the keyframe plus epsilon is the recovery
+        // point even though it is less than one frame ahead.
+        const keyframeValid =
+          keyframe !== undefined &&
+          !now.clip.reverse &&
+          !hasTimeScaleRamp(now.clip) &&
+          Math.abs(current - sourceAtErrorAtLookup) <= frameSource &&
+          this.sourceAdvances(keyframe, current, dirNow, 0, asset)
+        keyframeTarget = keyframeValid
+        sourceTarget = keyframeValid ? keyframe : this.fallbackSource(current, dirNow, asset)
+      } else {
+        sourceTarget = this.fallbackSource(sourceAtErrorAtLookup, direction, asset)
+      }
+
+      let now = currentEntry()
+      if (!now) return
+      let current = clampSourceTime(this.sourceTime(now.clip, this.time, now.offset), asset)
+      let next = this.sourceTime(now.clip, this.time + frame, now.offset)
+      let dirNow = next >= current ? 1 : -1
+      let frameSource = Math.abs(next - current)
+      if (
+        !this.sourceAdvances(sourceTarget, current, dirNow, keyframeTarget ? 0 : frameSource, asset)
+      ) {
+        sourceTarget = this.fallbackSource(current, dirNow, asset)
+        keyframeTarget = false
+        if (!this.sourceAdvances(sourceTarget, current, dirNow, frameSource, asset)) {
+          this.terminalizeRecovery(clipId, el, record)
+          return
+        }
+      }
+      let skipTo = this.mapSourceToTimeline(now.clip, now.offset, sourceTarget)
+      if (skipTo < this.time + (keyframeTarget ? 1e-9 : frame - 1e-9)) {
+        sourceTarget = this.fallbackSource(current, dirNow, asset)
+        keyframeTarget = false
+        if (!this.sourceAdvances(sourceTarget, current, dirNow, frameSource, asset)) {
+          this.terminalizeRecovery(clipId, el, record)
+          return
+        }
+        skipTo = this.mapSourceToTimeline(now.clip, now.offset, sourceTarget)
+        if (skipTo < this.time + frame - 1e-9) {
+          this.terminalizeRecovery(clipId, el, record)
+          return
+        }
+      }
+
+      const reload = await this.reloadElement(el)
+      if (bail(stillCurrent())) return
+      if (record.terminal) return
+      if (reload !== 'ok') {
+        record.attempts += 1
+        this.releaseClip(clipId)
+        this.pool.releaseNext(clipId)
+        // The next sync creates a fresh element. Resume it now instead of
+        // leaving playback silently stopped after a transient reload failure.
+        // At the sequence end, stay paused: startPlayback would restart at 0.
+        if (wasPlaying && this.time < this.durationOf(this.opts.getDoc()) - 1e-4) {
+          try {
+            await this.startPlayback(undefined, this.playToken, epoch)
+          } catch {
+            // A rejected play is not a second failure; the next user play retries.
+          }
+          if (
+            this.recoveryEpoch !== epoch ||
+            (this.opts.getProjectEpoch?.() ?? 0) !== projectEpoch
+          ) {
+            return
+          }
+        }
+        return
+      }
+
+      now = currentEntry()
+      if (!now) return
+      current = clampSourceTime(this.sourceTime(now.clip, this.time, now.offset), asset)
+      next = this.sourceTime(now.clip, this.time + frame, now.offset)
+      dirNow = next >= current ? 1 : -1
+      frameSource = Math.abs(next - current)
+      if (
+        !this.sourceAdvances(sourceTarget, current, dirNow, keyframeTarget ? 0 : frameSource, asset)
+      ) {
+        sourceTarget = this.fallbackSource(current, dirNow, asset)
+        keyframeTarget = false
+        if (!this.sourceAdvances(sourceTarget, current, dirNow, frameSource, asset)) {
+          this.terminalizeRecovery(clipId, el, record)
+          return
+        }
+      }
+      skipTo = this.mapSourceToTimeline(now.clip, now.offset, sourceTarget)
+      if (skipTo < this.time + (keyframeTarget ? 1e-9 : frame - 1e-9)) {
+        sourceTarget = this.fallbackSource(current, dirNow, asset)
+        keyframeTarget = false
+        if (!this.sourceAdvances(sourceTarget, current, dirNow, frameSource, asset)) {
+          this.terminalizeRecovery(clipId, el, record)
+          return
+        }
+        skipTo = this.mapSourceToTimeline(now.clip, now.offset, sourceTarget)
+        if (skipTo < this.time + frame - 1e-9) {
+          this.terminalizeRecovery(clipId, el, record)
+          return
+        }
+      }
+
+      record.attempts += 1
+      record.failedTo = skipTo
+      record.committed = true
+      this.pool.releaseNext(clipId)
+      // Force the commit seek: a near-start keyframe can sit inside the still
+      // seek dead zone, and a reload that left the element at zero must not be
+      // mistaken for the keyframe.
+      this.applySeek(skipTo, true)
+
+      // A setter that rejected the seek leaves the element at its old read.
+      // Only check a video element when the clip is actually on screen at the
+      // target; a target past the clip end parks the playhead there without
+      // seeking it, and audio-only elements are not positioned by drawStill.
+      if (el instanceof HTMLVideoElement) {
+        const targetEntry = currentEntry()
+        if (targetEntry) {
+          const start = targetEntry.offset + targetEntry.clip.start
+          const activeAtTarget = withinAncestorWindows(
+            skipTo,
+            start,
+            start + targetEntry.clip.duration,
+            targetEntry.ancestors,
+          )
+          if (activeAtTarget) {
+            const expected = clampSourceTime(
+              this.sourceTime(targetEntry.clip, skipTo, targetEntry.offset),
+              asset,
+            )
+            // The commit seek is forced, so the element has to be at the
+            // target even when the keyframe is inside the still seek dead zone.
+            if (Math.abs(el.currentTime - parkedTarget(expected)) > 1e-3) {
+              this.terminalizeRecovery(clipId, el, record)
+              return
+            }
+          }
+        }
+      }
+
+      const duration = this.durationOf(this.opts.getDoc())
+      if (record.terminal) return
+      if (skipTo >= duration - 1e-4) {
+        this.emitSkipNotice(clipId, code, record)
+        return
+      }
+      if (wasPlaying) {
+        try {
+          await this.startPlayback(undefined, this.playToken, epoch)
+        } catch {
+          // A rejected play is not a second failure; the notice below is enough.
+        }
+        if (this.recoveryEpoch !== epoch || (this.opts.getProjectEpoch?.() ?? 0) !== projectEpoch) {
+          return
+        }
+        if (bail(stillCurrent())) return
+        // An ordinary edit can remove or retime the clip while the resume is
+        // pending. Refresh skips the recovering element, so the committed
+        // source target is stale even though the transport did not move.
+        const resumed = currentEntry()
+        if (!resumed) return
+        const resumedSource = clampSourceTime(
+          this.sourceTime(resumed.clip, skipTo, resumed.offset),
+          asset,
+        )
+        if (Math.abs(resumedSource - sourceTarget) > Math.max(frameSource, 1e-6)) {
+          // The clip's timeline mapping changed under the committed range, so
+          // its failed range and consumed attempts no longer describe this
+          // source content. Drop the record instead of reusing it later.
+          if (this.recoveryRecords.get(clipId) === record) this.recoveryRecords.delete(clipId)
+          return
+        }
+      }
+      this.emitSkipNotice(clipId, code, record)
+    } catch (error) {
+      // Recovery is best-effort: an unexpected throw must not reject the void
+      // call or leave the lock set. Expected lookup, reload, and play failures
+      // are handled at their boundaries, so surface anything that reaches
+      // here instead of hiding a stopped preview.
+      console.error('[playback] decode recovery failed', clipId, error)
+    } finally {
+      if (this.recoveryInFlight === clipId) {
+        this.recoveryInFlight = null
+        this.recoveryProjectEpoch = null
+        this.recoveryElement = null
+        this.recoveryEpochOwner = null
+      }
+      // A pause drops the queue so the stale recovery cannot start another
+      // one. A seek or play still wants the new position's errors handled, so
+      // only a pause sets the discard flag. A project replacement alone also
+      // drains the new project's errors.
+      const userCancelled = this.recoveryEpoch !== recoveryEpochAtStart
+      if (userCancelled && this.recoveryCancelDiscard) {
+        this.deferredErrors.clear()
+      } else if (this.activeTerminalAt(this.time)) {
+        this.deferredErrors.clear()
+      } else {
+        const pending = [...this.deferredErrors]
+        this.deferredErrors.clear()
+        for (const [id, pendingEl] of pending) {
+          if (this.pool.peek(id) === pendingEl && this.isClipActiveAt(id, this.time)) {
+            this.handleElementError(id, pendingEl)
+          }
+        }
+      }
+      this.recoveryCancelDiscard = false
+    }
   }
 
   dispose(): void {
@@ -473,7 +1170,9 @@ export class PlaybackCore {
   private releaseMissingClips(): void {
     const doc = this.opts.getDoc()
     const live = new Set<string>()
+    const docIds = new Set<string>()
     for (const { clip } of this.activeClipList(doc)) {
+      docIds.add(clip.id)
       // A clip whose media no longer resolves (its asset was removed from
       // the bin while the clip survives for undo/relink) is NOT live: the
       // doc keeps the clip, but keeping its element would let it play on
@@ -486,46 +1185,42 @@ export class PlaybackCore {
     // Parked blend partners follow the same rule: a clip that is gone must not
     // keep a second decode alive.
     for (const id of this.pool.nextIds()) {
-      if (!live.has(id)) this.pool.releaseNext(id)
+      if (live.has(id)) continue
+      const partner = this.pool.peekNext(id)
+      if (partner) this.endSeek(partner)
+      this.pool.releaseNext(id)
     }
     for (const id of this.pool.ids()) {
       if (live.has(id)) continue
-      const el = this.pool.peek(id)
-      if (el) {
-        if (!el.paused) el.pause()
-        this.endSeek(el)
-      }
-      const entry = this.clipGains.get(id)
-      if (entry) {
-        try {
-          this.pool.getSourceNode(el!, this.audio!).disconnect()
-        } catch {
-          // already detached, or audio closed mid-teardown
-        }
-        for (const n of entry.nodes) {
-          try {
-            n.disconnect()
-          } catch {
-            // already detached
-          }
-        }
-        try {
-          entry.gain.disconnect() // the chain's edge into masterGain
-        } catch {
-          // already detached
-        }
-        this.clipGains.delete(id)
-      }
-      this.pool.release(id)
+      this.releaseClip(id)
+    }
+    // A deleted clip must not keep recovery state or a deferred error alive.
+    // A clip that merely lost its asset stays in `docIds` and keeps its state
+    // for the relink.
+    for (const id of new Set([
+      ...this.recoveryRecords.keys(),
+      ...this.noticeRanges.keys(),
+      ...this.deferredErrors.keys(),
+    ])) {
+      if (docIds.has(id)) continue
+      this.recoveryRecords.delete(id)
+      this.noticeRanges.delete(id)
+      this.deferredErrors.delete(id)
+      this.opts.onMediaError?.(null, id)
     }
   }
 
   /** Starts/stops elements, corrects drift, and updates per-clip gain. */
   private syncMedia(t: number, forceSeek = false): void {
+    this.checkProjectEpoch()
+    this.clearPassedRecovery(t)
     const doc = this.opts.getDoc()
     this.releaseMissingClips()
     for (const { clip, track, offset, ancestors, audibleTracks } of this.activeClipList(doc)) {
       if (track.kind === 'text') continue
+      if (this.refreshing && this.recoveryInFlight === clip.id && !this.recoveryIsStale()) {
+        continue
+      }
       const asset = findMedia(doc, clip.mediaId)
       // Restored sessions keep assets without a URL ("missing" until
       // relinked). Elements for them are pure noise: error events, autoplay
@@ -538,6 +1233,12 @@ export class PlaybackCore {
       const start = offset + clip.start
       const active = withinAncestorWindows(t, start, start + clip.duration, ancestors)
       const el = this.pool.get(clip, asset, this.mediaUrl(asset))
+      if (el.error) {
+        if (!this.terminalElements.has(el)) this.handleElementError(clip.id, el)
+        if (!el.paused) el.pause()
+        this.endSeek(el)
+        continue
+      }
       // Clamped into the asset: a ramp may over-consume its source, and the
       // excess freezes on the last readable frame (mp4.ts clamps identically).
       const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
@@ -618,6 +1319,8 @@ export class PlaybackCore {
     }
     const el = this.pool.getNext(clip, asset, this.mediaUrl(asset))
     if (!el) return
+    if (el.error) this.handleElementError(clip.id, el)
+    if (this.failedPartners.has(el)) return
     this.watchPresentedFrames(el)
     if (!active) {
       if (!el.paused) el.pause()
@@ -689,7 +1392,14 @@ export class PlaybackCore {
     const partnerTime = blendPartnerTime(clip, local, asset, fps)
     if (partnerTime === undefined) return undefined
     const partner = this.pool.peekNext(clip.id)
-    if (!partner || partner.readyState < 2) return undefined
+    if (
+      !partner ||
+      this.failedPartners.has(partner) ||
+      this.terminalElements.has(primary) ||
+      partner.readyState < 2
+    ) {
+      return undefined
+    }
     // The primary's own read position is the reference for its frame: the
     // element plays on the element clock, so its presented frame can sit a hair
     // ahead of the playhead-derived source time.
@@ -741,15 +1451,16 @@ export class PlaybackCore {
    * never emits `seeked` there and must not leave a stale "seeking" entry.
    */
   private seekElement(el: HTMLMediaElement, expected: number): void {
-    // Track BEFORE the assignment: a synchronous `seeked` (fake elements, or a
-    // browser that completes instantly) then clears the entry within this call,
-    // and an async browser keeps it until the decode lands.
-    this.beginSeek(el)
     const prev = el.currentTime
     // Land inside the frame the read names rather than on its edge (see
     // SEEK_FRAME_NUDGE): the exporter resolves an exact frame start to the frame
     // that begins there, and an element seek to the bare value does not.
     const target = parkedTarget(expected)
+    if (Math.abs(prev - target) <= 1e-9) return
+    // Track BEFORE the assignment: a synchronous `seeked` (fake elements, or a
+    // browser that completes instantly) then clears the entry within this call,
+    // and an async browser keeps it until the decode lands.
+    this.beginSeek(el)
     try {
       el.currentTime = target
     } catch {
@@ -855,7 +1566,10 @@ export class PlaybackCore {
           // already detached
         }
         try {
-          node.disconnect()
+          // Disconnect the OLD element's source node. Disconnecting `node`
+          // here would tear down the NEW element's source before it is wired
+          // into the replacement chain.
+          this.pool.getSourceNode(entry.el, this.audio).disconnect()
         } catch {
           // already detached
         }
@@ -951,14 +1665,22 @@ export class PlaybackCore {
    * Paused rendering: positions active video elements at their expected source
    * time and draws. A one-time `seeked` listener re-draws when the frame lands.
    */
-  private drawStill(t: number): void {
+  private drawStill(t: number, forceSeek = false): void {
+    this.checkProjectEpoch()
     const doc = this.opts.getDoc()
     // Paused edits (Delete, undo, relink) never reach syncMedia, so the release
     // pass runs here too: a clip deleted while paused must not leave its
     // parked blend element holding a decode for the rest of the session.
     this.releaseMissingClips()
+    // Handle errors after the paint. A terminal error calls `applySeek`, which
+    // repaints at `failedFrom`; doing that inline would nest a second draw and
+    // leave the outer `render(t)` painting a different time than the playhead.
+    const pendingErrors: { clipId: string; el: HTMLMediaElement }[] = []
     for (const { clip, track, offset, ancestors } of this.activeClipList(doc)) {
       if (track.kind === 'text') continue
+      if (this.refreshing && this.recoveryInFlight === clip.id && !this.recoveryIsStale()) {
+        continue
+      }
       const asset = findMedia(doc, clip.mediaId)
       if (!asset || asset.kind !== 'video') continue
       // Missing assets have no URL: pool.get would materialize a phantom
@@ -969,14 +1691,23 @@ export class PlaybackCore {
       const active = withinAncestorWindows(t, start, start + clip.duration, ancestors)
       if (!active) continue
       const el = this.pool.get(clip, asset, this.mediaUrl(asset))
+      if (el.error) {
+        if (!this.terminalElements.has(el)) pendingErrors.push({ clipId: clip.id, el })
+        if (!el.paused) el.pause()
+        this.endSeek(el)
+        continue
+      }
       // Clamped into the asset: a ramp may over-consume its source, and the
       // excess freezes on the last readable frame (mp4.ts clamps identically).
       const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
+      const seekTarget = parkedTarget(expected)
       if (
-        Math.abs(el.currentTime - expected) > this.stillSeekEps(clip, t, doc.project.fps, offset)
+        Math.abs(el.currentTime - seekTarget) > 1e-9 &&
+        (forceSeek ||
+          Math.abs(el.currentTime - expected) > this.stillSeekEps(clip, t, doc.project.fps, offset))
       ) {
         try {
-          el.currentTime = parkedTarget(expected)
+          el.currentTime = seekTarget
         } catch {
           // ignore
         }
@@ -1001,6 +1732,8 @@ export class PlaybackCore {
       }
       const next = this.pool.getNext(clip, asset, this.mediaUrl(asset))
       if (!next) continue
+      if (next.error) this.handleElementError(clip.id, next)
+      if (this.failedPartners.has(next)) continue
       this.watchPresentedFrames(next)
       const target = clampSourceTime(partner, asset)
       if (Math.abs(next.currentTime - target) > PARTNER_SEEK_EPS) {
@@ -1020,6 +1753,9 @@ export class PlaybackCore {
       }
     }
     this.render(t)
+    for (const { clipId, el } of pendingErrors) {
+      if (this.pool.peek(clipId) === el) this.handleElementError(clipId, el)
+    }
   }
 
   private resolveClip(
@@ -1050,6 +1786,7 @@ export class PlaybackCore {
       // Missing (restored) assets have no URL: never build an element for them.
       if (asset.missing || !asset.url) return undefined
       const el = this.pool.get(clip, asset, this.mediaUrl(asset)) as HTMLVideoElement
+      if (this.terminalElements.has(el)) return { asset }
       this.watchPresentedFrames(el)
       // Sub-frame-rate reads hand the compositor the parked partner as well, so
       // the monitor blends the pair the exporter blends instead of holding a

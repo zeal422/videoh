@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import {
   allMarkersOnTimeline,
   applyMarkerPatch,
+  clampedClipLocalTime,
   clipMarkerLocalTime,
   clipMarkerTimelineTime,
   createMarker,
@@ -104,6 +105,49 @@ describe('clip marker mapping (source seconds -> clip-local timeline)', () => {
     })
     expect(visibleClipMarkers(c).map((v) => v.marker.time)).toEqual([1.5, 3, 5])
     expect(visibleClipMarkers(c).map((v) => v.timelineTime)).toEqual([2.5, 4, 6])
+  })
+})
+
+describe('clampedClipLocalTime (nearest visible source endpoint)', () => {
+  it('clamps both out-of-span directions on a forward clip', () => {
+    const c = clip() // source 1..5, local 0..4
+    expect(clampedClipLocalTime(c, 0.5)).toBe(0)
+    expect(clampedClipLocalTime(c, 6)).toBe(4)
+  })
+
+  it('clamps both out-of-span directions on a reverse clip', () => {
+    const c = clip({ reverse: true }) // local 0 reads source 5, local 4 reads source 1
+    expect(clampedClipLocalTime(c, 6)).toBe(0)
+    expect(clampedClipLocalTime(c, 0.5)).toBe(4)
+  })
+
+  it('clamps both out-of-span directions on a forward ramp', () => {
+    const c = clip({
+      inPoint: 0,
+      keyframes: {
+        timeScale: [
+          { time: 0, value: 1 },
+          { time: 4, value: 2 },
+        ],
+      },
+    })
+    expect(clampedClipLocalTime(c, -0.5)).toBe(0)
+    expect(clampedClipLocalTime(c, 6.5)).toBe(4)
+  })
+
+  it('clamps both out-of-span directions on a reverse ramp', () => {
+    const c = clip({
+      inPoint: 0,
+      reverse: true,
+      keyframes: {
+        timeScale: [
+          { time: 0, value: 1 },
+          { time: 4, value: 2 },
+        ],
+      },
+    })
+    expect(clampedClipLocalTime(c, 7)).toBe(0)
+    expect(clampedClipLocalTime(c, -1)).toBe(4)
   })
 })
 

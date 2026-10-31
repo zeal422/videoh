@@ -392,3 +392,87 @@ Action: kept as a note; `settledKeys` is keyed by asset id, `dropAsset` clears t
 What happened: the component's request effect depended on the memoized plan object, which is recreated when the clip object changes on a move. The cache reused the entry, but the effect cleared the ready flag and re-requested after the debounce.
 Would-have-caught: depending on the cache key and asset URL, not on an object whose identity changes without the source window changing.
 Action: kept as a note; the effect keys on `plan.key` and `asset.url`, and the move-reuse render test fails on the object dependency.
+
+## 2026-10-30 - a post-seek guard assumed every target seeks the element
+
+What happened: the recovery's "seek could not be applied" check compared the element position for every skip target. Audio-only clips are not positioned by `drawStill`, a reverse clip's target at `clip.duration` is outside its active window, and a sequence-end target is intentionally past the clip, so all three false-terminalized once the full suite ran.
+Would-have-caught: running the whole playback suite after adding a post-commit guard, and checking the guard against the same active-window and element-kind rules `drawStill` uses.
+Action: kept as a note; the guard only runs for a video element whose clip is active at the target with no slack.
+
+## 2026-10-30 - UrlSource over a blob URL timed out the keyframe lookup
+
+What happened: the keyframe helper used mediabunny's `UrlSource` for the element's blob URL. The 127 MB file issued whole-file and tail range requests and hit the 3 s timeout, so the manual proof always took the 6 s fallback even though the next keyframe was known.
+Would-have-caught: testing the helper against the actual blob URL in the browser, not only a mocked `UrlSource`, and checking the fetch pattern before accepting the timeout.
+Action: kept as a note; a blob URL is fetched once and read through `BlobSource`, which finds the keyframe in about a second; `UrlSource` remains for http(s) sources.
+
+## 2026-10-30 - a keyframe timeout started after the async source setup
+
+What happened: `nextVideoKeyframe` started its 3 s timer only after the blob fetch, the blob read, and `Input` construction. A slow fetch was unbounded, and an `Input` created after the race returned would have leaked.
+Would-have-caught: placing the timeout before the first await in the bounded operation, and testing a fetch that resolves after the deadline.
+Action: kept as a note; the timer covers the whole lookup, a late `Input` disposes itself, and the slow-fetch test locks both.
+
+## 2026-10-31 - a user pause was overridden by the project-replacement drain
+
+What happened: the recovery finally treated every cancellation with a changed project epoch as a replacement and drained deferred errors. A pause also bumped the recovery epoch, so a pause combined with a project replacement let the stale recovery start a new recovery despite the user's pause.
+Would-have-caught: combining pause with project replacement and asserting the pause still suppresses the stale recovery's deferred work.
+Action: kept as a note; the finally compares the recovery epoch to distinguish a user pause/seek/play from a project-only change, and only the latter drains.
+
+## 2026-10-31 - a reused clip id hid the new project's error behind the old recovery
+
+What happened: `recoveryInFlight` stored only a clip id. Reopening a project that reused the id made the paused refresh skip that clip, and `handleElementError` ignored its code 3 as a duplicate of the old recovery. The old recovery then exited on the epoch change without syncing the clip, so its error stayed unhandled until another refresh.
+Would-have-caught: replacing a project during an in-flight recovery with a document that reuses the clip id, then asserting the new clip is synced and recovered without another action.
+Action: kept as a note; recovery ownership now records the project epoch, the refresh guard only skips a current-project recovery, and a stale recovery defers a same-id error for the new project instead of ignoring it.
+
+## 2026-10-31 - a stale recovery cleared the new project's deferred error
+
+What happened: replacing the project while a recovery awaited its keyframe lookup left `recoveryInFlight` set. The new project's first media error was deferred behind it, then the stale recovery's `finally` saw the cancellation and cleared the queue instead of dispatching it, so the paused preview stayed silent until another seek or play.
+Would-have-caught: replacing the project during an in-flight recovery and asserting the new project's first error is handled without another user action.
+Action: kept as a note; the `finally` distinguishes a project-epoch change from a user cancellation and drains deferred errors for the new project, and the regression test holds the old lookup, replaces the project, and asserts the new clip recovers.
+
+## 2026-10-30 - a resumed failed reload lost its attempt budget
+
+What happened: a failed reload released the element and returned without resuming, so playback stopped silently. Resuming exposed a second issue: `clearPassedRecovery` deleted the record as soon as the playhead passed `failedTo`, which reset the three-attempt budget after a failed reload.
+Would-have-caught: resuming on the failure path and tracing the record through the next `syncMedia`, including the no-skip case.
+Action: kept as a note; a failed reload resumes when it was playing (not at the sequence end), and only a committed skip clears its record on playback pass.
+
+## 2026-10-31 - a pool teardown load reported a phantom decode
+
+What happened: `ClipMediaPool.release` called `load()` on an empty source before deleting the map entry and before detaching the element's error listener. A synchronous error from that load could reach `handleElementError` as a real code 4 while the element was still pooled.
+Would-have-caught: firing an error from the teardown load in the pool test and asserting the pool callback never sees it.
+Action: kept as a note; teardown detaches its error listener first, release deletes the map entry before best-effort teardown, and a throwing pause is contained.
+
+## 2026-10-31 - a cancelled recovery still owned its clip
+
+What happened: `recoveryInFlight` stored only the clip id. After a seek recreated the element, or after a user action bumped the recovery epoch, a same-clip error was still treated as a duplicate of the cancelled recovery. The deferred queue was then cleared or drained with the wrong ownership.
+Would-have-caught: seeking during a pending recovery, erroring the fresh element, and asserting the new position recovers without another action.
+Action: kept as a note; recovery ownership records the element, user-action epoch, and project epoch. A pause discards deferred work, while a seek or play drains it for the new position.
+
+## 2026-10-31 - terminal state outlived its clip and partner
+
+What happened: a terminal clip was still resolved for the compositor, its parked blend partner stayed pooled and could keep playing after an error, and deleting the clip left its recovery record, notice range, and deferred error behind.
+Would-have-caught: checking the compositor resolver and every state map after a terminal error, a partner error, and a clip deletion.
+Action: kept as a note; the resolver skips terminal elements, terminalization releases the partner, partner errors pause it, and `releaseMissingClips` drops state for clip ids no longer in the doc.
+
+## 2026-10-31 - a verified keyframe inside the still seek dead zone terminalized
+
+What happened: recovery accepted a verified keyframe less than one frame ahead, but the post-commit element check required the element to reach the target within 1e-3. `drawStill` deliberately skips a seek inside `stillSeekEps`, so the element stayed at the error position and the recovery terminalized instead of using the keyframe.
+Would-have-caught: testing the keyframe-any-positive-advance rule end to end, including the element position check, not only the source-target arithmetic.
+Action: superseded on 2026-10-31 by the forced commit seek. Recovery now seeks the element to the keyframe even inside the dead zone, and the post-commit check requires 1e-3 for both keyframe and fallback targets.
+
+## 2026-10-31 - a stale skip notice outlived its clip
+
+What happened: recovery held its lock while `startPlayback` awaited `prepare()`. An ordinary edit during that window changed neither the recovery epoch nor the project epoch, and refresh skips the recovering element, so a removed or retimed clip could still emit a skip notice for its old timeline range.
+Would-have-caught: holding `prepare()` after the commit, deleting or retiming the clip, then resolving the gate. A single-clip timeline hides the removal because the empty timeline ends playback and bumps the epoch.
+Action: kept as a note; after the resume, recovery re-runs the pool, active-clip, and terminal guard and compares the source at the committed target with the committed source target before emitting.
+
+## 2026-10-31 - an unexpected recovery throw vanished
+
+What happened: the outer recovery catch was empty by design, so an unexpected throw left playback paused with no notice or diagnostic.
+Would-have-caught: injecting a rejected reload and asserting the failure is logged while the lock still releases.
+Action: kept as a note; the catch logs `[playback] decode recovery failed` with the clip id and error.
+
+## 2026-10-31 - a forced keyframe commit and a stale record
+
+What happened: the dead-zone tolerance accepted a near-start keyframe when `load()` left the element at zero, so the recovery emitted a skip notice without moving the element. Separately, a retime during the resume bailed without deleting the committed record, so a later error could reuse the old failed range and attempt budget.
+Would-have-caught: holding a keyframe 0.01 s from the start with the element at zero, and retiming during the resume then asserting the record is gone.
+Action: kept as a note; the commit uses a forced seek and a 1e-3 post-commit check, and a failed source comparison deletes the stale record.

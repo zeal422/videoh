@@ -118,6 +118,8 @@ export class FakeMediaStreamAudioDestinationNode extends FakeAudioNode {
 
 export class FakeAudioContext {
   static instances: FakeAudioContext[] = []
+  /** When set, every resume() waits for it (tests hold play() inside prepare()). */
+  static resumeGate: Promise<void> | null = null
   currentTime = 0
   state: 'suspended' | 'running' | 'closed' = 'suspended'
   sampleRate = 48000
@@ -132,6 +134,7 @@ export class FakeAudioContext {
     FakeAudioContext.instances.push(this)
   }
   async resume(): Promise<void> {
+    if (FakeAudioContext.resumeGate) await FakeAudioContext.resumeGate
     if (this.state !== 'closed') this.state = 'running'
   }
   async suspend(): Promise<void> {
@@ -295,6 +298,18 @@ export function presentFrame(el: HTMLMediaElement, mediaTime: number): void {
   for (const cb of pending) cb(performance.now(), metadata)
 }
 
+/**
+ * Sets the element's MediaError and dispatches the error event. The code is the
+ * browser MediaError code (3 = decode, 4 = src not supported).
+ */
+export function setMediaError(el: HTMLMediaElement, code: number): void {
+  Object.defineProperty(el, 'error', {
+    configurable: true,
+    value: { code, message: `media error ${code}` },
+  })
+  el.dispatchEvent(new Event('error'))
+}
+
 /** play()/pause()/paused/currentTime/load become deterministic state machines. */
 export function patchMediaElements(): void {
   Object.defineProperty(HTMLMediaElement.prototype, 'paused', {
@@ -316,8 +331,11 @@ export function patchMediaElements(): void {
     ;(this as unknown as Record<symbol, boolean>)[kPaused] = true
     this.dispatchEvent(new Event('pause'))
   }
-  ;(HTMLMediaElement.prototype as unknown as Record<string | symbol, unknown>).load = function () {
-    /* no-op */
+  ;(HTMLMediaElement.prototype as unknown as Record<string | symbol, unknown>).load = function (
+    this: HTMLMediaElement,
+  ) {
+    Object.defineProperty(this, 'error', { configurable: true, value: null })
+    this.dispatchEvent(new Event('loadedmetadata'))
   }
   // requestVideoFrameCallback: jsdom never presents a frame, so the callbacks
   // are queued here and run by `presentFrame` with a test-chosen mediaTime.
@@ -401,6 +419,7 @@ export interface MockHarness {
  */
 export function installBrowserMocks(): MockHarness {
   FakeAudioContext.instances = []
+  FakeAudioContext.resumeGate = null
 
   vi.stubGlobal('AudioContext', FakeAudioContext)
   vi.stubGlobal('MediaStream', FakeMediaStream)

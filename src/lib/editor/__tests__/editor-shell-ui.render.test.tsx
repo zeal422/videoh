@@ -849,6 +849,56 @@ describe('playhead effect-contract', () => {
   })
 })
 
+describe('decode recovery overlay', () => {
+  it('renders skip and terminal copy, keeps only the latest notice, and dismisses', () => {
+    render(<EditorShell />)
+
+    act(() => {
+      useEditorStore.getState().setMediaError({
+        clipId: 'c1',
+        code: 3,
+        time: 118.4,
+        skippedTo: 124.3,
+        terminal: false,
+      })
+    })
+    const overlay = screen.getByTestId('media-decode-overlay')
+    expect(overlay).toHaveTextContent('Skipped damaged media')
+    expect(overlay).toHaveTextContent('from 01:58.4 to 02:04.3')
+    expect(overlay).toHaveTextContent('The browser could not decode that section.')
+    expect(overlay).not.toHaveTextContent('Chrome')
+
+    act(() => {
+      useEditorStore.getState().setMediaError({
+        clipId: 'c2',
+        code: 4,
+        time: 10,
+        terminal: true,
+      })
+    })
+    expect(screen.getByTestId('media-decode-overlay')).toHaveTextContent('Damaged media')
+    expect(screen.getByTestId('media-decode-overlay')).toHaveTextContent('around 00:10.0')
+    expect(screen.getByTestId('media-decode-overlay')).toHaveTextContent(
+      'the browser cannot decode',
+    )
+
+    act(() => {
+      useEditorStore.getState().setMediaError({
+        clipId: 'a1',
+        code: 3,
+        time: 1,
+        skippedTo: 2,
+        terminal: false,
+      })
+    })
+    expect(screen.getByTestId('media-decode-overlay')).toHaveTextContent('media')
+    expect(screen.getByTestId('media-decode-overlay')).not.toHaveTextContent('video')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByTestId('media-decode-overlay')).not.toBeInTheDocument()
+  })
+})
+
 describe('track lock notice (0.14.0)', () => {
   it('surfaces the command message for a refused dispatch and keeps the doc', async () => {
     const asset = createMediaAsset({ kind: 'video', duration: 10, name: 'x.mp4' })

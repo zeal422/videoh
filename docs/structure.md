@@ -86,7 +86,7 @@ src/components/
 │   ├── Toolbar.tsx               #   tools, history, tracks, save/open, export
 │   ├── MediaBin.tsx              #   import, samples, relink, drag source, bin row selection
 │   ├── SourcePanel.tsx           #   source monitor: preview, transport, mark In/Out
-│   ├── PreviewPanel.tsx          #   program monitor + transport + text drag
+│   ├── PreviewPanel.tsx          #   program monitor + transport + text drag + offline/decode overlays
 │   ├── ColorFilterDefs.tsx       #   hidden SVG grade/LUT filter host
 │   ├── ScopesPanel.tsx           #   histogram, RGB balance, waveform, vectorscope
 │   ├── InspectorPanel.tsx        #   clip properties / project settings
@@ -183,16 +183,17 @@ src/lib/editor/
 ├── sample-media.ts       # bundled sample list + load plan (fresh adds, offline relinks)
 ├── timeline-drop.ts      # drop-target geometry for drop-between-tracks
 ├── tracks.ts             # solo audibility + lock checks, removes the tracks an edit leaves empty (prune)
-├── timeline-scroll.ts    # drag edge auto-scroll geometry (pure)
+├── timeline-scroll.ts    # drag edge auto-scroll geometry + the shared zoom step (pure)
 ├── proxy.ts              # pure proxy planning: dimensions, bitrate, eligibility
 ├── media/
 │   ├── probe.ts          # importFile: probe duration/size, thumbnail, waveform peaks, hasAudio
 │   ├── filmstrip-cache.ts # runtime-only strip cache: one job, LRU budget, hidden video per asset
 │   ├── relink.ts         # isNativeFile guard + relinkPatchFrom: patch fields a relink carries (file handle included)
 │   ├── elements.ts       # ClipMediaPool: per-clip media elements, source nodes, the parked blend partner
+│   ├── keyframes.ts      # verified video keyframe lookup for decode recovery (mediabunny)
 │   └── proxies.ts        # session proxy build/revoke and effective media URL
 ├── playback/
-│   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate, blend partner
+│   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate, blend partner, decode recovery
 │   ├── compositor.ts     # drawFrame + the draws the exporter shares: contain-fit geometry, text, crossfade, blends, the 3D LUT pass
 │   ├── denoise.ts        # noise-reduction biquad chain, shared by the preview mixer and the export mix
 │   ├── preview.ts        # preview engine singleton (attach/detach)
@@ -202,7 +203,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 89 test files (1967 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 90 test files (2049 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

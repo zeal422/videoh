@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.16.4',
+    date: '2026-10-31',
+    highlights: [
+      'Damaged video now skips to the next decodable keyframe and tells you what it skipped, instead of leaving the monitor black',
+      'Audio-only clips decode as audio, so linked audio no longer fails on a damaged video GOP',
+      'Pressing play after a paused seek no longer re-seeks the element, removing the short black and silent gap',
+      'The timeline zooms down to 1 px/s, enough to fit a 15-minute sequence, and Zoom In still steps at the new floor',
+      'Recovery is bounded to three attempts, shows a persistent notice, and clears on Dismiss or a seek outside the damaged range',
+    ],
+  },
+  {
     version: '0.16.3',
     date: '2026-10-29',
     highlights: [

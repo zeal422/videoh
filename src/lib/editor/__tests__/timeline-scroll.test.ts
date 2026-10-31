@@ -7,7 +7,12 @@
  * pinned here instead of being re-discovered by hand in the browser.
  */
 import { describe, expect, it } from 'vitest'
-import { AUTOSCROLL_EDGE_PX, autoScrollStep, autoScrollStepX } from '../timeline-scroll'
+import {
+  AUTOSCROLL_EDGE_PX,
+  autoScrollStep,
+  autoScrollStepX,
+  nextZoomPxPerSec,
+} from '../timeline-scroll'
 
 const band = { top: 400, bottom: 550 }
 
@@ -72,5 +77,24 @@ describe('autoScrollStepX (marquee edge scrolling)', () => {
     // depth 5 of a 10px edge, maxStep 6 → round(6 * 5 / 10) = 3
     expect(autoScrollStepX(695, hband, 10, 6)).toBe(3)
     expect(autoScrollStepX(hband.left, hband, 0)).toBe(0)
+  })
+})
+
+describe('nextZoomPxPerSec', () => {
+  it('guarantees a step at the 1 px/s floor', () => {
+    expect(nextZoomPxPerSec(1, 1.4)).toBe(2)
+    expect(nextZoomPxPerSec(1, 1 / 1.4)).toBe(1)
+  })
+
+  it('keeps the existing 1.4 and 1.15 steps away from the floor', () => {
+    expect(nextZoomPxPerSec(10, 1.4)).toBe(14)
+    expect(nextZoomPxPerSec(10, 1 / 1.4)).toBe(7)
+    expect(nextZoomPxPerSec(10, 1.15)).toBe(12)
+    expect(nextZoomPxPerSec(10, 1 / 1.15)).toBe(9)
+  })
+
+  it('clamps at both limits', () => {
+    expect(nextZoomPxPerSec(400, 1.4)).toBe(400)
+    expect(nextZoomPxPerSec(1, 1 / 1.4)).toBe(1)
   })
 })

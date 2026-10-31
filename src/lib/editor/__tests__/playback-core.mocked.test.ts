@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { PlaybackCore } from '../playback/core'
+import { PlaybackCore, type MediaErrorInfo } from '../playback/core'
 import {
   FakeAudioContext,
   FakeBiquadFilterNode,
@@ -10,6 +11,7 @@ import {
   installBrowserMocks,
   installRAFPump,
   presentFrame,
+  setMediaError,
   type MockHarness,
 } from './mocks/browser-mocks'
 import {
@@ -74,18 +76,32 @@ function primeVideoElement(el: HTMLVideoElement): void {
   Object.defineProperty(el, 'videoHeight', { configurable: true, value: 360 })
 }
 
-function makeCore(doc: Doc, hooks: { onEnd?: () => void } = {}) {
+function makeCore(
+  doc: Doc,
+  hooks: {
+    onEnd?: () => void
+    onMediaError?: (info: MediaErrorInfo | null, clipId?: string) => void
+    nextKeyframe?: (url: string, sourceTime: number) => Promise<number | undefined>
+    getProjectEpoch?: () => number
+    resolveMediaUrl?: (asset: MediaAsset) => string
+  } = {},
+) {
   const canvas = document.createElement('canvas')
   const frames: number[] = []
+  const playingChanges: boolean[] = []
   const core = new PlaybackCore({
     canvas,
     getDoc: () => doc,
+    resolveMediaUrl: hooks.resolveMediaUrl,
+    getProjectEpoch: hooks.getProjectEpoch,
+    nextKeyframe: hooks.nextKeyframe,
+    onMediaError: hooks.onMediaError,
     onFrame: (t) => frames.push(t),
-    onPlayingChange: () => undefined,
+    onPlayingChange: (playing) => playingChanges.push(playing),
     onEnd: hooks.onEnd,
   })
   const ctx = canvas.getContext('2d') as unknown as { calls: { op: string; args: unknown[] }[] }
-  return { core, canvas, frames, ctx }
+  return { core, canvas, frames, ctx, playingChanges }
 }
 
 /** Master gain: the only node feeding the destination (reverse edge). */
@@ -97,6 +113,16 @@ function masterGainOf(ctx: FakeAudioContext): FakeGainNode {
 
 const closeTo = (value: number) => (actual: unknown) =>
   typeof actual === 'number' && Math.abs(actual - value) < 1e-5
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
 
 /**
  * The engine parks an element a hair PAST the read it was asked for
@@ -1126,6 +1152,29 @@ describe('PlaybackCore (mocked browser)', () => {
     core.dispose()
   })
 
+  it('disconnects the audio chain when the element is already released', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.play()
+    await h.pump.pump(1)
+
+    const el = core['pool'].peek('c1')!
+    const src = core['pool'].getSourceNode(el, h.lastAudioContext() as never) as unknown as {
+      connections: unknown[]
+    }
+    expect(src.connections.length).toBeGreaterThan(0)
+
+    // The element is gone from the pool, but the gain entry still owns the
+    // old source node. releaseClip must disconnect that node anyway.
+    core['pool'].release('c1')
+    core['releaseClip']('c1')
+
+    expect(src.connections).toHaveLength(0)
+    expect(core['clipGains'].has('c1')).toBe(false)
+    core.dispose()
+  })
+
   it('rewires the audio chain to the relinked element', async () => {
     const { doc, asset } = makeDoc()
     addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
@@ -1134,6 +1183,12 @@ describe('PlaybackCore (mocked browser)', () => {
     await h.pump.pump(1)
 
     const before = core['pool'].peek(doc.project.tracks[0].clips[0].id)
+    const oldSrc = core['pool'].getSourceNode(
+      before!,
+      h.lastAudioContext() as never,
+    ) as unknown as {
+      connections: unknown[]
+    }
     expect(masterGainOf(h.lastAudioContext()).inputs.length).toBe(1)
 
     // Relink: the asset's url changes; the pool rebuilds the element on the
@@ -1151,6 +1206,7 @@ describe('PlaybackCore (mocked browser)', () => {
       inputs: { mediaElement?: HTMLMediaElement }[]
     }
     expect(feeder.inputs.some((n) => n.mediaElement === after)).toBe(true)
+    expect(oldSrc.connections).toHaveLength(0) // the old source is detached
     core.dispose()
   })
 
@@ -1392,6 +1448,35 @@ describe('PlaybackCore sub-frame-rate blending (mocked browser)', () => {
     expect(alphas[0]).toBe(1) // the black base of the pair
     expect(alphas[1]).toBeCloseTo(0.5, 12) // 1 - w for the frame the read is on
     expect(alphas[2]).toBeCloseTo(0.5, 12) // w for the partner frame
+    core.dispose()
+  })
+
+  it('falls back to the single frame when the partner is latched', () => {
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const { core, ctx } = makeCore(doc)
+    const t = 31 / 30
+    core.seek(t)
+
+    const primary = document.querySelector('video') as HTMLVideoElement
+    const partner = core['pool'].peekNext(clip.id)!
+    primeVideoElement(primary)
+    primeVideoElement(partner)
+    presentFrame(primary, 0.5)
+    presentFrame(partner, 0.5 + 1 / 30)
+
+    // The pair blends before the latch.
+    ctx.calls.length = 0
+    core.seek(t)
+    expect(drawOps(ctx, 'drawImage')[0].args[0]).not.toBe(primary)
+
+    // A partner error latches it. The next draw must use the primary alone,
+    // not the failed partner's stale presented frame.
+    setMediaError(partner, 3)
+    expect(core['failedPartners'].has(partner)).toBe(true)
+    ctx.calls.length = 0
+    core.seek(t)
+    expect(drawOps(ctx, 'drawImage')[0].args[0]).toBe(primary)
     core.dispose()
   })
 
@@ -1720,5 +1805,1649 @@ describe('track solo in the preview mixer (0.14.0)', () => {
     expect(gains[0]).toBe(0)
     expect(gains[1]).toBe(1)
     core.dispose()
+  })
+})
+
+describe('decode recovery (mocked browser)', () => {
+  it('reloads, skips to the mapped keyframe, and reports the range when paused', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const lookups: { url: string; time: number }[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async (url, time) => {
+        lookups.push({ url, time })
+        return 5
+      },
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    expect(el).not.toBeNull()
+    setMediaError(el, 3)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(lookups).toHaveLength(1)
+    expect(lookups[0].time).toBeCloseTo(2, 5)
+    expect(lookups[0].url).toContain('blob:video')
+    expect(core.currentTime).toBeCloseTo(5, 5)
+    expect(el.currentTime).toBeGreaterThanOrEqual(5)
+    expect(el.error).toBeNull()
+    expect(notices[0]).toEqual({
+      clipId: 'c1',
+      code: 3,
+      time: 2,
+      skippedTo: 5,
+      terminal: false,
+    })
+    expect(core.isPlaying).toBe(false)
+    core.dispose()
+  })
+
+  it('uses a verified keyframe that is less than one frame ahead', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 5.01,
+    })
+
+    core.seek(5)
+    const el = core['pool'].peek('c1') as HTMLVideoElement
+    setMediaError(el, 3)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toMatchObject({ time: 5, terminal: false })
+    expect(notices[0]?.skippedTo).toBeCloseTo(5.01, 5)
+    expect(core.currentTime).toBeCloseTo(5.01, 5)
+    // The keyframe is inside the still seek dead zone, so the commit has to
+    // force the element to it instead of accepting the old read.
+    expect(el.currentTime).toBeCloseTo(5.01, 3)
+    core.dispose()
+  })
+
+  it('forces a near-start keyframe seek after the reload', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 0.01,
+    })
+
+    core.seek(0)
+    const el = core['pool'].peek('c1') as HTMLVideoElement
+    expect(el.currentTime).toBeCloseTo(0, 5)
+    setMediaError(el, 3)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toMatchObject({ time: 0, terminal: false })
+    expect(notices[0]?.skippedTo).toBeCloseTo(0.01, 5)
+    // The reload left the element at zero, and the keyframe is inside the still
+    // seek dead zone. The commit must seek instead of accepting the old read.
+    expect(el.currentTime).toBeCloseTo(0.01, 3)
+    core.dispose()
+  })
+
+  it('resumes when the error arrived during playback', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core, playingChanges } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 5,
+    })
+
+    await core.play()
+    await h.pump.pump(1)
+    core.seek(2)
+    await h.pump.pump(1)
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(core.isPlaying).toBe(true)
+    expect(core.currentTime).toBeCloseTo(5, 5)
+    expect(playingChanges).toContain(false)
+    expect(playingChanges[playingChanges.length - 1]).toBe(true)
+    core.dispose()
+  })
+
+  it('ignores an error from a clip that is not active at the playhead', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 2, inPoint: 0 })
+    const secondTrack = createTrack('video', 2)
+    doc.project.tracks.push(secondTrack)
+    secondTrack.clips.push(
+      createClip({ id: 'c2', mediaId: asset.id, start: 8, duration: 2, inPoint: 0 }),
+    )
+    const notices: (MediaErrorInfo | null)[] = []
+    const lookups: number[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => {
+        lookups.push(1)
+        return 9
+      },
+    })
+
+    await core.play()
+    await h.pump.pump(1)
+    core.pause()
+    const videos = document.querySelectorAll('video')
+    expect(videos).toHaveLength(2)
+    setMediaError(videos[1] as HTMLVideoElement, 3)
+    await Promise.resolve()
+
+    expect(notices).toHaveLength(0)
+    expect(lookups).toHaveLength(0)
+    expect(core.currentTime).toBe(0)
+    core.dispose()
+  })
+
+  it('a pause during the lookup cancels without jumping or reporting', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const gate = deferred<number | undefined>()
+    const notices: (MediaErrorInfo | null)[] = []
+    let lookups = 0
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: () => {
+        lookups++
+        return gate.promise
+      },
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+    await Promise.resolve()
+    expect(lookups).toBe(1)
+
+    core.pause()
+    gate.resolve(5)
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(core.currentTime).toBe(2)
+    expect(notices).toHaveLength(0)
+    expect(lookups).toBe(1)
+    core.dispose()
+  })
+
+  it('serializes two clip errors and drains the deferred one once', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const secondTrack = createTrack('video', 2)
+    doc.project.tracks.push(secondTrack)
+    secondTrack.clips.push(
+      createClip({ id: 'c2', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    const notices: (MediaErrorInfo | null)[] = []
+    let lookups = 0
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => {
+        lookups++
+        return lookups === 1 ? 5 : 8
+      },
+    })
+
+    core.seek(2)
+    const videos = document.querySelectorAll('video')
+    expect(videos).toHaveLength(2)
+    setMediaError(videos[0] as HTMLVideoElement, 3)
+    setMediaError(videos[1] as HTMLVideoElement, 3)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(2))
+    expect(lookups).toBe(2)
+    expect(notices.map((n) => n?.clipId)).toEqual(['c1', 'c2'])
+    expect(core.currentTime).toBeCloseTo(8, 5)
+    core.dispose()
+  })
+
+  it('ignores a duplicate code 3 from the clip already recovering', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const gate = deferred<number | undefined>()
+    const notices: (MediaErrorInfo | null)[] = []
+    let lookups = 0
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: () => {
+        lookups++
+        return gate.promise
+      },
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+    await Promise.resolve()
+    setMediaError(el, 3)
+    gate.resolve(5)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(lookups).toBe(1)
+    expect(notices[0]?.terminal).toBe(false)
+    expect(core.currentTime).toBeCloseTo(5, 5)
+    core.dispose()
+  })
+
+  it('terminalizes an in-flight code 4 without a success notice', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const gate = deferred<number | undefined>()
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: () => gate.promise,
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+    await Promise.resolve()
+    setMediaError(el, 4)
+    gate.resolve(5)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toEqual({
+      clipId: 'c1',
+      code: 4,
+      time: 2,
+      terminal: true,
+    })
+    expect(core.currentTime).toBeCloseTo(2, 5)
+    expect(core.isPlaying).toBe(false)
+
+    // The element is latched: another code 4 does not report again.
+    setMediaError(el, 4)
+    await Promise.resolve()
+    expect(notices).toHaveLength(1)
+    core.dispose()
+  })
+
+  it('a code 4 during the resume prepare cancels playback and applies failedFrom', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core, playingChanges } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 5,
+    })
+
+    await core.play()
+    await h.pump.pump(1)
+    core.seek(2)
+    await h.pump.pump(1)
+    const ctx = h.lastAudioContext()
+    ctx.state = 'suspended'
+    const gate = deferred<void>()
+    FakeAudioContext.resumeGate = gate.promise
+
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+    // The recovery pauses, skips to 5, and is now held inside prepare().
+    await vi.waitFor(() => expect(core.currentTime).toBeCloseTo(5, 5))
+    setMediaError(el, 4)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toEqual({
+      clipId: 'c1',
+      code: 4,
+      time: 2,
+      terminal: true,
+    })
+    expect(core.currentTime).toBeCloseTo(2, 5)
+    expect(core.isPlaying).toBe(false)
+
+    gate.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(core.isPlaying).toBe(false)
+    expect(notices).toHaveLength(1)
+    expect(playingChanges[playingChanges.length - 1]).toBe(false)
+    FakeAudioContext.resumeGate = null
+    core.dispose()
+  })
+
+  it('does not emit a skip notice when an edit removes the clip during the resume', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    // Keep the timeline non-empty so removing c1 does not end playback (and
+    // bump the recovery epoch) before the pending resume returns.
+    const secondTrack = createTrack('video', 2)
+    doc.project.tracks.push(secondTrack)
+    secondTrack.clips.push(
+      createClip({ id: 'c2', mediaId: asset.id, start: 0, duration: 20, inPoint: 0 }),
+    )
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 5,
+    })
+
+    await core.play()
+    await h.pump.pump(1)
+    core.seek(2)
+    await h.pump.pump(1)
+    const ctx = h.lastAudioContext()
+    ctx.state = 'suspended'
+    const gate = deferred<void>()
+    FakeAudioContext.resumeGate = gate.promise
+
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+    // The recovery pauses, skips to 5, and is now held inside prepare().
+    await vi.waitFor(() => expect(core.currentTime).toBeCloseTo(5, 5))
+
+    // An ordinary edit deletes the clip while the resume is pending. The edit
+    // refresh drops its record and clears its notice.
+    doc.project.tracks[0].clips = []
+    core.refresh(core.currentTime)
+    expect(core['recoveryRecords'].has('c1')).toBe(false)
+    expect(notices).toContainEqual(null)
+
+    gate.resolve()
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBeNull())
+    expect(notices.some((n) => n?.clipId === 'c1' && n.skippedTo !== undefined)).toBe(false)
+    FakeAudioContext.resumeGate = null
+    core.dispose()
+  })
+
+  it('does not emit a stale skip notice when an edit retimes the clip during the resume', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 5,
+    })
+
+    await core.play()
+    await h.pump.pump(1)
+    core.seek(2)
+    await h.pump.pump(1)
+    const ctx = h.lastAudioContext()
+    ctx.state = 'suspended'
+    const gate = deferred<void>()
+    FakeAudioContext.resumeGate = gate.promise
+
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(core.currentTime).toBeCloseTo(5, 5))
+
+    // Move the clip by two seconds. Timeline 5 now maps to source 3, not the
+    // committed source 5, so the old failed range no longer describes it.
+    clip.start = 2
+    core.refresh(core.currentTime)
+    expect(core['recoveryRecords'].has('c1')).toBe(true)
+
+    gate.resolve()
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBeNull())
+    // The resumed sync respects the new mapping, and no stale range is shown.
+    expect(el.currentTime).toBeCloseTo(3, 3)
+    expect(notices.some((n) => n?.clipId === 'c1' && n.skippedTo !== undefined)).toBe(false)
+    // The committed range and attempt budget belonged to the old mapping.
+    expect(core['recoveryRecords'].has('c1')).toBe(false)
+    FakeAudioContext.resumeGate = null
+    core.dispose()
+  })
+
+  it('code 4 outside recovery stops, seeks to failedFrom, and does not reload', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    let lookups = 0
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => {
+        lookups++
+        return 5
+      },
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 4)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toEqual({
+      clipId: 'c1',
+      code: 4,
+      time: 2,
+      terminal: true,
+    })
+    expect(core.currentTime).toBeCloseTo(2, 5)
+    expect(core.isPlaying).toBe(false)
+    expect(lookups).toBe(0)
+    core.dispose()
+  })
+
+  it('code 4 on an existing record preserves failedFrom and merges the range', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 5,
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]?.terminal).toBe(false)
+
+    setMediaError(el, 4)
+    await vi.waitFor(() => expect(notices).toHaveLength(2))
+    expect(notices[1]).toEqual({
+      clipId: 'c1',
+      code: 4,
+      time: 2,
+      terminal: true,
+    })
+
+    // The merged range still covers 3; only a seek outside 2..5 clears it.
+    core.seek(3)
+    expect(notices).toHaveLength(2)
+    core.seek(6)
+    expect(notices).toHaveLength(3)
+    expect(notices[2]).toBeNull()
+    core.dispose()
+  })
+
+  it('merges a reverse clip terminal range in timeline time', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+      reverse: true,
+    })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, { onMediaError: (info) => notices.push(info) })
+
+    core.seek(1)
+    const el = core['pool'].peek('c1') as HTMLVideoElement
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toMatchObject({ time: 1, skippedTo: 7, terminal: false })
+    expect(core['recoveryRecords'].get('c1')).toMatchObject({ failedFrom: 1, failedTo: 7 })
+
+    // A code 4 later in timeline time, still inside the range, must not shrink
+    // the recorded failure range.
+    core.seek(6.5)
+    setMediaError(el, 4)
+    await vi.waitFor(() => expect(notices).toHaveLength(2))
+    expect(notices[1]).toMatchObject({ time: 1, terminal: true })
+    expect(core['recoveryRecords'].get('c1')?.failedTo).toBeCloseTo(7, 5)
+
+    // 6.8 was inside the original 1..7 range, so the latch must survive.
+    core.seek(6.8)
+    expect(notices).toHaveLength(2)
+    expect(core['recoveryRecords'].get('c1')?.terminal).toBe(true)
+    core.dispose()
+  })
+
+  it('a terminal record keeps priority over a deferred overlapping clip', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const secondTrack = createTrack('video', 2)
+    doc.project.tracks.push(secondTrack)
+    secondTrack.clips.push(
+      createClip({ id: 'c2', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    const gate = deferred<number | undefined>()
+    const notices: (MediaErrorInfo | null)[] = []
+    let lookups = 0
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: () => {
+        lookups++
+        if (lookups === 1) return gate.promise
+        return Promise.resolve(8)
+      },
+    })
+
+    core.seek(2)
+    const videos = document.querySelectorAll('video')
+    setMediaError(videos[0] as HTMLVideoElement, 3)
+    await Promise.resolve()
+    setMediaError(videos[1] as HTMLVideoElement, 3)
+    setMediaError(videos[0] as HTMLVideoElement, 4)
+    gate.resolve(5)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toEqual({
+      clipId: 'c1',
+      code: 4,
+      time: 2,
+      terminal: true,
+    })
+    expect(core.currentTime).toBeCloseTo(2, 5)
+    expect(lookups).toBe(1)
+
+    // Let the cancelled recovery release its lock before the user seeks.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    core.seek(6)
+    await vi.waitFor(() => expect(notices).toHaveLength(3))
+    expect(notices[1]).toBeNull()
+    expect(notices[2]).toMatchObject({ clipId: 'c2', terminal: false })
+    expect(core.currentTime).toBeCloseTo(8, 5)
+    core.dispose()
+  })
+
+  it('does not replay a deferred error after its own recovery starts', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const long = createMediaAsset({
+      kind: 'video',
+      name: 'long.mp4',
+      duration: 20,
+      url: 'blob:long',
+    })
+    doc.media.push(long)
+    doc.project.tracks[1].clips.push(
+      createClip({
+        id: 'c2',
+        mediaId: long.id,
+        start: 0,
+        duration: 20,
+        inPoint: 0,
+        audioOnly: true,
+      }),
+    )
+    const notices: (MediaErrorInfo | null)[] = []
+    let loads = 0
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+    })
+
+    core.seek(2)
+    const videoEl = document.querySelector('video') as HTMLVideoElement
+    const audioEl = document.querySelector('audio') as HTMLAudioElement
+    audioEl.load = () => {
+      loads++
+      // The media error survives the successful reload.
+      Object.defineProperty(audioEl, 'error', { configurable: true, value: { code: 3 } })
+      audioEl.dispatchEvent(new Event('loadedmetadata'))
+    }
+
+    // c1 terminalizes with no recovery in flight, so no recovery finally can
+    // clear the queue. c2's error is then deferred behind the terminal.
+    setMediaError(videoEl, 4)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toMatchObject({ clipId: 'c1', terminal: true })
+    setMediaError(audioEl, 3)
+    expect(core['deferredErrors'].size).toBe(1)
+
+    // The seek clears the terminal and starts c2's recovery. The stale entry
+    // must not start a second recovery after the first one drains.
+    core.seek(4)
+    await vi.waitFor(() => expect(notices.some((n) => n?.clipId === 'c2')).toBe(true))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const c2Notices = notices.filter((n) => n?.clipId === 'c2')
+    expect(c2Notices).toHaveLength(1)
+    expect(c2Notices[0]).toMatchObject({ terminal: false, skippedTo: 10 })
+    expect(loads).toBe(1)
+    expect(core['recoveryRecords'].get('c2')?.attempts).toBe(1)
+    expect(core['deferredErrors'].size).toBe(0)
+    core.dispose()
+  })
+
+  it('clears errors requeued by the terminal repaint', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const secondTrack = createTrack('video', 2)
+    doc.project.tracks.push(secondTrack)
+    secondTrack.clips.push(
+      createClip({ id: 'c2', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, { onMediaError: (info) => notices.push(info) })
+
+    core.seek(2)
+    const first = core['pool'].peek('c1') as HTMLVideoElement
+    const second = core['pool'].peek('c2') as HTMLVideoElement
+    // The second element already carries an error, but its event was handled
+    // before the terminal record existed, so it is not queued yet.
+    Object.defineProperty(second, 'error', { configurable: true, value: { code: 3 } })
+
+    // The terminal repaint encounters the second element and would queue it.
+    setMediaError(first, 4)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toMatchObject({ clipId: 'c1', terminal: true })
+    expect(core['deferredErrors'].size).toBe(0)
+    core.dispose()
+  })
+
+  it('fallback exhaustion terminalizes before the reload', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    let loads = 0
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => undefined,
+    })
+
+    core.seek(9.99)
+    const el = document.querySelector('video') as HTMLVideoElement
+    el.load = () => {
+      loads++
+    }
+    setMediaError(el, 3)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toEqual({
+      clipId: 'c1',
+      code: 3,
+      time: 9.99,
+      terminal: true,
+    })
+    expect(loads).toBe(0)
+    expect(core.currentTime).toBeCloseTo(9.99, 5)
+    core.dispose()
+  })
+
+  it('a failed reload resumes on a fresh element and lets it recover', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 5,
+    })
+
+    await core.play()
+    await h.pump.pump(1)
+    core.seek(2)
+    await h.pump.pump(1)
+    const el = document.querySelector('video') as HTMLVideoElement
+    let loads = 0
+    el.load = () => {
+      loads++
+      setMediaError(el, 3)
+    }
+    setMediaError(el, 3)
+
+    await vi.waitFor(() => expect(loads).toBeGreaterThan(0))
+    // The failed reload releases the old element and resumes playback; the
+    // next sync creates a fresh element at the current read.
+    await vi.waitFor(() => expect(core.isPlaying).toBe(true))
+    const fresh = document.querySelector('video') as HTMLVideoElement
+    expect(fresh).not.toBe(el)
+    expect(document.body.contains(el)).toBe(false)
+    expect(notices).toHaveLength(0)
+
+    setMediaError(fresh, 3)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]?.terminal).toBe(false)
+    expect(notices[0]?.skippedTo).toBeCloseTo(5, 5)
+    expect(core.currentTime).toBeCloseTo(5, 5)
+    core.dispose()
+  })
+
+  it('keeps the attempt budget across a resumed failed reload', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 5,
+    })
+
+    await core.play()
+    await h.pump.pump(1)
+    core.seek(2)
+    await h.pump.pump(1)
+    const failReload = (): HTMLVideoElement => {
+      const current = document.querySelector('video') as HTMLVideoElement
+      current.load = () => setMediaError(current, 3)
+      return current
+    }
+
+    let el = failReload()
+    setMediaError(el, 3)
+
+    // Each failed reload resumes; the fresh element then advances past
+    // failedTo and errors again. The record must survive that advance.
+    for (let i = 0; i < 2; i++) {
+      await vi.waitFor(() => expect(core.isPlaying).toBe(true))
+      h.lastAudioContext().currentTime += 0.1
+      await h.pump.pump(1)
+      el = failReload()
+      setMediaError(el, 3)
+    }
+
+    await vi.waitFor(() => expect(core.isPlaying).toBe(true))
+    h.lastAudioContext().currentTime += 0.1
+    await h.pump.pump(1)
+    el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+
+    // Three failed attempts are allowed; the fourth error is terminal and
+    // keeps the first error position.
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toMatchObject({
+      clipId: 'c1',
+      code: 3,
+      terminal: true,
+    })
+    expect(notices[0]?.time).toBeCloseTo(2, 5)
+    expect(core.isPlaying).toBe(false)
+    core.dispose()
+  })
+
+  it('allows three attempts and terminalizes the fourth error', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async (_url, sourceTime) => sourceTime + 2,
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    for (let i = 0; i < 3; i++) {
+      setMediaError(el, 3)
+      await vi.waitFor(() => expect(notices).toHaveLength(i + 1))
+      expect(notices[i]?.terminal).toBe(false)
+    }
+    expect(core.currentTime).toBeCloseTo(8, 5)
+
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(notices).toHaveLength(4))
+    expect(notices[3]).toEqual({
+      clipId: 'c1',
+      code: 3,
+      time: 2,
+      terminal: true,
+    })
+    expect(core.currentTime).toBeCloseTo(2, 5)
+    core.dispose()
+  })
+
+  it('reads the proxy URL the element is actually using', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const urls: string[] = []
+    const { core } = makeCore(doc, {
+      resolveMediaUrl: () => 'blob:proxy',
+      nextKeyframe: async (url) => {
+        urls.push(url)
+        return 5
+      },
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    expect(el.src).toContain('blob:proxy')
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(urls).toHaveLength(1))
+    expect(urls[0]).toBe(el.src)
+    core.dispose()
+  })
+
+  it('an audio-only element uses the source-time fallback, not video keyframes', async () => {
+    const { doc } = makeDoc()
+    const audio = createMediaAsset({
+      kind: 'audio',
+      name: 'a.m4a',
+      duration: 10,
+      url: 'blob:audio',
+    })
+    doc.media.push(audio)
+    doc.project.tracks[1].clips.push(
+      createClip({ id: 'a1', mediaId: audio.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    const notices: (MediaErrorInfo | null)[] = []
+    let lookups = 0
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => {
+        lookups++
+        return 5
+      },
+    })
+
+    await core.play()
+    await h.pump.pump(1)
+    core.pause()
+    const el = document.querySelector('audio') as HTMLAudioElement
+    expect(el).toBeInstanceOf(HTMLAudioElement)
+    setMediaError(el, 3)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(lookups).toBe(0)
+    expect(notices[0]).toMatchObject({
+      clipId: 'a1',
+      time: 0,
+      skippedTo: 6,
+      terminal: false,
+    })
+    expect(core.currentTime).toBeCloseTo(6, 5)
+    core.dispose()
+  })
+
+  it('stays paused at the sequence end instead of restarting at zero', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 10,
+    })
+
+    await core.play()
+    await h.pump.pump(1)
+    core.seek(9.5)
+    await h.pump.pump(1)
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(core.isPlaying).toBe(false)
+    expect(core.currentTime).toBeCloseTo(10, 5)
+    core.dispose()
+  })
+
+  it('project replacement clears the latch and overlay, while an ordinary edit does not', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    let epoch = 0
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      getProjectEpoch: () => epoch,
+      onMediaError: (info) => notices.push(info),
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 4)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]?.terminal).toBe(true)
+
+    // An ordinary command clones the doc but leaves the epoch alone.
+    doc.project.tracks[0].clips[0].opacity = 0.5
+    core.refresh(2)
+    expect(notices).toHaveLength(1)
+
+    // Project replacement changes the epoch and removes the old clip.
+    doc.project.tracks[0].clips = []
+    epoch = 1
+    core.refresh(0)
+    expect(notices[notices.length - 1]).toBeNull()
+    core.dispose()
+  })
+
+  it('project replacement clears the deferred error queue', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const secondTrack = createTrack('video', 2)
+    doc.project.tracks.push(secondTrack)
+    secondTrack.clips.push(
+      createClip({ id: 'c2', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    let epoch = 0
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      getProjectEpoch: () => epoch,
+      onMediaError: (info) => notices.push(info),
+    })
+
+    core.seek(2)
+    const videos = document.querySelectorAll('video')
+    setMediaError(videos[0] as HTMLVideoElement, 4)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    setMediaError(videos[1] as HTMLVideoElement, 3)
+    expect(core['deferredErrors'].size).toBe(1)
+
+    // Project replacement drops the old clips and their deferred entry.
+    doc.project.tracks[0].clips = []
+    secondTrack.clips = []
+    epoch = 1
+    core.refresh(0)
+    expect(core['deferredErrors'].size).toBe(0)
+    core.dispose()
+  })
+
+  it('recovers a new project error queued behind a stale recovery', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    let epoch = 0
+    const gate = deferred<number | undefined>()
+    const notices: (MediaErrorInfo | null)[] = []
+    let lookups = 0
+    const { core } = makeCore(doc, {
+      getProjectEpoch: () => epoch,
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: () => {
+        lookups++
+        return lookups === 1 ? gate.promise : Promise.resolve(undefined)
+      },
+    })
+
+    core.seek(2)
+    const oldEl = core['pool'].peek('c1') as HTMLVideoElement
+    setMediaError(oldEl, 3)
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBe('c1'))
+    expect(lookups).toBe(1)
+
+    // Replace the project while the old recovery is still awaiting the lookup.
+    const next = createDoc()
+    next.media.push(asset)
+    next.project.tracks[0].clips.push(
+      createClip({ id: 'c2', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    doc.media = next.media
+    doc.project = next.project
+    epoch = 1
+    core.refresh(0)
+
+    const newEl = core['pool'].peek('c2') as HTMLVideoElement
+    expect(newEl).toBeDefined()
+    setMediaError(newEl, 3)
+    expect(core['deferredErrors'].size).toBe(1)
+
+    // The stale recovery must hand the queued error to the new project.
+    gate.resolve(5)
+    await vi.waitFor(() =>
+      expect(notices.some((n) => n?.clipId === 'c2' && n.terminal === false)).toBe(true),
+    )
+    expect(lookups).toBe(2)
+    expect(core.currentTime).toBeCloseTo(6, 5)
+    core.dispose()
+  })
+
+  it('re-syncs a same-id clip after the project changes', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    let epoch = 0
+    const gate = deferred<number | undefined>()
+    const notices: (MediaErrorInfo | null)[] = []
+    let lookups = 0
+    const { core } = makeCore(doc, {
+      getProjectEpoch: () => epoch,
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: () => {
+        lookups++
+        return lookups === 1 ? gate.promise : Promise.resolve(undefined)
+      },
+    })
+
+    core.seek(2)
+    const el = core['pool'].peek('c1') as HTMLVideoElement
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBe('c1'))
+
+    // Reopen a project that reuses c1 and its source.
+    const next = createDoc()
+    next.media.push(asset)
+    next.project.tracks[0].clips.push(
+      createClip({ id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    doc.media = next.media
+    doc.project = next.project
+    epoch = 1
+    core.refresh(0)
+
+    // The refresh must still inspect the clip even though the stale recovery
+    // still names c1, and queue its error for the new project.
+    expect(core['pool'].peek('c1')).toBe(el)
+    expect(core['deferredErrors'].size).toBe(1)
+
+    gate.resolve(5)
+    await vi.waitFor(() =>
+      expect(notices.some((n) => n?.clipId === 'c1' && n.terminal === false)).toBe(true),
+    )
+    expect(lookups).toBe(2)
+    expect(core.currentTime).toBeCloseTo(6, 5)
+    core.dispose()
+  })
+
+  it('a pause during a replaced project discards the deferred error', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    let epoch = 0
+    const gate = deferred<number | undefined>()
+    const notices: (MediaErrorInfo | null)[] = []
+    let lookups = 0
+    const { core } = makeCore(doc, {
+      getProjectEpoch: () => epoch,
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: () => {
+        lookups++
+        return lookups === 1 ? gate.promise : Promise.resolve(undefined)
+      },
+    })
+
+    core.seek(2)
+    const el = core['pool'].peek('c1') as HTMLVideoElement
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBe('c1'))
+
+    // The user pauses, then opens a project that reuses c1 and its source.
+    core.pause()
+    const next = createDoc()
+    next.media.push(asset)
+    next.project.tracks[0].clips.push(
+      createClip({ id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    doc.media = next.media
+    doc.project = next.project
+    epoch = 1
+    core.refresh(0)
+    expect(core['deferredErrors'].size).toBe(1)
+
+    gate.resolve(5)
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBeNull())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    // The pause owns the cancellation: the stale recovery must not start a
+    // new recovery for the replaced project.
+    expect(lookups).toBe(1)
+    expect(notices.some((n) => n?.clipId === 'c1' && n.terminal === false)).toBe(false)
+    expect(core['deferredErrors'].size).toBe(0)
+
+    // A later refresh rediscovers the error.
+    core.refresh(0)
+    await vi.waitFor(() =>
+      expect(notices.some((n) => n?.clipId === 'c1' && n.terminal === false)).toBe(true),
+    )
+    expect(lookups).toBe(2)
+    core.dispose()
+  })
+
+  it('terminalizes an in-flight code 4 even when the record is gone', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const gate = deferred<number | undefined>()
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: () => gate.promise,
+    })
+
+    core.seek(2)
+    const el = core['pool'].peek('c1') as HTMLVideoElement
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBe('c1'))
+    core['recoveryRecords'].delete('c1')
+
+    setMediaError(el, 4)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toMatchObject({ clipId: 'c1', code: 4, terminal: true })
+
+    gate.resolve(5)
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBeNull())
+    core.dispose()
+  })
+
+  it('recovers a same-clip error after a seek during recovery', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const gate = deferred<number | undefined>()
+    const notices: (MediaErrorInfo | null)[] = []
+    let lookups = 0
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: () => {
+        lookups++
+        return lookups === 1 ? gate.promise : Promise.resolve(undefined)
+      },
+    })
+
+    core.seek(2)
+    const oldEl = core['pool'].peek('c1') as HTMLVideoElement
+    setMediaError(oldEl, 3)
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBe('c1'))
+
+    // Seek past the failed range: the old element is released and a fresh one
+    // is created at the new position while the stale recovery still awaits.
+    core.seek(6)
+    const newEl = core['pool'].peek('c1') as HTMLVideoElement
+    expect(newEl).not.toBe(oldEl)
+    setMediaError(newEl, 3)
+    expect(core['deferredErrors'].size).toBe(1)
+
+    gate.resolve(5)
+    await vi.waitFor(() =>
+      expect(notices.some((n) => n?.clipId === 'c1' && n.terminal === false)).toBe(true),
+    )
+    expect(lookups).toBe(2)
+    core.dispose()
+  })
+
+  it('releases the recovery lock and reports an unexpected failure', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const calls: (MediaErrorInfo | null)[] = []
+    const boom = new Error('boom')
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const { core } = makeCore(doc, {
+        onMediaError: (info) => {
+          calls.push(info)
+          if (info?.skippedTo !== undefined) throw boom
+        },
+        nextKeyframe: async () => 5,
+      })
+
+      core.seek(2)
+      const el = core['pool'].peek('c1') as HTMLVideoElement
+      setMediaError(el, 3)
+      await vi.waitFor(() => expect(core['recoveryInFlight']).toBeNull())
+      expect(calls.some((info) => info?.skippedTo !== undefined)).toBe(true)
+      expect(errorSpy).toHaveBeenCalledWith('[playback] decode recovery failed', 'c1', boom)
+      core.dispose()
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('does not resolve a terminal element for the compositor', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, { onMediaError: (info) => notices.push(info) })
+
+    core.seek(2)
+    const el = core['pool'].peek('c1') as HTMLVideoElement
+    primeVideoElement(el)
+    setMediaError(el, 4)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+
+    const resolved = core['resolveClip'](clip, 0)
+    expect(resolved?.el).toBeUndefined()
+    core.dispose()
+  })
+
+  it('releases the blend partner when the primary terminalizes', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+      speed: 0.5,
+    })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, { onMediaError: (info) => notices.push(info) })
+
+    core.seek(0)
+    const partner = core['pool'].peekNext(clip.id) as HTMLVideoElement
+    expect(partner).toBeDefined()
+    const primary = core['pool'].peek(clip.id) as HTMLVideoElement
+    setMediaError(primary, 4)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+
+    expect(core['pool'].peekNext(clip.id)).toBeUndefined()
+    expect(document.body.contains(partner)).toBe(false)
+    core.dispose()
+  })
+
+  it('pauses a failed blend partner', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+      speed: 0.5,
+    })
+    const { core } = makeCore(doc)
+
+    core.seek(0)
+    const partner = core['pool'].peekNext(clip.id) as HTMLVideoElement
+    expect(partner).toBeDefined()
+    await partner.play()
+    expect(partner.paused).toBe(false)
+
+    setMediaError(partner, 4)
+    expect(partner.paused).toBe(true)
+    core.dispose()
+  })
+
+  it('paints the terminal frame after a paused repaint, not the pre-error time', () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const { core } = makeCore(doc)
+
+    core.seek(2)
+    const el = core['pool'].peek('c1') as HTMLVideoElement
+    // A record whose failedFrom is behind the current playhead: the terminal
+    // path must move the playhead back to 0 and repaint there.
+    core['recoveryRecords'].set('c1', {
+      attempts: 1,
+      failedFrom: 0,
+      failedTo: 0,
+      terminal: false,
+      committed: false,
+    })
+    // Set the error without dispatching: this is the paused drawStill path,
+    // not the pool listener path.
+    Object.defineProperty(el, 'error', {
+      configurable: true,
+      value: { code: 4, message: 'bad' },
+    })
+    const renderSpy = vi.spyOn(core as unknown as { render: (t: number) => void }, 'render')
+
+    core.refresh(2)
+
+    expect(core.currentTime).toBeCloseTo(0, 5)
+    expect(core['terminalElements'].has(el)).toBe(true)
+    expect(renderSpy).toHaveBeenLastCalledWith(0)
+    renderSpy.mockRestore()
+    core.dispose()
+  })
+
+  it('drops terminal recovery state when its clip is deleted', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, { onMediaError: (info) => notices.push(info) })
+
+    core.seek(2)
+    const el = core['pool'].peek('c1') as HTMLVideoElement
+    setMediaError(el, 4)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(core['recoveryRecords'].has('c1')).toBe(true)
+
+    doc.project.tracks[0].clips = []
+    core.refresh(0)
+
+    expect(core['recoveryRecords'].has('c1')).toBe(false)
+    expect(core['noticeRanges'].has('c1')).toBe(false)
+    expect(notices[notices.length - 1]).toBeNull()
+    core.dispose()
+  })
+
+  it('drops a deferred error when its clip is deleted', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const secondTrack = createTrack('video', 2)
+    doc.project.tracks.push(secondTrack)
+    secondTrack.clips.push(
+      createClip({ id: 'c2', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    const gate = deferred<number | undefined>()
+    const { core } = makeCore(doc, { nextKeyframe: () => gate.promise })
+
+    core.seek(0)
+    const first = core['pool'].peek('c1') as HTMLVideoElement
+    const second = core['pool'].peek('c2') as HTMLVideoElement
+    setMediaError(first, 3)
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBe('c1'))
+    setMediaError(second, 3)
+    expect(core['deferredErrors'].has('c2')).toBe(true)
+
+    secondTrack.clips = []
+    core.refresh(0)
+    expect(core['deferredErrors'].has('c2')).toBe(false)
+
+    gate.resolve(5)
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBeNull())
+    core.dispose()
+  })
+
+  it('a blend-partner error latches without pausing, seeking, or reporting', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+      speed: 0.5,
+    })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, { onMediaError: (info) => notices.push(info) })
+
+    await core.play()
+    await h.pump.pump(1)
+    const partner = core['pool'].peekNext(clip.id) as HTMLVideoElement
+    expect(partner).toBeDefined()
+    const time = core.currentTime
+    setMediaError(partner, 3)
+    await Promise.resolve()
+
+    expect(core.isPlaying).toBe(true)
+    expect(core.currentTime).toBe(time)
+    expect(notices).toHaveLength(0)
+    core.dispose()
+  })
+
+  it('ignores an error from an element that is no longer pooled', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, { onMediaError: (info) => notices.push(info) })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    core['pool'].release('c1')
+    setMediaError(el, 3)
+    await Promise.resolve()
+
+    expect(notices).toHaveLength(0)
+    expect(core.currentTime).toBe(2)
+    core.dispose()
+  })
+
+  it('a refresh during the reload wait does not reposition the recovering element', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 5,
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    let loads = 0
+    el.load = () => {
+      loads++
+      Object.defineProperty(el, 'error', { configurable: true, value: null })
+    }
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(loads).toBe(1))
+
+    let writes = 0
+    let pos = el.currentTime
+    Object.defineProperty(el, 'currentTime', {
+      configurable: true,
+      get: () => pos,
+      set: (v: number) => {
+        writes++
+        pos = v
+      },
+    })
+
+    core.refresh(2)
+    expect(writes).toBe(0)
+
+    el.dispatchEvent(new Event('loadedmetadata'))
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(writes).toBe(1)
+    expect(pos).toBeGreaterThanOrEqual(5)
+    expect(notices[0]?.terminal).toBe(false)
+    core.dispose()
+  })
+
+  it('a code 4 during the reload wait terminalizes and never resumes', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 5,
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    let loads = 0
+    el.load = () => {
+      loads++
+      Object.defineProperty(el, 'error', { configurable: true, value: null })
+    }
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(loads).toBe(1))
+
+    setMediaError(el, 4)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toEqual({
+      clipId: 'c1',
+      code: 4,
+      time: 2,
+      terminal: true,
+    })
+    el.dispatchEvent(new Event('loadedmetadata'))
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(notices).toHaveLength(1)
+    expect(core.currentTime).toBeCloseTo(2, 5)
+    core.dispose()
+  })
+
+  it('a reversed clip uses a source-time fallback', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 4,
+      inPoint: 0,
+      reverse: true,
+    })
+    const notices: (MediaErrorInfo | null)[] = []
+    let lookups = 0
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => {
+        lookups++
+        return 2
+      },
+    })
+
+    core.seek(1)
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+
+    expect(lookups).toBe(0)
+    expect(notices[0]).toMatchObject({
+      clipId: 'c1',
+      time: 1,
+      skippedTo: 4,
+      terminal: false,
+    })
+    expect(core.currentTime).toBeCloseTo(4, 5)
+    core.dispose()
+  })
+
+  it('clears a committed reverse-clip record as timeline time passes failedTo', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+      reverse: true,
+    })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+    })
+
+    core.seek(1)
+    let el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toMatchObject({
+      clipId: 'c1',
+      time: 1,
+      skippedTo: 7,
+      terminal: false,
+    })
+    expect(core['recoveryRecords'].get('c1')?.committed).toBe(true)
+
+    // The timeline still advances toward larger sequence times on a reverse
+    // clip, so passing failedTo clears the committed record.
+    await core.play()
+    h.lastAudioContext().currentTime += 1.5
+    await h.pump.pump(1)
+    expect(core.currentTime).toBeCloseTo(8.5, 5)
+    expect(core['recoveryRecords'].has('c1')).toBe(false)
+
+    // A later error starts a fresh attempt budget instead of inheriting the
+    // old one.
+    el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(notices).toHaveLength(2))
+    expect(notices[1]?.terminal).toBe(false)
+    expect(notices[1]?.time).toBeCloseTo(8.5, 5)
+    expect(core['recoveryRecords'].get('c1')?.attempts).toBe(1)
+    core.dispose()
+  })
+
+  it('a ramped clip crosses six seconds of source, not six of timeline', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+      keyframes: {
+        timeScale: [
+          { time: 0, value: 0.5 },
+          { time: 10, value: 1 },
+        ],
+      },
+    })
+    const notices: (MediaErrorInfo | null)[] = []
+    let lookups = 0
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => {
+        lookups++
+        return 5
+      },
+    })
+
+    core.seek(1)
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+
+    expect(lookups).toBe(0)
+    const skippedTo = notices[0]?.skippedTo ?? 0
+    const sourceAtSkip = sourceTimeAt(clip, skippedTo - clip.start)
+    expect(sourceAtSkip).toBeCloseTo(0.525 + 6, 4)
+    core.dispose()
+  })
+
+  it('a doc edit that moves the clip away during the lookup bails without a notice', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    const gate = deferred<number | undefined>()
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: () => gate.promise,
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+    await Promise.resolve()
+    clip.start = 20
+    gate.resolve(5)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(notices).toHaveLength(0)
+    expect(core.currentTime).toBe(2)
+    core.dispose()
+  })
+
+  it('does not reassign currentTime when play starts at the parked position', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const { core } = makeCore(doc)
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    let writes = 0
+    let pos = el.currentTime
+    Object.defineProperty(el, 'currentTime', {
+      configurable: true,
+      get: () => pos,
+      set: (v: number) => {
+        writes++
+        pos = v
+      },
+    })
+
+    await core.play()
+    expect(writes).toBe(0)
+
+    pos = 3
+    core.pause()
+    await core.play()
+    expect(writes).toBe(1)
+    core.dispose()
+  })
+
+  it('terminalizes when the skip seek cannot be applied', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 5,
+    })
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    Object.defineProperty(el, 'currentTime', {
+      configurable: true,
+      get: () => 2.0001,
+      set: () => {
+        throw new Error('seek refused')
+      },
+    })
+    setMediaError(el, 3)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toEqual({
+      clipId: 'c1',
+      code: 3,
+      time: 2,
+      terminal: true,
+    })
+    expect(core.currentTime).toBeCloseTo(2, 5)
+    core.dispose()
+  })
+
+  it('keeps terminalization in the shared helper and uses the marker inverse', () => {
+    const source = readFileSync('src/lib/editor/playback/core.ts', 'utf8')
+    expect(source.match(/record\.terminal = true/g)).toHaveLength(1)
+    expect(source).toContain('private terminalizeRecovery(')
+    expect(source).toContain('clampedClipLocalTime(')
+    expect(source.match(/terminalizeRecovery\(/g)?.length ?? 0).toBeGreaterThanOrEqual(5)
   })
 })

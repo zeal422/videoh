@@ -474,6 +474,36 @@ Stable hooks used across flows and tests:
 - Scrubbing while paused re-seeks active video elements and redraws once `seeked` lands. Scrubbing
   while playing pauses playback first (Premiere behavior), so dragging the playhead can never inject
   a force-seek per pointer move into a running clock.
+- **Decode recovery.** A `MEDIA_ERR_DECODE` error pauses the core, reloads the same element, skips
+  to the next verified keyframe (or a bounded six-second source nudge for reversed, ramped, or
+  audio-only clips), and resumes if it was playing. A verified keyframe only has to advance past the
+  error position, even by less than one frame; the fallback needs one project frame. A failed reload
+  releases the element, keeps its
+  attempt record, and resumes when it was playing so the next sync creates a fresh element. A
+  committed skip's record clears once the playhead passes its skipped range in timeline time. The
+  overlay reports the skipped range. A second
+  clip's error is deferred, then consumed once. A terminalization outside a recovery drops the
+  queue because no recovery finally runs to drain it; a user pause during a recovery also drops it.
+  A project replacement drains the queue through the new project's recovery and treats a stale
+  recovery as not owning a reused clip id, so the new clip is synced and its error is deferred. A
+  seek or play drains the rediscovered queue so the new position is handled; a recovery start
+  removes its own queued entry so it cannot replay. A same-clip code 3 is ignored only while the
+  recovery still owns the element and epoch; a code 4 terminalizes the active record in place and
+  extends its timeline range without shrinking it. A pause cancels and discards, a seek or play
+  cancels and drains; a doc edit calls `core.refresh`, which repaints without cancelling and skips
+  the reloading element. A terminal error halts, latches the element, restores `failedFrom`,
+  releases its blend partner, and keeps priority over deferred overlapping clips until a seek
+  outside the range clears the record. The compositor does not
+  resolve a terminal element. A deleted clip drops its recovery record, notice range, and deferred
+  error. A code 4 during resume cancels the pending `startPlayback` without marking a user
+  cancellation. A clip removed or retimed during the resume is re-resolved after the await and emits
+  no stale notice; a retimed clip drops its stale record. The commit seek is forced, so a near-start
+  keyframe is not mistaken for the position `load()` left behind. An unexpected recovery throw is
+  logged as `[playback] decode recovery failed`.
+  A partner-element error pauses the parked partner and disables blending for that
+  read. A recovery target at the sequence end stays paused at the end. The overlay is latest-only,
+  with clip-owned clearing; an out-of-range terminal seek releases the element, clears the latch
+  and notice, and lets the next sync create a fresh element.
 
 ## Effects (crop, blend modes, chroma key, track matte, motion blur)
 

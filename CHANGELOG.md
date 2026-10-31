@@ -5,6 +5,72 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.16.4] - 2026-10-31
+
+### Added
+
+- **Decode recovery.** A `MEDIA_ERR_DECODE` error now pauses the preview, reloads the errored
+  element with `load()`, asks `media/keyframes.ts` for the next verified keyframe from the
+  element's effective URL (the proxy when one is active), and seeks past the damaged GOP.
+  Reversed or ramped clips and audio-only elements use a bounded six-second source-time nudge
+  mapped through `clampedClipLocalTime`. Recovery resumes when it was playing, is single-flight,
+  and is bounded to three attempts. A successful skip shows a persistent overlay with the skipped
+  range; a terminal failure shows "Damaged media" and asks for a re-encode or trim. The overlay
+  clears on Dismiss or a seek outside the failed range.
+- **Recovery ownership.** Recovery records the project epoch, element, and user-action epoch, so a
+  project replacement that reuses a clip id is still synced and its error deferred, a user pause
+  discards deferred work, and a seek or play drains it for the new position. An ordinary doc edit
+  refreshes the paused preview without cancelling recovery or clearing the notice.
+- **Audio-only elements.** `audioOnly` clips and audio assets now use an `<audio>` element instead
+  of a `<video>` element, so linked audio no longer decodes the video stream or fails on the same
+  damaged GOP. A parked blend partner is released when a clip becomes audio-only.
+
+### Changed
+
+- **Zoom floor.** `PPS_MIN` drops from 10 to 1 px/s, enough to fit a 15-minute sequence. A shared
+  `nextZoomPxPerSec` helper keeps every zoom step moving at the new floor, so Zoom In no longer
+  traps at 1 px/s. The toolbar, View menu, keyboard, and Ctrl+wheel all use it, and the ruler
+  still resolves a readable step at the new floor.
+- **Paused play.** Pressing play after a paused seek no longer re-issues the same seek, so the
+  element does not drop to `readyState 1` and the monitor no longer flashes black and silent.
+  `refreshPausedPreview` uses `core.refresh` instead of `core.seek`, so a doc edit repaints
+  without cancelling recovery or clearing the notice.
+
+### Fixed
+
+- **Pool teardown.** Releasing an element detaches its error listener and drops the map entry
+  before best-effort teardown, so a teardown `load()` cannot report a phantom decode. A throwing
+  `removeAttribute` is contained and the element is still removed. Relative source URLs are reused
+  correctly, and an audio-only clip releases a parked video partner.
+- **Partner latch and paused repaint.** A latched blend partner is no longer used by `blendFor`,
+  so the monitor falls back to the primary frame instead of a stale presented frame. `drawStill`
+  handles element errors after the paint, so a terminal error repaints `failedFrom` without a
+  nested draw leaving the canvas on the pre-error time.
+- **Audio source-node teardown.** `releaseClip` uses the element the chain was built for, and an
+  element swap disconnects the old source node. A relink or an already-released element can no
+  longer leave stale wiring feeding a dead chain.
+- **Recovery edge cases.** A code 4 on an existing record preserves `failedFrom` and merges its
+  timeline range without shrinking; a reverse clip merges in timeline time; a deleted clip drops
+  its recovery record, notice range, and deferred error; a terminal element is not resolved by the
+  compositor and its blend partner is paused or released. A clip removed or retimed during a
+  pending resume no longer emits a stale notice, and a retimed clip drops its stale record. A
+  near-start keyframe is forced to the element instead of being accepted at the reload position.
+  An unexpected recovery throw is logged as `[playback] decode recovery failed`.
+
+### Tests and docs
+
+- The suite moves to 90 files and 2,049 tests. New coverage includes the keyframe lookup module,
+  recovery single-flight and terminal paths, deferred errors, project replacement, pause, seek,
+  and play cancellation, reverse and ramped clips, audio-only elements, pool identity and
+  teardown, the decode overlay, the store's clip-owned clearing and project epoch, the 1 px/s zoom
+  floor and its step helper, and the paused-play seek removal.
+- The dev and standalone artifact batteries both pass 67/67 with terminal `BATTERY_EXIT=0`.
+  `bun run check` passes. The actual 127 MB ice-climbing file was exercised in a browser: the
+  neutral overlay copy, skip and resume, persistent notice, seek-out clearing, the A/V pair, the
+  1 px/s zoom floor, and the keyframe lookup around 0.7 s all behaved as designed.
+- Docs updated: README, architecture, flows, structure, testing, seo, and the roadmap. The version
+  atomically moves to `0.16.4` in `package.json`, `src/lib/releases.ts`, and this changelog.
+
 ## [0.16.3] - 2026-10-29
 
 ### Fixed

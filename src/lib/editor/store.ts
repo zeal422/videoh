@@ -47,6 +47,15 @@ export type AutosaveStatus =
   | 'error' /** Timeline editing tools (Premiere: V = selection, C = razor). */
 export type EditorTool = 'select' | 'razor' | 'ripple' | 'slip' | 'pen'
 
+/** Persistent decode-recovery notice for the preview overlay (session only). */
+export interface MediaErrorState {
+  clipId: string
+  code: number
+  time: number
+  skippedTo?: number
+  terminal: boolean
+}
+
 export interface EditorState {
   doc: Doc
   past: Doc[]
@@ -64,6 +73,14 @@ export interface EditorState {
 
   playhead: number
   playing: boolean
+  /**
+   * The latest decode-recovery notice. Session-only, never in the Doc, and
+   * replaced by a newer notice. A terminal notice has priority while its
+   * record is active at the playhead.
+   */
+  mediaError: MediaErrorState | null
+  /** Bumped only by replaceDoc, so edits do not look like project replacement. */
+  projectEpoch: number
   pxPerSec: number
   snapEnabled: boolean
   /** While dragging: the time a snap guide line should be drawn at (or null). */
@@ -184,6 +201,10 @@ export interface EditorState {
   deselectAll: () => void
   setPlayhead: (t: number) => void
   setPlaying: (playing: boolean) => void
+  /** Show the latest decode notice, or clear the one owned by `clipId`. */
+  setMediaError: (info: MediaErrorState | null, clipId?: string) => void
+  /** Clear the decode notice unconditionally (Dismiss and project replacement). */
+  clearMediaError: () => void
   setPxPerSec: (pps: number) => void
   toggleSnap: () => void
   setSnapLine: (t: number | null) => void
@@ -353,6 +374,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   selectedMarker: null,
   playhead: 0,
   playing: false,
+  mediaError: null,
+  projectEpoch: 0,
   pxPerSec: PPS_DEFAULT,
   snapEnabled: true,
   snapLine: null,
@@ -582,6 +605,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       activeSequencePath: [],
       playhead: 0,
       playing: false,
+      mediaError: null,
+      projectEpoch: get().projectEpoch + 1,
     })
   },
 
@@ -709,6 +734,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setPlayhead: (t) => set({ playhead: Math.max(0, t) }),
   setPlaying: (playing) => set({ playing }),
+  setMediaError: (info, clipId) =>
+    set((state) => {
+      if (info !== null) return { mediaError: info }
+      if (clipId !== undefined && state.mediaError?.clipId !== clipId) return {}
+      return { mediaError: null }
+    }),
+  clearMediaError: () => set({ mediaError: null }),
   setPxPerSec: (pps) => set({ pxPerSec: pps }),
   toggleSnap: () => set({ snapEnabled: !get().snapEnabled }),
   setSnapLine: (t) => set({ snapLine: t }),

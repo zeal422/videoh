@@ -26,6 +26,7 @@ import {
 } from '@/lib/editor/sequence-ops'
 import { toast } from '@/hooks/use-toast'
 import { FRAME_STEPS, PPS_MAX, PPS_MIN, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
+import { nextZoomPxPerSec } from '@/lib/editor/timeline-scroll'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { useEditorStore } from '@/lib/editor/store'
 import { isAutomationGestureLive } from './gesture-state'
@@ -493,12 +494,12 @@ export function useEditorKeyboard(onSave: () => void): void {
         }
         case '+':
         case '=': {
-          store.setPxPerSec(Math.min(PPS_MAX, Math.round(pxPerSec * 1.4)))
+          store.setPxPerSec(nextZoomPxPerSec(pxPerSec, 1.4))
           break
         }
         case '-':
         case '_': {
-          store.setPxPerSec(Math.max(PPS_MIN, Math.round(pxPerSec / 1.4)))
+          store.setPxPerSec(nextZoomPxPerSec(pxPerSec, 1 / 1.4))
           break
         }
         case '\\': {

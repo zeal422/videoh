@@ -192,6 +192,17 @@ describe('toolbar tools', () => {
     expect(pen.getAttribute('aria-label')).not.toMatch(/mask|roto/i)
   })
 
+  it('disables Zoom out at the 1 px/s floor and Zoom in still steps', () => {
+    useEditorStore.setState({ pxPerSec: 1 })
+    render(<Toolbar onOpenExport={() => {}} />)
+    const zoomOut = screen.getByRole('button', { name: /Zoom out/ })
+    const zoomIn = screen.getByRole('button', { name: /Zoom in/ })
+    expect(zoomOut).toBeDisabled()
+    expect(zoomIn).not.toBeDisabled()
+    fireEvent.click(zoomIn)
+    expect(useEditorStore.getState().pxPerSec).toBe(2)
+  })
+
   it('pressing a tool sets the active tool and its pressed state', () => {
     render(<Toolbar onOpenExport={() => {}} />)
     const ripple = screen.getByRole('button', { name: /Ripple trim tool/ })

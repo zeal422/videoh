@@ -1542,3 +1542,18 @@ describe('track solo and lock controls (0.14.0)', () => {
     )
   })
 })
+
+describe('timeline zoom floor', () => {
+  it('steps ctrl+wheel in from 1 px/s and stays at 1 when stepping out', () => {
+    const { doc } = docWithClips()
+    useEditorStore.setState({ doc, pxPerSec: 1 })
+    render(<TimelinePanel />)
+    const scroll = document.querySelector('[data-timeline-scroll]') as HTMLElement
+
+    fireEvent.wheel(scroll, { ctrlKey: true, deltaY: -1, clientX: 200 })
+    expect(useEditorStore.getState().pxPerSec).toBe(2)
+
+    fireEvent.wheel(scroll, { ctrlKey: true, deltaY: 1, clientX: 200 })
+    expect(useEditorStore.getState().pxPerSec).toBe(1)
+  })
+})

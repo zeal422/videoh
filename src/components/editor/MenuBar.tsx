@@ -64,6 +64,7 @@ import {
 } from '@/lib/editor/factories'
 import { cn } from '@/lib/utils'
 import { GAIN_MAX, GAIN_MIN, PPS_MAX, PPS_MIN, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
+import { nextZoomPxPerSec } from '@/lib/editor/timeline-scroll'
 import { buildMenus, type MenuActionId, type MenuContext } from '@/lib/editor/menus'
 import { CURRENT_VERSION } from '@/lib/releases'
 import { hasNavigableMarkers, markerSelectionExists, neighborMarker } from '@/lib/editor/markers'
@@ -533,10 +534,10 @@ export function MenuBar({
             break
 
           case 'view.zoomIn':
-            store.setPxPerSec(Math.min(PPS_MAX, Math.round(store.pxPerSec * 1.4)))
+            store.setPxPerSec(nextZoomPxPerSec(store.pxPerSec, 1.4))
             break
           case 'view.zoomOut':
-            store.setPxPerSec(Math.max(PPS_MIN, Math.round(store.pxPerSec / 1.4)))
+            store.setPxPerSec(nextZoomPxPerSec(store.pxPerSec, 1 / 1.4))
             break
           case 'view.zoomFit':
             zoomToFitSequence(store)

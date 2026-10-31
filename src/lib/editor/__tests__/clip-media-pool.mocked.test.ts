@@ -2,7 +2,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { ClipMediaPool } from '../media/elements'
-import { FakeAudioContext, installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
+import {
+  FakeAudioContext,
+  installBrowserMocks,
+  setMediaError,
+  type MockHarness,
+} from './mocks/browser-mocks'
 import { createClip, createMediaAsset } from '../factories'
 import type { MediaAsset } from '../types'
 
@@ -28,8 +33,8 @@ function asset(kind: MediaAsset['kind'] = 'video'): MediaAsset {
   return createMediaAsset({ id: 'm1', kind, name: `${kind}.f`, duration: 9, url: `blob:${kind}` })
 }
 
-function clip(id = 'c1') {
-  return createClip({ id, mediaId: 'm1', start: 0, duration: 2, inPoint: 0 })
+function clip(id = 'c1', audioOnly = false) {
+  return createClip({ id, mediaId: 'm1', start: 0, duration: 2, inPoint: 0, audioOnly })
 }
 
 describe('ClipMediaPool (mocked browser)', () => {
@@ -109,6 +114,120 @@ describe('ClipMediaPool (mocked browser)', () => {
     const el = pool.get(clip('c1'), asset('audio'))
     expect(el).toBeInstanceOf(HTMLAudioElement)
     expect(el).not.toBeInstanceOf(HTMLVideoElement)
+  })
+
+  it('creates one video and one audio element for an A/V pair', () => {
+    const pool = new ClipMediaPool()
+    const a = asset('video')
+    const picture = pool.get(clip('v1'), a)
+    const twin = pool.get(clip('a1', true), a)
+    expect(picture).toBeInstanceOf(HTMLVideoElement)
+    expect(twin).toBeInstanceOf(HTMLAudioElement)
+    expect(twin).not.toBeInstanceOf(HTMLVideoElement)
+    expect(pool.getNext(clip('a1', true), a)).toBeUndefined()
+    expect(pool.getNext(clip('v1'), a)).toBeInstanceOf(HTMLVideoElement)
+  })
+
+  it('recreates the element and drops the partner when audioOnly changes', () => {
+    const pool = new ClipMediaPool()
+    const a = asset('video')
+    const videoClip = clip('c1')
+    const audioClip = clip('c1', true)
+
+    const videoEl = pool.get(videoClip, a)
+    const partner = pool.getNext(videoClip, a)
+    expect(videoEl).toBeInstanceOf(HTMLVideoElement)
+    expect(partner).toBeInstanceOf(HTMLVideoElement)
+
+    const audioEl = pool.get(audioClip, a)
+    expect(audioEl).toBeInstanceOf(HTMLAudioElement)
+    expect(audioEl).not.toBe(videoEl)
+    expect(document.body.contains(videoEl)).toBe(false)
+    // get() itself drops the parked partner when the clip becomes audio-only.
+    expect(pool.peekNext('c1')).toBeUndefined()
+
+    expect(pool.getNext(audioClip, a)).toBeUndefined()
+    expect(pool.peekNext('c1')).toBeUndefined()
+    expect(document.body.contains(partner!)).toBe(false)
+
+    // Toggling back recreates the video element.
+    const videoAgain = pool.get(videoClip, a)
+    expect(videoAgain).toBeInstanceOf(HTMLVideoElement)
+    expect(videoAgain).not.toBe(audioEl)
+    expect(document.body.contains(audioEl)).toBe(false)
+  })
+
+  it('detaches the error listener before teardown loads the empty source', () => {
+    const seen: string[] = []
+    const pool = new ClipMediaPool((clipId) => seen.push(clipId))
+    const el = pool.get(clip('c1'), asset())
+    el.load = () => {
+      el.dispatchEvent(new Event('error'))
+    }
+
+    pool.release('c1')
+
+    expect(seen).toEqual([])
+    expect(pool.peek('c1')).toBeUndefined()
+  })
+
+  it('drops the pool entry even when teardown throws', () => {
+    const pool = new ClipMediaPool()
+    const el = pool.get(clip('c1'), asset())
+    el.pause = () => {
+      throw new Error('detached')
+    }
+
+    expect(() => pool.release('c1')).not.toThrow()
+    expect(pool.peek('c1')).toBeUndefined()
+  })
+
+  it('contains teardown throws and still removes the element', () => {
+    const pool = new ClipMediaPool()
+    const el = pool.get(clip('c1'), asset())
+    let removed = false
+    el.removeAttribute = () => {
+      throw new Error('detached')
+    }
+    el.remove = () => {
+      removed = true
+      throw new Error('detached')
+    }
+
+    expect(() => pool.release('c1')).not.toThrow()
+    expect(removed).toBe(true)
+    expect(pool.peek('c1')).toBeUndefined()
+  })
+
+  it('reuses elements whose relative source resolves to an absolute URL', () => {
+    const pool = new ClipMediaPool()
+    const relative = createMediaAsset({
+      kind: 'video',
+      id: 'm1',
+      name: 'relative.mp4',
+      duration: 9,
+      url: 'samples/relative.mp4',
+    })
+    const c = clip('c1')
+
+    const primary = pool.get(c, relative)
+    expect(pool.get(c, relative)).toBe(primary)
+    const partner = pool.getNext(c, relative)
+    expect(pool.getNext(c, relative)).toBe(partner)
+  })
+
+  it('attaches one error callback to primaries and partners', () => {
+    const seen: { clipId: string; el: HTMLMediaElement }[] = []
+    const pool = new ClipMediaPool((clipId, el) => seen.push({ clipId, el }))
+    const a = asset('video')
+    const primary = pool.get(clip('c1'), a)
+    const partner = pool.getNext(clip('c1'), a)
+    setMediaError(primary, 3)
+    setMediaError(partner!, 4)
+    expect(seen).toEqual([
+      { clipId: 'c1', el: primary },
+      { clipId: 'c1', el: partner },
+    ])
   })
 
   it('caches one MediaElementAudioSourceNode per element per context', () => {

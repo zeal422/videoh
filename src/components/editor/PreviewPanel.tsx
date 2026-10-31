@@ -41,6 +41,7 @@ export function PreviewPanel() {
   const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
   const playhead = useEditorStore((s) => s.playhead)
   const playing = useEditorStore((s) => s.playing)
+  const mediaError = useEditorStore((s) => s.mediaError)
   const selection = useEditorStore((s) => s.selection)
   const eyedropperArmed = useEditorStore((s) => s.eyedropper) !== null
   const [volume, setVolume] = useState(1)
@@ -103,6 +104,21 @@ export function PreviewPanel() {
     () => offlineMediaAt(doc, playhead, activeSequencePath),
     [doc, playhead, activeSequencePath],
   )
+  const mediaErrorCopy = useMemo(() => {
+    if (!mediaError) return null
+    if (mediaError.terminal) {
+      return {
+        title: 'Damaged media',
+        body: `This media has a damaged section the browser cannot decode. Re-encode the file or trim around ${formatTransportTime(mediaError.time)}.`,
+      }
+    }
+    const from = Math.min(mediaError.time, mediaError.skippedTo ?? mediaError.time)
+    const to = Math.max(mediaError.time, mediaError.skippedTo ?? mediaError.time)
+    return {
+      title: 'Skipped damaged media',
+      body: `from ${formatTransportTime(from)} to ${formatTransportTime(to)}. The browser could not decode that section.`,
+    }
+  }, [mediaError])
 
   // ————— drag-to-position (text) —————
   const selected = selection ? findClip(doc, selection) : undefined
@@ -288,19 +304,42 @@ export function PreviewPanel() {
               </p>
             </div>
           )}
-          {!isEmpty && offlineMedia.length > 0 && (
+          {mediaErrorCopy ? (
             <div
-              data-testid="media-offline-overlay"
+              data-testid="media-decode-overlay"
               className="pointer-events-none absolute inset-0 flex items-center justify-center p-4"
             >
               <div className="max-w-full rounded-lg border border-amber-500/40 bg-black/70 px-4 py-3 text-center">
-                <p className="text-sm font-medium text-amber-300">Media offline</p>
-                <p className="mt-1 truncate text-xs text-amber-200/80">{offlineMedia.join(', ')}</p>
-                <p className="mt-1 text-[11px] text-zinc-400">
-                  Relink in the Media bin to bring this frame back
-                </p>
+                <p className="text-sm font-medium text-amber-300">{mediaErrorCopy.title}</p>
+                <p className="mt-1 text-xs text-amber-200/80">{mediaErrorCopy.body}</p>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="pointer-events-auto mt-2"
+                  onClick={() => useEditorStore.getState().clearMediaError()}
+                >
+                  Dismiss
+                </Button>
               </div>
             </div>
+          ) : (
+            !isEmpty &&
+            offlineMedia.length > 0 && (
+              <div
+                data-testid="media-offline-overlay"
+                className="pointer-events-none absolute inset-0 flex items-center justify-center p-4"
+              >
+                <div className="max-w-full rounded-lg border border-amber-500/40 bg-black/70 px-4 py-3 text-center">
+                  <p className="text-sm font-medium text-amber-300">Media offline</p>
+                  <p className="mt-1 truncate text-xs text-amber-200/80">
+                    {offlineMedia.join(', ')}
+                  </p>
+                  <p className="mt-1 text-[11px] text-zinc-400">
+                    Relink in the Media bin to bring this frame back
+                  </p>
+                </div>
+              </div>
+            )
           )}
         </div>
       </div>

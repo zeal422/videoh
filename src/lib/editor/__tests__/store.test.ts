@@ -51,6 +51,8 @@ beforeEach(() => {
     sourceOut: null,
     sourcePlayhead: 0,
     activeSequencePath: [],
+    mediaError: null,
+    projectEpoch: 0,
   })
 })
 
@@ -484,6 +486,49 @@ describe('replaceDoc', () => {
 
     useEditorStore.getState().replaceDoc(createDoc())
     expect(isTransientActive()).toBe(false)
+  })
+})
+
+describe('decode-recovery overlay state', () => {
+  const notice = {
+    clipId: 'c1',
+    code: 3,
+    time: 118.4,
+    skippedTo: 124.4,
+    terminal: false,
+  }
+
+  it('replaces the current notice and clears only a matching clip', () => {
+    useEditorStore.getState().setMediaError(notice)
+    expect(useEditorStore.getState().mediaError).toEqual(notice)
+
+    const second = { ...notice, clipId: 'c2', time: 10, skippedTo: 16 }
+    useEditorStore.getState().setMediaError(second)
+    expect(useEditorStore.getState().mediaError).toEqual(second)
+
+    useEditorStore.getState().setMediaError(null, 'c1')
+    expect(useEditorStore.getState().mediaError).toEqual(second)
+
+    useEditorStore.getState().setMediaError(null, 'c2')
+    expect(useEditorStore.getState().mediaError).toBeNull()
+  })
+
+  it('clearMediaError clears unconditionally', () => {
+    useEditorStore.getState().setMediaError(notice)
+    useEditorStore.getState().clearMediaError()
+    expect(useEditorStore.getState().mediaError).toBeNull()
+  })
+
+  it('replaceDoc clears the notice and bumps projectEpoch; apply does neither', () => {
+    useEditorStore.getState().setMediaError(notice)
+    const epoch = useEditorStore.getState().projectEpoch
+    addTestClip()
+    expect(useEditorStore.getState().mediaError).toEqual(notice)
+    expect(useEditorStore.getState().projectEpoch).toBe(epoch)
+
+    useEditorStore.getState().replaceDoc(createDoc())
+    expect(useEditorStore.getState().mediaError).toBeNull()
+    expect(useEditorStore.getState().projectEpoch).toBe(epoch + 1)
   })
 })
 

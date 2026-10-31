@@ -43,6 +43,9 @@ export const CHROMA_EPS = 1e-6
 /** Number of waveform peak buckets stored per media asset. */
 export const WAVEFORM_BUCKETS = 1000
 
+/** Upper bound for the preview's keyframe lookup (milliseconds). */
+export const KEYFRAME_TIMEOUT_MS = 3_000
+
 /** Default timeline duration assigned to image clips (seconds). */
 export const DEFAULT_IMAGE_DURATION = 4
 
@@ -50,7 +53,7 @@ export const DEFAULT_IMAGE_DURATION = 4
 export const DEFAULT_TEXT_DURATION = 4
 
 /** Timeline zoom limits (pixels per second). */
-export const PPS_MIN = 10
+export const PPS_MIN = 1
 export const PPS_MAX = 400
 export const PPS_DEFAULT = 80
 

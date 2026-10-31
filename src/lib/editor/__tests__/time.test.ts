@@ -115,5 +115,6 @@ describe('clamp + rulerStep', () => {
     expect(rulerStep(80)).toBe(1) // 0.5*80=40 < 80 → 1s
     expect(rulerStep(200)).toBe(0.5)
     expect(rulerStep(10)).toBe(10)
+    expect(rulerStep(1)).toBe(120)
   })
 })

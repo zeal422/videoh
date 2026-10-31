@@ -155,6 +155,20 @@ export function clipMarkerLocalTime(clip: Clip, sourceTime: number): number | nu
   return clamp((below + above) / 2, 0, clip.duration)
 }
 
+/**
+ * The clip-local time for a source time, clamped to the nearest visible
+ * endpoint when the source falls outside the clip's consumed window. The
+ * endpoint is chosen by comparing the source time with both ends, so a reverse
+ * or ramped clip never assumes local 0 is the earliest source.
+ */
+export function clampedClipLocalTime(clip: Clip, sourceTime: number): number {
+  const local = clipMarkerLocalTime(clip, sourceTime)
+  if (local !== null) return local
+  const atStart = sourceTimeAt(clip, 0)
+  const atEnd = sourceTimeAt(clip, clip.duration)
+  return Math.abs(sourceTime - atStart) <= Math.abs(sourceTime - atEnd) ? 0 : clip.duration
+}
+
 /** Timeline seconds for a clip marker, or null when it is outside the span. */
 export function clipMarkerTimelineTime(clip: Clip, marker: Marker): number | null {
   const local = clipMarkerLocalTime(clip, marker.time)

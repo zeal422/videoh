@@ -151,7 +151,7 @@ bun run test:coverage  # v8 coverage + thresholds
 bun run battery        # 67-step UI battery (needs agent-browser; reuses :3000 or starts a server)
 ```
 
-Current state: **1967 tests across 89 files, all passing**. Coverage is enforced at 70/60/75/70 over
+Current state: **2049 tests across 90 files, all passing**. Coverage is enforced at 70/60/75/70 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -176,7 +176,7 @@ src/lib/editor/            # pure state core: commands, store, serialization, pl
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, hero, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 89 test files (1967 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 90 test files (2049 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations

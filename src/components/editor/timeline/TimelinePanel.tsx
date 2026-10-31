@@ -53,7 +53,7 @@ import {
   type MarqueeMode,
   type MarqueeRect,
 } from '@/lib/editor/marquee'
-import { autoScrollStep, autoScrollStepX } from '@/lib/editor/timeline-scroll'
+import { autoScrollStep, autoScrollStepX, nextZoomPxPerSec } from '@/lib/editor/timeline-scroll'
 import {
   activeTracks,
   docDuration,
@@ -249,7 +249,7 @@ export function TimelinePanel() {
       e.preventDefault()
       const store = useEditorStore.getState()
       const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
-      const next = Math.min(400, Math.max(10, Math.round(store.pxPerSec * factor)))
+      const next = nextZoomPxPerSec(store.pxPerSec, factor)
       if (next === store.pxPerSec) return
       // keep the time under the cursor stationary
       const rect = el.getBoundingClientRect()

@@ -15,6 +15,8 @@ import type { Clip, MediaAsset } from '../types'
  * element on the blend partner read (`getNext`), kept out of the audio graph.
  */
 export class ClipMediaPool {
+  constructor(private onError?: (clipId: string, el: HTMLMediaElement) => void) {}
+
   private els = new Map<string, HTMLVideoElement | HTMLAudioElement>()
   /**
    * Parked "next frame" elements for sub-frame-rate blending (0.7.0), one per
@@ -23,6 +25,7 @@ export class ClipMediaPool {
    */
   private nextEls = new Map<string, HTMLVideoElement>()
   private srcNodes = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>()
+  private errorHandlers = new WeakMap<HTMLMediaElement, () => void>()
   private container: HTMLDivElement | null = null
 
   private ensureContainer(): HTMLDivElement {
@@ -42,13 +45,21 @@ export class ClipMediaPool {
    * default, or the proxy when proxies are enabled and ready.
    */
   get(clip: Clip, asset: MediaAsset, url: string = asset.url): HTMLVideoElement | HTMLAudioElement {
+    const wantsAudio = asset.kind !== 'video' || clip.audioOnly === true
+    // A clip that reads audio only must not keep a stale parked video partner.
+    if (wantsAudio) this.releaseNext(clip.id)
     const existing = this.els.get(clip.id)
-    if (existing && existing.dataset.assetId === asset.id && existing.src === url) {
+    if (
+      existing &&
+      existing.dataset.assetId === asset.id &&
+      existing.getAttribute('src') === url &&
+      existing instanceof HTMLAudioElement === wantsAudio
+    ) {
       return existing
     }
     if (existing) this.release(clip.id)
 
-    const el = this.create(asset, url)
+    const el = this.create(clip.id, asset, url, clip.audioOnly === true)
     if (el instanceof HTMLVideoElement) el.muted = false // it must stay audible
     this.els.set(clip.id, el)
     return el
@@ -64,26 +75,39 @@ export class ClipMediaPool {
    * never handed to `getSourceNode`, so it stays out of the Web Audio graph.
    */
   getNext(clip: Clip, asset: MediaAsset, url: string = asset.url): HTMLVideoElement | undefined {
-    if (asset.kind !== 'video') return undefined
+    if (asset.kind !== 'video' || clip.audioOnly) {
+      this.releaseNext(clip.id)
+      return undefined
+    }
     const existing = this.nextEls.get(clip.id)
-    if (existing && existing.dataset.assetId === asset.id && existing.src === url) {
+    if (existing && existing.dataset.assetId === asset.id && existing.getAttribute('src') === url) {
       return existing
     }
     if (existing) this.releaseNext(clip.id)
-    const el = this.create(asset, url) as HTMLVideoElement
+    const el = this.create(clip.id, asset, url, false) as HTMLVideoElement
     el.muted = true
     this.nextEls.set(clip.id, el)
     return el
   }
 
   /** Creates a hidden element wired to a URL and parks it in the container. */
-  private create(asset: MediaAsset, url: string): HTMLVideoElement | HTMLAudioElement {
+  private create(
+    clipId: string,
+    asset: MediaAsset,
+    url: string,
+    audioOnly: boolean,
+  ): HTMLVideoElement | HTMLAudioElement {
     const el =
-      asset.kind === 'video' ? document.createElement('video') : document.createElement('audio')
+      asset.kind === 'video' && !audioOnly
+        ? document.createElement('video')
+        : document.createElement('audio')
     el.dataset.assetId = asset.id
     el.preload = 'auto'
     el.src = url
     if (el instanceof HTMLVideoElement) el.playsInline = true
+    const onError = () => this.onError?.(clipId, el)
+    el.addEventListener('error', onError)
+    this.errorHandlers.set(el, onError)
     this.ensureContainer().appendChild(el)
     return el
   }
@@ -129,27 +153,48 @@ export class ClipMediaPool {
   release(clipId: string): void {
     const el = this.els.get(clipId)
     if (!el) return
-    this.teardown(el)
+    // Drop the map entry first: teardown is best-effort and must not leave a
+    // released element discoverable through peek().
     this.els.delete(clipId)
+    this.teardown(el)
   }
 
   /** Drops a clip's parked blend partner, leaving the clip's own element alone. */
   releaseNext(clipId: string): void {
     const el = this.nextEls.get(clipId)
     if (!el) return
-    this.teardown(el)
     this.nextEls.delete(clipId)
+    this.teardown(el)
   }
 
   private teardown(el: HTMLMediaElement): void {
-    el.pause()
-    el.removeAttribute('src')
+    // Detach first: load() on an empty source can emit an error, and a
+    // listener that outlives the pool entry would report a phantom decode.
+    const onError = this.errorHandlers.get(el)
+    if (onError) {
+      el.removeEventListener('error', onError)
+      this.errorHandlers.delete(el)
+    }
+    try {
+      el.pause()
+    } catch {
+      // already detached
+    }
+    try {
+      el.removeAttribute('src')
+    } catch {
+      // already detached
+    }
     try {
       el.load()
     } catch {
-      // detached elements may throw — ignore
+      // detached elements may throw; ignore
     }
-    el.remove()
+    try {
+      el.remove()
+    } catch {
+      // already detached
+    }
   }
 
   dispose(): void {

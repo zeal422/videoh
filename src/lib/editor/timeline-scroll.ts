@@ -1,3 +1,5 @@
+import { PPS_MAX, PPS_MIN } from './constants'
+
 /**
  * Timeline edge auto-scroll geometry.
  *
@@ -80,4 +82,19 @@ export function autoScrollStepX(
   maxStep = AUTOSCROLL_MAX_STEP_PX,
 ): number {
   return edgeStep(pointerX, band.left, band.right, edge, maxStep)
+}
+
+/**
+ * The next zoom step. The `max(pps ± 1, round(pps * factor))` rule guarantees
+ * a move at the new 1 px/s floor, where `round(1 * 1.4)` would otherwise trap
+ * Zoom In forever. Zoom-to-fit is not a step and keeps its own math.
+ */
+export function nextZoomPxPerSec(pps: number, factor: number): number {
+  if (factor > 1) {
+    return Math.min(PPS_MAX, Math.max(pps + 1, Math.round(pps * factor)))
+  }
+  if (factor < 1) {
+    return Math.max(PPS_MIN, Math.min(pps - 1, Math.round(pps * factor)))
+  }
+  return pps
 }

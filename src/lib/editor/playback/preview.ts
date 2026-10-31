@@ -1,6 +1,7 @@
 'use client'
 
 import { docDuration } from '../factories'
+import { nextVideoKeyframe } from '../media/keyframes'
 import { effectiveMediaUrl } from '../media/proxies'
 import { useEditorStore } from '../store'
 import type { PlaybackController } from './engine-ref'
@@ -15,11 +16,15 @@ let core: PlaybackCore | null = null
 
 export function attachPreviewEngine(canvas: HTMLCanvasElement): PlaybackController {
   core?.dispose()
+  useEditorStore.getState().clearMediaError()
   core = new PlaybackCore({
     canvas,
     getDoc: () => useEditorStore.getState().doc,
     resolveMediaUrl: effectiveMediaUrl,
     getActiveSequencePath: () => useEditorStore.getState().activeSequencePath,
+    getProjectEpoch: () => useEditorStore.getState().projectEpoch,
+    nextKeyframe: (url, sourceTime) => nextVideoKeyframe(url, sourceTime),
+    onMediaError: (info, clipId) => useEditorStore.getState().setMediaError(info, clipId),
     onFrame: (t) => {
       const state = useEditorStore.getState()
       if (state.playhead !== t) state.setPlayhead(t)
@@ -51,12 +56,13 @@ export function detachPreviewEngine(): void {
   core?.dispose()
   core = null
   playbackRef.current = null
+  useEditorStore.getState().clearMediaError()
 }
 
 /** Draws the current playhead frame when paused (called after doc edits). */
 export function refreshPausedPreview(): void {
   if (core && !core.isPlaying) {
-    core.seek(useEditorStore.getState().playhead)
+    core.refresh(useEditorStore.getState().playhead)
   }
 }
 
