@@ -51,8 +51,10 @@ UI re-render ◀── zustand subscription ◀── store.set({ doc, past }) �
 
 The public site and the editor share one Next.js app but not one component tree:
 
-- `/` is a server-rendered hero from `src/app/(site)/page.tsx` and `src/components/site/`. It uses
-  `src/lib/seo.ts` for metadata and JSON-LD.
+- `/` is a server-rendered landing page from `src/app/(site)/page.tsx` and
+  `src/components/site/`. It composes the angled timeline hero, feature strip, product showcase,
+  tools band, privacy panel, CTA, and FAQ. It uses `src/lib/seo.ts` for metadata and JSON-LD; the FAQ
+  stays visible after privacy and before the closing CTA so the FAQPage content is on the page.
 - `/about`, `/privacy`, `/terms`, and `/contact` are server-rendered pages in the `(site)` route
   group. They share `LegalPage` and the site header/footer.
 - `/editor` is a server wrapper in `src/app/editor/page.tsx`. It exports `noindex, follow` metadata

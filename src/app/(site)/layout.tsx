@@ -13,7 +13,7 @@ const instrumentSerif = Instrument_Serif({
 
 export default function SiteLayout({ children }: { children: ReactNode }) {
   return (
-    <div className={`${instrumentSerif.variable} flex min-h-dvh flex-col`}>
+    <div className={`${instrumentSerif.variable} site-theme flex min-h-dvh flex-col`}>
       <a
         href="#main"
         className="focus:bg-background focus:text-foreground focus:ring-ring sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-md focus:px-4 focus:py-2 focus:text-sm focus:ring-2"

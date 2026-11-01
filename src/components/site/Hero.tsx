@@ -1,155 +1,119 @@
-import Image from 'next/image'
+import { Github, Lock } from 'lucide-react'
 
+import { CtaPanel } from '@/components/site/CtaPanel'
+import { FaqSection } from '@/components/site/FaqSection'
+import { FeatureStrip } from '@/components/site/FeatureStrip'
+import { PrivacyPanel } from '@/components/site/PrivacyPanel'
+import { ProductShowcase } from '@/components/site/ProductShowcase'
+import { ScrollDownLink } from '@/components/site/ScrollDownLink'
 import { TimelineHero } from '@/components/site/TimelineHero'
+import { ToolBand } from '@/components/site/ToolBand'
 import { TrackedLink } from '@/components/site/TrackedLink'
-import { FAQ_ITEMS, GITHUB_URL } from '@/lib/seo'
+import { GITHUB_URL } from '@/lib/seo'
 
-const FEATURES = [
-  {
-    title: 'Multi-track timeline',
-    body: 'Arrange video, audio, text, and captions on a real timeline. Trim, split, link, and undo without leaving the tab.',
-  },
-  {
-    title: 'Local-first media',
-    body: 'Your files stay on your device. videoh uses object URLs and browser APIs, so there is no upload queue and no account.',
-  },
-  {
-    title: 'MP4 export',
-    body: 'Render H.264 video with AAC or Opus audio through WebCodecs. The file is yours, with no watermark.',
-  },
-]
-
-const SCREENSHOT_ALT =
-  'The videoh editor showing the nine-track parity demo with color-bar filmstrips, linked A/V badges, a volume envelope on A2, the Pen tool active in the toolbar, an opacity keyframe curve with dots over the selected V1 video, and the inspector opacity graph above a full-width timeline'
-
+/**
+ * The public landing page. It is one server-rendered composition: the hero,
+ * feature strip, product proof, gradient tools band, privacy panel, closing
+ * CTA, and the FAQ that keeps the FAQPage JSON-LD eligible. The editor never
+ * mounts here; the timeline is CSS and the screenshot is a static image.
+ */
 export function Hero() {
   return (
-    <div data-testid="hero" className="site-grain relative overflow-hidden">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_10%,rgba(244,63,94,0.14),transparent_34%),radial-gradient(circle_at_82%_20%,rgba(139,92,246,0.12),transparent_30%)]"
-      />
+    <div data-testid="hero" className="site-grain relative overflow-hidden bg-[var(--site-bg)]">
       <section
         aria-labelledby="hero-title"
-        className="relative mx-auto flex w-full max-w-6xl flex-col gap-14 px-5 pt-16 pb-20 sm:px-8 sm:pt-24 lg:pt-28"
+        className="relative flex min-h-[calc(100svh_-_5rem)] flex-col"
       >
-        <div className="grid items-center gap-12 lg:grid-cols-[1.15fr_0.85fr]">
-          <div className="flex flex-col gap-6 motion-safe:animate-[hero-rise_0.8s_ease-out_both]">
-            <p className="text-[11px] font-medium tracking-[0.24em] text-rose-300/90 uppercase">
-              OPEN SOURCE · BROWSER NATIVE · LOCAL FIRST
+        <div aria-hidden="true" className="site-hero-bg absolute inset-0" />
+
+        <div className="relative mx-auto grid w-full max-w-[1288px] gap-16 px-6 pt-16 pb-10 lg:grid-cols-2 lg:items-start lg:gap-20 lg:pt-16">
+          <div className="relative z-10 motion-safe:animate-[hero-rise_0.8s_ease-out_both]">
+            <p className="text-[11px] font-semibold tracking-[0.22em] text-rose-300 uppercase">
+              Open source <span className="px-1 text-rose-300/55">•</span> Browser native{' '}
+              <span className="px-1 text-rose-300/55">•</span> Local first
             </p>
             <h1
               id="hero-title"
-              className="font-display text-foreground max-w-3xl text-5xl leading-[0.95] tracking-tight text-balance sm:text-6xl lg:text-7xl"
+              className="mt-5 font-display text-[clamp(4.5rem,8.5vw,7.625rem)] leading-[0.72] tracking-[-0.03em] text-[var(--site-text)]"
             >
-              Open-source video editing in your browser.
+              Video editing
+              <br />
+              that runs
+              <br />
+              <em className="site-gradient-text italic">where you do.</em>
             </h1>
-            <p className="text-muted-foreground max-w-xl text-lg leading-relaxed text-pretty">
-              A multi-track timeline, local media, and MP4 export. All of it runs in your browser,
-              with no uploads and no account.
+            <p className="mt-8 max-w-[34rem] text-xl leading-relaxed text-[var(--site-muted)]">
+              A powerful, open-source video editor that works entirely in your browser. No uploads.
+              No accounts. All creativity.
             </p>
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="mt-8 flex flex-wrap gap-4">
               <TrackedLink
                 href="/editor"
                 event="open-editor"
-                className="bg-rose-500 text-rose-950 hover:bg-rose-400 focus-visible:ring-ring inline-flex items-center rounded-full px-6 py-3 text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:outline-none"
+                className="site-cta-button inline-flex h-[3.25rem] items-center justify-center rounded-full px-7 text-base font-semibold"
               >
-                Open editor
+                <span className="site-cta-label">Open editor</span>
               </TrackedLink>
               <TrackedLink
                 href={GITHUB_URL}
                 event="view-source"
                 target="_blank"
                 rel="noreferrer"
-                className="border-border/80 bg-background/40 text-foreground hover:bg-accent focus-visible:ring-ring inline-flex items-center rounded-full border px-6 py-3 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none"
+                className="inline-flex h-[3.25rem] items-center justify-center gap-2 rounded-full border border-white/15 bg-white/[0.025] px-6 text-base font-medium text-[var(--site-text)] transition-colors hover:bg-white/[0.06] focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
               >
                 View source
+                <Github aria-hidden="true" className="size-4" />
               </TrackedLink>
             </div>
-            <p className="text-muted-foreground text-sm">No uploads. No account. No watermark.</p>
+            <p className="mt-6 flex items-center gap-2 text-sm text-[var(--site-muted-2)]">
+              <Lock aria-hidden="true" className="size-4" />
+              No uploads. No account. Your media stays local.
+            </p>
           </div>
 
-          <div className="motion-safe:animate-[hero-rise_0.9s_ease-out_0.12s_both]">
+          <div className="relative z-10 motion-safe:animate-[hero-rise_0.9s_ease-out_0.12s_both] lg:pt-20">
+            <div
+              aria-hidden="true"
+              className="absolute -top-4 right-8 hidden text-center text-sm text-[#b3a1c6]/70 lg:block"
+            >
+              Your edit, in real time.
+              <svg
+                viewBox="0 0 100 100"
+                fill="none"
+                className="mx-auto mt-1 h-14 w-14 -translate-x-5 text-[#8b5ca8] drop-shadow-[0_0_5px_rgba(139,92,168,0.3)]"
+              >
+                <path
+                  d="M82 18C62 20 40 38 30 78"
+                  stroke="currentColor"
+                  strokeWidth="3.2"
+                  strokeLinecap="round"
+                />
+                <path
+                  d="M30 78L22 60M30 78L46 70"
+                  stroke="currentColor"
+                  strokeWidth="3.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
             <TimelineHero />
           </div>
         </div>
 
-        <div className="border-border/70 bg-card/40 relative overflow-hidden rounded-2xl border p-2 shadow-2xl shadow-black/30 motion-safe:animate-[hero-rise_1s_ease-out_0.2s_both] sm:p-3">
-          <Image
-            src="/screenshots/editor.png"
-            alt={SCREENSHOT_ALT}
-            width={1600}
-            height={1000}
-            preload
-            loading="eager"
-            sizes="(min-width: 1152px) 1088px, 100vw"
-            className="border-border/60 h-auto w-full rounded-xl border"
-          />
-        </div>
-      </section>
-
-      <section aria-labelledby="features-title" className="relative border-border/60 border-y">
-        <div className="mx-auto w-full max-w-6xl px-5 py-16 sm:px-8">
-          <div className="mb-10 flex flex-col gap-3">
-            <p className="text-muted-foreground text-[11px] tracking-[0.22em] uppercase">
-              Built for the edit
-            </p>
-            <h2 id="features-title" className="font-display text-3xl tracking-tight sm:text-4xl">
-              The timeline is the product.
-            </h2>
-          </div>
-          <div className="grid gap-6 md:grid-cols-3">
-            {FEATURES.map((feature) => (
-              <article
-                key={feature.title}
-                className="border-border/70 bg-background/40 flex flex-col gap-3 rounded-xl border p-6"
-              >
-                <h3 className="text-foreground text-base font-medium">{feature.title}</h3>
-                <p className="text-muted-foreground text-sm leading-relaxed">{feature.body}</p>
-              </article>
-            ))}
+        <div className="relative mx-auto mt-10 w-full max-w-[1288px] px-6 pb-4">
+          <FeatureStrip />
+          <div className="mt-6 flex justify-center">
+            <ScrollDownLink targetId="product" />
           </div>
         </div>
       </section>
 
-      <section aria-labelledby="faq-title" className="relative">
-        <div className="mx-auto grid w-full max-w-6xl gap-10 px-5 py-16 sm:px-8 lg:grid-cols-[0.7fr_1.3fr]">
-          <div className="flex flex-col gap-3">
-            <p className="text-muted-foreground text-[11px] tracking-[0.22em] uppercase">FAQ</p>
-            <h2 id="faq-title" className="font-display text-3xl tracking-tight sm:text-4xl">
-              Straight answers.
-            </h2>
-          </div>
-          <dl className="divide-border/70 border-border/70 divide-y border-y">
-            {FAQ_ITEMS.map((item) => (
-              <div key={item.question} className="grid gap-2 py-5 sm:grid-cols-[0.8fr_1.2fr]">
-                <dt className="text-foreground text-sm font-medium">{item.question}</dt>
-                <dd className="text-muted-foreground text-sm leading-relaxed">{item.answer}</dd>
-              </div>
-            ))}
-          </dl>
-        </div>
-      </section>
-
-      <section className="relative border-border/60 border-t">
-        <div className="mx-auto flex w-full max-w-6xl flex-col items-start gap-6 px-5 py-16 sm:px-8 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-col gap-2">
-            <p className="text-muted-foreground text-[11px] tracking-[0.22em] uppercase">
-              Ready when you are
-            </p>
-            <h2 className="font-display text-3xl tracking-tight sm:text-4xl">
-              Start editing in your browser.
-            </h2>
-          </div>
-          <TrackedLink
-            href="/editor"
-            event="open-editor"
-            className="bg-rose-500 text-rose-950 hover:bg-rose-400 focus-visible:ring-ring inline-flex items-center rounded-full px-6 py-3 text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:outline-none"
-          >
-            Open editor
-          </TrackedLink>
-        </div>
-      </section>
+      <ProductShowcase />
+      <ToolBand />
+      <PrivacyPanel />
+      <FaqSection />
+      <CtaPanel />
     </div>
   )
 }

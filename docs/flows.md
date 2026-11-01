@@ -32,8 +32,10 @@ Stable hooks used across flows and tests:
 
 ## Public entry and editor boot
 
-- `/` is the public hero. It has no preloader and no editor shell. The header, hero, and final CTA
-  link to `/editor`; the hero also links to the public GitHub source.
+- `/` is the public landing page. It has no preloader and no editor shell. The header, hero, and
+  closing CTA link to `/editor`; the hero and CTA also link to the public GitHub source. The page
+  composes the angled timeline hero, feature strip, product showcase, tools band, privacy panel,
+  CTA, and a visible FAQ before the closing CTA.
 - `/editor` renders `EditorBoot`. The preloader stays up for the client-only shell import plus the
   3.2s minimum show, then the editor appears. A rejected import shows Try again, and a second failure
   offers Reload page. The public route never mounts this boot.

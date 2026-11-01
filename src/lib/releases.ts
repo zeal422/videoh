@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.17.0',
+    date: '2026-10-31',
+    highlights: [
+      'The landing page has a new angled timeline hero, feature strip, product showcase, gradient tools band, and privacy panel',
+      'The FAQ now follows privacy with an honest analytics answer, and the CTA closes the page',
+      'The footer uses the real contact email, a 2026 VectorMedia credit, and the local-media promise',
+      'The page keeps the real editor screenshot and the local-first story without claiming "no tracking"',
+      'The SEO description, sitemap date, and structured FAQ are updated for the new page',
+    ],
+  },
+  {
     version: '0.16.4',
     date: '2026-10-31',
     highlights: [

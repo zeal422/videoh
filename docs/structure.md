@@ -66,10 +66,17 @@ src/app/
 ```text
 src/components/
 ├── site/                         # public site, no editor store or browser-engine imports
-│   ├── SiteHeader.tsx            #   transparent favicon bars + wordmark, About, GitHub, tracked Open editor CTA
-│   ├── SiteFooter.tsx            #   public links, contact mailto, MIT license
-│   ├── Hero.tsx                  #   hero, screenshot, features, FAQ, final CTA
-│   ├── TimelineHero.tsx          #   CSS-only timeline strip with one rose playhead
+│   ├── SiteHeader.tsx            #   transparent favicon bars + wordmark, About, GitHub, tracked gradient Open editor CTA
+│   ├── SiteFooter.tsx            #   public links, real contact mailto, MIT license, VectorMedia credit, local-media tagline
+│   ├── Hero.tsx                  #   landing composition: hero, feature strip, product, tools, privacy, CTA, FAQ
+│   ├── TimelineHero.tsx          #   angled CSS timeline card on an offset back plate, one rose playhead, bottom-right orange glow
+│   ├── FeatureStrip.tsx          #   four promises in a gap-px segmented strip
+│   ├── ScrollDownLink.tsx        #   minimal animated scroll cue that jumps to the product section
+│   ├── ProductShowcase.tsx       #   real editor screenshot + narrow feature checklist
+│   ├── ToolBand.tsx              #   full-bleed gradient tools band with five gradient-bordered tiles
+│   ├── PrivacyPanel.tsx          #   device cards, dashed checks, and the redrawn gradient shield
+│   ├── CtaPanel.tsx              #   closing CTA after the FAQ
+│   ├── FaqSection.tsx            #   visible FAQ after privacy, before the closing CTA
 │   ├── LegalPage.tsx             #   shared legal page shell
 │   ├── TrackedLink.tsx           #   plain anchor that calls trackClick
 │   └── GoatCounter.tsx           #   optional page-view script
@@ -203,7 +210,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 90 test files (2049 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 90 test files (2050 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

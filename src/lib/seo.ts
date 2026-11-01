@@ -13,11 +13,11 @@ export const SITE_URL = 'https://videoh.vercel.app'
 export const SITE_NAME = 'videoh'
 export const SITE_TITLE = 'videoh, open-source video editing in your browser'
 export const SITE_DESCRIPTION =
-  'A free, open-source multi-track video editor that runs in your browser. No uploads, no account, MP4 export.'
+  'A powerful, open-source video editor that works entirely in your browser. Multi-track timeline, local media, MP4 export. No uploads, no account.'
 export const CONTACT_EMAIL = 'vectormediagr@gmail.com'
 export const GITHUB_URL = 'https://github.com/zeal422/videoh'
 export const LICENSE_URL = 'https://github.com/zeal422/videoh/blob/main/LICENSE'
-export const LAST_CONTENT_UPDATE = '2026-10-25'
+export const LAST_CONTENT_UPDATE = '2026-10-31'
 export const HOME_TITLE = { absolute: SITE_TITLE }
 
 export const ROOT_METADATA = {
@@ -118,6 +118,11 @@ export const FAQ_ITEMS = [
   {
     question: 'Does videoh upload my videos?',
     answer: 'No. Media is processed in your browser and is not uploaded to a videoh server.',
+  },
+  {
+    question: 'Does videoh track me?',
+    answer:
+      'The editor processes media locally. The public site uses optional, privacy-friendly GoatCounter analytics for page views and export events, with no media or account data.',
   },
   {
     question: 'What can I export?',

@@ -2,7 +2,7 @@
 
 Purpose: make the public editor discoverable and measure whether people reach a successful export. This page covers the public routes, metadata, search setup, analytics, and the release checklist.
 
-Last reviewed: 2026-10-26.
+Last reviewed: 2026-10-31.
 
 ## Scope
 
@@ -46,14 +46,14 @@ Do not add thin pages for every query. The hero, About, Privacy, Terms, and Cont
 
 ## Public page inventory
 
-| Route      | Indexable | Purpose                                                |
-| ---------- | --------- | ------------------------------------------------------ |
-| `/`        | yes       | Hero, screenshot, features, FAQ, and conversion CTAs   |
-| `/about`   | yes       | Product story, open source, privacy, contact           |
-| `/privacy` | yes       | Local media, browser storage, GoatCounter, Vercel      |
-| `/terms`   | yes       | Free service, MIT license, no warranty, acceptable use |
-| `/contact` | yes       | Email and GitHub                                       |
-| `/editor`  | no        | Client-only editor, `noindex, follow`                  |
+| Route      | Indexable | Purpose                                                                                                  |
+| ---------- | --------- | -------------------------------------------------------------------------------------------------------- |
+| `/`        | yes       | Landing page: angled timeline hero, feature strip, product showcase, tools band, privacy panel, CTA, FAQ |
+| `/about`   | yes       | Product story, open source, privacy, contact                                                             |
+| `/privacy` | yes       | Local media, browser storage, GoatCounter, Vercel                                                        |
+| `/terms`   | yes       | Free service, MIT license, no warranty, acceptable use                                                   |
+| `/contact` | yes       | Email and GitHub                                                                                         |
+| `/editor`  | no        | Client-only editor, `noindex, follow`                                                                    |
 
 ## Technical checklist
 
@@ -66,8 +66,10 @@ Do not add thin pages for every query. The hero, About, Privacy, Terms, and Cont
 - [x] `/editor` carries `noindex, follow`.
 - [x] Preview deployments carry `X-Robots-Tag: noindex, nofollow`; production does not.
 - [x] The home page renders `SoftwareApplication` and `FAQPage` JSON-LD.
+- [x] The FAQ stays visible after privacy and before the closing CTA, so the FAQPage content is on the page.
+- [x] The CTA closes the page after the FAQ.
 - [x] The social image is 1200x630 with a stable alt.
-- [x] The hero screenshot has descriptive alt text and uses `next/image` with `preload`.
+- [x] The product screenshot has descriptive alt text and uses `next/image` with explicit dimensions, `sizes`, and lazy loading below the fold.
 
 ## Search Console
 
@@ -83,7 +85,7 @@ Search Console is the source for impressions and clicks. Do not infer those from
 
 ## GoatCounter
 
-GoatCounter is the only analytics service. It is cookieless and supports custom events.
+GoatCounter is the only analytics service. It is cookieless and supports custom events. The landing page discloses it in the privacy section and the "Does videoh track me?" FAQ, so the local-media promise stays accurate without claiming "no tracking".
 
 ### Setup
 
@@ -130,7 +132,7 @@ GitHub is a credibility and contribution channel, not the primary acquisition go
 ## Release checklist
 
 - [x] `bun run check` is green.
-- [x] The last recorded dev and artifact batteries are 67/67 with a terminal `BATTERY_EXIT=0` (0.16.4).
+- [x] The last recorded dev and artifact batteries are 67/67 with a terminal `BATTERY_EXIT=0` (0.17.0, 2026-11-01).
 - [x] `robots.txt`, `sitemap.xml`, and the verification file return 200 in production.
 - [x] The production metadata check passes for `/` and `/editor`.
 - [x] Production returns no `X-Robots-Tag`; `site-seo.test.ts` locks the preview header.

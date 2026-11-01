@@ -5,6 +5,57 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] - 2026-10-31
+
+### Added
+
+- **Landing page redesign.** The home page now follows the 0.17.0 reference: an angled CSS timeline
+  hero on an offset back plate, with a right-side orange rim, a concentrated bottom-right glow, and a
+  lavender "Your edit, in real time." note with a violet arrow, a four-item feature strip,
+  a product showcase with the real `public/screenshots/editor.png` capture, a full-bleed gradient
+  tools band with drifting coloured particles, a privacy panel with a redrawn gradient shield, a
+  minimal scroll cue under the feature strip, a visible FAQ after privacy, and a CTA that closes the
+  page with a slowly rotating warm gradient border and a brighter highlight band. The desktop shell
+  is 1288px wide so the content matches the reference's 1240px content column.
+- **Animated primary CTAs.** The header, hero, and closing "Open editor" buttons rest as cream pills
+  with a rose rim and a dark inset ring. Hover or keyboard focus floods the fill to solid rose, pops
+  the rim outward as a fading ring, and switches the label to cream late enough that it never blanks
+  during a fast hover. Nothing shifts: the header and hero are text-only, and the closing CTA keeps
+  its single arrow. Reduced motion keeps the state change instant.
+- **FAQ redesign and disclosure.** The FAQ is a two-column section after privacy with five questions,
+  including an honest explanation of optional GoatCounter analytics. The FAQPage JSON-LD remains
+  because the questions stay visible on the page.
+- **Accurate local-first copy.** The hero note, footer tagline, privacy body, and "No media servers"
+  card keep the local-media promise. The page no longer claims "no tracking" or "no data sent" while
+  GoatCounter is optional.
+- **Real contact email.** The footer uses `CONTACT_EMAIL` from `src/lib/seo.ts`.
+
+### Changed
+
+- **Header and footer.** The shared public chrome uses the 1288px shell, a 40px wordmark, a gradient
+  Open editor CTA, the real contact email, the "© 2026 videoh. By VectorMedia for everyone." credit,
+  and the local-media tagline.
+- **SEO.** `SITE_DESCRIPTION` now leads with the browser editor, multi-track timeline, local media,
+  and MP4 export. `LAST_CONTENT_UPDATE` moves to 2026-10-31, and the FAQ adds the analytics question.
+
+### Fixed
+
+- **Responsive and reduced-motion edge cases.** The privacy heading wraps below `xl` and the left
+  column widens at `xl`, so it never clips at 390px or overlaps the panel, the tools heading wraps
+  below 360px instead of clipping, the tools tiles shrink to their grid tracks, the scroll cue jumps
+  instantly when reduced motion is requested, and the CTA ring pop no longer runs under reduced
+  motion.
+
+### Tests and docs
+
+- The suite moves to 90 files and 2,050 tests. New coverage locks the FAQ-before-CTA order and the
+  redesigned landing sections.
+- `bun run check` passes. The final dev and standalone artifact batteries both pass 67/67 with
+  terminal `BATTERY_EXIT=0`.
+- Docs updated: README, architecture, flows, structure, testing, seo, design-system, roadmap, and this
+  changelog. The version atomically moves to `0.17.0` in `package.json`, `src/lib/releases.ts`, this
+  changelog, and the roadmap.
+
 ## [0.16.4] - 2026-10-31
 
 ### Added

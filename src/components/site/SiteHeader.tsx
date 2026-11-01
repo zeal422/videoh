@@ -1,13 +1,18 @@
 import { GITHUB_URL } from '@/lib/seo'
 import { TrackedLink } from '@/components/site/TrackedLink'
 
+/**
+ * The shared public header. It stays sticky and translucent so the landing
+ * page's hero glow reads behind it, and it keeps the battery's
+ * `data-testid="open-editor"` contract on the primary CTA.
+ */
 export function SiteHeader() {
   return (
-    <header className="border-border/70 bg-background/80 sticky top-0 z-40 shrink-0 border-b backdrop-blur">
-      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-x-6 gap-y-3 px-5 py-4 sm:px-8">
+    <header className="sticky top-0 z-40 shrink-0 bg-[#080512]/70 backdrop-blur-md">
+      <div className="mx-auto flex w-full max-w-[1288px] flex-wrap items-center gap-x-6 gap-y-3 px-6 py-5">
         <a
           href="/"
-          className="font-display text-foreground flex items-center gap-2.5 text-2xl leading-none tracking-tight sm:gap-3"
+          className="flex items-center gap-3 font-display text-[2.5rem] leading-none tracking-[-0.01em] text-[var(--site-text)]"
           aria-label="videoh"
         >
           {/* Transparent version of the favicon bars; the favicon keeps its tile. */}
@@ -15,7 +20,7 @@ export function SiteHeader() {
             viewBox="5 6 22 20"
             aria-hidden="true"
             focusable="false"
-            className="h-6 w-6 shrink-0 sm:h-7 sm:w-7"
+            className="h-9 w-9 shrink-0"
           >
             <rect x="6" y="7" width="14" height="4" rx="1.5" fill="#34d399" />
             <rect x="10" y="14" width="16" height="4" rx="1.5" fill="#fbbf24" />
@@ -23,10 +28,10 @@ export function SiteHeader() {
           </svg>
           videoh
         </a>
-        <nav aria-label="Primary" className="ml-auto flex flex-wrap items-center gap-x-5 gap-y-2">
+        <nav aria-label="Primary" className="ml-auto flex flex-wrap items-center gap-x-8 gap-y-2">
           <a
             href="/about"
-            className="text-muted-foreground hover:text-foreground text-sm transition-colors"
+            className="text-sm text-[var(--site-muted)] transition-colors hover:text-[var(--site-text)]"
           >
             About
           </a>
@@ -34,7 +39,7 @@ export function SiteHeader() {
             href={GITHUB_URL}
             target="_blank"
             rel="noreferrer"
-            className="text-muted-foreground hover:text-foreground text-sm transition-colors"
+            className="text-sm text-[var(--site-muted)] transition-colors hover:text-[var(--site-text)]"
           >
             GitHub
           </a>
@@ -42,9 +47,9 @@ export function SiteHeader() {
             href="/editor"
             event="open-editor"
             data-testid="open-editor"
-            className="border-rose-400/40 bg-rose-500/10 text-rose-100 hover:bg-rose-500/20 focus-visible:ring-ring rounded-full border px-4 py-2 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none"
+            className="site-cta-button inline-flex items-center justify-center rounded-full px-5 py-2.5 text-sm font-semibold"
           >
-            Open editor
+            <span className="site-cta-label">Open editor</span>
           </TrackedLink>
         </nav>
       </div>

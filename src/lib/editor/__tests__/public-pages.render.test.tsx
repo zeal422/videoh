@@ -48,20 +48,18 @@ import ContactPage from '@/app/(site)/contact/page'
 import PrivacyPage from '@/app/(site)/privacy/page'
 import TermsPage from '@/app/(site)/terms/page'
 import { Hero } from '@/components/site/Hero'
+import { SCREENSHOT_ALT } from '@/components/site/ProductShowcase'
 import { SiteFooter } from '@/components/site/SiteFooter'
 import { SiteHeader } from '@/components/site/SiteHeader'
 import { TimelineHero } from '@/components/site/TimelineHero'
 import { TrackedLink } from '@/components/site/TrackedLink'
 import { FAQ_ITEMS, CONTACT_EMAIL, GITHUB_URL } from '@/lib/seo'
 
-const HERO_TITLE = 'Open-source video editing in your browser.'
-const SCREENSHOT_ALT =
-  'The videoh editor showing the nine-track parity demo with color-bar filmstrips, linked A/V badges, a volume envelope on A2, the Pen tool active in the toolbar, an opacity keyframe curve with dots over the selected V1 video, and the inspector opacity graph above a full-width timeline'
-
 /**
- * Public page locks: the hero is a real product page rather than the editor
- * shell, every CTA path is correct, the two mailto links are the only
- * contact-email sources, and the decorative timeline respects reduced motion.
+ * Public page locks: the landing page is a real product page rather than the
+ * editor shell, every CTA path is correct, the FAQ stays visible beside its
+ * JSON-LD, the FAQ sits after privacy and the CTA closes the page, and the
+ * decorative timeline respects reduced motion.
  */
 
 afterEach(() => {
@@ -72,33 +70,138 @@ afterEach(() => {
 })
 
 describe('public hero', () => {
-  it('renders the hero copy, feature sections, FAQ, and screenshot', () => {
+  it('renders the landing sections, FAQ, and real editor screenshot', () => {
     render(<Hero />)
     expect(screen.getByTestId('hero')).toBeInTheDocument()
-    expect(screen.getByText('OPEN SOURCE · BROWSER NATIVE · LOCAL FIRST')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { level: 1, name: HERO_TITLE })).toBeInTheDocument()
-    expect(screen.getByText('No uploads. No account. No watermark.')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Multi-track timeline' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Local-first media' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'MP4 export' })).toBeInTheDocument()
+    const heading = screen.getByRole('heading', { level: 1 })
+    expect(heading).toHaveTextContent('Video editing')
+    expect(heading).toHaveTextContent('where you do.')
+    expect(screen.getByText('No uploads. No account. Your media stays local.')).toBeInTheDocument()
+
+    expect(screen.getByRole('heading', { name: 'Runs in your browser' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Your data is yours' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Open source' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Export anywhere' })).toBeInTheDocument()
+
+    expect(screen.getByRole('heading', { name: /Everything you need\./ })).toBeInTheDocument()
+    for (const item of [
+      'Multi-track timeline',
+      'Text & titles',
+      'Transitions & effects',
+      'Audio editing',
+      'Frame-by-frame control',
+      'Keyboard shortcuts',
+    ]) {
+      expect(screen.getByText(item)).toBeInTheDocument()
+    }
+
+    const toolsTitle = screen.getByRole('heading', { name: 'Create without limits.' })
+    expect(toolsTitle).toBeInTheDocument()
+    expect(toolsTitle.classList.contains('whitespace-nowrap')).toBe(false)
+    expect(toolsTitle.classList.contains('min-[360px]:whitespace-nowrap')).toBe(true)
+    for (const tool of ['Trim', 'Text', 'Effects', 'Audio', 'Export']) {
+      expect(screen.getByText(tool, { exact: true })).toBeInTheDocument()
+    }
+    const toolTiles = document.querySelectorAll('.site-tool-tile')
+    expect(toolTiles).toHaveLength(5)
+    for (const tile of toolTiles) {
+      expect(tile.classList.contains('aspect-square')).toBe(true)
+      expect(tile.classList.contains('w-full')).toBe(true)
+      expect(tile.classList.contains('max-w-16')).toBe(true)
+      expect(tile.classList.contains('size-16')).toBe(false)
+    }
+    expect(screen.getByText('4K')).toBeInTheDocument()
+    expect(screen.getByText('Support')).toBeInTheDocument()
+    expect(screen.getByText('100%')).toBeInTheDocument()
+    expect(screen.getByText('Free', { exact: true })).toBeInTheDocument()
+
+    const privacyTitle = screen.getByRole('heading', {
+      name: 'Built for privacy. Built for you.',
+    })
+    expect(privacyTitle).toBeInTheDocument()
+    expect(privacyTitle.classList.contains('xl:whitespace-nowrap')).toBe(true)
+    expect(privacyTitle.classList.contains('whitespace-nowrap')).toBe(false)
+    expect(privacyTitle.closest('.grid')?.className).toContain('xl:grid-cols-[0.32fr_0.62fr]')
+    expect(screen.getByText('Your Device')).toBeInTheDocument()
+    expect(screen.getByText('No media servers')).toBeInTheDocument()
+    expect(screen.getByText(/Local first\./)).toBeInTheDocument()
+
+    expect(screen.getByRole('heading', { name: 'Ready to start editing?' })).toBeInTheDocument()
+    expect(screen.getAllByText('Open editor now').length).toBeGreaterThan(0)
+
     for (const item of FAQ_ITEMS) {
       expect(screen.getByText(item.question)).toBeInTheDocument()
       expect(screen.getByText(item.answer)).toBeInTheDocument()
     }
+
     const image = screen.getByRole('img', { name: SCREENSHOT_ALT })
-    expect(image).toHaveAttribute('data-preload', 'true')
     expect(image).toHaveAttribute('width', '1600')
-    expect(image).toHaveAttribute('loading', 'eager')
     expect(image).toHaveAttribute('height', '1000')
+    expect(image).toHaveAttribute('loading', 'lazy')
+    expect(image).toHaveAttribute('data-sizes')
+    expect(image).not.toHaveAttribute('data-preload')
+
+    const scrollLink = screen.getByRole('link', { name: 'Scroll to the product section' })
+    expect(scrollLink).toHaveAttribute('href', '#product')
+    expect(document.getElementById('product')).not.toBeNull()
+
+    const css = readSource('src/app/globals.css')
+    const reducedCta = css.slice(css.lastIndexOf('@media (prefers-reduced-motion: reduce)'))
+    expect(reducedCta).toContain('.site-cta-button:hover::after')
+    expect(reducedCta).toContain('.site-cta-button:focus-visible::after')
+
+    const scrollIntoView = vi.fn()
+    const originalScrollIntoView = Element.prototype.scrollIntoView
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      writable: true,
+      value: scrollIntoView,
+    })
+    const media = vi.fn((query: string) => ({ matches: false, media: query }))
+    vi.stubGlobal('matchMedia', media)
+    try {
+      fireEvent.click(scrollLink)
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ behavior: 'smooth', block: 'start' })
+      media.mockReturnValue({ matches: true, media: '(prefers-reduced-motion: reduce)' })
+      fireEvent.click(scrollLink)
+      expect(scrollIntoView).toHaveBeenLastCalledWith({ behavior: 'auto', block: 'start' })
+    } finally {
+      vi.unstubAllGlobals()
+      if (originalScrollIntoView) {
+        Object.defineProperty(Element.prototype, 'scrollIntoView', {
+          configurable: true,
+          writable: true,
+          value: originalScrollIntoView,
+        })
+      } else {
+        Reflect.deleteProperty(Element.prototype, 'scrollIntoView')
+      }
+    }
   })
 
-  it('points every open-editor CTA at /editor and the source CTA at GitHub', () => {
+  it('points every open-editor CTA at /editor and the source CTAs at GitHub', () => {
     render(<Hero />)
     const openEditor = screen.getAllByRole('link', { name: 'Open editor' })
-    expect(openEditor).toHaveLength(2)
-    for (const link of openEditor) expect(link).toHaveAttribute('href', '/editor')
-    const source = screen.getByRole('link', { name: 'View source' })
-    expect(source).toHaveAttribute('href', GITHUB_URL)
+    expect(openEditor).toHaveLength(1)
+    expect(openEditor[0]).toHaveAttribute('href', '/editor')
+    expect(openEditor[0]).toHaveClass('site-cta-button')
+    expect(screen.getByRole('link', { name: 'Open editor now' })).toHaveAttribute('href', '/editor')
+    expect(screen.getByRole('link', { name: 'Open editor now' })).toHaveClass('site-cta-button')
+    expect(screen.getByRole('link', { name: 'View source' })).toHaveAttribute('href', GITHUB_URL)
+    expect(screen.getByRole('link', { name: 'Or view source on GitHub' })).toHaveAttribute(
+      'href',
+      GITHUB_URL,
+    )
+  })
+
+  it('keeps the FAQ after privacy and the CTA after the FAQ', () => {
+    const hero = readSource('src/components/site/Hero.tsx')
+    const privacy = hero.indexOf('<PrivacyPanel />')
+    const faq = hero.indexOf('<FaqSection />')
+    const cta = hero.indexOf('<CtaPanel />')
+    expect(privacy).toBeGreaterThan(-1)
+    expect(faq).toBeGreaterThan(privacy)
+    expect(cta).toBeGreaterThan(faq)
   })
 })
 
@@ -116,13 +219,14 @@ describe('site chrome', () => {
     expect(screen.getByRole('link', { name: 'About' })).toHaveAttribute('href', '/about')
     expect(screen.getByRole('link', { name: 'GitHub' })).toHaveAttribute('href', GITHUB_URL)
     expect(screen.getByTestId('open-editor')).toHaveAttribute('href', '/editor')
+    expect(screen.getByTestId('open-editor')).toHaveClass('site-cta-button')
   })
 
   it('tracks the footer mailto but not the Contact navigation link', () => {
     render(<SiteFooter />)
-    expect(
-      screen.getByText('No uploads. No account. Your media stays on your device.'),
-    ).toBeInTheDocument()
+    expect(screen.getByText(/No uploads\. No account\./)).toBeInTheDocument()
+    expect(screen.getByText(/Your media stays local\./)).toBeInTheDocument()
+    expect(screen.getByText('© 2026 videoh. By VectorMedia for everyone.')).toBeInTheDocument()
     const email = screen.getByRole('link', { name: `Email ${CONTACT_EMAIL}` })
     expect(email).toHaveAttribute('href', `mailto:${CONTACT_EMAIL}`)
     fireEvent.click(email)

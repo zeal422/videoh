@@ -38,12 +38,12 @@ describe('site metadata', () => {
     expect(SITE_NAME).toBe('videoh')
     expect(SITE_TITLE).toBe('videoh, open-source video editing in your browser')
     expect(SITE_DESCRIPTION).toBe(
-      'A free, open-source multi-track video editor that runs in your browser. No uploads, no account, MP4 export.',
+      'A powerful, open-source video editor that works entirely in your browser. Multi-track timeline, local media, MP4 export. No uploads, no account.',
     )
     expect(CONTACT_EMAIL).toBe('vectormediagr@gmail.com')
     expect(GITHUB_URL).toBe('https://github.com/zeal422/videoh')
     expect(LICENSE_URL).toBe('https://github.com/zeal422/videoh/blob/main/LICENSE')
-    expect(LAST_CONTENT_UPDATE).toBe('2026-10-25')
+    expect(LAST_CONTENT_UPDATE).toBe('2026-10-31')
     expect(HOME_TITLE).toEqual({ absolute: SITE_TITLE })
     expect(ROOT_METADATA.metadataBase).toEqual(new URL(SITE_URL))
     expect(ROOT_METADATA.title).toEqual({
@@ -156,6 +156,11 @@ describe('site metadata', () => {
       {
         question: 'Does videoh upload my videos?',
         answer: 'No. Media is processed in your browser and is not uploaded to a videoh server.',
+      },
+      {
+        question: 'Does videoh track me?',
+        answer:
+          'The editor processes media locally. The public site uses optional, privacy-friendly GoatCounter analytics for page views and export events, with no media or account data.',
       },
       {
         question: 'What can I export?',

@@ -79,35 +79,84 @@ All colours are authored in `oklch()`. Use the semantic utilities (`bg-backgroun
 ## Public site
 
 The public site at `/` shares the editor's dark base, rose playhead, and amber secondary accent, but it
-is not the editor shell. It is a server-rendered product page with its own header, footer, hero, and
-legal pages.
+is not the editor shell. It is a server-rendered landing page with its own header, footer, hero,
+product proof, privacy story, CTA, FAQ, and legal pages.
 
-- **Composition.** A cinematic "editing room at 2 a.m." direction: near-black surfaces, a restrained
-  rose glow, a CSS-only grain overlay, and one decorative timeline strip. The strip uses the editor's
-  kind colours (emerald video, amber audio, violet text) and exactly one rose playhead. Amber is a
-  small secondary accent, never a second playhead.
-- **Display type.** Instrument Serif is the documented public-site exception. Headings use
-  `font-display`; body text stays Geist Sans. Do not apply the serif to editor controls.
-- **Wordmark.** The header pairs transparent favicon bars with the Instrument Serif wordmark inside
-  the same home link. The favicon keeps its dark tile; the header mark has no tile. The bars are
-  decorative, 24px on mobile and 28px on desktop, with no separate accessible name.
-- **Screenshot.** The hero uses a real `public/screenshots/editor.png` capture at 1600x1000 with
-  `next/image`, `preload`, explicit dimensions, `sizes`, and descriptive alt text. The demo project
-  uses the repository's own `public/samples` video, audio, and image, so the media bin shows all
-  three sample assets while the nine-track timeline shows sampled filmstrips, linked A/V badges,
-  the `A2` volume envelope, and the selected `V1` clip's opacity curve, with the Pen active and the
-  inspector's opacity keyframe graph visible above the full-width timeline. There is no third-party
-  credit. Recapture it when the editor chrome changes.
+- **Site palette.** `.site-theme` in `globals.css` scopes the marketing palette: `--site-bg` (#080512),
+  `--site-panel`, `--site-border`, the muted text pair, and the rose, pink, amber, orange, violet, and
+  emerald accents. These are the public-site exception to the editor's semantic tokens. Use the
+  `--site-*` variables for landing surfaces instead of hardcoded hex values.
+- **Composition.** A cinematic "editing room at 2 a.m." direction: near-black surfaces, rose and
+  violet radial glows, a CSS-only grain overlay, and one angled timeline card. The card uses the
+  editor's kind colours (emerald video, amber audio, violet text), exactly one rose playhead, a
+  right-side orange rim, and a concentrated orange glow at its bottom right. It sits on a darker
+  offset back plate with a warm edge, a top-edge highlight, and a deeper contact shadow so it reads
+  as a physical slab rather than a flat panel. A small lavender "Your edit, in real time." note with
+  a thin violet SVG arrow sits above the card, floating clear of its top edge. Amber stays a small
+  secondary accent, never a second playhead.
+- **Sections.** The landing page is one server-rendered composition in `Hero.tsx`: hero, four-item
+  feature strip, product showcase, full-bleed gradient tools band, privacy panel, closing CTA, and
+  FAQ. The hero is at least `100svh` minus the header, so the product section starts below the fold.
+  The feature strip follows the hero copy with a small gap. A minimal scroll cue sits under the
+  strip and links to the product section; its chevron bobs with motion-safe and the click scrolls
+  smoothly, or jumps instantly when reduced motion is requested. The FAQ follows the privacy panel,
+  and the CTA closes the page after it.
+- **Display type.** Instrument Serif is the documented public-site exception. The hero H1 uses
+  `font-display` at `clamp(4.5rem, 8.5vw, 7.625rem)` with a tight `0.72` line height and a
+  pink-to-orange gradient on the italic line. The FAQ and CTA headings also use `font-display`; body
+  text stays Geist Sans. Do not apply the serif to editor controls.
+- **Wordmark.** The header and footer pair transparent favicon bars with the Instrument Serif wordmark
+  inside the same home link. The favicon keeps its dark tile; the header mark has no tile. The bars are
+  decorative, 32px in the footer and 36px in the header, with no separate accessible name.
+- **Feature strip.** Four promises sit in a `gap-px` grid: the outer white/6 surface shows through as
+  a one-pixel divider, and each item uses the dark site panel. The strip is four columns on desktop,
+  two on tablet, and one on mobile.
+- **Product showcase.** The real `public/screenshots/editor.png` capture at 1600x1000 sits in the
+  wide right column with `next/image`, explicit dimensions, `sizes`, `loading="lazy"`, and descriptive
+  alt text. The demo project uses the repository's own `public/samples` video, audio, and image, so
+  the media bin shows all three sample assets while the nine-track timeline shows sampled filmstrips,
+  linked A/V badges, the `A2` volume envelope, and the selected `V1` clip's opacity curve, with the
+  Pen active and the inspector's opacity keyframe graph visible above the full-width timeline. There
+  is no third-party credit. Recapture it when the editor chrome changes.
+- **Tools band.** A self-contained full-bleed gradient band with the sampled purple-to-red palette, a
+  warm glow at the top right, a field of small coloured particles with a few larger drifting motes,
+  and five gradient-bordered tiles. The particle field lives on the band's `::before`; the blurred
+  motes live on `::after` and drift on an 18s `motion-safe` loop. The tile borders use the
+  padding-box/border-box technique; each tile sets `--tile-a`, `--tile-b`, and its icon colour. It is
+  its own section, with no cross-section fade.
+- **Privacy panel.** The panel carries a faint dot grid, two device cards, dashed connectors with
+  emerald checks, and a gradient shield. The shield uses the same lucide Shield silhouette as the
+  "Your data is yours" feature icon, scaled up, with a smaller copy of the same path inset as the
+  inner shield. It is rendered at 170x180 so it reads as a security shield, not a crest. The copy
+  keeps the local-media promise and discloses optional analytics.
+- **FAQ.** The visible FAQ is a two-column definition list with bordered rows. It stays on the page
+  because the home route emits FAQPage JSON-LD; do not move the questions behind a client-only
+  accordion or remove them without removing the structured data.
+- **CTA border.** The closing panel's 2px border is a warm rose-pink-orange-amber conic gradient
+  with a brighter highlight band, driven by the `--cta-border-angle` custom property. The highlight
+  keeps the slow rotation visible. The 8s loop drifts slowly for 2s, surges for 0.7s, then settles
+  for the rest of the cycle. Reduced motion keeps the border static.
+- **Primary CTA.** The header, hero, and closing "Open editor" links share `.site-cta-button`: a
+  `--site-cream` pill with a 2px `--site-rose` rim and a 2px `--site-bg` inset ring. On hover or
+  keyboard focus the fill floods to solid rose over 200ms and the rim pops outward as a fading ring.
+  The label stays dark until 140ms, then switches to cream over 70ms, so it never blanks during a
+  fast hover. Nothing shifts: the header and hero are text-only, and the closing CTA keeps its
+  single arrow. The release takes 240ms. Reduced motion makes the state change instant and
+  suppresses the ring pop.
 - **Motion.** Every animation class is `motion-safe:`. The hero rises, clips settle with a stagger, and
   the playhead sweeps once in a loop. Reduced motion leaves the same composition static. There is no
   bare animation fallback.
 - **Grain.** The grain is a CSS pseudo-element with a tiled SVG noise data URI and low opacity. It is
   decorative, pointer-events-none, and sits behind content.
-- **Focus and keyboard.** The site layout starts with a skip link to `#main`. CTAs use a visible
-  `focus-visible:ring-2` ring; plain links keep the browser focus outline. Navigation uses plain
-  anchors, so no router test scaffolding is needed.
-- **Responsive.** The hero stacks below `lg`, the feature grid stacks below `md`, and the FAQ switches
-  from stacked rows to a two-column definition list at `sm`. The header wraps rather than clipping.
+- **Focus and keyboard.** The site layout starts with a skip link to `#main`. Primary CTAs use the
+  `.site-cta-button` outline (2px `--ring` at a 3px offset); secondary CTAs keep
+  `focus-visible:ring-2`. Plain links keep the browser focus outline. Navigation uses plain anchors,
+  so no router test scaffolding is needed.
+- **Responsive.** The hero stacks below `lg`; the feature strip is four, two, then one column; the
+  product showcase, tools band, privacy panel, CTA, and FAQ stack below `lg`. The tools tiles stay
+  five across but shrink, the tools heading wraps below 360px, and the privacy panel becomes a
+  vertical stack. The privacy heading wraps below `xl` and stays on one line at `xl`, where the left
+  column widens. The header wraps rather than clipping.
 - **No editor chrome.** The public site never imports the editor store, media, playback, or export
   modules. It does not reuse the resizable workspace shell.
 
