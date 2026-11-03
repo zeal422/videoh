@@ -79,7 +79,7 @@ import {
 } from '@/lib/editor/project-io'
 import { PANEL_BOUNDS, PANEL_IDS } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
-import { useEditorStore } from '@/lib/editor/store'
+import { useEditorStore, useStableDoc } from '@/lib/editor/store'
 
 /**
  * Application menu bar (Premiere Pro–style): File · Edit · Clip · Sequence ·
@@ -130,7 +130,7 @@ export function MenuBar({
   const snapEnabled = useEditorStore((s) => s.snapEnabled)
   const proxiesEnabled = useEditorStore((s) => s.proxiesEnabled)
   const pxPerSec = useEditorStore((s) => s.pxPerSec)
-  const doc = useEditorStore((s) => s.doc)
+  const doc = useStableDoc()
   const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
 
   const panelHidden = useWorkspaceStore((s) => s.hidden)

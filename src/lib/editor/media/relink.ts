@@ -4,8 +4,8 @@ import type { MediaAsset } from '../types'
  * Patch fields a fresh probe contributes when an offline asset is relinked.
  *
  * One source of truth because several call sites patch the same asset shapes
- * (the media bin's manual relink, the sample import and the sample recovery),
- * and because the fields here are not cosmetic: `file` is the source handle
+ * (the media bin's manual relink and the import auto-relink), and because the
+ * fields here are not cosmetic: `file` is the source handle
  * the WebCodecs exporter reads frame-accurate bytes from (`mp4.ts` skips any
  * video asset without it), and `hasAudio` is the A/V split signal. A relink
  * that dropped them would leave the asset playing in the preview but silently
@@ -16,9 +16,9 @@ import type { MediaAsset } from '../types'
  * - `'manual'` clears them, so replacing a file with a different one never
  *   pairs the new bytes with the old file's thumbnail, waveform or audio
  *   flag (a silent replacement would keep claiming to have sound).
- * - `'sample'` preserves them: a recovery refetches the SAME bundled file,
- *   so whatever the probe could not regenerate is still the old file's own
- *   truth and must not be lost to a partial probe.
+ * - `'sample'` preserves them for a same-file recovery, so whatever the probe
+ *   could not regenerate is still the old file's own truth. The bundled sample
+ *   flow that used it was removed in 0.18.0, so it has no production caller.
  */
 export type RelinkMode = 'manual' | 'sample'
 

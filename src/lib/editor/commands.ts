@@ -51,6 +51,7 @@ import {
   createBuiltinTextPresets,
   sanitizePresetStyle,
 } from './factories'
+import { resolveInsertIndex, type InsertBoundary } from './clip-gesture'
 import { rehomeSegmentShapes } from './ease-segment'
 import {
   clampEffectPropertyValue,
@@ -845,6 +846,9 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
         insertTrack(tracks, track)
         reorderTracksConvention(tracks)
       }
+      // Positional names follow the placement, including an explicit atIndex
+      // insertion: the new lane takes its slot and the auto names renumber.
+      renumberAutoTracks(tracks, command.kind)
       return
     }
 
@@ -878,7 +882,12 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
 
     case 'renameTrack': {
       const track = requireTrack(doc, command.trackId)
-      track.name = command.name.trim() || track.name
+      const name = command.name.trim()
+      if (!name) return
+      track.name = name
+      // An explicit rename makes the name custom: it must survive later
+      // positional renumbering, even when it happens to match `A2`.
+      track.autoName = false
       return
     }
 
@@ -2299,9 +2308,60 @@ function clampClipToMedia(doc: Doc, clip: Clip): void {
  * command itself and the drop indicator's "+ V2" preview label.
  */
 export function previewTrackName(doc: Doc, kind: TrackKind, sequenceId?: string): string {
-  const count = sequenceTracks(doc, sequenceId).filter((t) => t.kind === kind).length
+  const tracks = sequenceTracks(doc, sequenceId).filter((t) => t.kind === kind)
+  // Text keeps the old count-every-track rule; only audio and video renumber.
+  const auto = kind === 'text' ? tracks.length : tracks.filter(isAutoNamedTrack).length
   const prefix = kind === 'video' ? 'V' : kind === 'audio' ? 'A' : 'T'
-  return `${prefix}${count + 1}`
+  return `${prefix}${auto + 1}`
+}
+
+/** True when a track's name is editor-generated and may be renumbered. */
+export function isAutoNamedTrack(track: Track): boolean {
+  if (track.autoName === false) return false
+  return /^[VAT]\d+$/.test(track.name)
+}
+
+/**
+ * Renumbers the auto-named tracks of one kind positionally (0.18.0). Audio
+ * counts top-to-bottom (`A1`, `A2`, `A3`), video bottom-to-top (`V1` at the
+ * bottom, so the newest top layer gets the highest number). Custom names are
+ * skipped and do not consume a number. Text keeps its existing names.
+ */
+export function renumberAutoTracks(tracks: Track[], kind: TrackKind): void {
+  if (kind === 'text') return
+  const prefix = kind === 'video' ? 'V' : 'A'
+  const owned = tracks.filter((t) => t.kind === kind)
+  // Audio numbers in array order; video numbers from the bottom of the group.
+  const ordered = kind === 'audio' ? owned : [...owned].reverse()
+  let n = 1
+  for (const track of ordered) {
+    if (!isAutoNamedTrack(track)) continue
+    track.name = `${prefix}${n}`
+    n += 1
+  }
+}
+
+/**
+ * The name a pending insert would receive after the positional renumber
+ * (0.18.0): `+ A2` between A1 and A2, `+ V2` between V1 and V2. The index
+ * comes from the boundary so a custom name never consumes a number.
+ */
+export function previewInsertTrackName(
+  doc: Doc,
+  kind: TrackKind,
+  boundary: InsertBoundary,
+  sequenceId?: string,
+): string {
+  const tracks = sequenceTracks(doc, sequenceId)
+  const index = resolveInsertIndex(tracks, boundary)
+  const autoOfKind = (slice: Track[]) =>
+    slice.filter((t) => t.kind === kind && isAutoNamedTrack(t)).length
+  const prefix = kind === 'video' ? 'V' : kind === 'audio' ? 'A' : 'T'
+  // Video numbers bottom-to-top, so the new track's number is the count of
+  // auto tracks at or below its insertion point. Audio numbers top-to-bottom.
+  const n =
+    kind === 'video' ? autoOfKind(tracks.slice(index)) + 1 : autoOfKind(tracks.slice(0, index)) + 1
+  return `${prefix}${n}`
 }
 
 /**
@@ -2342,6 +2402,14 @@ function reorderTracksConvention(tracks: Track[]): void {
  * stable convention sort afterwards keeps this relative order.
  */
 function insertTrack(tracks: Track[], track: Track): void {
+  // Audio appends below the last audio track (Adobe order); video and text
+  // still prepend inside their kind group.
+  if (track.kind === 'audio') {
+    const lastOfKind = tracks.map((t) => t.kind).lastIndexOf('audio')
+    if (lastOfKind === -1) tracks.push(track)
+    else tracks.splice(lastOfKind + 1, 0, track)
+    return
+  }
   const firstOfKind = tracks.findIndex((t) => t.kind === track.kind)
   if (firstOfKind === -1) tracks.push(track)
   else tracks.splice(firstOfKind, 0, track)

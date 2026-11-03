@@ -2,7 +2,8 @@
 import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { PlaybackCore, type MediaErrorInfo } from '../playback/core'
+import { PlaybackCore, SCRUB_FALLBACK_TIMEOUT_MS, type MediaErrorInfo } from '../playback/core'
+import type { ScrubFrameRequest, ScrubFrameSource } from '../playback/scrub-source'
 import {
   FakeAudioContext,
   FakeBiquadFilterNode,
@@ -81,9 +82,11 @@ function makeCore(
   hooks: {
     onEnd?: () => void
     onMediaError?: (info: MediaErrorInfo | null, clipId?: string) => void
+    onPreviewRecovering?: (recovering: boolean) => void
     nextKeyframe?: (url: string, sourceTime: number) => Promise<number | undefined>
     getProjectEpoch?: () => number
     resolveMediaUrl?: (asset: MediaAsset) => string
+    createScrubSource?: () => ScrubFrameSource | null
   } = {},
 ) {
   const canvas = document.createElement('canvas')
@@ -96,6 +99,8 @@ function makeCore(
     getProjectEpoch: hooks.getProjectEpoch,
     nextKeyframe: hooks.nextKeyframe,
     onMediaError: hooks.onMediaError,
+    onPreviewRecovering: hooks.onPreviewRecovering,
+    createScrubSource: hooks.createScrubSource,
     onFrame: (t) => frames.push(t),
     onPlayingChange: (playing) => playingChanges.push(playing),
     onEnd: hooks.onEnd,
@@ -752,6 +757,226 @@ describe('PlaybackCore (mocked browser)', () => {
     expect(ctx.calls.some((c) => c.op === 'drawImage')).toBe(true)
   })
 
+  it('a WebCodecs scrub requests a frame and never seeks the video element (0.18.0)', () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0.5 })
+    const requests: {
+      request: ScrubFrameRequest
+      onFrame: (result: {
+        clipId: string
+        frame: CanvasImageSource
+        sourceTime: number
+        generation: number
+      }) => void
+    }[] = []
+    let cached: CanvasImageSource | undefined
+    const source: ScrubFrameSource = {
+      hasSink: () => true,
+      peek: () => cached,
+      request: (request, onFrame) => {
+        requests.push({
+          request,
+          onFrame: (result) => {
+            cached = result.frame
+            onFrame(result)
+          },
+        })
+      },
+      releaseClip: vi.fn(),
+      releaseAsset: vi.fn(),
+      reset: vi.fn(),
+      dispose: vi.fn(),
+      onFallback: () => () => undefined,
+    }
+    const { core, ctx } = makeCore(doc, { createScrubSource: () => source })
+    const setSpy = vi.spyOn(HTMLMediaElement.prototype, 'currentTime', 'set')
+
+    core.seek(2)
+    expect(requests).toHaveLength(1)
+    expect(requests[0].request.clipId).toBe(clip.id)
+    expect(requests[0].request.sourceTime).toBeCloseTo(2.5, 5)
+    // No element seek on the WebCodecs path.
+    expect(setSpy).not.toHaveBeenCalled()
+
+    const frame = document.createElement('canvas')
+    frame.width = 640
+    frame.height = 360
+    requests[0].onFrame({
+      clipId: clip.id,
+      frame,
+      sourceTime: 2.5,
+      generation: requests[0].request.generation,
+    })
+    expect(ctx.calls.some((c) => c.op === 'drawImage' && c.args[0] === frame)).toBe(true)
+    setSpy.mockRestore()
+  })
+
+  it('keeps the last scrub frame visible while the fallback video seeks (0.18.0)', () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    const frame = document.createElement('canvas')
+    frame.width = 640
+    frame.height = 360
+    const source: ScrubFrameSource = {
+      hasSink: () => false,
+      peek: () => frame,
+      request: vi.fn(),
+      releaseClip: vi.fn(),
+      releaseAsset: vi.fn(),
+      reset: vi.fn(),
+      dispose: vi.fn(),
+      onFallback: () => () => undefined,
+    }
+    const { core, ctx } = makeCore(doc, { createScrubSource: () => source })
+    core.seek(1)
+    const video = document.querySelector('video') as HTMLVideoElement
+    // The fallback element has not landed yet: the compositor draws the cached
+    // WebCodecs frame, so the monitor never clears to black.
+    expect(video.readyState).toBeLessThan(2)
+    expect(ctx.calls.some((c) => c.op === 'drawImage' && c.args[0] === frame)).toBe(true)
+  })
+
+  it('hands the fallback frame back to the video once the seek lands (0.18.0)', () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+    const frame = document.createElement('canvas')
+    frame.width = 640
+    frame.height = 360
+    const source: ScrubFrameSource = {
+      hasSink: () => false,
+      peek: () => frame,
+      request: vi.fn(),
+      releaseClip: vi.fn(),
+      releaseAsset: vi.fn(),
+      reset: vi.fn(),
+      dispose: vi.fn(),
+      onFallback: () => () => undefined,
+    }
+    const { core, ctx } = makeCore(doc, { createScrubSource: () => source })
+    core.seek(1)
+    const video = document.querySelector('video') as HTMLVideoElement
+    primeVideoElement(video)
+    const before = ctx.calls.length
+    core.refresh(1)
+    const drawn = ctx.calls.slice(before).filter((call) => call.op === 'drawImage')
+    // The element is ready now, so it is the frame; the cached frame is no
+    // longer allowed to mask it.
+    expect(drawn.some((call) => call.args[0] === video)).toBe(true)
+    expect(drawn.some((call) => call.args[0] === frame)).toBe(false)
+  })
+
+  it('does not request scrub frames for an audio-only clip (0.18.0)', () => {
+    const { doc, asset } = makeDoc()
+    const audioTrack = createTrack('audio', 1)
+    doc.project.tracks.push(audioTrack)
+    audioTrack.clips.push(
+      createClip({
+        id: 'clip-audio',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        audioOnly: true,
+      }),
+    )
+    const source: ScrubFrameSource = {
+      hasSink: () => true,
+      peek: () => undefined,
+      request: vi.fn(),
+      releaseClip: vi.fn(),
+      releaseAsset: vi.fn(),
+      reset: vi.fn(),
+      dispose: vi.fn(),
+      onFallback: () => () => undefined,
+    }
+    const { core } = makeCore(doc, { createScrubSource: () => source })
+    core.seek(1)
+    // The audio element still exists for its decode-error path, but no video
+    // frame request is made for a clip that has no picture.
+    expect(source.request).not.toHaveBeenCalled()
+  })
+
+  it('keeps scrub retries on the neutral notice path and clears it on dispose (0.18.0)', () => {
+    vi.useFakeTimers()
+    try {
+      const { doc, asset } = makeDoc()
+      addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+      const recovering: boolean[] = []
+      const mediaErrors: (MediaErrorInfo | null)[] = []
+      const source: ScrubFrameSource = {
+        hasSink: () => false,
+        peek: () => undefined,
+        request: vi.fn(),
+        releaseClip: vi.fn(),
+        releaseAsset: vi.fn(),
+        reset: vi.fn(),
+        dispose: vi.fn(),
+        onFallback: () => () => undefined,
+      }
+      const { core } = makeCore(doc, {
+        createScrubSource: () => source,
+        onPreviewRecovering: (value) => recovering.push(value),
+        onMediaError: (info) => mediaErrors.push(info),
+      })
+      core.seek(1)
+      const el = document.querySelector('video') as HTMLVideoElement
+      Object.defineProperty(el, 'error', { configurable: true, value: { code: 3 } })
+
+      // The first draw sees the error while the scrub is in progress and
+      // schedules a retry. Two more retries exhaust the budget and raise the
+      // neutral notice; none of them may enter damaged-media recovery.
+      core.seek(1)
+      vi.advanceTimersByTime(SCRUB_FALLBACK_TIMEOUT_MS)
+      vi.advanceTimersByTime(SCRUB_FALLBACK_TIMEOUT_MS)
+      expect(mediaErrors).toEqual([])
+      expect(recovering.at(-1)).toBe(true)
+
+      core.dispose()
+      expect(recovering.at(-1)).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps an asynchronous fallback error on the neutral retry path (0.18.0)', () => {
+    vi.useFakeTimers()
+    try {
+      const { doc, asset } = makeDoc()
+      addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
+      const recovering: boolean[] = []
+      const mediaErrors: (MediaErrorInfo | null)[] = []
+      const source: ScrubFrameSource = {
+        hasSink: () => false,
+        peek: () => undefined,
+        request: vi.fn(),
+        releaseClip: vi.fn(),
+        releaseAsset: vi.fn(),
+        reset: vi.fn(),
+        dispose: vi.fn(),
+        onFallback: () => () => undefined,
+      }
+      const { core } = makeCore(doc, {
+        createScrubSource: () => source,
+        onPreviewRecovering: (value) => recovering.push(value),
+        onMediaError: (info) => mediaErrors.push(info),
+      })
+      core.seek(1)
+      const el = document.querySelector('video') as HTMLVideoElement
+      // The fallback draw has already returned; the error event lands later,
+      // when `scrubInProgress` is false.
+      setMediaError(el, 3)
+      expect(mediaErrors).toEqual([])
+      vi.advanceTimersByTime(SCRUB_FALLBACK_TIMEOUT_MS)
+      vi.advanceTimersByTime(SCRUB_FALLBACK_TIMEOUT_MS)
+      // The neutral retry budget ran out: the preview notice appears, and no
+      // damaged-media report was made.
+      expect(mediaErrors).toEqual([])
+      expect(recovering.at(-1)).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('seek clamps to the timeline bounds', () => {
     const { doc, asset } = makeDoc()
     addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 4, inPoint: 0 })
@@ -1353,6 +1578,106 @@ describe('PlaybackCore sub-frame-rate blending (mocked browser)', () => {
     expect(alphas[0]).toBe(1)
     expect(alphas[1]).toBeCloseTo(0.5, 12)
     expect(alphas[2]).toBeCloseTo(0.5, 12)
+    core.dispose()
+  })
+
+  it('uses the blend path for a paused scrub instead of one WebCodecs frame (0.18.0)', () => {
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const frame = document.createElement('canvas')
+    frame.width = 640
+    frame.height = 360
+    const request = vi.fn()
+    const source: ScrubFrameSource = {
+      hasSink: () => true,
+      // A blend clip never requests a frame, so the cache stays empty. The
+      // render preflight must not wait for one.
+      peek: () => undefined,
+      request,
+      releaseClip: vi.fn(),
+      releaseAsset: vi.fn(),
+      reset: vi.fn(),
+      dispose: vi.fn(),
+      onFallback: () => () => undefined,
+    }
+    const { core, ctx } = makeCore(doc, { createScrubSource: () => source })
+    const t = 1 / 30
+    core.seek(t)
+
+    // The clip needs a pair. The single-frame WebCodecs shortcut must not run.
+    expect(request).not.toHaveBeenCalled()
+    const primary = core['pool'].peek(clip.id) as HTMLVideoElement
+    const partner = core['pool'].peekNext(clip.id)
+    expect(primary).toBeDefined()
+    expect(partner).toBeDefined()
+
+    primeVideoElement(primary)
+    primeVideoElement(partner!)
+    presentFrame(primary, shownFrame(primary.currentTime) / 30)
+    presentFrame(partner!, shownFrame(partner!.currentTime) / 30)
+    ctx.calls.length = 0
+    core.seek(t)
+
+    const draws = drawOps(ctx, 'drawImage')
+    expect(draws).toHaveLength(1)
+    const scratch = draws[0].args[0] as HTMLCanvasElement
+    expect(scratch).toBeInstanceOf(HTMLCanvasElement)
+    const sctx = (scratch as unknown as { __fakeCtx: unknown }).__fakeCtx
+    // The scratch is reused across renders; the last pair is this draw's.
+    const layers = drawOps(sctx, 'drawImage').slice(-2)
+    expect(layers.map((call) => call.args[0])).toEqual([primary, partner])
+    expect(draws.some((call) => call.args[0] === frame)).toBe(false)
+    core.dispose()
+  })
+
+  it('does not mark a blend clip as a scrub fallback while its sink is available (0.18.0)', () => {
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const source: ScrubFrameSource = {
+      hasSink: () => true,
+      peek: () => undefined,
+      request: vi.fn(),
+      releaseClip: vi.fn(),
+      releaseAsset: vi.fn(),
+      reset: vi.fn(),
+      dispose: vi.fn(),
+      onFallback: () => () => undefined,
+    }
+    const { core } = makeCore(doc, { createScrubSource: () => source })
+    const note = vi.spyOn(
+      core as unknown as { noteScrubFallback: (...args: unknown[]) => void },
+      'noteScrubFallback',
+    )
+    core.seek(1 / 30)
+    const el = core['pool'].peek(clip.id) as HTMLVideoElement
+    expect(el).toBeDefined()
+    // The blend path is deliberate, not a WebCodecs fallback: its element
+    // must not inherit the neutral scrub-retry budget or the fallback map.
+    expect(core['scrubFallbackElements'].has(el)).toBe(false)
+
+    Object.defineProperty(el, 'error', { configurable: true, value: { code: 3 } })
+    core.seek(1 / 30)
+    expect(note).not.toHaveBeenCalled()
+    core.dispose()
+  })
+
+  it('still marks a blend clip as a scrub fallback when its sink is unavailable (0.18.0)', () => {
+    const { doc, asset } = makeDoc()
+    const clip = slowClip(doc, asset)
+    const source: ScrubFrameSource = {
+      hasSink: () => false,
+      peek: () => undefined,
+      request: vi.fn(),
+      releaseClip: vi.fn(),
+      releaseAsset: vi.fn(),
+      reset: vi.fn(),
+      dispose: vi.fn(),
+      onFallback: () => () => undefined,
+    }
+    const { core } = makeCore(doc, { createScrubSource: () => source })
+    core.seek(1 / 30)
+    const el = core['pool'].peek(clip.id) as HTMLVideoElement
+    expect(core['scrubFallbackElements'].has(el)).toBe(true)
     core.dispose()
   })
 
@@ -3381,6 +3706,119 @@ describe('decode recovery (mocked browser)', () => {
 
     expect(notices).toHaveLength(0)
     expect(core.currentTime).toBe(2)
+    core.dispose()
+  })
+
+  it('does not re-seek a paused element already within the start threshold', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const { core } = makeCore(doc)
+
+    core.seek(2)
+    const el = document.querySelector('video') as HTMLVideoElement
+    let writes = 0
+    let pos = 2.04
+    Object.defineProperty(el, 'currentTime', {
+      configurable: true,
+      get: () => pos,
+      set: (v: number) => {
+        writes++
+        pos = v
+      },
+    })
+
+    await core.play()
+    // 0.04 s is inside the start threshold: the clock can start without a
+    // decode that would blank the monitor or delay the linked audio twin.
+    expect(writes).toBe(0)
+    expect(el.paused).toBe(false)
+    core.dispose()
+  })
+
+  it('warms the active element before starting the clock', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const source: ScrubFrameSource = {
+      hasSink: () => false,
+      peek: () => undefined,
+      request: vi.fn(),
+      releaseClip: vi.fn(),
+      releaseAsset: vi.fn(),
+      reset: vi.fn(),
+      dispose: vi.fn(),
+      onFallback: () => () => undefined,
+    }
+    const { core } = makeCore(doc, { createScrubSource: () => source })
+    core.seek(1)
+    const el = document.querySelector('video') as HTMLVideoElement
+    // A paused scrub can leave the element behind the playhead. Play must wait
+    // for it instead of starting the audio clock against a black canvas.
+    Object.defineProperty(el, 'currentTime', {
+      configurable: true,
+      get: () => 0,
+      set: () => undefined,
+    })
+    Object.defineProperty(el, 'readyState', { configurable: true, value: 0 })
+    Object.defineProperty(el, 'seeking', { configurable: true, value: false })
+
+    const playPromise = core.play()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(core.isPlaying).toBe(false)
+
+    el.dispatchEvent(new Event('canplay'))
+    await playPromise
+    expect(core.isPlaying).toBe(true)
+    core.dispose()
+  })
+
+  it('corrects a stale in-flight seek before starting the clock', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const source: ScrubFrameSource = {
+      hasSink: () => false,
+      peek: () => undefined,
+      request: vi.fn(),
+      releaseClip: vi.fn(),
+      releaseAsset: vi.fn(),
+      reset: vi.fn(),
+      dispose: vi.fn(),
+      onFallback: () => () => undefined,
+    }
+    const { core } = makeCore(doc, { createScrubSource: () => source })
+    core.seek(1)
+    const el = document.querySelector('video') as HTMLVideoElement
+    let pos = 0
+    let seeking = true
+    let writes = 0
+    Object.defineProperty(el, 'currentTime', {
+      configurable: true,
+      get: () => pos,
+      set: (v: number) => {
+        writes++
+        pos = v
+        seeking = true
+      },
+    })
+    Object.defineProperty(el, 'seeking', { configurable: true, get: () => seeking })
+    Object.defineProperty(el, 'readyState', { configurable: true, value: 2 })
+
+    const playPromise = core.play()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(core.isPlaying).toBe(false)
+    expect(writes).toBe(0)
+
+    // The stale seek lands at 0, away from the playhead at 1. Play must issue
+    // one corrective seek and wait for it before the clock starts.
+    seeking = false
+    el.dispatchEvent(new Event('seeked'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(writes).toBe(1)
+    expect(core.isPlaying).toBe(false)
+
+    seeking = false
+    el.dispatchEvent(new Event('seeked'))
+    await playPromise
+    expect(core.isPlaying).toBe(true)
     core.dispose()
   })
 

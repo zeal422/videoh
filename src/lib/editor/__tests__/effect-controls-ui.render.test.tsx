@@ -9,6 +9,7 @@ import { useEditorKeyboard } from '@/hooks/editor/useEditorKeyboard'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { playbackRef, type PlaybackController } from '../playback/engine-ref'
 import { isTransientActive, useEditorStore } from '../store'
+import { useWorkspaceStore } from '../workspace-store'
 import {
   clipFitsTrack,
   createClip,
@@ -33,6 +34,7 @@ beforeEach(() => {
   h = installBrowserMocks()
   document.body.innerHTML = ''
   useEditorStore.setState(useEditorStore.getInitialState())
+  useWorkspaceStore.setState(useWorkspaceStore.getInitialState())
 })
 
 afterEach(() => {
@@ -749,6 +751,70 @@ describe('InspectorPanel tabs', () => {
     const undone =
       useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity?.[0].time
     expect(undone).toBe(1)
+  })
+
+  it('dragging a keyframe dot vertically changes its value (0.18.0)', async () => {
+    const { doc } = docWithSelectedVideoClip()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.keyframes = {
+      opacity: [
+        { time: 1, value: 0.5 },
+        { time: 3, value: 1 },
+      ],
+    }
+    useEditorStore.setState({ doc: structuredClone(doc) })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    const graph = screen.getByTestId('kf-graph-opacity')
+    graph.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 200,
+        bottom: 40,
+        width: 200,
+        height: 40,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect
+
+    fireEvent.pointerDown(screen.getByTestId('kf-dot-opacity-0'), {
+      bubbles: true,
+      pointerId: 4,
+      clientX: 33,
+      clientY: 20,
+    })
+    // Up 10px of a 40px graph is +25% of the 0..1 opacity range.
+    fireEvent.pointerMove(window, { pointerId: 4, clientX: 33, clientY: 10 })
+    fireEvent.pointerUp(window, { pointerId: 4 })
+
+    const moved = useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity?.[0]
+    expect(moved?.value).toBeCloseTo(0.75, 5)
+  })
+
+  it('resizes the keyframe graph without an undo entry (0.18.0)', async () => {
+    const { doc } = docWithSelectedVideoClip()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.keyframes = { opacity: [{ time: 1, value: 1 }] }
+    useEditorStore.setState({ doc: structuredClone(doc) })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+
+    const pastBefore = useEditorStore.getState().past.length
+    const handle = screen.getByTestId('kf-resize-opacity')
+    // The dot at value 0 sits over the handle's strip; it must win the hit
+    // test so a press starts a keyframe drag, not a graph resize (0.18.0).
+    expect(screen.getByTestId('kf-dot-opacity-0').className).toContain('z-30')
+    expect(handle.className).toContain('z-20')
+    fireEvent.pointerDown(handle, { bubbles: true, pointerId: 9, clientY: 40 })
+    fireEvent.pointerMove(window, { pointerId: 9, clientY: 80 })
+    fireEvent.pointerUp(window, { pointerId: 9, clientY: 80 })
+
+    expect(useEditorStore.getState().past.length).toBe(pastBefore)
+    expect(useWorkspaceStore.getState().keyframeGraphHeights.opacity).toBe(80)
+    expect(screen.getByTestId('kf-graph-opacity').style.height).toBe('80px')
   })
 
   it('a foreign commit mid-drag makes the dot refuse its remaining frames', async () => {

@@ -33,6 +33,7 @@ export default defineConfig({
         'src/lib/editor/lut.ts',
         'src/lib/editor/frame-blend.ts',
         'src/lib/editor/filmstrip.ts',
+        'src/lib/editor/clip-gesture.ts',
         'src/lib/editor/volume-automation.ts',
         'src/lib/editor/pen.ts',
         'src/lib/editor/playback/denoise.ts',

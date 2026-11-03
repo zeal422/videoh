@@ -70,6 +70,7 @@ export function Waveform({
   return (
     <canvas
       ref={canvasRef}
+      data-testid="waveform-canvas"
       aria-hidden="true"
       className="pointer-events-none absolute bottom-0.5 left-0"
     />

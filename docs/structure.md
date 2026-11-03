@@ -11,12 +11,11 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 ├── src/                     # all application code
 ├── public/
 │   ├── google80671fa4533bcad3.html  # Search Console verification file
-│   ├── screenshots/editor.png       # real editor screenshot for the hero
-│   ├── robots.txt           # allow all plus the sitemap URL
-│   └── samples/             # bundled demo media: sample-video.mp4, sample-audio.mp3, sample-image.png
+│   └── robots.txt           # allow all plus the sitemap URL
 ├── e2e/
 │   ├── battery.sh           # scripted UI battery (67 steps) driven by agent-browser
 │   ├── battery.timing.sh    # battery copy that records per-step timing
+│   ├── fixtures/            # committed battery media, parity project, and provenance
 │   └── run-battery.sh       # runner: dev server, session cleanup, strict verdict
 ├── docs/                    # this documentation set, including seo.md
 ├── next.config.ts           # output: "standalone", preview X-Robots-Tag
@@ -61,6 +60,11 @@ src/app/
 └── icon.svg          # favicon (Next.js file convention)
 ```
 
+## `src/assets/` — imported media
+
+`editor-screenshot.png` is the real 1921x1079 editor capture imported by `ProductShowcase.tsx`.
+Next emits a content-hashed URL, so replacing the file invalidates the old optimized variants.
+
 ## `src/components/` — UI
 
 ```text
@@ -91,7 +95,7 @@ src/components/
 │   ├── PanelShell.tsx            #   resizable/collapsible panel frame
 │   ├── NamedSlider.tsx           #   slider wrapper that names the thumb
 │   ├── Toolbar.tsx               #   tools, history, tracks, save/open, export
-│   ├── MediaBin.tsx              #   import, samples, relink, drag source, bin row selection
+│   ├── MediaBin.tsx              #   import, relink, drag source, bin row selection
 │   ├── SourcePanel.tsx           #   source monitor: preview, transport, mark In/Out
 │   ├── PreviewPanel.tsx          #   program monitor + transport + text drag + offline/decode overlays
 │   ├── ColorFilterDefs.tsx       #   hidden SVG grade/LUT filter host
@@ -156,7 +160,7 @@ src/lib/editor/
 ├── snap.ts               # snap-point computation and application
 ├── srt.ts                # SRT parse/serialize + the caption cue collector (pure)
 ├── vtt.ts                # WebVTT serialize (escape, timestamps, document) over shared SrtCue (pure)
-├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, move/trim/rate-stretch math, partner shifts
+├── clip-gesture.ts       # pure clip-gesture decisions: lane drop, insert boundaries, move/trim/rate-stretch math, partner shifts
 ├── ripple-trim.ts        # pure same-track ripple planner: anchored-start head trim, shared end delta, transition overlap
 ├── slip.ts               # pure Slip planner: source-window bounds, shared linked-pair delta
 ├── pen.ts                # pure keyframe Pen helpers: property selection, sampling, add/remove/nudge (0.16.0)
@@ -182,19 +186,19 @@ src/lib/editor/
 ├── store.ts              # zustand store: doc, history, transients, selection, playhead, zoom
 ├── serialization.ts      # .veproj.json v4 (v1, v2 and v3 still load): serialize / parse / hydrate
 ├── persistence.ts        # debounced localStorage autosave + restore
-├── workspace.ts          # panel layout state (pure)
-├── workspace-store.ts    # zustand wrapper over workspace.ts
+├── workspace.ts          # panel + keyframe-graph layout state (pure)
+├── workspace-store.ts    # zustand wrapper over workspace.ts (layout + graph heights)
 ├── theme.ts              # appearance palette ids/labels + preference read/write (pure)
 ├── menus.ts              # menu bar model (pure)
-├── project-io.ts         # save / open / import-media / sample browser helpers
-├── sample-media.ts       # bundled sample list + load plan (fresh adds, offline relinks)
+├── project-io.ts         # save / open / import-media browser helpers
 ├── timeline-drop.ts      # drop-target geometry for drop-between-tracks
 ├── tracks.ts             # solo audibility + lock checks, removes the tracks an edit leaves empty (prune)
 ├── timeline-scroll.ts    # drag edge auto-scroll geometry + the shared zoom step (pure)
 ├── proxy.ts              # pure proxy planning: dimensions, bitrate, eligibility
 ├── media/
 │   ├── probe.ts          # importFile: probe duration/size, thumbnail, waveform peaks, hasAudio
-│   ├── filmstrip-cache.ts # runtime-only strip cache: one job, LRU budget, hidden video per asset
+│   ├── filmstrip-cache.ts # runtime-only strip cache: one job, LRU budget, hidden video per asset, progress events
+│   ├── thumbnail-cache.ts # per-asset source-time cache: split reuse, bounded runs, Input ownership
 │   ├── relink.ts         # isNativeFile guard + relinkPatchFrom: patch fields a relink carries (file handle included)
 │   ├── elements.ts       # ClipMediaPool: per-clip media elements, source nodes, the parked blend partner
 │   ├── keyframes.ts      # verified video keyframe lookup for decode recovery (mediabunny)
@@ -203,6 +207,8 @@ src/lib/editor/
 │   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate, blend partner, decode recovery
 │   ├── compositor.ts     # drawFrame + the draws the exporter shares: contain-fit geometry, text, crossfade, blends, the 3D LUT pass
 │   ├── denoise.ts        # noise-reduction biquad chain, shared by the preview mixer and the export mix
+│   ├── scrub-source.ts   # WebCodecs paused/scrub frame source (worker or main-thread sink)
+│   ├── scrub-worker.ts   # module worker behind scrub-source: Inputs, CanvasSinks, coalesced decode
 │   ├── preview.ts        # preview engine singleton (attach/detach)
 │   ├── source-preview.ts # source monitor element singleton (attach/detach, one owner of sourcePlayhead)
 │   ├── engine-ref.ts     # PlaybackController ref shared by all UI
@@ -210,7 +216,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 90 test files (2050 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 93 test files (2132 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

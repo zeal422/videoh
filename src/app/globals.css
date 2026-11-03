@@ -485,6 +485,39 @@
   cursor: not-allowed;
 }
 
+/* A clip dragged into a gap or past an outer edge (0.18.0): the lane shows
+   where the new track will land. Set/cleared by ClipView for the drag. */
+[data-drop-insert] {
+  position: relative;
+}
+[data-drop-insert='before'] {
+  box-shadow: inset 0 2px 0 0 var(--primary);
+}
+[data-drop-insert='after'] {
+  box-shadow: inset 0 -2px 0 0 var(--primary);
+}
+[data-drop-insert]::after {
+  content: attr(data-drop-label);
+  position: absolute;
+  left: 6px;
+  z-index: 20;
+  border-radius: var(--radius-sm);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  padding: 1px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  pointer-events: none;
+  white-space: nowrap;
+}
+[data-drop-insert='before']::after {
+  top: 2px;
+}
+[data-drop-insert='after']::after {
+  bottom: 2px;
+}
+
 /* ----- Public site: cinematic night edit -----
    The public pages share the editor's dark base and rose/amber accents, but
    they never mount the editor shell. The display serif is scoped to the
@@ -652,8 +685,7 @@
   border: 2px solid transparent;
   border-radius: 1rem;
   background:
-    radial-gradient(120% 100% at 18% 0%, rgba(255, 255, 255, 0.075), transparent 55%)
-      padding-box,
+    radial-gradient(120% 100% at 18% 0%, rgba(255, 255, 255, 0.075), transparent 55%) padding-box,
     linear-gradient(160deg, rgba(17, 12, 25, 0.99), rgba(8, 6, 12, 0.995)) padding-box,
     linear-gradient(
         120deg,

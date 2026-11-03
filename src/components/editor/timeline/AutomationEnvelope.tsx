@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 
 import { findClip } from '@/lib/editor/factories'
 import { keyframeDefaultEasing } from '@/lib/editor/keyframes'
@@ -111,7 +111,6 @@ export function AutomationEnvelope({
   const keyframes = automationKeyframes(clip, property)
   const hasCurve = keyframes.length > 0
   const duration = Math.max(1e-6, clip.duration)
-  const plotTop = Math.min(14, Math.max(10, height * 0.34))
   const sampleCount = Math.max(
     2,
     Math.min(MAX_SAMPLES, Math.round(Math.max(0, widthPx - TRIM_INSET * 2) / 2)),
@@ -230,6 +229,12 @@ export function AutomationEnvelope({
 
     const startKey = keyframes[index]
     if (!startKey) return
+    // The drag starts from the grabbed keyframe's value and applies the
+    // pointer delta through the plot box (0.18.0). An absolute pointer mapping
+    // would jump the value when the press lands off-center in the 12px hit
+    // target, which is exactly what the clamped endpoint hit box exposes.
+    const startUnit = automationUnitForValue(property, startKey.value)
+    const startTime = startKey.time
     // The tool keys read this marker: a pending press or Alt-click is a live
     // gesture even though no transient starts until the 3px threshold.
     rootRef.current?.setAttribute('data-automation-gesture', 'true')
@@ -293,10 +298,13 @@ export function AutomationEnvelope({
       const found = liveCurve()
       if (!found) return
       const time = Math.min(
-        Math.max(0, ((ev.clientX - rect.left) / rect.width) * found.clipNow.duration),
+        Math.max(
+          0,
+          startTime + ((ev.clientX - startX) / rect.width) * Math.max(0, found.clipNow.duration),
+        ),
         Math.max(0, found.clipNow.duration),
       )
-      const unit = Math.min(1, Math.max(0, 1 - (ev.clientY - rect.top) / rect.height))
+      const unit = Math.min(1, Math.max(0, startUnit + (startY - ev.clientY) / rect.height))
       const value = automationValueForUnit(property, unit)
       // The stored array re-sorts the moment the grabbed point crosses a
       // neighbour, so the captured index stops naming it. Find it by the time
@@ -435,7 +443,7 @@ export function AutomationEnvelope({
         ref={plotRef}
         data-testid={`${prefix}-plot`}
         className="pointer-events-none absolute"
-        style={{ left: TRIM_INSET, right: TRIM_INSET, top: plotTop, bottom: 3 }}
+        style={{ left: TRIM_INSET, right: TRIM_INSET, top: 0, bottom: 0 }}
       >
         <svg
           className="pointer-events-none absolute inset-0 size-full"
@@ -499,37 +507,50 @@ export function AutomationEnvelope({
               ? Number(db.toFixed(1))
               : DB_FLOOR
             : Number(k.value.toFixed(2))
+          // The visual dot center sits on the value line: the maximum is the
+          // clip's top edge and the minimum its bottom edge (0.18.0). Half of
+          // an endpoint dot is clipped by the clip root, which is the intended
+          // Adobe-style look. The 12px hit target is clamped fully inside the
+          // clip so the endpoint stays reachable.
+          const dotCenter = unit * height
+          const hitCenter = Math.min(
+            Math.max(dotCenter, DOT_HIT / 2),
+            Math.max(DOT_HIT / 2, height - DOT_HIT / 2),
+          )
           return (
-            <div
-              // Index key: a time-bearing key would remount the focused dot on
-              // every nudge/drag frame and drop keyboard focus mid-use.
-              key={i}
-              data-testid={`${dotPrefix}-${i}`}
-              role="slider"
-              tabIndex={editable ? 0 : -1}
-              aria-label={`${isVolume ? 'Volume' : 'Opacity'} keyframe ${i + 1}`}
-              aria-valuemin={ariaMin}
-              aria-valuemax={ariaMax}
-              aria-valuenow={ariaValue}
-              aria-valuetext={valueText(k.value, k.time)}
-              aria-disabled={editable ? undefined : true}
-              className={cn(
-                'absolute z-[1] flex -translate-x-1/2 translate-y-1/2 items-center justify-center rounded-full',
-                editable
-                  ? 'pointer-events-auto cursor-ns-resize focus-visible:ring-2 focus-visible:ring-white focus-visible:outline-none'
-                  : 'pointer-events-none',
-              )}
-              style={{
-                left: `${left}%`,
-                bottom: `${unit * 100}%`,
-                width: DOT_HIT,
-                height: DOT_HIT,
-              }}
-              onPointerDown={editable ? (e) => beginDotGesture(e, i) : undefined}
-              onKeyDown={editable ? (e) => onDotKeyDown(e, i) : undefined}
-            >
-              <span aria-hidden="true" className="block size-1.5 rounded-full bg-white shadow-sm" />
-            </div>
+            <Fragment key={i}>
+              <span
+                data-testid={`${isVolume ? 'volume' : 'opacity'}-visual-${i}`}
+                aria-hidden="true"
+                className="pointer-events-none absolute z-[1] block size-1.5 -translate-x-1/2 translate-y-1/2 rounded-full bg-white shadow-sm"
+                style={{ left: `${left}%`, bottom: dotCenter }}
+              />
+              <div
+                data-testid={`${dotPrefix}-${i}`}
+                role="slider"
+                tabIndex={editable ? 0 : -1}
+                aria-label={`${isVolume ? 'Volume' : 'Opacity'} keyframe ${i + 1}`}
+                aria-valuemin={ariaMin}
+                aria-valuemax={ariaMax}
+                aria-valuenow={ariaValue}
+                aria-valuetext={valueText(k.value, k.time)}
+                aria-disabled={editable ? undefined : true}
+                className={cn(
+                  'absolute z-[1] flex -translate-x-1/2 translate-y-1/2 items-center justify-center rounded-full',
+                  editable
+                    ? 'pointer-events-auto cursor-ns-resize focus-visible:ring-2 focus-visible:ring-white focus-visible:outline-none'
+                    : 'pointer-events-none',
+                )}
+                style={{
+                  left: `${left}%`,
+                  bottom: hitCenter,
+                  width: DOT_HIT,
+                  height: DOT_HIT,
+                }}
+                onPointerDown={editable ? (e) => beginDotGesture(e, i) : undefined}
+                onKeyDown={editable ? (e) => onDotKeyDown(e, i) : undefined}
+              />
+            </Fragment>
           )
         })}
       </div>

@@ -88,9 +88,10 @@ Running the suite (these are the steps agents get wrong):
 - `e2e/battery.sh`: 67-step UI battery, first step loads the public hero and its editor link (needs the
   dev server + `agent-browser`). Drive it through `e2e/run-battery.sh` (`bun run battery`), which owns
   the server, the session, and the strict verdict.
-- `public/samples/` — bundled demo media used by "Load sample media".
+- `e2e/fixtures/` — committed battery media, the parity project, and `PROVENANCE.md`.
 - `public/google80671fa4533bcad3.html` — Search Console verification. Keep it public.
-- `public/screenshots/editor.png` — hero screenshot; recapture when the editor chrome changes.
+- `src/assets/editor-screenshot.png` — hero screenshot; replacement and recapture steps are in
+  [docs/design-system.md](docs/design-system.md).
 
 ## Critical rules
 

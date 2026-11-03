@@ -335,8 +335,21 @@ describe('track operations are reachable from the timeline UI', () => {
     // committing would move the clip to a new time while the toast says the drop
     // was invalid. Cancel restores the base doc instead.
     const clip = read('src/components/editor/timeline/ClipView.tsx')
-    expect(clip).toMatch(/if \(cancelled \|\| g\.blockedLane\) store\.cancelTransient\(\)/)
-    expect(clip).toMatch(/else store\.commitTransient\(\)/)
+    expect(clip).toMatch(/if \(cancelled \|\| g\.blockedLane\) \{\s*store\.cancelTransient\(\)/)
+    expect(clip).toMatch(/else if \(g\.insert\)/)
+    expect(clip).toMatch(/else \{\s*store\.commitTransient\(\)/)
+  })
+
+  it('finishes the insert gesture even when the committed batch is refused', () => {
+    // `store.apply` returns false for a lock refusal and records `lockNotice`.
+    // Returning there skipped `gesture.current = null` and the HUD cleanup, so
+    // the drag stayed half-open after the refusal.
+    const clip = read('src/components/editor/timeline/ClipView.tsx')
+    const cleanup = clip.indexOf('gesture.current = null')
+    const apply = clip.lastIndexOf('store.apply(commands)', cleanup)
+    expect(apply).toBeGreaterThan(-1)
+    expect(cleanup).toBeGreaterThan(apply)
+    expect(clip.slice(apply, cleanup)).not.toContain('return')
   })
 
   it('refuses a second drag while another gesture owns the transient base', () => {

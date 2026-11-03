@@ -276,10 +276,17 @@ export function deserializeDoc(data: unknown): {
 function hydrateTracks(rawTracks: unknown, media: MediaAsset[]): Track[] {
   return (Array.isArray(rawTracks) ? (rawTracks as Record<string, unknown>[]) : []).map((t) => {
     const kind = (t.kind === 'audio' || t.kind === 'text' ? t.kind : 'video') as TrackKind
+    const rawName = typeof t.name === 'string' ? t.name.trim() : ''
+    const name = rawName || 'Track'
+    // 0.18.0 autoName. An explicit false is the only way to pin a custom
+    // name; otherwise a name matching `^[VAT]\d+$` is editor-generated and
+    // may renumber. Legacy files have no flag, so they take that fallback.
+    const autoName = t.autoName === false || !/^[VAT]\d+$/.test(name) ? false : undefined
     return {
       id: typeof t.id === 'string' ? t.id : `track_${Math.random().toString(36).slice(2)}`,
       kind,
-      name: typeof t.name === 'string' ? t.name : 'Track',
+      name,
+      ...(autoName === false ? { autoName: false as const } : {}),
       muted: t.muted === true,
       // Absent means visible; only an explicit false survives, so hydrated
       // docs (and the files saved from them) stay clean.

@@ -5,7 +5,7 @@ import { Pause, Play, Undo2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { useEditorStore } from '@/lib/editor/store'
+import { useEditorStore, useStableDoc } from '@/lib/editor/store'
 import { sourceRangeFor, sourceRangeInvalid } from '@/lib/editor/sequence-ops'
 import {
   attachSourcePreview,
@@ -26,7 +26,7 @@ import {
  * marks and the placement range cannot disagree.
  */
 export function SourcePanel({ className }: { className?: string }) {
-  const doc = useEditorStore((s) => s.doc)
+  const doc = useStableDoc()
   const sourceAssetId = useEditorStore((s) => s.sourceAssetId)
   const sourceIn = useEditorStore((s) => s.sourceIn)
   const sourceOut = useEditorStore((s) => s.sourceOut)

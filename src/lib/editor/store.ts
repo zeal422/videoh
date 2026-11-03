@@ -79,6 +79,12 @@ export interface EditorState {
    * record is active at the playhead.
    */
   mediaError: MediaErrorState | null
+  /**
+   * True while the paused/scrub preview is retrying a frame the decoder has
+   * not delivered yet (0.18.0). A neutral "Preview catching up" notice, never
+   * the damaged-media notice.
+   */
+  previewRecovering: boolean
   /** Bumped only by replaceDoc, so edits do not look like project replacement. */
   projectEpoch: number
   pxPerSec: number
@@ -205,6 +211,8 @@ export interface EditorState {
   setMediaError: (info: MediaErrorState | null, clipId?: string) => void
   /** Clear the decode notice unconditionally (Dismiss and project replacement). */
   clearMediaError: () => void
+  /** Neutral scrub-recovery state; never the damaged-media notice. */
+  setPreviewRecovering: (recovering: boolean) => void
   setPxPerSec: (pps: number) => void
   toggleSnap: () => void
   setSnapLine: (t: number | null) => void
@@ -283,6 +291,15 @@ function normalizeSourceState(
  * records which pointer owns the gesture so a stray pointer cannot end it.
  */
 let transientBase: Doc | null = null
+/**
+ * The pre-gesture doc the stable panels keep rendering while a transient drag
+ * is live (0.18.0). Every pointer frame changes `doc`, and re-rendering the
+ * menubar, toolbar, media bin, and dialogs for a clip move was most of the
+ * commit cost. They subscribe through `useStableDoc`, so a transient frame
+ * leaves them untouched; the commit or cancel installs a new doc and they
+ * update once.
+ */
+let transientDisplayDoc: Doc | null = null
 let transientToken = 0
 let transientPointerId: number | null = null
 /** Monotonic id for lock refusals, so the shell reacts to each new one. */
@@ -291,6 +308,7 @@ let lockNoticeId = 0
 /** Ends the gesture slot: invalidates the live token and forgets its pointer. */
 function endTransient() {
   transientBase = null
+  transientDisplayDoc = null
   transientPointerId = null
   transientToken++
 }
@@ -375,6 +393,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   playhead: 0,
   playing: false,
   mediaError: null,
+  previewRecovering: false,
   projectEpoch: 0,
   pxPerSec: PPS_DEFAULT,
   snapEnabled: true,
@@ -453,6 +472,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   beginTransient: (pointerId) => {
     transientBase = structuredClone(get().doc)
+    transientDisplayDoc = get().doc
     transientPointerId = pointerId ?? null
     return ++transientToken
   },
@@ -606,6 +626,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       playhead: 0,
       playing: false,
       mediaError: null,
+      previewRecovering: false,
       projectEpoch: get().projectEpoch + 1,
     })
   },
@@ -741,9 +762,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return { mediaError: null }
     }),
   clearMediaError: () => set({ mediaError: null }),
+  setPreviewRecovering: (recovering) => {
+    if (get().previewRecovering === recovering) return
+    set({ previewRecovering: recovering })
+  },
   setPxPerSec: (pps) => set({ pxPerSec: pps }),
   toggleSnap: () => set({ snapEnabled: !get().snapEnabled }),
-  setSnapLine: (t) => set({ snapLine: t }),
+  setSnapLine: (t) => {
+    // A move that snaps to nothing reports null every frame. Re-setting the
+    // same value would notify the timeline and re-render it for no change.
+    if (get().snapLine === t) return
+    set({ snapLine: t })
+  },
   setActiveTool: (tool) => set({ activeTool: tool }),
   setDropMode: (dropMode) => set({ dropMode }),
 
@@ -788,6 +818,20 @@ export const editorStore = {
 }
 
 /** True when a drag gesture is currently in progress. */
+/**
+ * The doc a panel that does not need live drag frames should render (0.18.0).
+ * During a transient gesture it returns the pre-gesture doc, so a pointermove
+ * does not re-render the menubar, toolbar, media bin, or dialogs. The timeline,
+ * preview, and inspector keep the live `s.doc`.
+ */
+export function stableDocForRender(doc: Doc): Doc {
+  return transientBase ? (transientDisplayDoc ?? doc) : doc
+}
+
+export function useStableDoc(): Doc {
+  return useEditorStore((s) => stableDocForRender(s.doc))
+}
+
 export function isTransientActive(): boolean {
   return transientBase !== null
 }

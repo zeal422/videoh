@@ -13,8 +13,10 @@
  * the editor on boot.
  */
 
-export type PanelId = 'media' | 'preview' | 'source' | 'inspector' | 'timeline' | 'captions'
+import { isAnimatableProperty } from './keyframes'
+import type { KeyframeProperty } from './types'
 
+export type PanelId = 'media' | 'preview' | 'source' | 'inspector' | 'timeline' | 'captions'
 export interface PanelInfo {
   id: PanelId
   title: string
@@ -71,7 +73,16 @@ export interface WorkspaceState {
   }
   collapsed: Record<PanelId, boolean>
   hidden: Record<PanelId, boolean>
+  /**
+   * Inspector keyframe graph height per property, in CSS pixels (0.18.0).
+   * UI state only: it must never enter the Doc or the undo history.
+   */
+  keyframeGraphHeights: Partial<Record<KeyframeProperty, number>>
 }
+
+/** Bounds for a dragged Inspector keyframe graph (CSS pixels). */
+export const KEYFRAME_GRAPH_MIN_HEIGHT = 32
+export const KEYFRAME_GRAPH_MAX_HEIGHT = 240
 
 export const WORKSPACE_STORAGE_KEY = 'web-video-editor:workspace:v1'
 
@@ -101,6 +112,7 @@ export function defaultWorkspace(): WorkspaceState {
       timeline: false,
       captions: false,
     },
+    keyframeGraphHeights: {},
   }
 }
 
@@ -139,10 +151,22 @@ export function sanitizeWorkspace(raw: unknown): WorkspaceState {
   }
 
   const panelIds = PANEL_IDS
+  const heights: Partial<Record<KeyframeProperty, number>> = {}
+  const rawHeights = obj.keyframeGraphHeights
+  if (typeof rawHeights === 'object' && rawHeights !== null) {
+    for (const [key, value] of Object.entries(rawHeights as Record<string, unknown>)) {
+      // Unknown property keys are dropped; a hostile or stale value never
+      // reaches the component.
+      if (!isAnimatableProperty(key)) continue
+      if (typeof value !== 'number' || !Number.isFinite(value)) continue
+      heights[key] = clamp(value, KEYFRAME_GRAPH_MIN_HEIGHT, KEYFRAME_GRAPH_MAX_HEIGHT)
+    }
+  }
   return {
     sizes,
     collapsed: sanitizePanelIdSet(obj.collapsed, panelIds),
     hidden: sanitizePanelIdSet(obj.hidden, panelIds),
+    keyframeGraphHeights: heights,
   }
 }
 
@@ -206,4 +230,19 @@ export function withSize(
 /** True when a persisted/observed size means "panel is collapsed". */
 export function isCollapsedSize(size: number): boolean {
   return size <= COLLAPSED_SIZE_PCT + COLLAPSED_EPSILON
+}
+
+/** Immutable update for one Inspector keyframe graph height (0.18.0). */
+export function withKeyframeGraphHeight(
+  state: WorkspaceState,
+  property: KeyframeProperty,
+  height: number,
+): WorkspaceState {
+  if (!Number.isFinite(height)) return state
+  const clamped = clamp(height, KEYFRAME_GRAPH_MIN_HEIGHT, KEYFRAME_GRAPH_MAX_HEIGHT)
+  if (state.keyframeGraphHeights[property] === clamped) return state
+  return {
+    ...state,
+    keyframeGraphHeights: { ...state.keyframeGraphHeights, [property]: clamped },
+  }
 }

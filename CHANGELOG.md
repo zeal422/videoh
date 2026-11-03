@@ -5,6 +5,110 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.18.0] - 2026-11-01
+
+### Added
+
+- **WebCodecs scrub preview.** Paused and scrubbing frames now come from a mediabunny `CanvasSink`
+  in a module worker, with one decode in flight per clip, the latest target winning, and the last good
+  frame kept on screen. Playback and audio stay on the existing `<video>` elements, and browsers
+  without WebCodecs keep the old seek behavior.
+- **Scrub recovery notice.** WebCodecs gets one retry from the preceding keyframe. If both attempts
+  fail, the clip falls back to its own hidden `<video>` with a separate three-attempt counter, then a
+  neutral "Preview catching up" notice. A normal scrub can no longer be reported as damaged media.
+- **Drag-to-create tracks.** Dragging a clip into a same-kind gap creates a track at that boundary;
+  dragging above the top video or below the bottom audio creates a track at that outer edge; a
+  mixed-kind gap moves to the nearest compatible lane. The release commits the new track and the
+  clip moves as one undo step.
+- **Track auto-naming.** `Track.autoName` distinguishes editor names from custom names. Audio
+  renumbers top-to-bottom (`A1`, `A2`) and video bottom-to-top (`V1` at the bottom). Custom names are
+  preserved and do not consume a number. Legacy files without the flag treat a `^[VAT]\d+$` name as
+  auto, so such a name may renumber once until it is renamed.
+- **Inspector graph editing.** Keyframe dots drag vertically to change value and horizontally to
+  change time, dB rows keep their display mapping, and a bottom handle resizes the graph per property.
+  The height lives in the workspace store and never enters undo history.
+- **Filmstrip frame cache and progress.** Thumbnails are cached per asset and source time, so a split
+  reuses the frames it already has and decodes only the missing cells. Reuse accepts the nearest
+  frame within half a cell inside the clip's source window, and the first generation decodes one
+  visible tile ahead, so a split is a cache hit. The visible part of a long clip is generated at
+  layout density instead of stretching a 4,096px strip; an off-screen clip gets a bounded head tile
+  rather than its whole width. Per-clip plus timeline header progress bars show `Thumbnails 12/24`
+  after 300 ms.
+
+### Changed
+
+- **Unlink keeps the video visual.** A waveform is drawn only on audio tracks and `audioOnly` clips,
+  so an unlinked video half keeps its filmstrip instead of growing an embedded-audio waveform.
+- **Audio track order.** The plus button and `addTrack` append audio below the existing audio tracks;
+  video still prepends above the existing video tracks.
+- **Pen height.** The timeline automation plot uses the full clip height, the visual dot center reaches
+  the clip edge, and the 12px hit target stays inside the clip at the endpoints.
+- **Drag performance.** A move now sends one transient batch for the dragged clip and every partner,
+  caches snap points and lane boxes until a scroll or resize, and skips the paused-preview refresh
+  during transient frames. The menubar, toolbar, media bin, and dialogs keep rendering the
+  pre-gesture doc while a drag is live, so a pointer frame only re-renders the timeline, preview,
+  and inspector. The five-run 1080p benchmark now sits at 16.7 ms median and 20.2 ms p95.
+- **Sample media removed.** The "Load sample media" button, `sample-media.ts`, the sample fetch and
+  hydration helpers, and `public/samples/` are gone. The UI battery imports the committed fixtures in
+  `e2e/fixtures/` through the media bin's file input. Restored projects that referenced the old sample
+  assets now show them offline until relinked.
+
+### Fixed
+
+- A split no longer blanks both filmstrips or waits for a full regeneration.
+- A WebCodecs fallback now hands the frame back to its `<video>` once the seek lands, a scrub retry stays on
+  the neutral-notice path, and filmstrip decode or progress failures no longer blank the strip or leave
+  stale bars.
+- A scrub no longer clears the preview to black while a seek is pending.
+- Playback no longer opens on a black canvas: Play warms the active elements before starting the
+  clock, and a resume at the parked position no longer restarts a decode.
+- After a paused scrub or a decode-recovery skip, the linked audio and video halves start together
+  instead of the audio running ahead while the picture catches up.
+- Play now waits out an in-flight seek and corrects a stale position before starting the clock, so a
+  paused seek cannot resume at the old frame.
+- A stalled worker keyframe retry now times out with the rest of the attempt, letting a later
+  request, including a replacement URL, run instead of blocking the clip forever.
+- A stalled thumbnail decode now times out instead of holding the only filmstrip job lane, and its
+  late frames are closed. Thumbnail cache reset also clears its per-asset bookkeeping.
+- Paused scrubbing of a sub-frame-rate clip now uses the parked element pair, so a slow clip keeps the
+  blended frame the playback and export paths use instead of one WebCodecs frame.
+- A paused blend clip no longer waits for a WebCodecs frame it never requests, and its element is not
+  recorded as a scrub fallback while the sink is available.
+- A thumbnail track lookup that times out or is reset now disposes the Input that run created, so a
+  late lookup cannot register a dead Input or keep decoding after the run is over. A drop or reset
+  resolves that stale decode silently; timeouts and genuine decode failures still reject.
+- A released scrub drops its in-flight frame instead of caching or delivering it, and a clip source change
+  no longer discards the incoming asset's filmstrip cache or leaves the old one behind.
+- A released scrub-worker open no longer rejects the next request for the same asset; a fresh attempt
+  starts instead.
+- A queued scrub for a second URL no longer turns stale when the first URL is released; the release
+  epoch is stamped when the request is dequeued.
+- A scrub open or decode timeout now releases its decoder Input, and a released worker decode is
+  rejected so its pending request and late frame cannot leak.
+- A thumbnail decode that finishes after a drop or relink no longer repopulates the old URL or evicts
+  the new URL's cache.
+- Dragging a clip vertically no longer silently does nothing.
+- Long clips no longer stretch a 4,096px filmstrip across the whole timeline.
+
+### Tests and docs
+
+- The suite moves to 93 files and 2,132 tests. New tests cover the per-clip scrub queue and its
+  release/reset epochs, the worker's released-open, hung-open, and in-flight-frame handling, the
+  worker transport's released-request cleanup, the thumbnail cache's late-decode guard, timed-out, dropped, and reset Input ownership with silent stale cancellation, paused blend preflight and fallback marking, track
+  renumbering and hostile hydration, drop boundaries, the full-height Pen, vertical Inspector
+  dragging, and viewport filmstrip tiles.
+- The battery keeps its 67 steps, imports fixtures instead of the removed sample button, and captures
+  the fixture File for the blend-parity reference decoder. The final dev and standalone artifact runs
+  both pass 67/67 with terminal `BATTERY_EXIT=0`.
+- The three fixture files are committed in `e2e/fixtures/` with a provenance note that records the
+  unverified origin. The 15-minute climbing file stays manual only.
+- The landing-page capture is recaptured at 1921x1079 from the 0.18.0 Climbing-Vlog project, and the
+  product-showcase alt text now describes its filmstrips, two audio tracks, text track, and Effect
+  Controls inspector.
+- Docs updated: README, architecture, flows, structure, testing, design-system, seo, deployment, and
+  this changelog. The version atomically moves to `0.18.0` in `package.json`, `src/lib/releases.ts`,
+  this changelog, and the roadmap.
+
 ## [0.17.0] - 2026-10-31
 
 ### Added

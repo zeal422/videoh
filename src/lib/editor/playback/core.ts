@@ -20,6 +20,7 @@ import { clamp, frameToTime } from '../time'
 import { audibleTrackIds } from '../tracks'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
 import { drawFrame, type FrameBlendSource } from './compositor'
+import type { ScrubFrameSource } from './scrub-source'
 
 /**
  * PlaybackCore: the preview playback engine.
@@ -60,6 +61,13 @@ export interface PlaybackCoreOptions {
   nextKeyframe?: (url: string, sourceTime: number) => Promise<number | undefined>
   /** Persistent decode-recovery status for the preview overlay. */
   onMediaError?: (info: MediaErrorInfo | null, clipId?: string) => void
+  /** Neutral scrub-recovery notice, separate from the damaged-media notice. */
+  onPreviewRecovering?: (recovering: boolean) => void
+  /**
+   * Builds the WebCodecs scrub frame source (0.18.0). Omitted by tests and by
+   * browsers without WebCodecs; the `<video>` path then runs unchanged.
+   */
+  createScrubSource?: () => ScrubFrameSource | null
   onFrame?: (t: number) => void
   onEnd?: () => void
   onPlayingChange?: (playing: boolean) => void
@@ -155,6 +163,17 @@ function withinAncestorWindows(
  */
 const DRIFT_THRESHOLD = 0.4
 /**
+ * How far a paused element may sit from the playhead before Play re-seeks it.
+ * Resuming at the parked position must not start a decode that blanks the
+ * monitor; a paused scrub that left a video element behind still seeks.
+ */
+const START_SEEK_THRESHOLD = 0.15
+/**
+ * Bound on the pre-play media warmup. A slow source must not block Play
+ * forever; the normal sync path takes over after this.
+ */
+const PRIME_TIMEOUT_MS = 1_200
+/**
  * A seek is not instantaneous: Chrome must demux + decode before the new frame
  * is present (the readback position updates immediately, the data does not).
  * A scrub that lands >1 s away takes hundreds of ms; until it lands the element
@@ -213,6 +232,10 @@ const DECODE_SKIP_SOURCE_SECONDS = 6
 const RELOAD_TIMEOUT_MS = 5_000
 /** Recovery attempts before the record becomes terminal. */
 const MAX_RECOVERY_ATTEMPTS = 3
+/** Scrub fallback attempts at the SAME timestamp before the neutral notice. */
+export const SCRUB_FALLBACK_ATTEMPTS = 3
+/** How long one scrub fallback attempt may take before it counts as failed. */
+export const SCRUB_FALLBACK_TIMEOUT_MS = 250
 
 /**
  * The position an element is parked at for a read: the read itself, a hair
@@ -324,6 +347,26 @@ export class PlaybackCore {
   private playToken = 0
   private refreshing = false
   private lastProjectEpoch = 0
+  /** WebCodecs scrub frame source (0.18.0); null keeps the `<video>` path. */
+  private scrub: ScrubFrameSource | null
+  private scrubUnsubscribe: (() => void) | null = null
+  /** Per-clip generation token; bumps when the effective URL changes. */
+  private scrubGenerations = new Map<string, { url: string; token: number }>()
+  /** Effective URL last sent for each asset, for release on relink/removal. */
+  private scrubAssets = new Map<string, string>()
+  /** Scrub fallback attempts at the same source time, per clip. */
+  private scrubFallback = new Map<string, { attempts: number; sourceTime: number }>()
+  /** Pending neutral-notice retries, one per clip (0.18.0). */
+  private scrubRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** True while the current `drawStill` came from a scrub seek. */
+  private scrubInProgress = false
+  /**
+   * Elements last drawn on the `<video>` scrub-fallback path, with the source
+   * time they were parked on. The ownership outlives `refresh`: an error event
+   * arrives asynchronously, after `scrubInProgress` is already false.
+   */
+  private scrubFallbackElements = new WeakMap<HTMLMediaElement, number>()
+  private scrubRecovering = false
 
   constructor(private opts: PlaybackCoreOptions) {
     opts.canvas.width = opts.getDoc().project.width
@@ -331,6 +374,15 @@ export class PlaybackCore {
     this.ctx2d = opts.canvas.getContext('2d')
     this.pool = new ClipMediaPool((clipId, el) => this.handleElementError(clipId, el))
     this.lastProjectEpoch = opts.getProjectEpoch?.() ?? 0
+    this.scrub = opts.createScrubSource?.() ?? null
+    if (this.scrub) {
+      this.scrubUnsubscribe = this.scrub.onFallback(() => {
+        // The asset's WebCodecs path failed: redraw through the `<video>`
+        // fallback. `hasSink` now returns false for that URL.
+        this.setScrubRecovering(false)
+        if (!this.playingState) this.refresh(this.time)
+      })
+    }
   }
 
   /** Audio output stream (a capture destination; export mixes offline instead). */
@@ -361,15 +413,17 @@ export class PlaybackCore {
   async play(from?: number): Promise<void> {
     this.recoveryEpoch++
     this.playToken++
+    this.scrubInProgress = false
+    this.setScrubRecovering(false)
     if (this.recoveryInFlight !== null) this.recoveryCancelDiscard = false
     if (from !== undefined) this.clearRecoveryForSeek(from)
-    return this.startPlayback(from, this.playToken)
+    return this.startPlayback(from, this.playToken, this.recoveryEpoch)
   }
 
   /**
-   * The shared start path. A public play passes no expected recovery epoch; a
-   * recovery passes the epoch it captured so a user pause or seek during
-   * `prepare()` wins.
+   * The shared start path. A public play and a recovery both pass the epoch
+   * they captured, so a user pause or seek during `prepare()` or the media
+   * warmup wins.
    */
   private async startPlayback(
     from: number | undefined,
@@ -387,12 +441,95 @@ export class PlaybackCore {
     if (token !== this.playToken) return
     if (expectedRecoveryEpoch !== undefined && expectedRecoveryEpoch !== this.recoveryEpoch) return
 
+    // Warm the active elements before the clock starts. The canvas keeps the
+    // paused frame, so a slow load or a seek left behind by a paused scrub
+    // cannot open playback on black, and the linked audio twin starts with
+    // the picture instead of running ahead during the decode.
+    await this.primePlayback(this.time)
+    if (token !== this.playToken) return
+    if (expectedRecoveryEpoch !== undefined && expectedRecoveryEpoch !== this.recoveryEpoch) return
+
     this.anchorDoc = this.time
     this.anchorAudio = this.audio ? this.audio.currentTime : 0
     this.anchorPerf = performance.now()
     this.playingState = true
     this.opts.onPlayingChange?.(true)
     this.tick()
+  }
+
+  /**
+   * Positions and warms the elements that are active at `t` (0.18.0). The
+   * paused preview uses WebCodecs and deliberately does not seek the `<video>`
+   * element, so play must not start the clock until the element has caught up
+   * or the first frames are black. An already-running seek is awaited first,
+   * then corrected if it landed away from the playhead. Waiting here keeps the
+   * paused frame on the canvas and keeps the A/V pair on the same start
+   * position.
+   */
+  private async primePlayback(t: number): Promise<void> {
+    if (!this.scrub) return
+    const doc = this.opts.getDoc()
+    const waits: Promise<void>[] = []
+    for (const { clip, track, offset, ancestors } of this.activeClipList(doc)) {
+      if (track.kind === 'text') continue
+      if (clip.reverse || hasTimeScaleRamp(clip)) continue
+      const asset = findMedia(doc, clip.mediaId)
+      if (!mediaPlayable(asset)) continue
+      const start = offset + clip.start
+      if (!withinAncestorWindows(t, start, start + clip.duration, ancestors)) continue
+      const el = this.pool.get(clip, asset, this.mediaUrl(asset))
+      if (el.error) continue
+      const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
+      el.playbackRate = constantRateOf(clip)
+      waits.push(this.primeElement(el, expected))
+    }
+    await Promise.all(waits)
+  }
+
+  /**
+   * Waits out a seek already in flight, then corrects the element if the
+   * landed position is outside the start dead zone, and waits for that seek.
+   * Comparing only before the wait would start the clock on the pre-seek
+   * position when a paused scrub left an older seek running.
+   */
+  private async primeElement(el: HTMLMediaElement, expected: number): Promise<void> {
+    if (this.trackingSeek(el)) await this.waitForMediaReady(el)
+    if (el.error) return
+    if (Math.abs(el.currentTime - expected) > START_SEEK_THRESHOLD) {
+      this.seekElement(el, expected)
+    }
+    await this.waitForMediaReady(el)
+  }
+
+  /**
+   * Resolves when an element can present a frame, or when the warmup bound
+   * expires. `error` resolves too: the first sync must route it through the
+   * normal recovery path instead of hanging Play.
+   */
+  private waitForMediaReady(el: HTMLMediaElement): Promise<void> {
+    if (!el.seeking && el.readyState >= 2) return Promise.resolve()
+    return new Promise((resolve) => {
+      let done = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const finish = (): void => {
+        if (done) return
+        done = true
+        el.removeEventListener('loadeddata', finish)
+        el.removeEventListener('canplay', finish)
+        el.removeEventListener('seeked', finish)
+        el.removeEventListener('error', finish)
+        if (timer !== undefined) clearTimeout(timer)
+        resolve()
+      }
+      timer = setTimeout(finish, PRIME_TIMEOUT_MS)
+      el.addEventListener('loadeddata', finish)
+      el.addEventListener('canplay', finish)
+      el.addEventListener('seeked', finish)
+      el.addEventListener('error', finish)
+      // A synchronous seek (or a source that was already ready) can settle
+      // between the first check and the listeners above.
+      if (el.error || (!el.seeking && el.readyState >= 2)) finish()
+    })
   }
 
   pause(): void {
@@ -415,11 +552,17 @@ export class PlaybackCore {
     this.clearRecoveryForSeek(t)
     this.recoveryEpoch++
     if (this.recoveryInFlight !== null) this.recoveryCancelDiscard = false
-    this.applySeek(t)
+    this.scrubInProgress = true
+    try {
+      this.applySeek(t)
+    } finally {
+      this.scrubInProgress = false
+    }
   }
 
   /** Paused repaint for doc edits: no epoch bump, no recovery cancellation. */
-  refresh(t: number): void {
+  refresh(t: number, scrub = false): void {
+    this.scrubInProgress = scrub
     this.refreshing = true
     try {
       this.applySeek(t)
@@ -535,6 +678,12 @@ export class PlaybackCore {
     this.recoveryRecords.clear()
     this.noticeRanges.clear()
     this.deferredErrors.clear()
+    this.scrub?.reset()
+    for (const clipId of [...this.scrubRetryTimers.keys()]) this.clearScrubRetry(clipId)
+    this.scrubGenerations.clear()
+    this.scrubAssets.clear()
+    this.scrubFallback.clear()
+    this.setScrubRecovering(false)
     this.opts.onMediaError?.(null)
   }
 
@@ -585,6 +734,26 @@ export class PlaybackCore {
       return
     }
     if (!this.isClipActiveAt(clipId, this.time)) return
+    // A paused element that was drawn on the scrub-fallback path keeps its
+    // neutral retry budget even after `refresh` returns and `scrubInProgress`
+    // clears. Without this, the error event that lands a moment later enters
+    // damaged-media recovery and reports a source that only failed WebCodecs.
+    const fallbackSourceTime = this.scrubFallbackElements.get(el)
+    // A recovery that owns this clip keeps the element; the neutral path is
+    // only for errors outside damaged-media recovery (the same rule drawStill
+    // applies by skipping the clip it is recovering).
+    const recoveringThisClip = this.recoveryInFlight === clipId && !this.recoveryIsStale()
+    if (
+      this.scrub &&
+      fallbackSourceTime !== undefined &&
+      !this.playingState &&
+      !recoveringThisClip
+    ) {
+      this.noteScrubFallback(clipId, fallbackSourceTime, this.time)
+      if (!el.paused) el.pause()
+      this.endSeek(el)
+      return
+    }
     if (this.activeTerminalAt(this.time)) {
       this.deferredErrors.set(clipId, el)
       return
@@ -1104,6 +1273,15 @@ export class PlaybackCore {
     this.pool.dispose()
     this.imageCache.clear()
     for (const el of [...this.seekingEls.keys()]) this.endSeek(el) // detach listeners too
+    this.setScrubRecovering(false)
+    for (const clipId of [...this.scrubRetryTimers.keys()]) this.clearScrubRetry(clipId)
+    this.scrubUnsubscribe?.()
+    this.scrubUnsubscribe = null
+    this.scrub?.dispose()
+    this.scrub = null
+    this.scrubGenerations.clear()
+    this.scrubAssets.clear()
+    this.scrubFallback.clear()
     if (this.audio) {
       void this.audio.close().catch(() => undefined)
       this.audio = null
@@ -1208,6 +1386,22 @@ export class PlaybackCore {
       this.deferredErrors.delete(id)
       this.opts.onMediaError?.(null, id)
     }
+    // Scrub source (0.18.0): a deleted clip drops its sink and cached frame.
+    // An asset whose effective URL changed (relink, proxy ready, proxy toggle)
+    // or that left the bin releases its `Input`.
+    for (const id of [...this.scrubGenerations.keys()]) {
+      if (live.has(id)) continue
+      this.clearScrubRetry(id)
+      this.scrub?.releaseClip(id)
+      this.scrubGenerations.delete(id)
+      this.scrubFallback.delete(id)
+    }
+    for (const [assetId, url] of [...this.scrubAssets]) {
+      const asset = findMedia(doc, assetId)
+      if (asset && this.mediaUrl(asset) === url) continue
+      this.scrub?.releaseAsset(assetId, url)
+      this.scrubAssets.delete(assetId)
+    }
   }
 
   /** Starts/stops elements, corrects drift, and updates per-clip gain. */
@@ -1267,7 +1461,13 @@ export class PlaybackCore {
             this.seekElement(el, expected)
           }
         } else if (el.paused) {
-          this.seekElement(el, expected)
+          // Resume at the parked position must not restart the decode: the
+          // clock starts immediately, and a seek here blanks the monitor (and
+          // delays the linked audio twin) for the whole seek. Only a real
+          // offset, a paused scrub, or an explicit force-seek moves it.
+          if (forceSeek || Math.abs(el.currentTime - expected) > START_SEEK_THRESHOLD) {
+            this.seekElement(el, expected)
+          }
           el.playbackRate = constantRateOf(clip)
           void el.play().catch(() => undefined)
         } else if (forceSeek || Math.abs(el.currentTime - expected) > DRIFT_THRESHOLD) {
@@ -1642,9 +1842,116 @@ export class PlaybackCore {
     return this.opts.resolveMediaUrl?.(asset) ?? asset.url
   }
 
+  /**
+   * The clip's scrub generation (0.18.0). It bumps when the effective URL
+   * changes (relink, proxy ready, proxy toggle) or the clip's media id moves,
+   * so a frame decoded from the old source can never be shown for the new one.
+   */
+  private scrubGeneration(clipId: string, assetId: string, url: string): number {
+    const previousAssetUrl = this.scrubAssets.get(assetId)
+    if (previousAssetUrl !== undefined && previousAssetUrl !== url) {
+      this.scrub?.releaseAsset(assetId, previousAssetUrl)
+      this.scrubFallback.delete(clipId)
+    }
+    this.scrubAssets.set(assetId, url)
+    const previous = this.scrubGenerations.get(clipId)
+    if (previous && previous.url === url) return previous.token
+    const token = (previous?.token ?? 0) + 1
+    this.scrubGenerations.set(clipId, { url, token })
+    return token
+  }
+
+  /** Requests one scrub frame and repaints only when it is still current. */
+  private requestScrubFrame(
+    clipId: string,
+    assetId: string,
+    url: string,
+    sourceTime: number,
+    generation: number,
+  ): void {
+    if (!this.scrub) return
+    const requestedAt = this.time
+    this.scrub.request({ clipId, assetId, effectiveUrl: url, sourceTime, generation }, (result) => {
+      if (this.playingState) return
+      if (Math.abs(this.time - requestedAt) > 1e-3) return
+      if (this.scrubGeneration(clipId, assetId, url) !== result.generation) return
+      this.clearScrubFallback(clipId)
+      this.render(this.time)
+    })
+  }
+
+  private clearScrubFallback(clipId: string): void {
+    this.clearScrubRetry(clipId)
+    this.scrubFallback.delete(clipId)
+    if (this.scrubRecovering && this.scrubFallback.size === 0) this.setScrubRecovering(false)
+  }
+
+  private clearScrubRetry(clipId: string): void {
+    const timer = this.scrubRetryTimers.get(clipId)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.scrubRetryTimers.delete(clipId)
+  }
+
+  /**
+   * The `<video>` scrub fallback's own retry budget. It never calls
+   * `handleElementError`: a normal scrub must not be reported as damaged media.
+   */
+  private noteScrubFallback(clipId: string, sourceTime: number, playhead: number): void {
+    const fps = Math.max(1, this.opts.getDoc().project.fps)
+    const previous = this.scrubFallback.get(clipId)
+    const sameTime = previous && Math.abs(previous.sourceTime - sourceTime) <= 1 / fps
+    const attempts = sameTime ? previous.attempts + 1 : 1
+    this.clearScrubRetry(clipId)
+    this.scrubFallback.set(clipId, { attempts, sourceTime })
+    if (attempts >= SCRUB_FALLBACK_ATTEMPTS) {
+      this.setScrubRecovering(true)
+      return
+    }
+    const requestedAt = playhead
+    const timer = setTimeout(() => {
+      this.scrubRetryTimers.delete(clipId)
+      if (this.playingState) return
+      if (Math.abs(this.time - requestedAt) > 1e-3) return
+      // Stay on the scrub path: a retry that still errors must advance the
+      // fallback counter, never enter damaged-media recovery.
+      this.refresh(this.time, true)
+    }, SCRUB_FALLBACK_TIMEOUT_MS)
+    this.scrubRetryTimers.set(clipId, timer)
+  }
+
+  private setScrubRecovering(recovering: boolean): void {
+    if (this.scrubRecovering === recovering) return
+    this.scrubRecovering = recovering
+    this.opts.onPreviewRecovering?.(recovering)
+  }
+
   private render(t: number): void {
     if (!this.ctx2d) return
     const doc = this.opts.getDoc()
+    // A paused scrub must never clear the monitor while the next WebCodecs
+    // frame is in flight. If any active video clip has a scrub sink but no
+    // cached frame yet, leave the previous composite on the canvas.
+    if (!this.playingState && this.scrub) {
+      for (const { clip, track, offset, ancestors } of this.activeClipList(doc)) {
+        if (track.kind === 'text' || track.kind === 'audio' || clip.audioOnly) continue
+        const asset = findMedia(doc, clip.mediaId)
+        if (!asset || asset.kind !== 'video' || asset.missing || !asset.url) continue
+        const start = offset + clip.start
+        if (!withinAncestorWindows(t, start, start + clip.duration, ancestors)) continue
+        // A blend clip renders through the parked element pair, never the
+        // single WebCodecs frame, so it never requests one. Requiring a cached
+        // frame here would block the whole composite forever.
+        if (blendPartnerTime(clip, t - offset - clip.start, asset, doc.project.fps) !== undefined) {
+          continue
+        }
+        const url = this.mediaUrl(asset)
+        if (!this.scrub.hasSink(asset.id, url)) continue
+        const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
+        const generation = this.scrubGeneration(clip.id, asset.id, url)
+        if (!this.scrub.peek(clip.id, expected, generation)) return
+      }
+    }
     drawFrame({
       ctx: this.ctx2d,
       doc,
@@ -1690,16 +1997,62 @@ export class PlaybackCore {
       const start = offset + clip.start
       const active = withinAncestorWindows(t, start, start + clip.duration, ancestors)
       if (!active) continue
-      const el = this.pool.get(clip, asset, this.mediaUrl(asset))
+      const url = this.mediaUrl(asset)
+      // Clamped into the asset: a ramp may over-consume its source, and the
+      // excess freezes on the last readable frame (mp4.ts clamps identically).
+      const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
+      const generation = this.scrubGeneration(clip.id, asset.id, url)
+      // A sub-frame-rate read needs the parked partner pair. The WebCodecs
+      // cache holds one frame per clip, so taking that shortcut here would
+      // silently drop the blend. Route these clips through the element path.
+      const partner = blendPartnerTime(clip, t - offset - clip.start, asset, doc.project.fps)
+      const sinkAvailable = this.scrub ? this.scrub.hasSink(asset.id, url) : false
+      if (
+        partner === undefined &&
+        this.scrub &&
+        !this.playingState &&
+        !clip.audioOnly &&
+        track.kind !== 'audio' &&
+        sinkAvailable
+      ) {
+        // WebCodecs path (0.18.0): request the target and draw the cached or
+        // last-good frame. Never assign `el.currentTime`; restarting the
+        // element's seek on every move is what cleared the canvas to black.
+        // Audio-only clips skip the request but still get their element below,
+        // so their decode errors keep reaching the recovery path.
+        this.requestScrubFrame(clip.id, asset.id, url, expected, generation)
+        this.clearScrubFallback(clip.id)
+        continue
+      }
+      const el = this.pool.get(clip, asset, url)
+      // Reaching the element for a paused video clip while a scrub source
+      // exists means this URL has no WebCodecs sink: it is the fallback. A
+      // blend clip reaches the element with its sink intact, by design, so it
+      // must not be recorded as a fallback.
+      if (
+        this.scrub &&
+        !this.playingState &&
+        !clip.audioOnly &&
+        track.kind !== 'audio' &&
+        !sinkAvailable
+      ) {
+        this.scrubFallbackElements.set(el, expected)
+      }
       if (el.error) {
+        // A scrub fallback (WebCodecs already failed for this asset) must not
+        // reach the damaged-media path. It has its own counter and neutral
+        // notice; genuine terminal damage still uses the existing path.
+        if (this.scrubInProgress && this.scrub && !sinkAvailable) {
+          this.noteScrubFallback(clip.id, expected, t)
+          if (!el.paused) el.pause()
+          this.endSeek(el)
+          continue
+        }
         if (!this.terminalElements.has(el)) pendingErrors.push({ clipId: clip.id, el })
         if (!el.paused) el.pause()
         this.endSeek(el)
         continue
       }
-      // Clamped into the asset: a ramp may over-consume its source, and the
-      // excess freezes on the last readable frame (mp4.ts clamps identically).
-      const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
       const seekTarget = parkedTarget(expected)
       if (
         Math.abs(el.currentTime - seekTarget) > 1e-9 &&
@@ -1717,6 +2070,8 @@ export class PlaybackCore {
             // this.time, not t: a seek superseded by a later one still fires
             // its listener, and repainting the captured t would put a stale
             // frame back on screen after the newer seek already drew.
+            this.clearScrubFallback(clip.id)
+            this.setScrubRecovering(false)
             if (!this.playingState) this.render(this.time)
           },
           { once: true },
@@ -1725,7 +2080,6 @@ export class PlaybackCore {
       // The blend partner is parked on its own frame here too, so a still
       // frame blends exactly like a playing one. Its seek landing has to
       // redraw: until it does, the pair falls back to the single frame.
-      const partner = blendPartnerTime(clip, t - offset - clip.start, asset, doc.project.fps)
       if (partner === undefined) {
         this.pool.releaseNext(clip.id)
         continue
@@ -1762,7 +2116,11 @@ export class PlaybackCore {
     clip: Clip,
     local: number,
   ):
-    | { asset: MediaAsset; el?: HTMLVideoElement | HTMLImageElement; blend?: FrameBlendSource }
+    | {
+        asset: MediaAsset
+        el?: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement | ImageBitmap
+        blend?: FrameBlendSource
+      }
     | undefined {
     const doc = this.opts.getDoc()
     const asset = findMedia(doc, clip.mediaId)
@@ -1785,7 +2143,32 @@ export class PlaybackCore {
     if (asset.kind === 'video') {
       // Missing (restored) assets have no URL: never build an element for them.
       if (asset.missing || !asset.url) return undefined
-      const el = this.pool.get(clip, asset, this.mediaUrl(asset)) as HTMLVideoElement
+      const url = this.mediaUrl(asset)
+      // Paused/scrubbing frames come from WebCodecs (0.18.0). On the WebCodecs
+      // path the cached frame IS the frame; a fallback asset keeps its last
+      // good frame only while the `<video>` seek is still pending, because
+      // clearing to black while it lands is the scrub regression this release
+      // fixes. Once the seek lands, the element supplies the frame.
+      let cached: CanvasImageSource | undefined
+      if (
+        !this.playingState &&
+        this.scrub &&
+        blendPartnerTime(clip, local, asset, doc.project.fps) === undefined
+      ) {
+        const expected = clampSourceTime(sourceTimeAt(clip, local), asset)
+        const generation = this.scrubGeneration(clip.id, asset.id, url)
+        const frame = this.scrub.peek(clip.id, expected, generation)
+        if (this.scrub.hasSink(asset.id, url)) {
+          return frame ? { asset, el: frame as HTMLCanvasElement | ImageBitmap } : { asset }
+        }
+        cached = frame
+      }
+      const el = this.pool.get(clip, asset, url) as HTMLVideoElement
+      // A fallback asset keeps the last WebCodecs frame only while its seek is
+      // still pending. Once the element is ready, the element is the truth.
+      if (cached && (el.seeking || el.readyState < 2)) {
+        return { asset, el: cached as HTMLCanvasElement | ImageBitmap }
+      }
       if (this.terminalElements.has(el)) return { asset }
       this.watchPresentedFrames(el)
       // Sub-frame-rate reads hand the compositor the parked partner as well, so

@@ -11,6 +11,7 @@ import {
   EditorCommand,
   EditorCommandError,
   firstFreeCaptionsName,
+  previewInsertTrackName,
 } from '../commands'
 import {
   clipFitsTrack,
@@ -441,18 +442,21 @@ describe('tracks', () => {
       'audio',
     ])
     expect(next.project.tracks[0].name).toBe('T1')
-    // Premiere/Photoshop layering semantics: the newest track of a kind stacks
-    // ABOVE the older ones — V2 renders on top of V1, A2 above A1.
+    // Premiere/Photoshop layering semantics: the newest video track stacks
+    // ABOVE the older ones — V2 renders on top of V1. Audio appends BELOW
+    // (0.18.0): the newest audio track is the bottom one.
     expect(next.project.tracks[1].name).toBe('V2')
     expect(next.project.tracks[2].name).toBe('V1')
-    expect(next.project.tracks[3].name).toBe('A2')
-    expect(next.project.tracks[4].name).toBe('A1')
+    expect(next.project.tracks[3].name).toBe('A1')
+    expect(next.project.tracks[4].name).toBe('A2')
   })
 
   it('addTrack with atIndex inserts at an exact z-position (drop-between-tracks)', () => {
     const { doc } = makeDoc() // [V1, A1]
     const next = applyCommand(doc, { type: 'addTrack', kind: 'video', atIndex: 1 })
-    expect(next.project.tracks.map((t) => t.name)).toEqual(['V1', 'V2', 'A1'])
+    // The new video sits below V1, so bottom-to-top numbering makes it V1 and
+    // renames the old top lane V2 (0.18.0).
+    expect(next.project.tracks.map((t) => t.name)).toEqual(['V2', 'V1', 'A1'])
   })
 
   it('addTrack atIndex 0 stacks the new track on top of everything', () => {
@@ -466,6 +470,81 @@ describe('tracks', () => {
     // an audio track BETWEEN V1 and A1 stays exactly there
     const next = applyCommand(doc, { type: 'addTrack', kind: 'audio', atIndex: 1 })
     expect(next.project.tracks.map((t) => t.kind)).toEqual(['video', 'audio', 'audio'])
+  })
+
+  it('appends audio below and renumbers top-to-bottom (0.18.0)', () => {
+    const { doc } = makeDoc() // [V1, A1]
+    const next = applyCommand(doc, { type: 'addTrack', kind: 'audio' })
+    expect(next.project.tracks.map((t) => `${t.kind}:${t.name}`)).toEqual([
+      'video:V1',
+      'audio:A1',
+      'audio:A2',
+    ])
+  })
+
+  it('prepends video above and renumbers bottom-to-top (0.18.0)', () => {
+    const { doc } = makeDoc()
+    const next = applyCommand(doc, { type: 'addTrack', kind: 'video' })
+    expect(next.project.tracks.map((t) => `${t.kind}:${t.name}`)).toEqual([
+      'video:V2',
+      'video:V1',
+      'audio:A1',
+    ])
+  })
+
+  it('skips custom names and does not consume a number (0.18.0)', () => {
+    const { doc } = makeDoc()
+    doc.project.tracks = [
+      createTrack('audio', 1, { name: 'A1' }),
+      createTrack('audio', 2, { name: 'Music', autoName: false }),
+      createTrack('audio', 3, { name: 'A2' }),
+    ]
+    const next = applyCommand(doc, { type: 'addTrack', kind: 'audio' })
+    expect(next.project.tracks.map((t) => t.name)).toEqual(['A1', 'Music', 'A2', 'A3'])
+  })
+
+  it('renameTrack pins a custom name even when it matches the auto pattern', () => {
+    const { doc } = makeDoc()
+    let next = applyCommand(doc, {
+      type: 'renameTrack',
+      trackId: doc.project.tracks[0].id,
+      name: 'V9',
+    })
+    next = applyCommand(next, { type: 'addTrack', kind: 'video' })
+    expect(next.project.tracks.filter((t) => t.kind === 'video').map((t) => t.name)).toEqual([
+      'V1',
+      'V9',
+    ])
+  })
+
+  it('scopes order and renumbering to the owning compound sequence', () => {
+    const { doc } = makeDoc()
+    doc.project.sequences = [
+      {
+        id: 'seq1',
+        name: 'Comp',
+        tracks: [createTrack('audio', 1), createTrack('audio', 2)],
+      },
+    ]
+    const next = applyCommand(doc, { type: 'addTrack', kind: 'audio', sequenceId: 'seq1' })
+    expect(next.project.tracks.map((t) => t.name)).toEqual(['V1', 'A1'])
+    expect(next.project.sequences?.[0].tracks.map((t) => t.name)).toEqual(['A1', 'A2', 'A3'])
+  })
+
+  it('previews the renumbered insert name at a boundary (0.18.0)', () => {
+    const { doc } = makeDoc() // [V1, A1]
+    expect(
+      previewInsertTrackName(doc, 'audio', {
+        type: 'after',
+        trackId: doc.project.tracks[1].id,
+      }),
+    ).toBe('A2')
+    expect(
+      previewInsertTrackName(doc, 'video', {
+        type: 'before',
+        trackId: doc.project.tracks[0].id,
+      }),
+    ).toBe('V2')
   })
 
   it('addTrack clamps atIndex into [0, tracks.length]', () => {

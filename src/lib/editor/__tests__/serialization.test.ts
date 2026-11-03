@@ -301,6 +301,36 @@ describe('deserializeDoc', () => {
     expect(hydrate(2)).toBe(false)
   })
 
+  it('hydrates autoName from the flag, the name pattern, and hostile values (0.18.0)', () => {
+    const hydrate = (track: Record<string, unknown>) =>
+      deserializeDoc({
+        version: 1,
+        project: { tracks: [{ kind: 'audio', ...track, clips: [] }] },
+      }).doc.project.tracks[0]
+
+    // Legacy auto name with no flag: classified as auto (flag omitted).
+    expect(hydrate({ name: 'A2' }).autoName).toBeUndefined()
+    // Legacy custom name: pinned as custom so a later save keeps it.
+    expect(hydrate({ name: 'Music' }).autoName).toBe(false)
+    // Explicit false wins even when the name matches the auto pattern.
+    expect(hydrate({ name: 'A2', autoName: false }).autoName).toBe(false)
+    // A non-boolean flag is ignored; the name decides.
+    expect(hydrate({ name: 'A2', autoName: 'false' }).autoName).toBeUndefined()
+    expect(hydrate({ name: 'Music', autoName: true }).autoName).toBe(false)
+    // Names are trimmed at the trust boundary.
+    expect(hydrate({ name: '  Music  ' }).name).toBe('Music')
+    expect(hydrate({ name: '   ' }).name).toBe('Track')
+  })
+
+  it('round-trips an explicit custom name that matches the auto pattern', () => {
+    const doc = createDoc()
+    doc.project.tracks[0].autoName = false
+    doc.project.tracks[0].name = 'A2'
+    const restored = deserializeDoc(JSON.parse(JSON.stringify(serializeDoc(doc)))).doc
+    expect(restored.project.tracks[0].autoName).toBe(false)
+    expect(restored.project.tracks[0].name).toBe('A2')
+  })
+
   it('drops a foreign timeScale curve on picture-less clips, keeps the picture half', () => {
     // A hand-edited or imported file can put a timeScale curve on a clip that
     // carries no picture (the A/V twin or a clip of an audio asset). The

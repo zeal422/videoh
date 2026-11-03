@@ -7,6 +7,7 @@ import {
   activeTransientPointerId,
   currentTransientToken,
   isTransientActive,
+  stableDocForRender,
   useEditorStore,
 } from '../store'
 import { copyClips, hasClipboardContent } from '../clipboard'
@@ -197,6 +198,27 @@ describe('transient gestures', () => {
 
     useEditorStore.getState().undo()
     expect(useEditorStore.getState().doc.project.tracks.flatMap((t) => t.clips)[0].start).toBe(0)
+  })
+
+  it('keeps the stable panels on the pre-gesture doc during a transient (0.18.0)', () => {
+    addTestClip()
+    const store = useEditorStore.getState()
+    const before = store.doc
+    const clipId = store.doc.project.tracks.flatMap((t) => t.clips)[0].id
+    const trackId = videoTrackId(store.doc)
+
+    store.beginTransient()
+    store.applyTransient({ type: 'moveClip', clipId, trackId, start: 2 })
+    const live = useEditorStore.getState().doc
+    expect(live).not.toBe(before)
+    // The menubar, toolbar, media bin, and dialogs keep rendering the
+    // pre-gesture doc, so a pointer frame does not re-render them.
+    expect(stableDocForRender(live)).toBe(before)
+
+    store.commitTransient()
+    const committed = useEditorStore.getState().doc
+    expect(stableDocForRender(committed)).toBe(committed)
+    expect(committed.project.tracks.flatMap((t) => t.clips)[0].start).toBe(2)
   })
 
   it('applyTransientBatch installs a whole batch and commits ONE history entry', () => {

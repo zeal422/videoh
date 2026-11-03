@@ -35,7 +35,12 @@ import { toast } from '@/hooks/use-toast'
 import { Ruler } from './Ruler'
 import { ClipView, computeFadeIn } from './ClipView'
 import { SequenceMarkers } from './SequenceMarkers'
-import { filmstripsReady, subscribeFilmstripReadiness } from '@/lib/editor/media/filmstrip-cache'
+import {
+  filmstripProgressSnapshot,
+  filmstripsReady,
+  subscribeFilmstripProgress,
+  subscribeFilmstripReadiness,
+} from '@/lib/editor/media/filmstrip-cache'
 import {
   commandsToAddMedia,
   commandsToAddMediaInNewTrack,
@@ -716,7 +721,10 @@ export function TimelinePanel() {
               className="sticky left-0 z-50 flex shrink-0 items-center justify-between border-b border-r bg-card py-1 pl-2 pr-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
               style={{ width: TRACK_HEADER_WIDTH }}
             >
-              <span>Timeline</span>
+              <div className="flex min-w-0 flex-col">
+                <span>Timeline</span>
+                <TimelineFilmstripProgress />
+              </div>
               {/* Always-visible add-track affordance right where the tracks
                   live (the toolbar "+" dropdown alone was not discoverable —
                   user feedback: "I don't see a way to add another video"). */}
@@ -978,6 +986,51 @@ export function TimelinePanel() {
  * The menu is where the track-level commands live — `renameTrack` and
  * `removeTrack` had no UI reachable from anywhere, so neither was usable.
  */
+/**
+ * Global thumbnail progress in the timeline header (0.18.0): sums every
+ * active and queued strip job. Hidden until a job has run for 300 ms.
+ */
+function TimelineFilmstripProgress() {
+  const progress = useSyncExternalStore(
+    subscribeFilmstripProgress,
+    filmstripProgressSnapshot,
+    filmstripProgressSnapshot,
+  )
+  const signature = progress.map((entry) => `${entry.key}:${entry.total}`).join('|')
+  const [armed, setArmed] = useState<string | null>(null)
+  const completed = progress.reduce((sum, entry) => sum + entry.completed, 0)
+  const total = progress.reduce((sum, entry) => sum + entry.total, 0)
+
+  useEffect(() => {
+    if (!signature) return
+    const timer = setTimeout(() => setArmed(signature), 300)
+    return () => clearTimeout(timer)
+  }, [signature])
+
+  if (!signature || total === 0 || armed !== signature) return null
+  return (
+    <div
+      data-testid="timeline-filmstrip-progress"
+      role="progressbar"
+      aria-label="Thumbnails"
+      aria-valuemin={0}
+      aria-valuemax={total}
+      aria-valuenow={completed}
+      className="mt-0.5 w-full normal-case tracking-normal"
+    >
+      <div className="h-0.5 w-full overflow-hidden rounded bg-border">
+        <div
+          className="h-full bg-foreground/80 transition-[width] duration-150"
+          style={{ width: `${(completed / Math.max(1, total)) * 100}%` }}
+        />
+      </div>
+      <span className="text-[9px] tabular-nums text-muted-foreground">
+        Thumbnails {completed}/{total}
+      </span>
+    </div>
+  )
+}
+
 function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean }) {
   const KindIcon = track.kind === 'video' ? Video : track.kind === 'audio' ? AudioLines : TypeIcon
   const untargeted = useEditorStore((s) => s.untargetedTracks.includes(track.id))

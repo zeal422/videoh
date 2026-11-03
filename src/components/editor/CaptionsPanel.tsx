@@ -12,7 +12,7 @@ import { MIN_CLIP_DURATION } from '@/lib/editor/constants'
 import { findSequence } from '@/lib/editor/factories'
 import { compareSrtCues, collectCaptionCues, parseSrt, serializeSrt } from '@/lib/editor/srt'
 import { serializeVtt } from '@/lib/editor/vtt'
-import { useEditorStore } from '@/lib/editor/store'
+import { useEditorStore, useStableDoc } from '@/lib/editor/store'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { commandsToAddCaptionCue } from '@/lib/editor/actions'
 import type { Clip, Doc } from '@/lib/editor/types'
@@ -81,7 +81,7 @@ export function captionCueRootTime(
  * start blank.
  */
 export function CaptionsPanel() {
-  const doc = useEditorStore((s) => s.doc)
+  const doc = useStableDoc()
   const playhead = useEditorStore((s) => s.playhead)
   const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
   const fileRef = useRef<HTMLInputElement>(null)

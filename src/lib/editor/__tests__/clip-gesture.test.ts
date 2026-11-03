@@ -4,6 +4,8 @@ import {
   decideRateStretch,
   decideTrimEnd,
   decideTrimStart,
+  insertAnchor,
+  resolveInsertIndex,
   resolveLaneDrop,
   snapThreshold,
   trimRooms,
@@ -183,6 +185,135 @@ describe('decideMove', () => {
     })
     expect(d.start).toBe(11) // 15 - duration 4
     expect(d.snapped).toBe(15)
+  })
+})
+
+describe('decideMove drag-to-create (0.18.0)', () => {
+  // Gapped rows so the pointer can sit BETWEEN lanes, not inside one.
+  const gapped: LaneBox[] = [
+    { id: 'v1', kind: 'video', top: 0, bottom: 40 },
+    { id: 'v2', kind: 'video', top: 60, bottom: 100 },
+    { id: 'a1', kind: 'audio', top: 150, bottom: 190 },
+  ]
+  const gappedTracks = [
+    { id: 'v1', kind: 'video', name: 'V1' },
+    { id: 'v2', kind: 'video', name: 'V2' },
+    { id: 'a1', kind: 'audio', name: 'A1' },
+  ]
+  const base = {
+    orig: clip(),
+    origTrackId: 'v1',
+    origTrackKind: 'video',
+    startX: 100,
+    tracks: gappedTracks,
+    scale: 10,
+    snapping: false,
+    snapPoints: [],
+    partners: [],
+  }
+
+  it('creates a track in a same-kind gap', () => {
+    const d = decideMove({ ...base, clientX: 100, clientY: 50, lanes: gapped })
+    expect(d.insert).toEqual({ boundary: { type: 'after', trackId: 'v1' }, kind: 'video' })
+    // The clip stays on its lane until the release creates the track.
+    expect(d.targetTrackId).toBe('v1')
+  })
+
+  it('creates a video track above the top video track', () => {
+    const d = decideMove({ ...base, clientX: 100, clientY: -10, lanes: gapped })
+    expect(d.insert).toEqual({
+      boundary: { type: 'outer', kind: 'video', side: 'top' },
+      kind: 'video',
+    })
+  })
+
+  it('creates an audio track below the bottom audio track', () => {
+    const d = decideMove({
+      ...base,
+      origTrackKind: 'audio',
+      origTrackId: 'a1',
+      orig: clip({ audioOnly: true }),
+      clientX: 100,
+      clientY: 220,
+      lanes: gapped,
+    })
+    expect(d.insert).toEqual({
+      boundary: { type: 'outer', kind: 'audio', side: 'bottom' },
+      kind: 'audio',
+    })
+  })
+
+  it('moves to the nearest compatible lane in a mixed-kind gap', () => {
+    const d = decideMove({ ...base, clientX: 100, clientY: 120, lanes: gapped })
+    expect(d.insert).toBeNull()
+    expect(d.targetTrackId).toBe('v2')
+  })
+
+  it('creates at the outer edge when no compatible lane exists', () => {
+    const d = decideMove({
+      ...base,
+      tracks: [{ id: 'a1', kind: 'audio', name: 'A1' }],
+      lanes: [{ id: 'a1', kind: 'audio', top: 0, bottom: 40 }],
+      clientX: 100,
+      clientY: -10,
+    })
+    expect(d.insert).toEqual({
+      boundary: { type: 'outer', kind: 'video', side: 'top' },
+      kind: 'video',
+    })
+  })
+
+  it('keeps partner lanes when a track is created, and shifts only time', () => {
+    const d = decideMove({
+      ...base,
+      clientX: 160,
+      clientY: 50,
+      lanes: gapped,
+      partners: [{ id: 'p1', trackIndex: 2, kind: 'audio', origStart: 5 }],
+    })
+    expect(d.insert).not.toBeNull()
+    expect(d.partnerUpdates).toEqual([{ clipId: 'p1', trackId: 'a1', start: 11 }])
+  })
+})
+
+describe('insert boundary resolution (0.18.0)', () => {
+  const tracks = [
+    { id: 't1', kind: 'text', name: 'T1' },
+    { id: 'v1', kind: 'video', name: 'V1' },
+    { id: 'v2', kind: 'video', name: 'V2' },
+    { id: 'a1', kind: 'audio', name: 'A1' },
+  ]
+
+  it('resolves before/after anchors', () => {
+    expect(resolveInsertIndex(tracks, { type: 'before', trackId: 'v2' })).toBe(2)
+    expect(resolveInsertIndex(tracks, { type: 'after', trackId: 'v1' })).toBe(2)
+    expect(resolveInsertIndex(tracks, { type: 'after', trackId: 'missing' })).toBe(4)
+  })
+
+  it('resolves an outer edge of an existing kind group', () => {
+    expect(resolveInsertIndex(tracks, { type: 'outer', kind: 'video', side: 'top' })).toBe(1)
+    expect(resolveInsertIndex(tracks, { type: 'outer', kind: 'video', side: 'bottom' })).toBe(3)
+    expect(resolveInsertIndex(tracks, { type: 'outer', kind: 'audio', side: 'bottom' })).toBe(4)
+  })
+
+  it('resolves an outer edge for a kind with no existing tracks', () => {
+    const noVideo = [
+      { id: 't1', kind: 'text', name: 'T1' },
+      { id: 'a1', kind: 'audio', name: 'A1' },
+    ]
+    expect(resolveInsertIndex(noVideo, { type: 'outer', kind: 'video', side: 'top' })).toBe(1)
+    expect(resolveInsertIndex(noVideo, { type: 'outer', kind: 'audio', side: 'bottom' })).toBe(2)
+  })
+
+  it('anchors the insertion line to the track at the resolved index', () => {
+    expect(insertAnchor(tracks, { type: 'outer', kind: 'video', side: 'top' })).toEqual({
+      trackId: 'v1',
+      side: 'before',
+    })
+    expect(insertAnchor(tracks, { type: 'outer', kind: 'audio', side: 'bottom' })).toEqual({
+      trackId: 'a1',
+      side: 'after',
+    })
   })
 })
 

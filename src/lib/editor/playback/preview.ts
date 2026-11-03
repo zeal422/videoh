@@ -7,6 +7,7 @@ import { useEditorStore } from '../store'
 import type { PlaybackController } from './engine-ref'
 import { playbackRef } from './engine-ref'
 import { PlaybackCore } from './core'
+import { createScrubFrameSource } from './scrub-source'
 
 /**
  * App-wide preview engine singleton. `attachPreviewEngine(canvas)` is called
@@ -25,6 +26,8 @@ export function attachPreviewEngine(canvas: HTMLCanvasElement): PlaybackControll
     getProjectEpoch: () => useEditorStore.getState().projectEpoch,
     nextKeyframe: (url, sourceTime) => nextVideoKeyframe(url, sourceTime),
     onMediaError: (info, clipId) => useEditorStore.getState().setMediaError(info, clipId),
+    onPreviewRecovering: (recovering) => useEditorStore.getState().setPreviewRecovering(recovering),
+    createScrubSource: () => createScrubFrameSource(),
     onFrame: (t) => {
       const state = useEditorStore.getState()
       if (state.playhead !== t) state.setPlayhead(t)

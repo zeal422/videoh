@@ -22,6 +22,19 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.18.0',
+    date: '2026-11-01',
+    highlights: [
+      'Scrubbing keeps the last good frame with WebCodecs instead of clearing the monitor to black',
+      'An unlinked video clip keeps its filmstrip, and audio tracks and audio-only clips keep their waveform',
+      'New audio tracks go below and new video tracks above; dragging into a gap creates a track at that boundary',
+      'The Pen reaches the full clip height, and Inspector keyframes drag vertically and the graph resizes',
+      'Filmstrips cache source frames, so a split reuses them, and only the visible part of a long clip is generated at layout density',
+      'The landing page shows a fresh 0.18.0 capture of the Climbing-Vlog project with filmstrips, two audio tracks, and the Effect Controls inspector',
+      '"Load sample media" is gone; the UI battery now imports committed fixtures through the media bin',
+    ],
+  },
+  {
     version: '0.17.0',
     date: '2026-10-31',
     highlights: [

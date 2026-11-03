@@ -34,7 +34,7 @@ import {
   type ExportFileSink,
   type ExportHandle,
 } from '@/lib/editor/export/mp4'
-import { useEditorStore } from '@/lib/editor/store'
+import { useEditorStore, useStableDoc } from '@/lib/editor/store'
 
 type Phase = 'setup' | 'exporting' | 'done'
 
@@ -61,7 +61,7 @@ export function ExportDialog({
   open: boolean
   onOpenChange: (o: boolean) => void
 }) {
-  const doc = useEditorStore((s) => s.doc)
+  const doc = useStableDoc()
   const [phase, setPhase] = useState<Phase>('setup')
   const [progress, setProgress] = useState(0)
   const [quality, setQuality] = useState<'low' | 'medium' | 'high'>('medium')

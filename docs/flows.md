@@ -45,19 +45,11 @@ Stable hooks used across flows and tests:
 
 ## Import media
 
-- The media bin accepts multi-file selection, OS drag-and-drop, and **Load sample media**, which
-  fetches the three bundled files from `/samples/*`.
-- **Idempotent samples.** Loading samples never duplicates: `planSampleLoad` skips names already in the
-  bin and online, overlapping loads share ONE run (single-flight), and every write re-checks the live
-  bin (`sampleImportAction`), so a press landing while the fetches are still in flight cannot add a
-  twin. A re-entrancy ref blocks double clicks, and the button disables + spins while importing. If
-  nothing is new, it toasts "Sample media already loaded". A sample that is in the bin but **offline**
-  is refetched and relinked in place, so the button is also the recovery path after a restore, when
-  every asset hydrates without a URL. A batch stays bound to the project that planned it: opening or
-  restoring another project mid-flight drops the rest instead of writing the old project's files into
-  the new one.
-- Import probes duration/size, generates a JPEG thumbnail (≤160 px), decodes audio for waveform peaks
+- The media bin accepts multi-file selection and OS drag-and-drop. Import probes duration/size,
+  generates a JPEG thumbnail (≤160 px), decodes audio for waveform peaks
   (`WAVEFORM_BUCKETS = 1000`) and records `hasAudio`.
+- Re-importing a file whose name matches an offline asset relinks it in place instead of adding a
+  twin. The relink patch is shared with the per-asset Relink button.
 - Removing an asset leaves clips with a dangling `mediaId`: the span renders black (the offline
   overlay names only assets the bin still has), the export refuses until it resolves, and undo is
   the recovery.
@@ -72,6 +64,10 @@ Stable hooks used across flows and tests:
   hidden element before React re-renders, and a stale job cannot install.
 - The timeline root publishes `data-filmstrips-ready` only when every mounted request has settled (a
   poster fallback counts). No strip data enters the Doc, autosave, or the project file.
+- Thumbnails are cached per asset and source time, so a split reuses the frames the other half
+  already decoded and decodes only the missing cells. Only the visible tile of a long clip is
+  generated, at layout density; an off-screen clip gets a bounded head tile. Per-clip and
+  timeline-header progress bars show `Thumbnails 12/24` after 300 ms.
 
 ## LUT import (.cube)
 
@@ -126,10 +122,14 @@ Stable hooks used across flows and tests:
   relocating; Place keeps its documented fallback. Refusal precedence: an incompatible lane beats the
   mode, and an atomic placement refusal beats commit. Every refusal decides and toasts BEFORE
   `store.apply`, so a refusal never leaves a partial batch.
-- **Drag onto a row edge (12 px) or below the last track** shows a kind-coloured insertion line plus a
-  `+ V2` / `+ A2` preview label and inserts a **new track at that exact z-position** (`addTrack` with
-  `atIndex`, skipping the convention sort). The drop is one undoable `[addTrack, addClip]` batch. This
-  path still means "create a track": it does not honor `dropMode`.
+- **Dragging into empty space** resolves by the pointer's gap. A gap between two lanes of the dragged
+  kind creates a track at that boundary; the dragged kind's own outer edge creates a track there; any
+  other gap, including a mixed-kind gap, moves to the nearest compatible lane, or to the dragged
+  kind's outer edge when no compatible lane exists. A row-edge (12 px) or
+  below-the-last-track drop shows a kind-coloured insertion line plus a `+ V2` / `+ A2` preview label
+  and inserts a **new track at that exact z-position** (`addTrack` with `atIndex`, skipping the
+  convention sort). The drop is one undoable `[addTrack, addClip]` batch. This path still means
+  "create a track": it does not honor `dropMode`.
 - The ruler zone and the sticky header column never show a drop indicator.
 - Every lane placement (any mode) applies as ONE command batch, so one undo restores the whole
   operation.
@@ -240,6 +240,8 @@ Stable hooks used across flows and tests:
 - A video with audio lands as a linked pair: video part on a video track, `audioOnly` twin on an audio
   track (waveform included). The engine shadows the video part's embedded audio while the twin exists,
   so there is **no double audio**.
+- The audio twin draws the waveform. A video-bearing clip never does, including an unlinked video
+  half after `Ctrl+L`; that half keeps its filmstrip instead (0.18.0).
 - The pair's rate is a shared contract: change either half's speed and the engine drops the pair's
   audio (preview and export alike) until both halves run at the same effective rate.
 - A twin whose media is gone still counts as the pair's sound carrier, so the pair stays silent until the
@@ -275,8 +277,9 @@ Stable hooks used across flows and tests:
   below the label and trim handles. It samples `animatedValue` every ~2px, so an eased segment draws
   its real shape. A selected clip with no volume curve shows a flat line; an idle clip shows nothing.
   Opacity is the same component on a picture clip, drawn 0..1, and appears without the Pen only when
-  opacity keyframes already exist. The plot is inset 8px from the trim handles, and each visible 6px
-  dot sits inside a 12px hit target.
+  opacity keyframes already exist. The plot spans the full clip height (0.18.0), is inset 8px from the
+  trim handles, and each visible 6px dot sits inside a 12px hit target; the dot center reaches the
+  clip edge and the hit target is clamped fully inside the endpoints.
 - A press on a dot starts no transient until the pointer moves 3px in screen space. A shorter
   press/release is a click. Once the threshold is crossed, vertical movement edits gain in dB
   (converted back to linear and clamped 0..2), horizontal movement edits time (clamped to
@@ -411,8 +414,9 @@ Stable hooks used across flows and tests:
 
 ## Layers, opacity, and playback
 
-- New tracks stack by convention (text → video → audio); the newest track of a kind appears above the
-  older ones. Any explicit `atIndex` placement is honoured verbatim.
+- New tracks stack by convention (text → video → audio). Video and text prepend inside their kind, so
+  the newest video is above older ones; audio appends below the last audio track. Any explicit
+  `atIndex` placement is honoured verbatim.
 - Adding a layer scrolls the track area by exactly the height of the inserted row, cancelling the shift
   it would otherwise push onto the lanes below — the browser clamps it, so a timeline that still fits
   does not move at all. Without this, the lane holding your clips scrolled out of view and the new layer
@@ -442,7 +446,9 @@ Stable hooks used across flows and tests:
 - **Keyframes and Effect Controls**: selecting a clip shows the Clip / Effect Controls tabs. Each
   animatable property row has a keyframe diamond (add/remove at the playhead), an easing picker that
   is always visible (on a property with no curve it stores that property's default easing for new
-  keyframes), and, once animated, a light graph whose dots drag in time (one drag = one undo step).
+  keyframes), and, once animated, a light graph whose dots drag in time and value (one drag = one undo
+  step). A bottom handle resizes the graph per property; the height is workspace state, never Doc or
+  undo state.
   The graph draws every segment's real bezier shape, and the active segment carries two handles: a
   drag or the arrow keys shapes that segment's quad beyond the presets, one undo step per drag. The
   picker and the handles edit the active segment's start keyframe. Keyframe times are clip-local, so
@@ -472,10 +478,14 @@ Stable hooks used across flows and tests:
 - **Play / pause (Space)**, `J`/`K`/`L` shuttle (browsers cannot play backwards, so `J` stops like `K`),
   frame stepping, Home/End, and Up/Down edit-point navigation. Transport state mirrors into
   `[data-testid="play-pause"]` and `[data-testid="time-display"]`. A focused button owns Space and
-  activates itself instead of toggling playback.
-- Scrubbing while paused re-seeks active video elements and redraws once `seeked` lands. Scrubbing
-  while playing pauses playback first (Premiere behavior), so dragging the playhead can never inject
-  a force-seek per pointer move into a running clock.
+  activates itself instead of toggling playback. Play warms the active elements before starting the
+  clock: a paused scrub's behind `<video>` is seeked and both A/V halves wait for readiness, while a
+  resume at the parked position does not re-seek. The monitor holds the paused frame instead of black.
+- Scrubbing while paused requests a WebCodecs frame for each active video clip and redraws when it
+  lands, keeping the last good frame while a decode is pending. A clip without a usable sink falls
+  back to re-seeking its `<video>` and redrawing on `seeked`. Scrubbing while playing pauses playback
+  first (Premiere behavior), so dragging the playhead can never inject a force-seek per pointer move
+  into a running clock.
 - **Decode recovery.** A `MEDIA_ERR_DECODE` error pauses the core, reloads the same element, skips
   to the next verified keyframe (or a bounded six-second source nudge for reversed, ramped, or
   audio-only clips), and resumes if it was playing. A verified keyframe only has to advance past the
@@ -649,15 +659,11 @@ Stable hooks used across flows and tests:
 
 - **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 4; versions 1, 2 and 3 still load) and
   downloads it; object URLs are stripped and never persisted.
-- **Open** hydrates every asset with `missing: true`. Bundled samples then refetch themselves
-  (`hydrateSampleMedia(doc)`), which the restore path shares: their bytes are the app's own. The merge
-  lands BEFORE the doc is installed, so the load is ONE undo step; relink commands applied afterwards
-  would each push their own history entry, and one Ctrl+Z would drop a single sample back to offline
-  and black out the preview again. Anything else relinks automatically on a matching re-import, or
-  manually per asset. A relink writes only media details through a whitelist: the asset's identity is
-  immutable, a non-undefined source handle must pass the browser-side `isNativeFile` guard, and a
-  relink that clears `missing` must leave a usable URL. A whitespace-only URL is rejected, and the
-  bundled-sample hydration runs the same sanitizer before merging its patch into the loaded doc.
+- **Open** hydrates every asset with `missing: true`; object URLs cannot persist. Re-importing a file
+  with a matching name relinks it automatically, or the user can relink each asset from the media bin.
+  A relink writes only media details through a whitelist: the asset's identity is immutable, a
+  non-undefined source handle must pass the browser-side `isNativeFile` guard, and a relink that clears
+  `missing` must leave a usable URL. A whitespace-only URL is rejected.
 - While the playhead sits on a clip whose media is offline, the monitor paints **Media offline** with
   the file names and a relink hint. The frame is genuinely black and silent; the overlay is what keeps
   that from reading as a broken preview.

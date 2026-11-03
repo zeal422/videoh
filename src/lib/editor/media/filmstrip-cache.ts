@@ -1,5 +1,6 @@
-import { filmstripCanvasFits, type FilmstripPlan } from '../filmstrip'
+import { filmstripCanvasFits, filmstripPrefetchTimes, type FilmstripPlan } from '../filmstrip'
 import type { MediaAsset } from '../types'
+import { ThumbnailCache } from './thumbnail-cache'
 
 /**
  * Runtime filmstrip cache (0.12.0). Browser-bound: owns one hidden video
@@ -25,12 +26,24 @@ export interface FilmstripRequest {
   clipId: string
   plan: FilmstripPlan
   asset: MediaAsset
+  /** Project fps, for the one-source-frame cache tolerance. */
+  fps?: number
+}
+
+/** One cache job's progress, aggregated by the timeline header. */
+export interface FilmstripProgress {
+  key: string
+  assetId: string
+  completed: number
+  total: number
+  phase: 'queued' | 'decoding' | 'ready'
 }
 
 interface ClipRequest {
   key: string
   plan: FilmstripPlan
   asset: MediaAsset
+  fps: number
   onSettle: FilmstripSettle
 }
 
@@ -38,6 +51,7 @@ interface Job {
   key: string
   plan: FilmstripPlan
   asset: MediaAsset
+  fps: number
   cancelled: boolean
   generation: number
 }
@@ -65,6 +79,49 @@ let cacheGeneration = 0
 const videoElements = new Map<string, { el: HTMLVideoElement; url: string }>()
 const knownAssetUrls = new Map<string, string>()
 let currentProjectId: string | null = null
+/** Per-asset source-time thumbnails: the split-reuse cache (0.18.0). */
+let thumbnailCache = new ThumbnailCache()
+
+/** Test seam: replace the thumbnail cache (null restores the real one). */
+export function setFilmstripThumbnailCache(cache: ThumbnailCache | null): void {
+  thumbnailCache = cache ?? new ThumbnailCache()
+}
+const progressEntries = new Map<string, FilmstripProgress>()
+const progressListeners = new Set<() => void>()
+let progressSnapshot: FilmstripProgress[] = []
+
+function refreshProgress(): void {
+  progressSnapshot = [...progressEntries.values()].filter((entry) => entry.phase !== 'ready')
+  for (const listener of [...progressListeners]) listener()
+}
+
+function emitProgress(progress: FilmstripProgress): void {
+  // Ready is terminal: drop the entry instead of leaving it in the map. The
+  // snapshot already filtered it, but the map must not grow per generated key.
+  if (progress.phase === 'ready') {
+    clearProgress(progress.key)
+    return
+  }
+  progressEntries.set(progress.key, progress)
+  refreshProgress()
+}
+
+function clearProgress(key: string): void {
+  if (!progressEntries.delete(key)) return
+  refreshProgress()
+}
+
+/** The current queued/decoding jobs, for the global progress bar. */
+export function filmstripProgressSnapshot(): FilmstripProgress[] {
+  return progressSnapshot
+}
+
+export function subscribeFilmstripProgress(listener: () => void): () => void {
+  progressListeners.add(listener)
+  return () => {
+    progressListeners.delete(listener)
+  }
+}
 
 function notifyReadiness(): void {
   for (const listener of [...readinessListeners]) listener()
@@ -92,6 +149,30 @@ function hasRequester(key: string): boolean {
     if (request.key === key) return true
   }
   return false
+}
+
+function hasAssetRequester(assetId: string): boolean {
+  for (const request of clipRequests.values()) {
+    if (request.asset.id === assetId) return true
+  }
+  return false
+}
+
+/** Drops one key's cached strip when no clip still asks for it. */
+function dropUnusedEntry(key: string): void {
+  if (hasRequester(key)) return
+  let changed = false
+  const entry = entries.get(key)
+  if (entry) {
+    entries.delete(key)
+    totalPixels -= entry.pixels
+    disposeEntry(entry)
+    changed = true
+  }
+  if (settledKeys.delete(key)) changed = true
+  if (pendingKeys.delete(key)) changed = true
+  clearProgress(key)
+  if (changed) notifyReadiness()
 }
 
 /**
@@ -204,6 +285,14 @@ function dropAsset(assetId: string): void {
     pendingKeys.delete(active.key)
   }
   knownAssetUrls.delete(assetId)
+  thumbnailCache.dropAsset(assetId)
+  let droppedProgress = false
+  for (const [key, progress] of [...progressEntries]) {
+    if (progress.assetId !== assetId) continue
+    progressEntries.delete(key)
+    droppedProgress = true
+  }
+  if (droppedProgress) refreshProgress()
   notifyReadiness()
 }
 
@@ -226,6 +315,9 @@ export function disposeAll(): void {
   active = null
   pendingKeys.clear()
   knownAssetUrls.clear()
+  thumbnailCache.reset()
+  progressEntries.clear()
+  refreshProgress()
   notifyReadiness()
 }
 
@@ -396,34 +488,135 @@ async function generateVideo(job: Job): Promise<FilmstripEntry | null> {
   const canvas = createStripCanvas(widthBucket, heightBucket)
   if (!canvas) return null
   const ctx = canvas.getContext('2d')
-  const el = getVideoElement(job.asset)
-  if (!ctx || !el || frames.length === 0) {
+  if (!ctx || frames.length === 0) {
     canvas.width = 0
     canvas.height = 0
     return null
   }
   const cellWidth = widthBucket / frames.length
+  // One source frame is the floor. The plan raises it to just over half a
+  // cell so a split, which re-phases the cell grid, reuses the left half's
+  // decoded frames instead of seeking the 127 MB source 24 more times.
+  const tolerance = Math.max(1 / Math.max(1, job.fps), job.plan.cacheTolerance)
+  const window = { start: job.plan.sourceStart, end: job.plan.sourceEnd }
+  const total = frames.length
+  emitProgress({
+    key: job.key,
+    assetId: job.asset.id,
+    completed: 0,
+    total,
+    phase: 'queued',
+  })
+  let fallbackEl: HTMLVideoElement | null = null
   try {
-    for (const frame of frames) {
+    if (thumbnailCache.available) {
+      try {
+        await thumbnailCache.ensure(
+          job.asset.id,
+          job.asset.url,
+          frames.map((frame) => frame.sourceTime),
+          tolerance,
+          (progress) => {
+            // The decode can outlive the job. A release clears the bar; a
+            // late callback must not resurrect it (or overwrite a live
+            // replacement for the same key). Same checks as the frame loop.
+            if (job.cancelled || job.generation !== cacheGeneration) return
+            emitProgress({
+              key: job.key,
+              assetId: job.asset.id,
+              completed: progress.completed,
+              total,
+              phase: 'decoding',
+            })
+          },
+          window,
+        )
+        // A cancelled ensure resolves silently. Stop before starting the
+        // prefetch decode for an asset that was dropped or a job that was
+        // released while the first pass ran.
+        if (job.cancelled || job.generation !== cacheGeneration) throw new Error('cancelled')
+        // One tile ahead: a split's right half starts inside this tile and
+        // reads past its edge. Prefetching that span turns the split's decode
+        // into cache hits. The prefetch is part of this job (the ready marker
+        // waits for it) but does not move the visible progress bar.
+        const prefetch = job.plan.prefetch ? filmstripPrefetchTimes(job.plan) : []
+        if (prefetch.length > 0) {
+          await thumbnailCache.ensure(
+            job.asset.id,
+            job.asset.url,
+            prefetch,
+            tolerance,
+            undefined,
+            window,
+          )
+        }
+      } catch (error) {
+        // A decode failure must not blank the strip. Cancellation and a stale
+        // generation still stop the job; any other error falls through to the
+        // per-frame hidden-element seek below.
+        if (job.cancelled || job.generation !== cacheGeneration) throw error
+      }
+    }
+    for (let index = 0; index < frames.length; index++) {
       if (job.cancelled || job.generation !== cacheGeneration) throw new Error('cancelled')
-      await seekVideo(el, frame.sourceTime)
-      if (job.cancelled || job.generation !== cacheGeneration) throw new Error('cancelled')
+      const frame = frames[index]
+      let source: CanvasImageSource | null = null
+      let sourceWidth = job.asset.width
+      let sourceHeight = job.asset.height
+      if (thumbnailCache.available) {
+        const cached = thumbnailCache.nearest(
+          job.asset.id,
+          job.asset.url,
+          frame.sourceTime,
+          tolerance,
+          window,
+        )
+        if (cached) {
+          source = cached.frame
+          sourceWidth = cached.width
+          sourceHeight = cached.height
+        }
+      }
+      if (!source) {
+        // Unsupported browser, or a cache miss after `ensure`: one hidden
+        // element seek per missing cell.
+        fallbackEl ??= getVideoElement(job.asset)
+        if (!fallbackEl) throw new Error('no video element')
+        await seekVideo(fallbackEl, frame.sourceTime)
+        if (job.cancelled || job.generation !== cacheGeneration) throw new Error('cancelled')
+        source = fallbackEl
+      }
       drawCover(
         ctx,
-        el,
-        job.asset.width,
-        job.asset.height,
+        source,
+        sourceWidth,
+        sourceHeight,
         frame.x * widthBucket - cellWidth / 2,
         0,
         cellWidth,
         heightBucket,
       )
+      emitProgress({
+        key: job.key,
+        assetId: job.asset.id,
+        completed: index + 1,
+        total,
+        phase: 'decoding',
+      })
     }
   } catch {
     canvas.width = 0
     canvas.height = 0
+    clearProgress(job.key)
     return null
   }
+  emitProgress({
+    key: job.key,
+    assetId: job.asset.id,
+    completed: total,
+    total,
+    phase: 'ready',
+  })
   return makeEntry(job.key, job.asset.id, canvas, widthBucket, heightBucket)
 }
 
@@ -464,6 +657,7 @@ function settleJob(job: Job, entry: FilmstripEntry | null): void {
     // same key; its pending count must stay open until that job settles.
     if (!findJob(job.key)) {
       pendingKeys.delete(job.key)
+      clearProgress(job.key)
       notifyReadiness()
     }
     return
@@ -474,6 +668,9 @@ function settleJob(job: Job, entry: FilmstripEntry | null): void {
   for (const request of requests) request.onSettle(entry ? entry.source : null)
   if (!findJob(job.key)) {
     pendingKeys.delete(job.key)
+    // A successful job that never emitted `ready` (the image path) would
+    // otherwise leave its queued entry behind.
+    clearProgress(job.key)
     notifyReadiness()
   }
 }
@@ -497,6 +694,7 @@ function drainQueue(): void {
   if (next.cancelled || next.generation !== cacheGeneration) {
     if (!findJob(next.key)) {
       pendingKeys.delete(next.key)
+      clearProgress(next.key)
       notifyReadiness()
     }
     drainQueue()
@@ -511,11 +709,19 @@ function enqueueJob(request: ClipRequest): void {
     key: request.key,
     plan: request.plan,
     asset: request.asset,
+    fps: request.fps,
     cancelled: false,
     generation: cacheGeneration,
   }
   jobs.push(job)
   pendingKeys.add(job.key)
+  emitProgress({
+    key: job.key,
+    assetId: job.asset.id,
+    completed: 0,
+    total: job.plan.frames.length,
+    phase: 'queued',
+  })
   notifyReadiness()
   drainQueue()
 }
@@ -534,6 +740,7 @@ function rekeyJob(clipId: string, oldKey: string, request: ClipRequest): Job | n
     live.cancelled = true
     if (!findJob(oldKey)) {
       pendingKeys.delete(oldKey)
+      clearProgress(oldKey)
       notifyReadiness()
     }
     return null
@@ -544,6 +751,7 @@ function rekeyJob(clipId: string, oldKey: string, request: ClipRequest): Job | n
     jobs.splice(index, 1)
     if (!findJob(oldKey)) {
       pendingKeys.delete(oldKey)
+      clearProgress(oldKey)
       notifyReadiness()
     }
     return null
@@ -552,8 +760,17 @@ function rekeyJob(clipId: string, oldKey: string, request: ClipRequest): Job | n
   job.key = request.key
   job.plan = request.plan
   job.asset = request.asset
+  job.fps = request.fps
   pendingKeys.delete(oldKey)
+  clearProgress(oldKey)
   pendingKeys.add(request.key)
+  emitProgress({
+    key: request.key,
+    assetId: job.asset.id,
+    completed: 0,
+    total: job.plan.frames.length,
+    phase: 'queued',
+  })
   notifyReadiness()
   return job
 }
@@ -568,11 +785,28 @@ export function requestFilmstrip(request: FilmstripRequest, onSettle: FilmstripS
   const { clipId, plan, asset } = request
   const previous = clipRequests.get(clipId)
   if (previous && !sameSource(previous, asset)) {
-    // Relink (or a new file handle): the old strips and element are stale.
-    dropAsset(asset.id)
+    // The clip moved to a different source. Release only this clip's request,
+    // then drop the old strip and asset caches if no other clip still uses
+    // them. Dropping the INCOMING asset discarded a cache the clip was about
+    // to use and never cleaned the old one.
+    releaseFilmstrip(clipId)
+    dropUnusedEntry(previous.key)
+    if (!hasAssetRequester(previous.asset.id)) {
+      disposeVideoElement(previous.asset.id)
+      thumbnailCache.dropAsset(previous.asset.id)
+      for (const [key, assetId] of [...settledKeys]) {
+        if (assetId === previous.asset.id) settledKeys.delete(key)
+      }
+    }
   }
   const fresh = clipRequests.get(clipId)
-  const next: ClipRequest = { key: plan.key, plan, asset, onSettle }
+  const next: ClipRequest = {
+    key: plan.key,
+    plan,
+    asset,
+    fps: request.fps ?? 30,
+    onSettle,
+  }
   clipRequests.set(clipId, next)
 
   // Offline media has nothing to seek: settle immediately and keep the missing
@@ -604,6 +838,7 @@ export function requestFilmstrip(request: FilmstripRequest, onSettle: FilmstripS
       if (index >= 0) {
         jobs.splice(index, 1)
         pendingKeys.delete(retargeted.key)
+        if (!findJob(retargeted.key)) clearProgress(retargeted.key)
         notifyReadiness()
       }
     }
@@ -634,6 +869,7 @@ export function releaseFilmstrip(clipId: string): void {
     live.cancelled = true
     if (!findJob(request.key)) {
       pendingKeys.delete(request.key)
+      clearProgress(request.key)
       notifyReadiness()
     }
     return
@@ -643,6 +879,7 @@ export function releaseFilmstrip(clipId: string): void {
     jobs.splice(index, 1)
     if (!findJob(request.key)) {
       pendingKeys.delete(request.key)
+      clearProgress(request.key)
       notifyReadiness()
     }
   }

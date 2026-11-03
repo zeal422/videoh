@@ -9,10 +9,12 @@ import {
   saveWorkspace,
   withCollapsed,
   withHidden,
+  withKeyframeGraphHeight,
   withSize,
   type PanelId,
   type WorkspaceState,
 } from './workspace'
+import type { KeyframeProperty } from './types'
 
 /**
  * UI-side workspace store (panel sizes / collapse / visibility).
@@ -28,6 +30,7 @@ interface WorkspaceStoreState extends WorkspaceState {
   toggleCollapsed: (id: PanelId) => void
   setCollapsed: (id: PanelId, collapsed: boolean) => void
   setSize: (id: 'media' | 'source' | 'inspector' | 'timeline' | 'captions', size: number) => void
+  setKeyframeGraphHeight: (property: KeyframeProperty, height: number) => void
   resetWorkspace: () => void
 }
 
@@ -42,6 +45,13 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set, get) => {
   const initial = loadWorkspace(typeof window === 'undefined' ? null : getPreferredStorage())
 
   const persist = (state: WorkspaceState) => {
+    // An immediate write supersedes any pending size debounce: the timer holds
+    // a snapshot from before this change and would otherwise overwrite it 300ms
+    // later (the keyframe graph height was the visible case).
+    if (sizeDebounce) {
+      clearTimeout(sizeDebounce)
+      sizeDebounce = null
+    }
     saveWorkspace(state, getPreferredStorage())
   }
 
@@ -85,7 +95,17 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set, get) => {
       set(next)
       // Sizes stream in continuously while dragging — debounce the writes.
       if (sizeDebounce) clearTimeout(sizeDebounce)
-      sizeDebounce = setTimeout(() => persist(next), 300)
+      sizeDebounce = setTimeout(() => {
+        sizeDebounce = null
+        persist(next)
+      }, 300)
+    },
+
+    setKeyframeGraphHeight: (property, height) => {
+      const next = withKeyframeGraphHeight(get(), property, height)
+      if (next === get()) return
+      set(next)
+      persist(next)
     },
 
     resetWorkspace: () => {

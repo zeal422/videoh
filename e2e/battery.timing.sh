@@ -129,6 +129,69 @@ PASTED_START=''
 trap '[ -n "$PROJECT_CAPTURE" ] && rm -f "$PROJECT_CAPTURE"; [ -n "$LUT_FIXTURE" ] && rm -f "$LUT_FIXTURE"; [ -n "$CAPTIONS_TMPS" ] && rm -f $CAPTIONS_TMPS' INT TERM EXIT
 
 ab() { agent-browser --session "$SESSION" "$@"; }
+# Committed battery fixtures (0.18.0): uploaded through the media bin's real
+# file input, so the battery no longer depends on the removed sample button.
+FIXTURES_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures"
+capture_fixture_files() {
+  ab eval '(() => {
+    const input = document.querySelector("aside[aria-label=\"Media bin\"] input[type=file][multiple]");
+    if (!input) return false;
+    window.__fixtureFiles = window.__fixtureFiles || {};
+    if (!input.__fixtureCapture) {
+      input.__fixtureCapture = true;
+      input.addEventListener("change", () => {
+        const file = input.files && input.files[0];
+        if (file) window.__fixtureFiles[file.name] = file;
+      }, true);
+    }
+    return true;
+  })()' >/dev/null 2>&1
+}
+upload_fixtures() {
+  local input='aside[aria-label="Media bin"] input[type=file][multiple]'
+  capture_fixture_files
+  ab upload "$input" "$FIXTURES_DIR/sample-video.mp4" >/dev/null 2>&1 || {
+    echo "fixture upload: sample-video.mp4 failed" >&2
+    return 1
+  }
+  sleep 0.8
+  ab upload "$input" "$FIXTURES_DIR/sample-audio.mp3" >/dev/null 2>&1 || {
+    echo "fixture upload: sample-audio.mp3 failed" >&2
+    return 1
+  }
+  sleep 0.8
+  ab upload "$input" "$FIXTURES_DIR/sample-image.png" >/dev/null 2>&1 || {
+    echo "fixture upload: sample-image.png failed" >&2
+    return 1
+  }
+  sleep 0.8
+}
+ensure_fixture_file() {
+  ab eval '(() => {
+    let input = document.querySelector("#battery-fixture-input");
+    if (!input) {
+      input = document.createElement("input");
+      input.type = "file";
+      input.id = "battery-fixture-input";
+      input.style.display = "none";
+      document.body.appendChild(input);
+    }
+    window.__fixtureFiles = window.__fixtureFiles || {};
+    if (!input.__fixtureCapture) {
+      input.__fixtureCapture = true;
+      input.addEventListener("change", () => {
+        const file = input.files && input.files[0];
+        if (file) window.__fixtureFiles[file.name] = file;
+      }, true);
+    }
+    return true;
+  })()' >/dev/null 2>&1
+  ab upload '#battery-fixture-input' "$FIXTURES_DIR/sample-video.mp4" >/dev/null 2>&1 || {
+    echo "fixture capture: sample-video.mp4 failed" >&2
+    return 1
+  }
+  sleep 0.5
+}
 snap() { ab snapshot -i -c 2>/dev/null; }
 refs() { snap | grep -E "$1" | grep -oE 'ref=e[0-9]+' | cut -d= -f2; }
 spinrefs() { snap | grep -- '- spinbutton' | grep -oE 'ref=e[0-9]+' | cut -d= -f2; }
@@ -316,7 +379,7 @@ s02_boot() {
   ab click '[data-testid=open-editor]' >/dev/null || return 1
   wait_boot || return 1
   dismiss_greeting || return 1
-  snap | grep -q 'Load sample media'
+  [ "$(evaln '(() => document.body.innerText.includes("No media yet") ? "1" : "0")()')" = "1" ]
 }
 
 s03_fresh() {
@@ -324,7 +387,7 @@ s03_fresh() {
   ab open "$BASE_URL/editor" >/dev/null || return 1
   wait_boot || return 1
   dismiss_greeting || return 1
-  snap | grep -q 'Load sample media'
+  [ "$(evaln '(() => document.body.innerText.includes("No media yet") ? "1" : "0")()')" = "1" ]
 }
 
 # ----- 0.5.6 welcome modal (Help > What's new) -----
@@ -350,13 +413,28 @@ f11_whatsnew_once() {
   n=$(evaln 'document.querySelectorAll("[data-testid=release-notes-modal]").length')
   [ "$n" = "0" ] || return 1
   ab find role button click --name 'Restore' >/dev/null 2>&1 && sleep 1.5
+  # 0.18.0 removed the bundled sample bytes, so a restored session hydrates its
+  # media offline. Relink the committed fixtures by name before the decode-heavy
+  # steps that follow.
+  upload_fixtures || return 1
+  local offline=1 offline_wait=0
+  while [ "$offline" != "0" ] && [ "$offline_wait" -lt 30 ]; do
+    offline=$(evaln '(() => [...document.querySelectorAll("[data-testid^=media-item-]")].filter((e) => e.textContent.includes("offline")).length)()')
+    [ "$offline" = "0" ] || { sleep 0.5; offline_wait=$((offline_wait + 1)); }
+  done
+  [ "$offline" = "0" ] || { echo "f11: restored media still offline" >&2; return 1; }
   [ "$(clipcount)" -ge 3 ]
 }
 
 # ————— F1 import —————
 f01_import() {
-  ab find role button click --name 'Load sample media' >/dev/null && sleep 2.5
-  [ "$(ab get count '[aria-label="Add to timeline"]')" = "3" ]
+  upload_fixtures || return 1
+  local n=0 deadline=$((SECONDS + 30))
+  while [ "$n" != "3" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    n=$(ab get count '[aria-label="Add to timeline"]' 2>/dev/null || echo 0)
+    [ "$n" = "3" ] || sleep 0.3
+  done
+  [ "$n" = "3" ] || { echo "f01: expected 3 media items, got $n" >&2; return 1; }
 }
 
 # ————— F2 quick-add —————
@@ -777,6 +855,23 @@ canvas_ratio() { # canvas_ratio <css selector for the canvas>
   }'
 }
 
+# WebCodecs scrub frames are asynchronous (0.18.0): poll for a painted frame.
+wait_preview_painted() { # wait_preview_painted <selector> [seconds]
+  local selector="$1" deadline=$((SECONDS + ${2:-5})) s
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    s=$(evaln "(() => {
+      const c = document.querySelector('$selector');
+      if (!c || !c.width || !c.height) return 0;
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      let s = 0; for (let i = 0; i < d.length; i += 40) s += d[i] + d[i + 1] + d[i + 2];
+      return s;
+    })()")
+    [ "${s:-0}" -gt 0 ] 2>/dev/null && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
 # Brightness of one frame: a stride sum over the composited canvas. Equality
 # (not a ratio) between two parked seeks of the SAME timeline time is what the
 # reversed-trim step asserts, so the raw sum is the value it stores.
@@ -946,10 +1041,10 @@ f06_lut() {
   ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
   local i
   step_frames 18 || return 1
-  sleeps 0.6
-  # The FIRST video part covers the parked time (the split put it at 0.00).
-  click_clip 'sample-video.mp4 from 0.00 to' || {
-    echo "f06_lut: the first video part did not select" >&2
+  wait_preview_painted '[data-testid=preview-canvas]' 5 || return 1
+  # The monitor shows the TOPMOST video clip; apply the LUT proof to that one.
+  select_topmost_clip || {
+    echo "f06_lut: no visible video clip" >&2
     return 1
   }
   ab eval 'document.querySelector("[data-testid=inspector-tab-clip]")?.click()' >/dev/null 2>&1
@@ -1037,22 +1132,11 @@ f06_play() {
   [ "$t0" != "$t1" ]
 }
 f06_canvas() {
-  local s
-  s=$(evaln '(() => {
-    const c = document.querySelector("[data-testid=preview-canvas]");
-    const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
-    let s = 0; for (let i = 0; i < d.length; i += 40) s += d[i] + d[i+1] + d[i+2];
-    return s;
-  })()')
-  [ "${s:-0}" -gt 0 ] 2>/dev/null || return 1
-
-  # Color grade reaches the monitor (0.6.0).
-  # Park on a deterministic frame: 18 frame-steps = 0.60s at 30 fps, a doc time
-  # where the video clip is live. f07_export decodes the same time out of the
-  # produced MP4, so both samples cover the same content.
+  # Color grade reaches the monitor (0.6.0). WebCodecs delivers the parked
+  # frame asynchronously, so poll instead of sleeping a fixed time.
   ab find role button click --name 'Go to start (Home)' >/dev/null && sleeps 0.4
   step_frames 18 || return 1
-  sleeps 0.6
+  wait_preview_painted '[data-testid=preview-canvas]' 5 || return 1
   local neutral graded
   neutral=$(canvas_ratio "[data-testid=preview-canvas]")
   [ -n "$neutral" ] || { echo "f06: could not sample the monitor" >&2; return 1; }
@@ -1063,13 +1147,17 @@ f06_canvas() {
   # Focus the thumb, then press End: the slider commits on the keydown, exactly
   # like the Inspector gain slider elsewhere in this battery.
   ab eval 'document.querySelector("#grade-temperature [role=slider]").focus()' >/dev/null
-  ab press End >/dev/null 2>&1 && sleeps 0.6
-  graded=$(canvas_ratio "[data-testid=preview-canvas]")
+  ab press End >/dev/null 2>&1 && sleeps 0.4
+  local deadline=$((SECONDS + 5))
+  graded=''
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    graded=$(canvas_ratio "[data-testid=preview-canvas]")
+    [ -n "$graded" ] && awk -v n="$neutral" -v g="$graded" 'BEGIN { exit !(g > n * 1.2) }' && return 0
+    sleep 0.2
+  done
   [ -n "$graded" ] || { echo "f06: could not resample the monitor" >&2; return 1; }
-  awk -v n="$neutral" -v g="$graded" 'BEGIN { exit !(g > n * 1.2) }' || {
-    echo "f06: +100 temperature did not warm the monitor (neutral=$neutral graded=$graded)" >&2
-    return 1
-  }
+  echo "f06: +100 temperature did not warm the monitor (neutral=$neutral graded=$graded)" >&2
+  return 1
 }
 
 # ————— F2 split + F8 undo/redo —————
@@ -1302,6 +1390,7 @@ e01_crop_add_remove() {
   if ! between "$(playhead_seconds)" 0.29 0.41; then
     echo "e01: playhead missed 0.3s ($(playhead_seconds))" >&2; return 1
   fi
+  wait_preview_painted '[data-testid=preview-canvas]' 5 || { echo "e01: monitor never painted" >&2; return 1; }
   local plain1
   plain1=$(settled_sum "[data-testid=preview-canvas]")
   [ -n "$plain1" ] || { echo "e01: monitor never settled" >&2; return 1; }
@@ -1343,6 +1432,7 @@ e02_blend_mode() {
 }
 
 e03_chroma_hex() {
+  select_topmost_clip || return 1
   ab eval 'document.querySelector("[data-testid=inspector-tab-effects]").click()' >/dev/null 2>&1
   sleeps 0.4
   insp '[aria-label="Add effect"]'
@@ -1372,6 +1462,7 @@ e03_chroma_hex() {
   if ! between "$(playhead_seconds)" 1.09 1.41; then
     echo "e03: playhead missed 1.2s ($(playhead_seconds))" >&2; return 1
   fi
+  wait_preview_painted '[data-testid=preview-canvas]' 5 || { echo "e03: monitor never painted" >&2; return 1; }
   local plain3
   plain3=$(settled_sum "[data-testid=preview-canvas]")
   [ -n "$plain3" ] || { echo "e03: monitor never settled at 1.2s" >&2; return 1; }
@@ -1411,6 +1502,7 @@ e03_chroma_hex() {
 }
 
 e04_matte_masks_and_survives_hide() {
+  select_topmost_clip || return 1
   # Matte source: the Captions text track from c01 sits above V1. Park at
   # 1.2s: inside the matted first video part (0..1.50, end-exclusive, so
   # parking ON 1.50 would show the next, unmatted part) and inside the Alpha
@@ -1437,6 +1529,7 @@ e04_matte_masks_and_survives_hide() {
   # sampling, so a slow seek reads as waiting, not as content. The floor is
   # well above an unsettled (near-black) frame and far below the bright video
   # parked here, so neither side passes vacuously.
+  wait_preview_painted '[data-testid=preview-canvas]' 5 || { echo "e04: monitor never painted" >&2; return 1; }
   local plain
   plain=$(settled_sum "[data-testid=preview-canvas]")
   [ -n "$plain" ] || { echo "e04: monitor never settled at 1.2s" >&2; return 1; }
@@ -1707,6 +1800,7 @@ f05_mute() {
 # element seek can resolve to the previous frame.
 f05_blend_parity() {
   local root; root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+  ensure_fixture_file || return 1
   click_clip 'sample-video.mp4 from 0.00 to 6.00 seconds' || {
     echo "f05_blend_parity: the video clip did not select" >&2
     return 1
@@ -1768,7 +1862,8 @@ window.__bpar = (() => {
   v.muted = true
   v.preload = 'auto'
   v.playsInline = true
-  v.src = '/samples/sample-video.mp4'
+  const fixture = window.__fixtureFiles && window.__fixtureFiles['sample-video.mp4'];
+  v.src = fixture ? URL.createObjectURL(fixture) : ''
   v.style.position = 'fixed'
   v.style.left = '-10000px'
   v.style.width = '640px'
@@ -1924,7 +2019,7 @@ REFJS
       0.0000 | 1.0000) : ;;
       *) blended=$((blended + 1)) ;;
     esac
-    if [ "$preview" = "$expected" ]; then
+    if [ -n "$preview" ] && [ -n "$expected" ] && awk -v p="$preview" -v e="$expected" 'BEGIN { d = p - e; if (d < 0) d = -d; exit !(d <= e * 0.01) }'; then
       matched=$((matched + 1))
     else
       echo "f05_blend_parity: k=$k monitor $preview != plan $expected (weight $weight, source frames $ia/$ib)" >&2
@@ -2068,8 +2163,8 @@ f05_reverse_frame() {
   local before
   ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1 && sleeps 0.4
   step_frames 18 || return 1 # 18 frames = 0.60s, in-page with delivery lock
-  sleeps 0.6
-  before=$(frame_sum "[data-testid=preview-canvas]")
+  wait_preview_painted '[data-testid=preview-canvas]' 5 || return 1
+  before=$(settled_sum "[data-testid=preview-canvas]")
   [ "${before:-0}" -gt 0 ] 2>/dev/null || {
     echo "f05_reverse_frame: could not sample the monitor (before)" >&2
     return 1
@@ -2104,9 +2199,9 @@ f05_reverse_frame() {
   # again: keeping a local frame must keep the source frame it showed.
   ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1 && sleeps 0.4
   step_frames 18 || return 1 # 18 frames = 0.60s, in-page with delivery lock
-  sleeps 0.6
+  wait_preview_painted '[data-testid=preview-canvas]' 5 || return 1
   local after
-  after=$(frame_sum "[data-testid=preview-canvas]")
+  after=$(settled_sum "[data-testid=preview-canvas]")
   [ "${after:-0}" -gt 0 ] 2>/dev/null || {
     echo "f05_reverse_frame: could not resample the monitor (after)" >&2
     return 1
@@ -2384,6 +2479,20 @@ f05b_curve_handles() {
 # behind. ring_count is also the click-actually-selected guard.
 ring_count() {
   evaln '[...document.querySelectorAll("[data-testid^=clip-]:not([data-testid$=badge])")].filter((c) => c.className.includes("ring-rose-400")).length'
+}
+select_topmost_clip() {
+  local id
+  id=$(evaln '(() => {
+    for (const lane of document.querySelectorAll("[data-lane-id]")) {
+      if (lane.dataset.laneKind !== "video") continue;
+      const clip = lane.querySelector("[data-testid^=clip-][role=button]");
+      if (clip) return clip.dataset.testid;
+    }
+    return "none";
+  })()')
+  [ "$id" != "none" ] || { echo "select_topmost_clip: no video clip" >&2; return 1; }
+  ab scrollintoview "[data-testid=$id]" >/dev/null 2>&1
+  ab click "[data-testid=$id]" >/dev/null 2>&1
 }
 select_named() { # select_named <name-regex>: click by name, retry once, report ring
   click_clip "$1" || return 1
@@ -3230,6 +3339,9 @@ f02_ratestretch_relinked() {
     clean_relink
     return 1
   }
+  # 0.18.0 removed the bundled sample bytes, so the reopened project's sample
+  # assets are offline too. Relink the committed fixtures before the LUT proof.
+  upload_fixtures || { clean_relink; return 1; }
   # Reopen poll (item 3): the offline relink button renders asynchronously.
   item="none" deadline=$((SECONDS + 8))
   while [ "$item" = "none" ] && [ "$SECONDS" -lt "$deadline" ]; do
@@ -3389,9 +3501,14 @@ f12_setup() {
     return 1
   }
   [ "$(clipcount)" = "0" ] || { echo "f12: New Project left clips behind" >&2; return 1; }
-  ab find role button click --name 'Load sample media' >/dev/null 2>&1 && sleep 2.5
-  [ "$(ab get count '[aria-label="Add to timeline"]')" = "3" ] || {
-    echo "f12: sample media did not load" >&2
+  upload_fixtures || return 1
+  local n=0 deadline=$((SECONDS + 30))
+  while [ "$n" != "3" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    n=$(ab get count '[aria-label="Add to timeline"]' 2>/dev/null || echo 0)
+    [ "$n" = "3" ] || sleep 0.3
+  done
+  [ "$n" = "3" ] || {
+    echo "f12: fixture media did not load (got $n)" >&2
     return 1
   }
 }
@@ -3536,7 +3653,7 @@ console_clean() {
 step "s01 public: hero loads and links to the editor" s01_public
 step "s02 boot: Open editor loads the editor"      s02_boot
 step "s03 fresh: storage cleared, editor empty"     s03_fresh
-step "f01 import: sample media loads 3 assets"     f01_import
+step "f01 import: fixtures load 3 assets"     f01_import
 step "f01b import: a real (non-bundled) file imports" f01b_import_real_file
 step "f02 add: video+audio+image quick-added"      f02_add
 step "f02 zoom: all clips reachable in snapshot"   zoom_out

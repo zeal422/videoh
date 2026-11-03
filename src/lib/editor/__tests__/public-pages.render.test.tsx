@@ -43,6 +43,7 @@ vi.mock('next/image', () => ({
   ),
 }))
 
+import editorScreenshot from '@/assets/editor-screenshot.png'
 import AboutPage from '@/app/(site)/about/page'
 import ContactPage from '@/app/(site)/contact/page'
 import PrivacyPage from '@/app/(site)/privacy/page'
@@ -135,8 +136,11 @@ describe('public hero', () => {
     }
 
     const image = screen.getByRole('img', { name: SCREENSHOT_ALT })
-    expect(image).toHaveAttribute('width', '1600')
-    expect(image).toHaveAttribute('height', '1000')
+    const expectedSrc =
+      typeof editorScreenshot === 'string' ? editorScreenshot : editorScreenshot.src
+    expect(image).toHaveAttribute('src', expectedSrc)
+    expect(image).toHaveAttribute('width', '1921')
+    expect(image).toHaveAttribute('height', '1079')
     expect(image).toHaveAttribute('loading', 'lazy')
     expect(image).toHaveAttribute('data-sizes')
     expect(image).not.toHaveAttribute('data-preload')

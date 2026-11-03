@@ -58,7 +58,7 @@ describe('parity fixture (e2e/fixtures/editor-parity.veproj.json)', () => {
       'sample-image.png',
     ])
     // The fixture stores no object URLs: every asset hydrates offline until
-    // `hydrateSampleMedia` relinks the bundled names.
+    // the user relinks it from the media bin.
     expect(missingMediaIds).toHaveLength(3)
     expect(doc.media.every((asset) => asset.missing === true)).toBe(true)
   })

@@ -24,7 +24,12 @@ import { CURRENT_VERSION } from '@/lib/releases'
 import { useEditorKeyboard } from '@/hooks/editor/useEditorKeyboard'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { refreshPausedPreview } from '@/lib/editor/playback/preview'
-import { activeTransientPointerId, useEditorStore } from '@/lib/editor/store'
+import {
+  activeTransientPointerId,
+  isTransientActive,
+  useEditorStore,
+  useStableDoc,
+} from '@/lib/editor/store'
 import { PANEL_BOUNDS, type PanelId, PANEL_IDS } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
 import {
@@ -34,7 +39,7 @@ import {
   readValidAutosave,
 } from '@/lib/editor/persistence'
 import { projectFileName, serializeDoc } from '@/lib/editor/serialization'
-import { hydrateSampleMedia, bumpProjectGeneration } from '@/lib/editor/project-io'
+import { bumpProjectGeneration } from '@/lib/editor/project-io'
 import { revokeAllProxies } from '@/lib/editor/media/proxies'
 import { disposeAll, syncFilmstrips } from '@/lib/editor/media/filmstrip-cache'
 import { toast } from '@/hooks/use-toast'
@@ -59,7 +64,7 @@ export function EditorShell() {
   // effect holds back until this flips (see the scan comment below).
   const [autosaveScanned, setAutosaveScanned] = useState(false)
   const isMobile = useIsMobile()
-  const doc = useEditorStore((s) => s.doc)
+  const doc = useStableDoc()
   const pendingRestore = useEditorStore((s) => s.pendingRestore)
   const lockNotice = useEditorStore((s) => s.lockNotice)
   const hidden = useWorkspaceStore((s) => s.hidden)
@@ -259,8 +264,12 @@ export function EditorShell() {
     }
   }, [])
 
-  // When the doc changes while paused, refresh the preview frame.
+  // When the doc changes while paused, refresh the preview frame. A transient
+  // drag frame (0.18.0) only moves clips; seeking the preview on every one of
+  // them was a large part of the drag cost. The commit/cancel that follows
+  // ends the transient, so its doc change still refreshes.
   useEffect(() => {
+    if (isTransientActive()) return
     refreshPausedPreview()
   }, [doc])
 
@@ -344,32 +353,22 @@ export function EditorShell() {
     try {
       const json = pendingRestore
       if (!json) return
-      const { doc: restored } = parseAutosave(json)
-      // Bundled samples are the only media the app can refetch by itself, so
-      // they are merged into the doc BEFORE it is installed: the restore stays
-      // one undo step instead of appending a history entry per relinked file.
-      const { doc, relinked, remaining, failed } = await hydrateSampleMedia(restored)
+      const { doc } = parseAutosave(json)
       // Installing a project invalidates any in-flight project load; the bump
       // and the install are one step, so no load can land in between them.
       bumpProjectGeneration()
       revokeAllProxies()
       useEditorStore.getState().replaceDoc(doc)
       useEditorStore.getState().setPendingRestore(null)
-      // Hydration returns failures instead of toasting them, so they are
-      // reported here, against the session that actually got installed.
-      for (const name of failed) {
-        toast({ title: 'Sample unavailable', description: name, variant: 'destructive' })
-      }
+      const remaining = doc.media.filter((asset) => asset.missing).length
       toast({
         title: 'Session restored',
         description:
           remaining > 0
             ? `${remaining} media file(s) need relinking`
-            : relinked > 0
-              ? `${relinked} sample file(s) relinked automatically`
-              : doc.media.length > 0
-                ? `All ${doc.media.length} media file(s) are back online`
-                : undefined,
+            : doc.media.length > 0
+              ? `All ${doc.media.length} media file(s) are back online`
+              : undefined,
       })
     } catch {
       toast({ title: 'Restore failed', variant: 'destructive' })

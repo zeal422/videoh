@@ -11,13 +11,16 @@ import {
   filmstripEntryCount,
   filmstripsReady,
   hasFilmstrip,
+  filmstripProgressSnapshot,
   releaseFilmstrip,
   requestFilmstrip,
   setFilmstripImageLoader,
+  setFilmstripThumbnailCache,
   subscribeFilmstripReadiness,
   syncFilmstrips,
   type FilmstripEntry,
 } from '../media/filmstrip-cache'
+import { THUMBNAIL_DECODE_TIMEOUT_MS, ThumbnailCache } from '../media/thumbnail-cache'
 import { serializeDoc } from '../serialization'
 import type { Clip, MediaAsset } from '../types'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
@@ -269,6 +272,157 @@ describe('filmstrip cache generation', () => {
     }
   })
 
+  it('drops a cancelled job from the progress snapshot (0.18.0)', async () => {
+    const asset = videoAsset()
+    const plan = planFor(videoClip(), asset, 500, 44)
+    const onSettle = vi.fn()
+    requestFilmstrip({ clipId: 'clip-a', plan, asset }, onSettle)
+    expect(filmstripProgressSnapshot().some((entry) => entry.key === plan.key)).toBe(true)
+    releaseFilmstrip('clip-a')
+    expect(filmstripProgressSnapshot().some((entry) => entry.key === plan.key)).toBe(false)
+    await settle()
+    expect(onSettle).not.toHaveBeenCalled()
+  })
+
+  it('ignores progress reported by a released job (0.18.0)', async () => {
+    const asset = videoAsset()
+    const plan = planFor(videoClip(), asset, 500, 44)
+    let emit: ((progress: { completed: number; total: number }) => void) | undefined
+    let finish: (() => void) | undefined
+    const fake = {
+      available: true,
+      ensure: vi.fn(
+        (
+          _assetId: string,
+          _url: string,
+          _times: readonly number[],
+          _tolerance: number,
+          onProgress?: (progress: { completed: number; total: number }) => void,
+        ) => {
+          emit = onProgress
+          return new Promise<void>((resolve) => {
+            finish = resolve
+          })
+        },
+      ),
+      nearest: vi.fn(() => undefined),
+      dropAsset: vi.fn(),
+      reset: vi.fn(),
+      dispose: vi.fn(),
+    }
+    setFilmstripThumbnailCache(fake as unknown as Parameters<typeof setFilmstripThumbnailCache>[0])
+    try {
+      requestFilmstrip({ clipId: 'clip-a', plan, asset }, vi.fn())
+      expect(emit).toBeDefined()
+      releaseFilmstrip('clip-a')
+      expect(filmstripProgressSnapshot().some((entry) => entry.key === plan.key)).toBe(false)
+      // The decode was already in flight. Its late progress must not put the
+      // cleared bar back in the snapshot.
+      emit?.({ completed: 1, total: 2 })
+      expect(filmstripProgressSnapshot().some((entry) => entry.key === plan.key)).toBe(false)
+      finish?.()
+      await Promise.resolve()
+    } finally {
+      setFilmstripThumbnailCache(null)
+    }
+  })
+
+  it('drops a completed image job from the progress snapshot (0.18.0)', async () => {
+    const image = document.createElement('canvas')
+    image.width = 800
+    image.height = 600
+    setFilmstripImageLoader(async () => image)
+    const asset = imageAsset('media-progress-image')
+    const plan = planFor(videoClip({ id: 'clip-progress', mediaId: asset.id }), asset, 500, 44)
+    requestFilmstrip({ clipId: 'clip-progress', plan, asset }, vi.fn())
+    await settle()
+    expect(filmstripProgressSnapshot().some((entry) => entry.key === plan.key)).toBe(false)
+  })
+
+  it('falls back to element seeks when the thumbnail cache throws (0.18.0)', async () => {
+    const asset = videoAsset()
+    const plan = planFor(videoClip(), asset, 500, 44)
+    const fake = {
+      available: true,
+      ensure: vi.fn(async () => {
+        throw new Error('decode failed')
+      }),
+      nearest: vi.fn(() => undefined),
+      dropAsset: vi.fn(),
+      reset: vi.fn(),
+      dispose: vi.fn(),
+    }
+    setFilmstripThumbnailCache(fake as unknown as Parameters<typeof setFilmstripThumbnailCache>[0])
+    const onSettle = vi.fn()
+    try {
+      requestFilmstrip({ clipId: 'clip-a', plan, asset }, onSettle)
+      await settle()
+    } finally {
+      setFilmstripThumbnailCache(null)
+    }
+    expect(fake.ensure).toHaveBeenCalled()
+    expect(onSettle).toHaveBeenCalledTimes(1)
+    expect(onSettle.mock.calls[0][0]).toBeTruthy()
+    expect(document.querySelectorAll('video')).toHaveLength(1)
+  })
+
+  it('does not let a stalled thumbnail decode block the next filmstrip job (0.18.0)', async () => {
+    vi.useFakeTimers()
+    try {
+      const assetA = videoAsset({ id: 'media-a', url: 'blob:a' })
+      const assetB = videoAsset({ id: 'media-b', url: 'blob:b' })
+      const planA = planFor(videoClip({ id: 'clip-a', mediaId: 'media-a' }), assetA, 500, 44)
+      const planB = planFor(videoClip({ id: 'clip-b', mediaId: 'media-b' }), assetB, 500, 44)
+      const canvas = document.createElement('canvas')
+      canvas.width = 10
+      canvas.height = 10
+      const decode = vi.fn(
+        (
+          _assetId: string,
+          url: string,
+          times: readonly number[],
+        ): Promise<
+          {
+            sourceTime: number
+            frame: CanvasImageSource
+            width: number
+            height: number
+            pixels: number
+          }[]
+        > => {
+          if (url === 'blob:a') return new Promise(() => undefined)
+          return Promise.resolve(
+            times.map((time) => ({
+              sourceTime: time,
+              frame: canvas,
+              width: 10,
+              height: 10,
+              pixels: 100,
+            })),
+          )
+        },
+      )
+      setFilmstripThumbnailCache(new ThumbnailCache(decode, true))
+      const first = vi.fn()
+      const second = vi.fn()
+      requestFilmstrip({ clipId: 'clip-a', plan: planA, asset: assetA }, first)
+      requestFilmstrip({ clipId: 'clip-b', plan: planB, asset: assetB }, second)
+      expect(decode).toHaveBeenCalledTimes(1)
+
+      // The first asset's decode never settles. Its timeout must release the
+      // job lane so the queued strip still runs.
+      await vi.advanceTimersByTimeAsync(THUMBNAIL_DECODE_TIMEOUT_MS)
+      await settle()
+
+      expect(first).toHaveBeenCalledTimes(1)
+      expect(second).toHaveBeenCalledTimes(1)
+      expect(decode.mock.calls.some((call) => call[1] === 'blob:b')).toBe(true)
+    } finally {
+      setFilmstripThumbnailCache(null)
+      vi.useRealTimers()
+    }
+  })
+
   it('treats an invalid backing size as settled without allocating a canvas', () => {
     const asset = videoAsset()
     const plan = { ...planFor(videoClip(), asset, 500, 44), widthBucket: 4097, heightBucket: 64 }
@@ -387,6 +541,59 @@ describe('filmstrip cache invalidation and memory', () => {
     expect(newCanvas.width).toBe(plan.widthBucket)
     expect(filmstripEntryCount()).toBe(1)
     expect(document.querySelectorAll('video')).toHaveLength(1)
+  })
+
+  it('drops the old source, not the incoming one, when a clip changes asset', async () => {
+    const assetA = videoAsset({ id: 'media-a', url: 'blob:a' })
+    const assetC = videoAsset({ id: 'media-c', url: 'blob:c' })
+    const planA = planFor(videoClip({ id: 'clip-a', mediaId: 'media-a' }), assetA, 500, 44)
+    const planC = planFor(videoClip({ id: 'clip-c', mediaId: 'media-c' }), assetC, 500, 44)
+    syncFilmstrips([assetA, assetC], 'project-source-change')
+    const first = vi.fn()
+    const shared = vi.fn()
+    requestFilmstrip({ clipId: 'clip-a', plan: planA, asset: assetA }, first)
+    requestFilmstrip({ clipId: 'clip-c', plan: planC, asset: assetC }, shared)
+    await settle()
+    const oldCanvas = first.mock.calls[0][0] as HTMLCanvasElement
+    const sharedCanvas = shared.mock.calls[0][0] as HTMLCanvasElement
+
+    const changedPlan = planFor(videoClip({ id: 'clip-a', mediaId: 'media-c' }), assetC, 500, 44)
+    const changed = vi.fn()
+    requestFilmstrip({ clipId: 'clip-a', plan: changedPlan, asset: assetC }, changed)
+    await settle()
+
+    // The old asset's strip is gone; the incoming asset's strip for another
+    // clip is untouched, and the changed clip generates its own new strip.
+    expect(oldCanvas.width).toBe(0)
+    expect(sharedCanvas.width).toBe(planC.widthBucket)
+    // The changed clip shares the incoming asset's cached strip; it must not
+    // dispose and regenerate that strip.
+    expect(changed.mock.calls[0][0]).toBe(sharedCanvas)
+    expect(filmstripEntryCount()).toBe(1)
+    expect(document.querySelectorAll('video')).toHaveLength(1)
+  })
+
+  it('keeps another clip on the old source when one clip changes asset', async () => {
+    const assetA = videoAsset({ id: 'media-a', url: 'blob:a' })
+    const assetC = videoAsset({ id: 'media-c', url: 'blob:c' })
+    const planA1 = planFor(videoClip({ id: 'clip-a1', mediaId: 'media-a' }), assetA, 500, 44)
+    const planA2 = planFor(videoClip({ id: 'clip-a2', mediaId: 'media-a' }), assetA, 500, 44)
+    syncFilmstrips([assetA, assetC], 'project-shared-source')
+    const first = vi.fn()
+    const other = vi.fn()
+    requestFilmstrip({ clipId: 'clip-a1', plan: planA1, asset: assetA }, first)
+    requestFilmstrip({ clipId: 'clip-a2', plan: planA2, asset: assetA }, other)
+    await settle()
+    const otherCanvas = other.mock.calls[0][0] as HTMLCanvasElement
+
+    const changedPlan = planFor(videoClip({ id: 'clip-a1', mediaId: 'media-c' }), assetC, 500, 44)
+    requestFilmstrip({ clipId: 'clip-a1', plan: changedPlan, asset: assetC }, vi.fn())
+    await settle()
+
+    // clip-a2 still uses the old asset: its strip and the shared element stay.
+    expect(otherCanvas.width).toBe(planA2.widthBucket)
+    expect(hasFilmstrip(planA2.key)).toBe(true)
+    expect(document.querySelectorAll('video')).toHaveLength(2)
   })
 
   it('retries a failed strip after a relink', async () => {

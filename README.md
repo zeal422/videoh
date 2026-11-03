@@ -16,12 +16,17 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/u
 
 - **Media, filmstrips, and proxies.** Import video, audio, and images through the bin or drag and
   drop. The app probes duration and size, makes thumbnails, normalizes waveform peaks, and detects
-  audio. Video clips draw sampled source frames across the span they show; a source over 1920px can
-  build a session-only proxy, and export always reads the original.
+  audio. Video clips draw sampled source frames for the visible span at layout density, reuse
+  per-asset source-time frames across a split, and show per-clip plus timeline-header progress on
+  long strips; a source over 1920px can build a session-only proxy, and export always reads the
+  original.
 - **Timeline and tracks.** Move a selection across compatible lanes, trim, split, duplicate, delete,
-  snap, and drag to scroll. Drop between lanes to create a layer at that z-position. Place, Insert,
-  and Overwrite set how a mid-lane drop lands. Lanes rename, mute, solo, lock, and delete from their
-  headers; the last lane is protected, and an emptied lane is pruned with the edit.
+  snap, and drag to scroll. Drop into a same-kind gap or past the dragged kind's outer edge to create
+  a layer at that z-position; other gaps move to the nearest compatible lane, or to the outer edge
+  when none exists. Place, Insert, and Overwrite set how a mid-lane drop lands. Audio tracks append
+  below and video tracks prepend above; lanes rename, mute, solo, lock, and delete from their headers;
+  auto names renumber while custom names stay; the last lane is protected, and an emptied lane is
+  pruned with the edit.
 - **Editing, links, and markers.** Selection, Razor, Ripple Trim, Slip, and Pen, plus multi-select,
   marquee, track targeting, and ripple delete. A video with audio lands as a linked pair; compound
   clips fold a selection into a reusable nested sequence. The Source monitor marks In/Out for
@@ -36,7 +41,9 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/u
   curve that ramps speed without changing timeline length. Per-clip gain, mute, pan, 3-band EQ,
   compressor, broadband denoise, volume automation, auto-ducking, and track solo/mute.
 - **Playback and export.** An audio-clock-driven preview with a per-clip media pool and drift
-  correction. Offline MP4 export is frame-accurate H.264 with AAC, or Opus where AAC is unavailable,
+  correction. Paused scrubbing uses WebCodecs and keeps the last good frame, falling back to the
+  `<video>` element when a source has no usable sink. Offline MP4 export is frame-accurate H.264 with
+  AAC, or Opus where AAC is unavailable,
   with progress, cancel, an in-dialog preview, and streamed export to disk.
 - **Workspace and persistence.** Six resizable panels, a Premiere-style menu bar, appearance
   palettes, whole-document undo/redo, `.veproj.json` save/open, and autosave with restore.
@@ -50,11 +57,12 @@ bun install
 bun run dev
 ```
 
-Open <http://localhost:3000/editor>. For a demo, click **Load sample media** in the media bin; it
-imports the three files in `public/samples/`, then quick-add them with the `+` button on each asset.
+Open <http://localhost:3000/editor>. Import video, audio, or image files with the **Import**
+button (or drag them onto the media bin), then quick-add them with the `+` button on each asset.
 
 Use a current Chromium-based browser for the full feature set. Export also needs WebCodecs:
-Chromium, Edge, Firefox 130+, or Safari 26+.
+Chromium, Edge, Firefox 130+, or Safari 26+. The WebCodecs scrub preview targets Chrome and modern
+Firefox 130+; older browsers keep the `<video>` fallback.
 
 ### Keyboard shortcuts
 
@@ -151,7 +159,7 @@ bun run test:coverage  # v8 coverage + thresholds
 bun run battery        # 67-step UI battery (needs agent-browser; reuses :3000 or starts a server)
 ```
 
-Current state: **2050 tests across 90 files, all passing**. Coverage is enforced at 70/60/75/70 over
+Current state: **2132 tests across 93 files, all passing**. Coverage is enforced at 70/60/75/70 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -177,7 +185,7 @@ src/lib/editor/            # pure state core: commands, store, serialization, pl
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, landing sections, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 90 test files (2050 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 93 test files (2132 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations

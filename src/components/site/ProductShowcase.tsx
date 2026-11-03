@@ -1,8 +1,10 @@
 import Image from 'next/image'
 import { CircleCheck } from 'lucide-react'
 
+import editorScreenshot from '@/assets/editor-screenshot.png'
+
 export const SCREENSHOT_ALT =
-  'The videoh editor showing the nine-track parity demo with color-bar filmstrips, linked A/V badges, a volume envelope on A2, the Pen tool active in the toolbar, an opacity keyframe curve with dots over the selected V1 video, and the inspector opacity graph above a full-width timeline'
+  'The videoh editor showing the Climbing-Vlog project: one video track with filmstrips, two audio tracks with waveforms, a text track, the climbing preview, and the Effect Controls inspector'
 
 const CHECKLIST = [
   'Multi-track timeline',
@@ -63,10 +65,10 @@ export function ProductShowcase() {
             className="absolute inset-[6%] rounded-[2rem] bg-[radial-gradient(ellipse_at_55%_45%,rgba(236,72,153,0.20),rgba(124,58,237,0.14)_40%,transparent_72%)] blur-3xl"
           />
           <Image
-            src="/screenshots/editor.png"
+            src={editorScreenshot}
             alt={SCREENSHOT_ALT}
-            width={1600}
-            height={1000}
+            width={1921}
+            height={1079}
             loading="lazy"
             sizes="(min-width: 1024px) 900px, 100vw"
             className="relative z-10 h-auto w-full rounded-xl border border-white/10 shadow-[0_30px_80px_rgba(0,0,0,0.55),0_0_60px_rgba(236,72,153,0.08)]"

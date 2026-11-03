@@ -476,3 +476,39 @@ Action: kept as a note; the catch logs `[playback] decode recovery failed` with 
 What happened: the dead-zone tolerance accepted a near-start keyframe when `load()` left the element at zero, so the recovery emitted a skip notice without moving the element. Separately, a retime during the resume bailed without deleting the committed record, so a later error could reuse the old failed range and attempt budget.
 Would-have-caught: holding a keyframe 0.01 s from the start with the element at zero, and retiming during the resume then asserting the record is gone.
 Action: kept as a note; the commit uses a forced seek and a 1e-3 post-commit check, and a failed source comparison deletes the stale record.
+
+## 2026-11-02 - paused resume re-seeked a parked element
+
+What happened: `PlaybackCore.syncMedia` always called `seekElement` for a paused element. After the 0.18.0 WebCodecs paused path stopped seeking the `<video>` element, resume from 24.1 s with the element at 23.99 s forced a 0.7 s seek and a black canvas while the audio clock advanced; initial play at 0 forced a 0.0001 s seek that took 2.7 s on the 127 MB file.
+Would-have-caught: pausing and resuming the real 127 MB file in Chrome and sampling canvas luminance and element `currentTime`, not only the unit tests.
+Action: kept as a note; `syncMedia` now guards the paused seek with `START_SEEK_THRESHOLD`, and `primePlayback` warms the active elements (bounded by `PRIME_TIMEOUT_MS`) before the clock starts.
+
+## 2026-11-02 - warmup trusted an in-flight seek and the worker key retry had no bound
+
+What happened: `primePlayback` skipped a new seek when one was already in flight and never re-compared the landed position, so a stale seek could start the clock at the wrong frame. Separately, `scrub-worker`'s keyframe retry ran outside the decode timeout, so a stalled `getKeyPacket`/`getFirstKeyPacket` left `drain` on one clip and a replacement URL never ran.
+Would-have-caught: holding a stale in-flight seek and asserting Play corrects it before `playingState`; stalling the key lookup and queuing a replacement URL for the same clip.
+Action: kept as a note; `primeElement` waits, compares, and corrects before the clock, and `drain` bounds the complete attempt with a late-frame close.
+
+## 2026-11-02 - a stalled thumbnail decode held the filmstrip lane
+
+What happened: `ThumbnailCache.ensure` awaited `decodeFrame` without a timeout. `generateVideo` awaited `ensure`, `runJob` kept the only active lane, and `drainQueue` refused to start another job while active. A stalled track lookup or timestamp iterator blocked every later strip. `reset()` also left `assetEpochs` and `latestRun` populated.
+Would-have-caught: stalling the injected decode and queueing a second filmstrip job; inspecting the two maps after reset.
+Action: kept as a note; each decode run is bounded by `THUMBNAIL_DECODE_TIMEOUT_MS` with late frames closed, and reset clears both maps.
+
+## 2026-11-02 - paused WebCodecs scrub dropped the blend pair
+
+What happened: `resolveClip` returned the cached WebCodecs canvas or bitmap with no `blend`, and `drawStill` took the single-frame shortcut even for a sub-frame-rate clip. The compositor draws canvas and bitmap sources directly, so paused scrubbing of a slow clip lost the pair the element path and exporter use.
+Would-have-caught: a 0.5x clip with a scrub sink, asserting the scrub request is not made and the primary and partner elements are drawn.
+Action: kept as a note; sub-frame-rate clips bypass the scrub shortcut and use the parked element pair.
+
+## 2026-11-02 - a thumbnail lookup outlived its run, and a blend clip blocked the preflight
+
+What happened: `decodeThumbnailFrame` created an `Input` and awaited the track lookup before registering it, so a timeout or reset left that lookup running and a late result installed a dead Input. Separately, the paused render preflight still required a WebCodecs frame for every sink-backed clip, but a sub-frame-rate clip never requests one because it renders through the element pair, so the whole composite could return early.
+Would-have-caught: resolving a stalled lookup after the timeout/reset and inspecting the shared map; pausing a 0.5x clip with an empty scrub cache and asserting the element pair still draws.
+Action: each decode run now owns its Input across the lookup and disposes it on timeout, reset, or drop; the preflight skips clips with a blend partner, and a blend clip is only recorded as a scrub fallback when its sink is unavailable.
+
+## 2026-11-02 - stale thumbnail cancellation rejected like a decode failure
+
+What happened: a drop or reset cancelled a thumbnail decode and `ensure` rejected with the cancellation error. The only caller treats rejection as a decode failure and falls through to per-frame element seeks, so a run nobody wanted still looked like a fault.
+Would-have-caught: cancelling a pending default-decoder lookup with a drop and a reset, then asserting the promise resolves while the Input is disposed and never registered.
+Action: cancellation now throws a distinct error, and `ensure` resolves it only when the run is stale. Timeouts and genuine decode failures still reject, and the filmstrip caller stops before its prefetch decode when the job was cancelled.

@@ -12,9 +12,15 @@ import {
   Unlink,
   ClipboardPaste,
 } from 'lucide-react'
-import { applyCommands } from '@/lib/editor/commands'
+import { applyCommands, previewInsertTrackName, type EditorCommand } from '@/lib/editor/commands'
 import { MIN_CLIP_DURATION } from '@/lib/editor/constants'
-import { activeTracks, findMedia, findSequence } from '@/lib/editor/factories'
+import {
+  activeSequenceId,
+  activeTracks,
+  findMedia,
+  findSequence,
+  uid,
+} from '@/lib/editor/factories'
 import { hasTimeScaleCurve } from '@/lib/editor/keyframes'
 import { computeSnapPoints } from '@/lib/editor/snap'
 import {
@@ -22,8 +28,11 @@ import {
   decideRateStretch,
   decideTrimEnd,
   decideTrimStart,
+  insertAnchor,
+  resolveInsertIndex,
   trimRooms,
   type BlockedLane,
+  type PendingInsert,
 } from '@/lib/editor/clip-gesture'
 import { planRippleShift, planRippleTrim } from '@/lib/editor/ripple-trim'
 import { planSlip } from '@/lib/editor/slip'
@@ -49,7 +58,6 @@ import {
   canLinkClips,
   canSplitAnySelectedAt,
   clipIsSelected,
-  hasLinkedAudioTwin,
   linkedClips,
   resolveSelectionGroups,
 } from '@/lib/editor/links'
@@ -148,6 +156,10 @@ export function ClipView({
     orig: Clip
     origTrackId: string
     lanes: { id: string; kind: string; top: number; bottom: number; el: HTMLElement }[]
+    /** Lane boxes are static until a scroll or resize moves the rows (0.18.0). */
+    lanesDirty: boolean
+    /** Marks the cached lane boxes stale; registered on scroll and resize. */
+    onLanesDirty: () => void
     /** Lane under the pointer that cannot host this clip (shown blocked). */
     blockedLane: BlockedLane | null
     /** Latest pointer position. The auto-scroll tick replays the move from here,
@@ -173,6 +185,16 @@ export function ClipView({
      *  later moves dispatch without re-paying the whole-document clone, and
      *  'rejected' applies nothing for the rest of the drag. */
     stretchVerdict: 'pending' | 'ok' | 'rejected'
+    /** A move drop that will create a track on release (0.18.0). */
+    insert: PendingInsert | null
+    /** The last transient start for the dragged clip, captured for the
+     *  committed batch after `cancelTransient` restores the base doc. */
+    lastStart: number
+    /** The last transient partner targets, captured the same way. */
+    lastPartnerUpdates: { clipId: string; trackId: string; start: number }[]
+    /** Snap points cached at pointerdown; null means recompute per frame
+     *  (ripple trims shift other clips, so their edges are not static). */
+    snapPoints: number[] | null
     /** Store gesture token captured at pointerdown; a mismatch means the slot
      *  was ended underneath us (foreign commit) and frames must stop. */
     token: number
@@ -297,6 +319,19 @@ export function ClipView({
               }
             })
         : []
+    // Snap points are static for a move and a plain trim: the only clips that
+    // change are the dragged clip (excluded) and, in a move, its partners
+    // (also excluded). A ripple trim shifts OTHER clips, so its edges must be
+    // re-read every frame. Caching removes a whole-doc walk from each frame.
+    const snapPoints =
+      activeTool === 'ripple'
+        ? null
+        : computeSnapPoints(fresh.doc, {
+            excludeClipIds:
+              gestureMode === 'move' ? [clip.id, ...partners.map((p) => p.id)] : [clip.id],
+            includeTimelineEnd: false,
+            activeSequencePath: fresh.activeSequencePath,
+          })
     // Lock gate (0.14.0): refuse BEFORE beginTransient, so a refused move or
     // trim writes no frame and the clip never leaves its place. A move drags
     // every selected partner and edits the whole link group, so it checks all
@@ -328,6 +363,13 @@ export function ClipView({
       if (ev.pointerId !== gesture.current?.pointerId) return
       moveTo(ev.clientX, ev.clientY)
     }
+    // Lane rows only move under the pointer on a scroll or a resize. Re-reading
+    // every pointer frame forced a synchronous layout before the doc update,
+    // which was the biggest per-frame drag cost (0.18.0).
+    const onLanesDirty = () => {
+      const g = gesture.current
+      if (g) g.lanesDirty = true
+    }
     const onUp = (ev: PointerEvent) => {
       // One pointer owns the gesture: a second pointer lifting (multi-touch)
       // must not commit a clip the user is still dragging. Both the pointerup
@@ -349,6 +391,8 @@ export function ClipView({
       orig: structuredClone(clip),
       origTrackId: track.id,
       lanes,
+      lanesDirty: false,
+      onLanesDirty,
       blockedLane: null,
       lastX: e.clientX,
       lastY: e.clientY,
@@ -356,6 +400,10 @@ export function ClipView({
       moved: false,
       stretchToastShown: false,
       stretchVerdict: 'pending',
+      insert: null,
+      lastStart: clip.start,
+      lastPartnerUpdates: [],
+      snapPoints,
       token: useEditorStore.getState().beginTransient(e.pointerId),
       pointerId: e.pointerId,
       slipGroup: gestureMode === 'slip' ? linkedClips(fresh.doc, clip.id) : undefined,
@@ -372,6 +420,9 @@ export function ClipView({
       onUp,
     }
     window.addEventListener('pointermove', onMove)
+    const scrollEl = document.querySelector('[data-timeline-scroll]')
+    scrollEl?.addEventListener('scroll', onLanesDirty, { passive: true })
+    window.addEventListener('resize', onLanesDirty)
     // Capture phase on purpose. EditorShell registers a "commit any dangling
     // gesture" safety net on window at mount, so in the BUBBLE order it is
     // registered earlier than this listener and therefore runs first — it would
@@ -419,6 +470,7 @@ export function ClipView({
     autoScrollRaf.current = requestAnimationFrame(autoScrollTick)
     // The rows slid under a stationary pointer, so the lane boxes now point at
     // the wrong lanes — moveTo re-reads them before resolving the drop.
+    g.lanesDirty = true
     moveTo(g.lastX, g.lastY)
   }
 
@@ -508,19 +560,29 @@ export function ClipView({
     // dragged clip's edges, and one snap against them would stick for the
     // whole move. A TRIM leaves partners stationary, so their edges and
     // markers stay legitimate targets — exclude them in move mode only.
-    const points = computeSnapPoints(liveDoc, {
-      excludeClipIds: g.mode === 'move' ? [clip.id, ...g.partners.map((p) => p.id)] : [clip.id],
-      includeTimelineEnd: false,
-      activeSequencePath: useEditorStore.getState().activeSequencePath,
-    })
+    // Cached at pointerdown for a move or plain trim; a ripple trim shifts
+    // other clips, so it recomputes.
+    const points =
+      g.snapPoints ??
+      computeSnapPoints(liveDoc, {
+        excludeClipIds: g.mode === 'move' ? [clip.id, ...g.partners.map((p) => p.id)] : [clip.id],
+        includeTimelineEnd: false,
+        activeSequencePath: useEditorStore.getState().activeSequencePath,
+      })
 
     if (g.mode === 'move') {
       // Re-read the lane boxes every move: the rows can have moved under the
       // pointer since the last event (auto-scroll, a wheel scroll, a resized
       // timeline), and a stale box would resolve the drop onto the wrong lane.
-      g.lanes = readLanes()
-      // The whole move decision (lane compatibility, snap edge choice, partner
-      // shifts) is pure math in clip-gesture.ts — this is only the dispatch.
+      if (g.lanesDirty) {
+        g.lanes = readLanes()
+        g.lanesDirty = false
+      }
+      const sequenceId = activeSequenceId(store.activeSequencePath)
+      const tracks = activeTracks(liveDoc, store.activeSequencePath)
+      // The whole move decision (lane compatibility, pending insert, snap edge
+      // choice, partner shifts) is pure math in clip-gesture.ts — this is only
+      // the dispatch.
       const decision = decideMove({
         orig: g.orig,
         origTrackId: g.origTrackId,
@@ -529,35 +591,56 @@ export function ClipView({
         clientY,
         startX: g.startX,
         lanes: g.lanes,
-        tracks: activeTracks(liveDoc, useEditorStore.getState().activeSequencePath),
+        tracks,
         scale,
         snapping,
         snapPoints: points,
         partners: g.partners,
+        sequenceId,
       })
       // Mark an incompatible lane while the pointer is over it. Without this a
-      // refused drop looks identical to a drag that simply did nothing.
+      // refused drop looks identical to a drag that simply did nothing. A
+      // pending insert marks the lane it will land beside instead.
+      const insertAnchorPoint = decision.insert
+        ? insertAnchor(tracks, decision.insert.boundary)
+        : null
+      const insertLabel = decision.insert
+        ? `+ ${previewInsertTrackName(liveDoc, decision.insert.kind, decision.insert.boundary, sequenceId)}`
+        : ''
       for (const l of g.lanes) {
         if (decision.blockedLane && l.id === decision.blockedLane.id)
           l.el.setAttribute('data-drop-blocked', 'true')
         else l.el.removeAttribute('data-drop-blocked')
+        if (insertAnchorPoint && l.id === insertAnchorPoint.trackId) {
+          l.el.setAttribute('data-drop-insert', insertAnchorPoint.side)
+          l.el.setAttribute('data-drop-label', insertLabel)
+        } else {
+          l.el.removeAttribute('data-drop-insert')
+          l.el.removeAttribute('data-drop-label')
+        }
       }
       g.blockedLane = decision.blockedLane
+      g.insert = decision.insert
+      g.lastStart = decision.start
+      g.lastPartnerUpdates = decision.partnerUpdates
 
-      store.applyTransient({
-        type: 'moveClip',
-        clipId: clip.id,
-        trackId: decision.targetTrackId,
-        start: decision.start,
-      })
-      for (const p of decision.partnerUpdates) {
-        store.applyTransient({
+      // One clone for the primary clip and every partner, not one per clip:
+      // a full-document structuredClone per pointermove was the drag cost.
+      const moveCommands: EditorCommand[] = [
+        {
           type: 'moveClip',
+          clipId: clip.id,
+          trackId: decision.targetTrackId,
+          start: decision.start,
+        },
+        ...decision.partnerUpdates.map((p) => ({
+          type: 'moveClip' as const,
           clipId: p.clipId,
           trackId: p.trackId,
           start: p.start,
-        })
-      }
+        })),
+      ]
+      store.applyTransientBatch(moveCommands)
       onSnapGuide(decision.snapped)
       // Keep the edge scroll running while the pointer holds a band, and stop it
       // the moment it leaves.
@@ -818,6 +901,9 @@ export function ClipView({
     window.removeEventListener('pointermove', g.onMove)
     window.removeEventListener('pointerup', g.onUp, true)
     window.removeEventListener('pointercancel', g.onUp, true)
+    const scrollEl = document.querySelector('[data-timeline-scroll]')
+    scrollEl?.removeEventListener('scroll', g.onLanesDirty)
+    window.removeEventListener('resize', g.onLanesDirty)
     // Releasing over an incompatible lane is refused — say why, so the clip
     // snapping back is explained rather than silent. A pointercancel is not a
     // release and says nothing.
@@ -845,7 +931,11 @@ export function ClipView({
         })
       }
     }
-    for (const l of g.lanes) l.el.removeAttribute('data-drop-blocked')
+    for (const l of g.lanes) {
+      l.el.removeAttribute('data-drop-blocked')
+      l.el.removeAttribute('data-drop-insert')
+      l.el.removeAttribute('data-drop-label')
+    }
     // A refused drop is refused in full. While the pointer sat over the blocked
     // lane the drag kept applying the legal half of the gesture (the time shift,
     // on the original lane), so committing here would move the clip to a new
@@ -853,8 +943,56 @@ export function ClipView({
     // doc instead, so the clip goes back to where it started. A cancelled
     // modal gesture does the same.
     const store = useEditorStore.getState()
-    if (cancelled || g.blockedLane) store.cancelTransient()
-    else store.commitTransient()
+    if (cancelled || g.blockedLane) {
+      store.cancelTransient()
+    } else if (g.insert) {
+      // A pending insert: capture the last transient start before the base
+      // restore, cancel the transient, then commit one batch against the base
+      // doc. `commitTransient` only promotes the base, so it cannot add a track
+      // and a cross-track move by itself.
+      const insert = g.insert
+      const lastStart = g.lastStart
+      const partnerUpdates = g.lastPartnerUpdates
+      const sequenceId = activeSequenceId(store.activeSequencePath)
+      store.cancelTransient()
+      const base = useEditorStore.getState().doc
+      const tracks = activeTracks(base, useEditorStore.getState().activeSequencePath)
+      const index = resolveInsertIndex(tracks, insert.boundary)
+      const trackId = uid('track')
+      const commands: EditorCommand[] = [
+        {
+          type: 'addTrack',
+          kind: insert.kind,
+          trackId,
+          atIndex: index,
+          ...(sequenceId ? { sequenceId } : {}),
+        },
+        { type: 'moveClip', clipId: clip.id, trackId, start: lastStart },
+        ...partnerUpdates.map((p) => ({
+          type: 'moveClip' as const,
+          clipId: p.clipId,
+          trackId: p.trackId,
+          start: p.start,
+        })),
+      ]
+      try {
+        // A lock refusal returns false and records `lockNotice`; the shell
+        // reports it. Do not return here: the gesture and HUD still need the
+        // cleanup below, or the drag stays half-open.
+        store.apply(commands)
+      } catch (error) {
+        // The batch is validated against the restored base doc and writes
+        // nothing on failure, so the base doc is intact and the error is the
+        // whole story.
+        toast({
+          title: 'Could not create the track',
+          description: error instanceof Error ? error.message : String(error),
+          variant: 'destructive',
+        })
+      }
+    } else {
+      store.commitTransient()
+    }
     gesture.current = null
     setSlipHud(null)
     onSnapGuide(null)
@@ -1025,7 +1163,13 @@ export function ClipView({
         >
           {/* Filmstrip: sampled source cells under every overlay. Moving a
               clip changes no key, so a move reuses its strip. */}
-          <Filmstrip clip={clip} asset={asset} widthPx={widthPx} height={height} />
+          <Filmstrip
+            clip={clip}
+            asset={asset}
+            widthPx={widthPx}
+            height={height}
+            fps={doc.project.fps}
+          />
 
           {/* fade-in overlay when the previous clip crossfades into this one */}
           {fadeIn > 0 ? (
@@ -1047,19 +1191,22 @@ export function ClipView({
           ) : null}
 
           {/* waveform (audio-bearing clips). A linked audio twin carries the
-              pair's sound, so the video half stays clean; a solo video keeps
-              its embedded-audio waveform. */}
-          {asset?.waveformPeaks && asset.kind !== 'image' && !hasLinkedAudioTwin(doc, clip) && (
-            <Waveform
-              peaks={asset.waveformPeaks}
-              assetDuration={asset.duration || clip.duration}
-              inPoint={clip.inPoint}
-              duration={clip.duration}
-              widthPx={widthPx}
-              height={height}
-              muted={!!clip.muted}
-            />
-          )}
+              pair's sound, so the video half stays clean; an unlinked video
+              half must STILL stay clean (0.18.0): the waveform belongs to
+              audio tracks and audioOnly clips, never to a video-bearing clip. */}
+          {asset?.waveformPeaks &&
+            asset.kind !== 'image' &&
+            (track.kind === 'audio' || clip.audioOnly) && (
+              <Waveform
+                peaks={asset.waveformPeaks}
+                assetDuration={asset.duration || clip.duration}
+                inPoint={clip.inPoint}
+                duration={clip.duration}
+                widthPx={widthPx}
+                height={height}
+                muted={!!clip.muted}
+              />
+            )}
 
           {/* opacity automation: the Pen's curve on a picture clip. Without
               the Pen it is display-only and appears only when keyframes exist.

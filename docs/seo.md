@@ -132,7 +132,7 @@ GitHub is a credibility and contribution channel, not the primary acquisition go
 ## Release checklist
 
 - [x] `bun run check` is green.
-- [x] The last recorded dev and artifact batteries are 67/67 with a terminal `BATTERY_EXIT=0` (0.17.0, 2026-11-01).
+- [x] The last recorded dev and artifact batteries are 67/67 with a terminal `BATTERY_EXIT=0` (0.18.0, 2026-11-01).
 - [x] `robots.txt`, `sitemap.xml`, and the verification file return 200 in production.
 - [x] The production metadata check passes for `/` and `/editor`.
 - [x] Production returns no `X-Robots-Tag`; `site-seo.test.ts` locks the preview header.

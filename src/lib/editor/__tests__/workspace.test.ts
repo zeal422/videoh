@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Anti-regression tests for the workspace layout state (workspace.ts).
  *
@@ -7,11 +8,13 @@
  * 3. save/load round-trips through an injected storage; corrupt JSON falls
  *    back to defaults instead of crashing the editor on boot.
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   defaultWorkspace,
   isCollapsedSize,
+  KEYFRAME_GRAPH_MAX_HEIGHT,
+  KEYFRAME_GRAPH_MIN_HEIGHT,
   loadWorkspace,
   PANEL_BOUNDS,
   PANELS,
@@ -19,10 +22,12 @@ import {
   saveWorkspace,
   withCollapsed,
   withHidden,
+  withKeyframeGraphHeight,
   withSize,
   WORKSPACE_STORAGE_KEY,
   workspaceToJSON,
 } from '../workspace'
+import { useWorkspaceStore } from '../workspace-store'
 
 /** Minimal in-memory Storage double (no Node globals needed). */
 function fakeStorage(initial: Record<string, string> = {}) {
@@ -249,5 +254,69 @@ describe('persistence (injected storage)', () => {
     const ws = withSize(defaultWorkspace(), 'inspector', 40)
     const parsed = sanitizeWorkspace(JSON.parse(workspaceToJSON(ws)))
     expect(parsed).toEqual(ws)
+  })
+})
+
+describe('keyframe graph heights (0.18.0)', () => {
+  it('defaults to an empty map and clamps a stored height', () => {
+    expect(defaultWorkspace().keyframeGraphHeights).toEqual({})
+    const ws = withKeyframeGraphHeight(defaultWorkspace(), 'opacity', 120)
+    expect(ws.keyframeGraphHeights.opacity).toBe(120)
+    expect(
+      sanitizeWorkspace({ keyframeGraphHeights: { opacity: 120 } }).keyframeGraphHeights,
+    ).toEqual({ opacity: 120 })
+  })
+
+  it('clamps and drops hostile values', () => {
+    const ws = sanitizeWorkspace({
+      keyframeGraphHeights: {
+        opacity: 9999,
+        volume: -4,
+        scale: 'tall',
+        hue: NaN,
+        notAProperty: 100,
+      },
+    })
+    expect(ws.keyframeGraphHeights.opacity).toBe(KEYFRAME_GRAPH_MAX_HEIGHT)
+    expect(ws.keyframeGraphHeights.volume).toBe(KEYFRAME_GRAPH_MIN_HEIGHT)
+    expect(ws.keyframeGraphHeights.scale).toBeUndefined()
+    expect(ws.keyframeGraphHeights.hue).toBeUndefined()
+    expect('notAProperty' in ws.keyframeGraphHeights).toBe(false)
+  })
+
+  it('old workspaces hydrate with defaults instead of being wiped', () => {
+    const ws = sanitizeWorkspace({ sizes: { media: 20 }, hidden: { timeline: true } })
+    expect(ws.sizes.media).toBe(20)
+    expect(ws.hidden.timeline).toBe(true)
+    expect(ws.keyframeGraphHeights).toEqual({})
+  })
+})
+
+describe('workspace store persistence (0.18.0)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    localStorage.clear()
+    useWorkspaceStore.setState(defaultWorkspace())
+  })
+
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+
+  it('does not let a pending size debounce overwrite a keyframe graph height', () => {
+    useWorkspaceStore.getState().setSize('media', 25)
+    useWorkspaceStore.getState().setKeyframeGraphHeight('opacity', 120)
+    // The size write is still pending; the graph-height write must cancel it,
+    // or the delayed snapshot reverts the graph height 300 ms later.
+    vi.advanceTimersByTime(400)
+    const raw = localStorage.getItem(WORKSPACE_STORAGE_KEY)
+    expect(raw).toBeTruthy()
+    const stored = JSON.parse(raw!) as {
+      sizes: { media: number }
+      keyframeGraphHeights: { opacity?: number }
+    }
+    expect(stored.keyframeGraphHeights.opacity).toBe(120)
+    expect(stored.sizes.media).toBe(25)
   })
 })

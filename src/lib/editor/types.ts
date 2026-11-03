@@ -369,6 +369,13 @@ export interface Track {
   id: string
   kind: TrackKind
   name: string
+  /**
+   * True when the name is editor-generated (`A2`, `V3`) and may be renumbered
+   * positionally when tracks are added (0.18.0). Absent means auto for a name
+   * matching `^[VAT]\d+$`; an explicit `false` marks a custom name, so a
+   * custom name that happens to match the pattern is never renumbered.
+   */
+  autoName?: boolean
   /** Mutes the whole track (audio only; video frames still render). */
   muted?: boolean
   /**

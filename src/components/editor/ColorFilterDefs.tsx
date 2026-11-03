@@ -2,7 +2,7 @@
 
 import { buildColorMatrix, colorFilterId, hasColorMatrix, lutFilterId } from '@/lib/editor/color'
 import { lutShaperValues } from '@/lib/editor/lut'
-import { useEditorStore } from '@/lib/editor/store'
+import { useEditorStore, useStableDoc } from '@/lib/editor/store'
 import type { ProjectLut } from '@/lib/editor/types'
 
 /**
@@ -32,7 +32,7 @@ import type { ProjectLut } from '@/lib/editor/types'
 export function ColorFilterDefs() {
   // Select the doc (a stable reference) and derive per render: a selector that
   // returned a fresh array would re-render forever under zustand v5.
-  const doc = useEditorStore((s) => s.doc)
+  const doc = useStableDoc()
   // Include every clip in the doc's reachable compound graph (0.8.1): a nested
   // clip's grade/LUT needs its SVG def mounted even while the root shows the
   // container. A superset is harmless, so root plus every sequence is enough.

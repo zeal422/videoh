@@ -23,7 +23,7 @@ import {
   markerFromSelection,
   type MarkerSelection,
 } from '@/lib/editor/markers'
-import { useEditorStore } from '@/lib/editor/store'
+import { useEditorStore, useStableDoc } from '@/lib/editor/store'
 import { formatTime } from '@/lib/editor/time'
 import type { MarkerColor } from '@/lib/editor/types'
 import { cn } from '@/lib/utils'
@@ -39,7 +39,7 @@ import { cn } from '@/lib/utils'
  * undo or a delete that removes it closes the dialog without extra effects.
  */
 export function MarkerDialog() {
-  const doc = useEditorStore((s) => s.doc)
+  const doc = useStableDoc()
   const [editing, setEditing] = useState<MarkerSelection | null>(null)
   const [name, setName] = useState('')
   const [notes, setNotes] = useState('')

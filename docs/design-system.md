@@ -111,13 +111,16 @@ product proof, privacy story, CTA, FAQ, and legal pages.
 - **Feature strip.** Four promises sit in a `gap-px` grid: the outer white/6 surface shows through as
   a one-pixel divider, and each item uses the dark site panel. The strip is four columns on desktop,
   two on tablet, and one on mobile.
-- **Product showcase.** The real `public/screenshots/editor.png` capture at 1600x1000 sits in the
+- **Product showcase.** The real `src/assets/editor-screenshot.png` capture at 1921x1079 sits in the
   wide right column with `next/image`, explicit dimensions, `sizes`, `loading="lazy"`, and descriptive
-  alt text. The demo project uses the repository's own `public/samples` video, audio, and image, so
-  the media bin shows all three sample assets while the nine-track timeline shows sampled filmstrips,
-  linked A/V badges, the `A2` volume envelope, and the selected `V1` clip's opacity curve, with the
-  Pen active and the inspector's opacity keyframe graph visible above the full-width timeline. There
-  is no third-party credit. Recapture it when the editor chrome changes.
+  alt text. The 0.18.0 capture uses the Climbing-Vlog project: one video track with filmstrips, two
+  audio tracks with waveforms, a text track, the climb in the program monitor, and the Effect
+  Controls inspector. There is no third-party credit. Recapture it when the editor chrome or demo
+  project changes.
+- **Replacing the capture.** Replace `src/assets/editor-screenshot.png` at 1921x1079 and update
+  `SCREENSHOT_ALT` and the `width`/`height` in `ProductShowcase.tsx`. The static import emits a
+  content-hashed URL, so a new file gets a new URL automatically and cannot reuse the old optimized
+  WebP variant. Rebuild the production output after the swap (`bun run check` or `bun run build`).
 - **Tools band.** A self-contained full-bleed gradient band with the sampled purple-to-red palette, a
   warm glow at the top right, a field of small coloured particles with a few larger drifting motes,
   and five gradient-bordered tiles. The particle field lives on the band's `::before`; the blurred
@@ -174,21 +177,26 @@ them:
   - drop indicators take the dragged media's kind colour (`+ V2` emerald, `+ A2` amber)
 - **Filmstrip layer.** Video and image clips paint a `Filmstrip` layer at the bottom of the clip
   body: sampled source cells for video, the image itself for an image, and the poster behind while a
-  strip loads. A top and bottom black scrim keeps the label readable. The layer never takes pointer
-  events; the label, badges, waveform, trim handles, and markers stay above it, and the strip is
-  clipped by the clip's rounded border.
+  strip loads. Only the visible tile of a long clip is generated, at layout density. A top and
+  bottom black scrim keeps the label readable. The layer never takes pointer events; the label,
+  badges, waveform, trim handles, and markers stay above it, and the strip is clipped by the clip's
+  rounded border. While a strip is generating, a thin progress bar sits at the clip bottom after
+  300 ms, and the timeline header carries the global `Thumbnails 12/24` readout.
 - **Automation envelopes.** Audio-bearing clips paint volume as a 1.5px white line with
   `stroke-white/90` and 6px white dots inside 12px hit targets; picture clips use the same component
   for opacity, mapped 0..100% instead of the dB domain. The curve is deliberately not the selection
-  rose: rose stays the selection/playhead signal. The plot is inset 8px from the trim handles, sits
-  above the waveform and below the label and z-10 trim handles, and only the dots and the 10px
-  transparent hit path take pointer events. A muted clip dims the volume layer to 50% but keeps it
-  editable; opacity is not an audio property and never dims on mute. On a solo video under the Pen
-  the opacity instance owns the line and the volume overlay sets `dotsOnly`: the visible volume path
-  is hidden and only its dots stay live. The shared `KeyframeGraph` draws the same volume curve in
-  its dB mode on an 80px box, with 7px `-inf`, `-6 dB`, and `0 dB` labels over the muted graph
-  background. Its dots and easing handles read the same dB mapping as the curve, so a unity point
-  sits on the 0 dB line.
+  rose: rose stays the selection/playhead signal. The plot spans the full clip height, is inset 8px
+  from the trim handles, sits above the waveform and below the label and z-10 trim handles, and only
+  the dots and the 10px transparent hit path take pointer events. Dot centers sit on the value line
+  at the clip edges, and the 12px hit target is clamped fully inside the endpoints. A muted clip dims
+  the volume layer to 50% but keeps it editable; opacity is not an audio property and never dims on
+  mute. On a solo video under the Pen the opacity instance owns the line and the volume overlay sets
+  `dotsOnly`: the visible volume path is hidden and only its dots stay live. The shared
+  `KeyframeGraph` draws the same volume curve in its dB mode, with 7px `-inf`, `-6 dB`, and `0 dB`
+  labels over the muted graph background. The graph defaults to 80px for dB and 40px for linear,
+  resizes 32..240px per property from its bottom handle, and stores that height in the workspace
+  rather than the Doc. Its dots and easing handles read the same dB mapping as the curve, so a unity
+  point sits on the 0 dB line.
 - **Marker swatches** use the eight-colour Premiere palette (`MARKER_COLOR_VALUES` in
   `markers.ts`, Tailwind 500-family values) applied as an inline `backgroundColor`. They are content
   data (the colour the user picked) and stay fixed across themes.

@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
 import { TimelinePanel } from '@/components/editor/timeline/TimelinePanel'
-import { FILMSTRIP_DEBOUNCE_MS } from '@/components/editor/timeline/Filmstrip'
+import { Filmstrip, FILMSTRIP_DEBOUNCE_MS } from '@/components/editor/timeline/Filmstrip'
 import { createClip, createMediaAsset, createTrack } from '@/lib/editor/factories'
 import { useEditorStore } from '@/lib/editor/store'
 import { disposeAll, setFilmstripImageLoader } from '@/lib/editor/media/filmstrip-cache'
@@ -227,12 +227,12 @@ describe('filmstrip layer', () => {
     expect(waveformCanvas(screen.getByTestId('clip-clip-a'))).toBeInTheDocument()
   })
 
-  it('keeps the waveform on a solo video (positive control)', async () => {
+  it('a solo video keeps its filmstrip and draws no waveform (0.18.0)', async () => {
     useEditorStore.setState({ doc: makeDoc({ twin: false }) })
     render(<TimelinePanel />)
     await settleStrips()
     const clip = screen.getByTestId('clip-clip-v')
-    expect(waveformCanvas(clip)).toBeInTheDocument()
+    expect(waveformCanvas(clip)).toBeUndefined()
     expect(filmstripCanvas(clip)).toBeInTheDocument()
   })
 
@@ -288,6 +288,58 @@ describe('filmstrip layer', () => {
       await flushMicrotasks()
     })
     expect(root).toHaveAttribute('data-filmstrips-ready', 'true')
+  })
+})
+
+describe('filmstrip viewport mount (0.18.0)', () => {
+  it('recomputes the viewport when the root mounts after the asset arrives', async () => {
+    const scroll = document.createElement('div')
+    scroll.setAttribute('data-timeline-scroll', '')
+    document.body.appendChild(scroll)
+    const rect = (left: number, right: number, width: number) =>
+      ({
+        left,
+        right,
+        width,
+        top: 0,
+        bottom: 100,
+        height: 100,
+        x: left,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: Element,
+    ) {
+      if (this.hasAttribute('data-timeline-scroll')) return rect(0, 1_000, 1_000)
+      if (this.hasAttribute('data-filmstrip-ready')) return rect(0, 10_000, 10_000)
+      return rect(0, 0, 0)
+    })
+    try {
+      const clip = createClip({
+        id: 'clip-long',
+        mediaId: ASSET.id,
+        start: 0,
+        duration: 100,
+        inPoint: 0,
+      })
+      const { container, rerender } = render(
+        <Filmstrip clip={clip} asset={undefined} widthPx={10_000} height={44} fps={30} />,
+      )
+      // No plan yet: the root is not mounted, so the effect cannot read it.
+      expect(container.querySelector('[data-filmstrip-ready]')).toBeNull()
+
+      rerender(<Filmstrip clip={clip} asset={ASSET} widthPx={10_000} height={44} fps={30} />)
+      await act(async () => {})
+      const canvas = container.querySelector('[data-testid=filmstrip-canvas]') as HTMLCanvasElement
+      expect(canvas).toBeInTheDocument()
+      // The tiled plan uses the 1,000px viewport (padded to 1,280), not the
+      // 10,000px clip width.
+      expect(canvas.style.width).toBe('1280px')
+    } finally {
+      spy.mockRestore()
+      scroll.remove()
+    }
   })
 })
 

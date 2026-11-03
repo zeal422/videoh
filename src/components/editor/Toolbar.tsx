@@ -53,13 +53,13 @@ import { nextZoomPxPerSec } from '@/lib/editor/timeline-scroll'
 import { projectFileName, serializeDoc } from '@/lib/editor/serialization'
 import { openProjectFile } from '@/lib/editor/project-io'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
-import { useEditorStore } from '@/lib/editor/store'
+import { useEditorStore, useStableDoc } from '@/lib/editor/store'
 import type { TextStyle } from '@/lib/editor/types'
 import { isAutomationGestureLive } from '@/hooks/editor/gesture-state'
 
 /** Top toolbar: tools (V/C), edit history, edit tools, zoom, project name, project IO, export. */
 export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
-  const doc = useEditorStore((s) => s.doc)
+  const doc = useStableDoc()
   const past = useEditorStore((s) => s.past)
   const future = useEditorStore((s) => s.future)
   const selections = useEditorStore((s) => s.selections)

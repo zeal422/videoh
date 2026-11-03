@@ -14,7 +14,7 @@
 
 import { MIN_CLIP_DURATION, SNAP_THRESHOLD_PX, SPEED_MAX, SPEED_MIN } from './constants'
 import { applySnap } from './snap'
-import type { Clip } from './types'
+import type { Clip, TrackKind } from './types'
 
 /** A timeline lane's live box in viewport coordinates (read by ClipView). */
 export interface LaneBox {
@@ -30,6 +30,21 @@ export interface TrackView {
   kind: string
   name: string
   locked?: boolean
+}
+
+/**
+ * Where a drop would insert a new track (0.18.0). The boundary is resolved
+ * against the base doc at commit time, never stored as an absolute index.
+ */
+export type InsertBoundary =
+  | { type: 'before'; trackId: string; sequenceId?: string }
+  | { type: 'after'; trackId: string; sequenceId?: string }
+  | { type: 'outer'; kind: TrackKind; side: 'top' | 'bottom'; sequenceId?: string }
+
+/** A pending track creation: the boundary and the kind of lane to create. */
+export interface PendingInsert {
+  boundary: InsertBoundary
+  kind: TrackKind
 }
 
 /** A lane the drop cannot use, with the reason the release toast reports. */
@@ -54,6 +69,17 @@ export interface MoveDecision {
   /** The snap guide time to show, or null. */
   snapped: number | null
   partnerUpdates: { clipId: string; trackId: string; start: number }[]
+  /**
+   * A track to create on release. While this is set the clip stays on its
+   * original lane and the UI shows an insertion line instead of moving it to
+   * a lane that does not exist yet.
+   */
+  insert: PendingInsert | null
+}
+
+/** Video and image clips share the video lane family; audio is its own. */
+function sameKindFamily(a: string, b: string): boolean {
+  return a === b || (a === 'image' && b === 'video') || (b === 'image' && a === 'video')
 }
 
 /**
@@ -71,10 +97,152 @@ export function resolveLaneDrop(
   const lane = lanes.find((l) => clientY >= l.top && clientY <= l.bottom)
   if (!lane) return { laneId: null, blocked: null }
   if (lane.id === origTrackId) return { laneId: origTrackId, blocked: null }
-  const sameFamily = (a: string, b: string) =>
-    a === b || (a === 'image' && b === 'video') || (b === 'image' && a === 'video')
-  if (sameFamily(lane.kind, origTrackKind)) return { laneId: lane.id, blocked: null }
+  if (sameKindFamily(lane.kind, origTrackKind)) return { laneId: lane.id, blocked: null }
   return { laneId: null, blocked: { reason: 'kind', id: lane.id, kind: lane.kind } }
+}
+
+/** Convention order, matching `reorderTracksConvention` in commands.ts. */
+const TRACK_RANK: Record<TrackKind, number> = { text: 0, video: 1, audio: 2 }
+
+/**
+ * The absolute index a pending insert boundary resolves to. `tracks` is the
+ * owning list (root or one compound sequence). An outer boundary lands at the
+ * outer edge of that kind's group; when the kind has no tracks it falls back
+ * to the convention position (text, video, audio).
+ */
+export function resolveInsertIndex(tracks: readonly TrackView[], boundary: InsertBoundary): number {
+  if (boundary.type === 'before' || boundary.type === 'after') {
+    const index = tracks.findIndex((t) => t.id === boundary.trackId)
+    if (index === -1) return tracks.length
+    return boundary.type === 'before' ? index : index + 1
+  }
+  const owned = tracks
+    .map((track, index) => ({ track, index }))
+    .filter((entry) => entry.track.kind === boundary.kind)
+  if (owned.length > 0) {
+    return boundary.side === 'top' ? owned[0].index : owned[owned.length - 1].index + 1
+  }
+  // No track of this kind: the first lane that convention puts BELOW this
+  // kind is where the group belongs. Audio is last, so it appends.
+  const rank = TRACK_RANK[boundary.kind]
+  const firstBelow = tracks.findIndex((track) => TRACK_RANK[track.kind as TrackKind] > rank)
+  return firstBelow === -1 ? tracks.length : firstBelow
+}
+
+/**
+ * The lane element an insertion line attaches to: the track at the resolved
+ * index, or the last lane's bottom when the insert appends.
+ */
+export function insertAnchor(
+  tracks: readonly TrackView[],
+  boundary: InsertBoundary,
+): { trackId: string; side: 'before' | 'after' } | null {
+  if (tracks.length === 0) return null
+  const index = resolveInsertIndex(tracks, boundary)
+  if (index >= tracks.length) return { trackId: tracks[tracks.length - 1].id, side: 'after' }
+  return { trackId: tracks[Math.max(0, index)].id, side: 'before' }
+}
+
+/** The nearest existing lane that can host the dragged kind, by center distance. */
+function nearestCompatibleTrack(
+  lanes: LaneBox[],
+  tracks: readonly TrackView[],
+  clientY: number,
+  kind: string,
+): string | null {
+  let best: { id: string; distance: number } | null = null
+  for (const track of tracks) {
+    if (!sameKindFamily(track.kind, kind)) continue
+    const lane = lanes.find((l) => l.id === track.id)
+    const distance = lane ? Math.abs(clientY - (lane.top + lane.bottom) / 2) : Infinity
+    if (!best || distance < best.distance) best = { id: track.id, distance }
+  }
+  return best?.id ?? null
+}
+
+interface DropResolution {
+  laneId: string | null
+  blocked: BlockedLane | null
+  insert: PendingInsert | null
+}
+
+/**
+ * The full lane resolution (0.18.0): an existing compatible lane, a pending
+ * insert, or a blocked lane. A gap between two lanes of the dragged kind
+ * creates a track at that boundary; a mixed-kind gap moves to the nearest
+ * compatible existing track; the outer edge of the dragged kind creates a
+ * track at that edge. Text clips never create tracks.
+ */
+export function resolveDrop(args: {
+  lanes: LaneBox[]
+  tracks: readonly TrackView[]
+  clientY: number
+  origTrackId: string
+  origTrackKind: string
+  sequenceId?: string
+}): DropResolution {
+  const { lanes, tracks, clientY, origTrackId, origTrackKind, sequenceId } = args
+  const lane = lanes.find((l) => clientY >= l.top && clientY <= l.bottom)
+  if (lane) {
+    if (lane.id === origTrackId) return { laneId: origTrackId, blocked: null, insert: null }
+    if (sameKindFamily(lane.kind, origTrackKind)) {
+      return { laneId: lane.id, blocked: null, insert: null }
+    }
+    return {
+      laneId: null,
+      blocked: { reason: 'kind', id: lane.id, kind: lane.kind },
+      insert: null,
+    }
+  }
+
+  const sorted = [...lanes].sort((a, b) => a.top - b.top)
+  if (sorted.length === 0) return { laneId: origTrackId, blocked: null, insert: null }
+  const first = sorted[0]
+  const last = sorted[sorted.length - 1]
+  const aboveAll = clientY < first.top
+  const belowAll = clientY > last.bottom
+  const above = [...sorted].reverse().find((l) => l.bottom <= clientY)
+  const below = sorted.find((l) => l.top >= clientY)
+
+  // The dragged kind's own outer edge creates a lane there. Video lives at
+  // the top of the stack; audio at the bottom.
+  const kind: TrackKind =
+    origTrackKind === 'audio' ? 'audio' : origTrackKind === 'text' ? 'text' : 'video'
+  const insert = (boundary: InsertBoundary): DropResolution => ({
+    laneId: origTrackId,
+    blocked: null,
+    insert: { boundary, kind },
+  })
+  if (kind === 'video' && aboveAll) {
+    return insert({ type: 'outer', kind, side: 'top', ...(sequenceId ? { sequenceId } : {}) })
+  }
+  if (kind === 'audio' && belowAll) {
+    return insert({ type: 'outer', kind, side: 'bottom', ...(sequenceId ? { sequenceId } : {}) })
+  }
+  // A gap between two lanes of the dragged kind is a same-kind gap.
+  if (
+    kind !== 'text' &&
+    above &&
+    below &&
+    sameKindFamily(above.kind, origTrackKind) &&
+    sameKindFamily(below.kind, origTrackKind)
+  ) {
+    return insert({
+      type: 'after',
+      trackId: above.id,
+      ...(sequenceId ? { sequenceId } : {}),
+    })
+  }
+  // Mixed-kind gap (or a gap at the wrong outer edge): nearest compatible lane.
+  const nearest = nearestCompatibleTrack(sorted, tracks, clientY, origTrackKind)
+  if (nearest) return { laneId: nearest, blocked: null, insert: null }
+  if (kind === 'text') return { laneId: origTrackId, blocked: null, insert: null }
+  return insert({
+    type: 'outer',
+    kind,
+    side: kind === 'video' ? 'top' : 'bottom',
+    ...(sequenceId ? { sequenceId } : {}),
+  })
 }
 
 /**
@@ -120,6 +288,8 @@ export function decideMove(args: {
   snapping: boolean
   snapPoints: number[]
   partners: GesturePartner[]
+  /** Owning compound sequence for a pending insert; undefined = project root. */
+  sequenceId?: string
 }): MoveDecision {
   const {
     orig,
@@ -134,15 +304,22 @@ export function decideMove(args: {
     snapping,
     snapPoints,
     partners,
+    sequenceId,
   } = args
   const dxSec = (clientX - startX) / scale
 
-  // Lane under the pointer (compatible kinds only; anything else is blocked).
-  let targetTrackId = origTrackId
-  let blockedLane: MoveDecision['blockedLane'] = null
-  const drop = resolveLaneDrop(lanes, clientY, origTrackId, origTrackKind)
-  if (drop.laneId && drop.laneId !== origTrackId) targetTrackId = drop.laneId
-  if (drop.blocked) blockedLane = drop.blocked
+  // Lane under the pointer: an existing compatible lane, a pending insert, or
+  // a blocked lane.
+  const drop = resolveDrop({
+    lanes,
+    tracks,
+    clientY,
+    origTrackId,
+    origTrackKind,
+    sequenceId,
+  })
+  const targetTrackId = drop.laneId ?? origTrackId
+  let blockedLane: MoveDecision['blockedLane'] = drop.blocked
 
   // Time: never before 0, snapped to either edge when snapping is on.
   const rawStart = Math.max(0, orig.start + dxSec)
@@ -153,10 +330,14 @@ export function decideMove(args: {
 
   // The whole selection follows: same time delta; when the dragged clip
   // changed lane, partners shift by the SAME track-index offset (skipped
-  // when the destination lane is missing or a different kind).
+  // when the destination lane is missing or a different kind). A pending
+  // insert creates a lane only for the dragged kind, so partners keep their
+  // existing compatible lanes and only shift in time.
   const delta = start - orig.start
-  const dIndex =
-    tracks.findIndex((t) => t.id === targetTrackId) - tracks.findIndex((t) => t.id === origTrackId)
+  const dIndex = drop.insert
+    ? 0
+    : tracks.findIndex((t) => t.id === targetTrackId) -
+      tracks.findIndex((t) => t.id === origTrackId)
   const partnerUpdates: MoveDecision['partnerUpdates'] = []
   for (const p of partners) {
     let partnerTrackId = tracks[p.trackIndex]?.id
@@ -194,12 +375,26 @@ export function decideMove(args: {
       // No half move: the dragged clip returns to its lane and the partners
       // plan nothing. ClipView cancels the transient on release, so an earlier
       // legal time shift is rolled back too.
-      targetTrackId = origTrackId
       partnerUpdates.length = 0
+      return {
+        targetTrackId: origTrackId,
+        blockedLane,
+        start,
+        snapped,
+        partnerUpdates,
+        insert: null,
+      }
     }
   }
 
-  return { targetTrackId, blockedLane, start, snapped, partnerUpdates }
+  return {
+    targetTrackId,
+    blockedLane,
+    start,
+    snapped,
+    partnerUpdates,
+    insert: blockedLane ? null : drop.insert,
+  }
 }
 
 /**

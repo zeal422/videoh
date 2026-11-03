@@ -10,7 +10,6 @@ import {
   Link2,
   Loader2,
   Plus,
-  Sparkles,
   Trash2,
 } from 'lucide-react'
 
@@ -23,8 +22,8 @@ import { buildProxy, dropProxy } from '@/lib/editor/media/proxies'
 import { shouldProxy } from '@/lib/editor/proxy'
 import { commandsToAddMedia } from '@/lib/editor/actions'
 import { activeSequenceDuration } from '@/lib/editor/factories'
-import { importMediaFiles, loadSampleMedia } from '@/lib/editor/project-io'
-import { useEditorStore } from '@/lib/editor/store'
+import { importMediaFiles } from '@/lib/editor/project-io'
+import { useEditorStore, useStableDoc } from '@/lib/editor/store'
 import type { MediaAsset } from '@/lib/editor/types'
 import { cn } from '@/lib/utils'
 
@@ -35,9 +34,6 @@ export function MediaBin({ className, heading = true }: { className?: string; he
   const setSourceAsset = useEditorStore((s) => s.setSourceAsset)
   const [importing, setImporting] = useState(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  // Re-entrancy guard: "Load sample media" is async (3 fetches + probes), so
-  // rapid re-presses must not race past the dedup check inside loadSamples.
-  const loadingSamplesRef = useRef(false)
 
   const importFiles = useCallback(async (files: FileList | File[]) => {
     setImporting((n) => n + 1)
@@ -45,27 +41,6 @@ export function MediaBin({ className, heading = true }: { className?: string; he
       await importMediaFiles(files)
     } finally {
       setImporting((n) => n - 1)
-    }
-  }, [])
-
-  const loadSamples = useCallback(async () => {
-    if (loadingSamplesRef.current) return
-    loadingSamplesRef.current = true
-    setImporting((n) => n + 1)
-    try {
-      // Imports samples the bin lacks and refetches the ones that came back
-      // offline, so a restored session recovers its samples in one click
-      // instead of hitting a name-only "already loaded" dead end.
-      const result = await loadSampleMedia()
-      if (result.upToDate) {
-        toast({
-          title: 'Sample media already loaded',
-          description: 'All samples are already in your media bin.',
-        })
-      }
-    } finally {
-      setImporting((n) => n - 1)
-      loadingSamplesRef.current = false
     }
   }, [])
 
@@ -162,30 +137,12 @@ export function MediaBin({ className, heading = true }: { className?: string; he
         />
       </div>
 
-      <div className="px-3 pt-2">
-        <Button
-          size="sm"
-          variant="outline"
-          className="h-7 w-full gap-1.5 text-xs"
-          disabled={importing > 0}
-          onClick={() => void loadSamples()}
-        >
-          {importing > 0 ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Sparkles className="size-3.5" />
-          )}
-          Load sample media
-        </Button>
-      </div>
-
       <div className="editor-scroll mt-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3 pb-3">
         {media.length === 0 && (
           <div className="mt-6 rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
             <p className="font-medium">No media yet</p>
             <p className="mt-1 leading-relaxed">
-              Import video, audio, or image files. Click <em>Load sample media</em> to try the
-              editor. Drag assets onto the timeline.
+              Import video, audio, or image files, then drag assets onto the timeline.
             </p>
           </div>
         )}

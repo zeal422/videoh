@@ -63,7 +63,11 @@ export type MediaResolver = (
 ) =>
   | {
       asset: MediaAsset
-      el?: HTMLVideoElement | HTMLImageElement
+      /**
+       * The frame source. A video element for playback, an image element for
+       * stills, and a canvas or bitmap for a WebCodecs scrub frame (0.18.0).
+       */
+      el?: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement | ImageBitmap
       /**
        * Present only when the clip reads strictly below the source frame rate
        * and the partner frame is decodable. The engine resolves the partner
@@ -549,6 +553,15 @@ function drawClipCore(
 
   if (asset.kind === 'image') {
     drawContain(ctx, el as HTMLImageElement, width, height, alpha, filter, transform, lut)
+    return
+  }
+  // A WebCodecs scrub frame is a canvas or bitmap: draw it directly, with the
+  // same contain geometry and grade as a video frame. Blend stays video-only.
+  if (
+    (typeof HTMLCanvasElement !== 'undefined' && el instanceof HTMLCanvasElement) ||
+    (typeof ImageBitmap !== 'undefined' && el instanceof ImageBitmap)
+  ) {
+    drawContain(ctx, el, width, height, alpha, filter, transform, lut)
     return
   }
   const video = el as HTMLVideoElement

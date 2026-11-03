@@ -60,6 +60,8 @@ import { linkedAudioTwin } from '@/lib/editor/links'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
 import { lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
 import { frameToTime } from '@/lib/editor/time'
+import { KEYFRAME_GRAPH_MAX_HEIGHT, KEYFRAME_GRAPH_MIN_HEIGHT } from '@/lib/editor/workspace'
+import { useWorkspaceStore } from '@/lib/editor/workspace-store'
 import { toast } from '@/hooks/use-toast'
 import { dbToUnit, formatDb, gainToUnit, unitToGain } from '@/lib/editor/volume-automation'
 import type { Clip, Keyframe, KeyframeInterpolation } from '@/lib/editor/types'
@@ -613,6 +615,20 @@ function KeyframeGraph({
   // moment a crossing frame lands, so the index captured below stops naming
   // the grabbed keyframe: the drag looks it up by the time it last wrote.
   const dragTimeRef = useRef(0)
+  // The pointerdown origin for the two-axis dot drag (0.18.0): time and value
+  // are applied as deltas from here, so an off-center press cannot jump.
+  const dragStartRef = useRef({ x: 0, y: 0, time: 0, value: 0 })
+  // Live graph height while the bottom handle is dragged. The committed value
+  // lives in the workspace store, never in the Doc.
+  const storedHeight = useWorkspaceStore((s) => s.keyframeGraphHeights[property])
+  const setKeyframeGraphHeight = useWorkspaceStore((s) => s.setKeyframeGraphHeight)
+  const [dragHeight, setDragHeight] = useState<number | null>(null)
+  const graphHeight = dragHeight ?? storedHeight ?? (scale === 'db' ? 80 : 40)
+  const [resizeDrag, setResizeDrag] = useState<{
+    pointerId: number
+    startY: number
+    startHeight: number
+  } | null>(null)
 
   useEffect(() => {
     if (dragIndex === null) return
@@ -622,8 +638,8 @@ function KeyframeGraph({
       if (e.pointerId !== pointerId) return
       if (currentTransientToken() !== tokenRef.current) return
       const rect = wrapRef.current?.getBoundingClientRect()
-      if (!rect || rect.width <= 0) return
-      const t = ((e.clientX - rect.left) / rect.width) * clip.duration
+      if (!rect || rect.width <= 0 || rect.height <= 0) return
+      const start = dragStartRef.current
       const live = useEditorStore.getState().doc
       const clipNow = findClip(live, clip.id)?.clip
       const kfs = clipNow?.keyframes?.[property]
@@ -638,8 +654,25 @@ function KeyframeGraph({
           ? dragIndex
           : kfs.findIndex((k) => k.time === dragTimeRef.current)
       if (target < 0) return
+      // Horizontal movement changes time; vertical movement changes value
+      // (0.18.0). Time keeps the established absolute pointer mapping; value
+      // is a delta from the pointerdown origin so an off-center press cannot
+      // jump it.
+      const t = ((e.clientX - rect.left) / rect.width) * clip.duration
       const time = Math.max(0, Math.min(clip.duration, axis(t)))
-      const next = kfs.map((k, i) => (i === target ? { ...k, time } : k))
+      const bounds = KEYFRAME_PROPERTY_BOUNDS[property]
+      const nextValue =
+        scale === 'db'
+          ? unitToGain(
+              Math.max(
+                0,
+                Math.min(1, gainToUnit(start.value) + (start.y - e.clientY) / rect.height),
+              ),
+            )
+          : start.value +
+            ((start.y - e.clientY) / rect.height) * Math.max(1e-6, bounds.max - bounds.min)
+      const value = clampPropertyValue(property, nextValue)
+      const next = kfs.map((k, i) => (i === target ? { ...k, time, value } : k))
       dragTimeRef.current = time
       store.applyTransient({ type: 'setClipKeyframes', clipId: clip.id, property, keyframes: next })
     }
@@ -679,7 +712,42 @@ function KeyframeGraph({
     // same dot by a second pointer must hand ownership over instead of leaving
     // the listeners filtering for the first one. `dragTimeRef` is read live and
     // mutates per frame, so it stays out of the dependency list on purpose.
-  }, [dragIndex, clip.id, clip.duration, property, pointerId])
+  }, [dragIndex, clip.id, clip.duration, property, pointerId, scale])
+
+  // Bottom-edge resize (0.18.0): UI state only, so it never enters the Doc or
+  // the undo history. The live height follows the pointer; the workspace store
+  // gets one write on release.
+  useEffect(() => {
+    if (!resizeDrag) return
+    const clampHeight = (value: number) =>
+      Math.max(KEYFRAME_GRAPH_MIN_HEIGHT, Math.min(KEYFRAME_GRAPH_MAX_HEIGHT, value))
+    const onMove = (e: PointerEvent) => {
+      if (e.pointerId !== resizeDrag.pointerId) return
+      setDragHeight(clampHeight(resizeDrag.startHeight + (e.clientY - resizeDrag.startY)))
+    }
+    const onUp = (e: PointerEvent) => {
+      if (e.pointerId !== resizeDrag.pointerId) return
+      setKeyframeGraphHeight(
+        property,
+        clampHeight(resizeDrag.startHeight + (e.clientY - resizeDrag.startY)),
+      )
+      setResizeDrag(null)
+      setDragHeight(null)
+    }
+    const onCancel = (e: PointerEvent) => {
+      if (e.pointerId !== resizeDrag.pointerId) return
+      setResizeDrag(null)
+      setDragHeight(null)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, true)
+    window.addEventListener('pointercancel', onCancel, true)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp, true)
+      window.removeEventListener('pointercancel', onCancel, true)
+    }
+  }, [resizeDrag, property, setKeyframeGraphHeight])
 
   const bounds = KEYFRAME_PROPERTY_BOUNDS[property]
   const span = Math.max(1e-6, bounds.max - bounds.min)
@@ -934,9 +1002,9 @@ function KeyframeGraph({
       ref={wrapRef}
       data-testid={`kf-graph-${property}`}
       data-active-quad={active?.quadAttr}
-      className={`relative w-full rounded border border-border bg-muted/30 ${
-        scale === 'db' ? 'h-20' : 'h-10'
-      }`}
+      data-graph-height={Math.round(graphHeight)}
+      className="relative w-full rounded border border-border bg-muted/30"
+      style={{ height: graphHeight }}
       onKeyDown={swallowArrows}
     >
       <svg
@@ -1031,7 +1099,8 @@ function KeyframeGraph({
             aria-valuenow={Number(k.time.toFixed(2))}
             aria-valuemin={0}
             aria-valuemax={clip.duration}
-            className={`absolute size-2.5 -translate-x-1/2 translate-y-1/2 cursor-ew-resize rounded-full border bg-amber-400 ${
+            aria-valuetext={`${k.time.toFixed(2)} seconds, ${formatValue(property, k.value)}`}
+            className={`absolute z-30 size-2.5 -translate-x-1/2 translate-y-1/2 cursor-move rounded-full border bg-amber-400 ${
               eased ? 'border-dashed border-amber-700' : 'border-amber-600'
             }`}
             style={{ left: `${left}%`, bottom: `${Math.max(0, Math.min(100, bottom))}%` }}
@@ -1040,6 +1109,7 @@ function KeyframeGraph({
               if (refuseLockedClip(clip.id)) return
               tokenRef.current = useEditorStore.getState().beginTransient(e.pointerId)
               dragTimeRef.current = k.time
+              dragStartRef.current = { x: e.clientX, y: e.clientY, time: k.time, value: k.value }
               setPointerId(e.pointerId)
               setDragIndex(i)
             }}
@@ -1056,6 +1126,33 @@ function KeyframeGraph({
           />
         )
       })}
+      {/* Bottom-edge resize handle (0.18.0). Height is UI state: it persists
+          in the workspace store and never creates an undo entry. */}
+      <div
+        data-testid={`kf-resize-${property}`}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label={`Resize ${property} keyframe graph`}
+        tabIndex={0}
+        className="absolute inset-x-0 bottom-0 z-20 h-1.5 cursor-ns-resize rounded-b bg-transparent hover:bg-border focus-visible:bg-border focus-visible:outline-none"
+        onPointerDown={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          setResizeDrag({ pointerId: e.pointerId, startY: e.clientY, startHeight: graphHeight })
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+          e.preventDefault()
+          e.stopPropagation()
+          setKeyframeGraphHeight(
+            property,
+            Math.max(
+              KEYFRAME_GRAPH_MIN_HEIGHT,
+              Math.min(KEYFRAME_GRAPH_MAX_HEIGHT, graphHeight + (e.key === 'ArrowDown' ? 8 : -8)),
+            ),
+          )
+        }}
+      />
     </div>
   )
 }

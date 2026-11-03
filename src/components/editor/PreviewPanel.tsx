@@ -42,6 +42,7 @@ export function PreviewPanel() {
   const playhead = useEditorStore((s) => s.playhead)
   const playing = useEditorStore((s) => s.playing)
   const mediaError = useEditorStore((s) => s.mediaError)
+  const previewRecovering = useEditorStore((s) => s.previewRecovering)
   const selection = useEditorStore((s) => s.selection)
   const eyedropperArmed = useEditorStore((s) => s.eyedropper) !== null
   const [volume, setVolume] = useState(1)
@@ -301,6 +302,16 @@ export function PreviewPanel() {
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <p className="rounded-lg bg-black/60 px-4 py-2 text-sm text-zinc-300">
                 Import media or press <kbd className="rounded bg-zinc-700 px-1">T</kbd> to add text
+              </p>
+            </div>
+          )}
+          {previewRecovering && !mediaErrorCopy && (
+            <div
+              data-testid="preview-recovering"
+              className="pointer-events-none absolute inset-0 flex items-center justify-center p-4"
+            >
+              <p className="rounded-lg bg-black/60 px-4 py-2 text-sm text-zinc-300">
+                Preview catching up
               </p>
             </div>
           )}

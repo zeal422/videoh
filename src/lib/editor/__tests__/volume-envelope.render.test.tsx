@@ -229,6 +229,18 @@ describe('volume envelope rendering', () => {
     expect(plot.style.left).toBe('8px')
     expect(plot.style.right).toBe('8px')
   })
+
+  it('puts the maximum dot center on the clip top edge and clamps the hit target inside (0.18.0)', () => {
+    seedStore(audioDoc([{ time: 1, value: 2, interpolation: 'linear' }]), 'clip-a')
+    render(<EnvelopeHarness selected />)
+    const dot = screen.getByTestId('volume-dot-0')
+    const visual = screen.getByTestId('volume-visual-0')
+    // Height is 36 and the hit target is 12: its center clamps to 6px below
+    // the top, so the box is fully inside the clip.
+    expect(dot.style.bottom).toBe('30px')
+    // The visual center is the clip's top edge; half of it is clipped.
+    expect(visual.style.bottom).toBe('36px')
+  })
 })
 
 describe('volume envelope gestures', () => {
@@ -563,6 +575,33 @@ describe('volume envelope in the timeline', () => {
     expect(within(videoHalf).getByText('demo.mp4')).toBeInTheDocument()
     expect(within(videoHalf).getByTestId('clip-link-badge')).toBeInTheDocument()
     expect(audioHalf.querySelector('canvas')).not.toBeNull()
+  })
+
+  it('an unlinked video half keeps the filmstrip and gains no waveform (0.18.0)', () => {
+    const video = createClip({
+      id: 'clip-v',
+      mediaId: VIDEO_WITH_AUDIO.id,
+      start: 0,
+      duration: 4,
+    })
+    const twin = createClip({
+      id: 'clip-a',
+      mediaId: VIDEO_WITH_AUDIO.id,
+      start: 0,
+      duration: 4,
+      audioOnly: true,
+    })
+    const doc = projectDoc(
+      [createTrack('video', 1, { clips: [video] }), createTrack('audio', 1, { clips: [twin] })],
+      [VIDEO_WITH_AUDIO],
+    )
+    renderTimeline(doc)
+
+    const videoHalf = screen.getByTestId('clip-clip-v')
+    const audioHalf = screen.getByTestId('clip-clip-a')
+    expect(within(videoHalf).getByTestId('filmstrip-canvas')).toBeInTheDocument()
+    expect(within(videoHalf).queryByTestId('waveform-canvas')).not.toBeInTheDocument()
+    expect(within(audioHalf).getByTestId('waveform-canvas')).toBeInTheDocument()
   })
 
   it('does not capture a click on empty clip space', () => {

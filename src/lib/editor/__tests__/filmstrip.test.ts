@@ -9,6 +9,8 @@ import {
   filmstripCacheKey,
   filmstripCanvasFits,
   filmstripFrameCount,
+  filmstripPlan,
+  filmstripPrefetchTimes,
   filmstripSamples,
 } from '../filmstrip'
 import type { Clip, MediaAsset } from '../types'
@@ -199,6 +201,125 @@ describe('filmstripSamples', () => {
         expect(frame.sourceTime).toBeLessThanOrEqual(asset.duration - 0.01 + 1e-9)
       }
     }
+  })
+
+  it('gives a split half a cell of reuse tolerance and bounds it to the clip window', () => {
+    const long = videoAsset({ duration: 900 })
+    const clip = videoClip({ duration: 900 })
+    const tile = filmstripSamples(clip, long, 10_000, 44, { startPx: 0, widthPx: 1_000 })!
+    expect(tile.sourceStart).toBe(0)
+    expect(tile.sourceEnd).toBeCloseTo(900, 1)
+    expect(tile.cacheTolerance).toBeGreaterThan(1 / 30)
+
+    // A trimmed clip's window follows its in point: reuse cannot reach the
+    // material its head cut away.
+    const trimmed = filmstripSamples(videoClip({ inPoint: 100, duration: 100 }), long, 10_000, 44)!
+    expect(trimmed.sourceStart).toBeCloseTo(100, 6)
+    expect(trimmed.sourceEnd).toBeCloseTo(200, 6)
+
+    // A reversed clip reads the same window backwards; the window stays ordered.
+    const reversed = filmstripSamples(
+      videoClip({ inPoint: 100, duration: 100, reverse: true }),
+      long,
+      10_000,
+      44,
+    )!
+    expect(reversed.sourceStart).toBeCloseTo(100, 6)
+    expect(reversed.sourceEnd).toBeCloseTo(200, 6)
+  })
+})
+
+describe('filmstripPrefetchTimes (0.18.0)', () => {
+  const long = videoAsset({ duration: 900 })
+  const longClip = videoClip({ duration: 900 })
+
+  it('extends the visible grid one tile forward', () => {
+    const plan = filmstripPlan(longClip, long, 10_000, 44, { startPx: 0, widthPx: 1_000 })!
+    const prefetch = filmstripPrefetchTimes(plan)
+    expect(prefetch).toHaveLength(plan.frames.length)
+    expect(prefetch[0]).toBeGreaterThan(plan.frames.at(-1)!.sourceTime)
+    expect(prefetch.at(-1)!).toBeLessThanOrEqual(plan.sourceEnd)
+  })
+
+  it('returns nothing when the whole clip is already visible', () => {
+    const plan = filmstripPlan(videoClip(), videoAsset(), 500, 44)!
+    expect(filmstripPrefetchTimes(plan)).toEqual([])
+  })
+
+  it('extends a reversed clip downward and stops at its in point', () => {
+    const reversed = videoClip({ inPoint: 100, duration: 800, reverse: true })
+    const plan = filmstripPlan(reversed, long, 10_000, 44, { startPx: 0, widthPx: 1_000 })!
+    const prefetch = filmstripPrefetchTimes(plan)
+    expect(prefetch[0]).toBeLessThan(plan.frames.at(-1)!.sourceTime)
+    expect(prefetch.at(-1)!).toBeGreaterThanOrEqual(plan.sourceStart)
+  })
+})
+
+describe('filmstrip viewport tiles (0.18.0)', () => {
+  const asset = videoAsset()
+  const clip = videoClip({ duration: 9 })
+
+  it('samples only the visible range at layout density', () => {
+    const full = filmstripSamples(clip, asset, 10_000, 44)!
+    const tile = filmstripSamples(clip, asset, 10_000, 44, { startPx: 5_000, widthPx: 1_000 })!
+    expect(tile.tileStartPx).toBe(5_000)
+    expect(tile.tileWidthPx).toBe(1_000)
+    expect(tile.widthBucket).toBe(1024)
+    expect(tile.frames.length).toBe(filmstripFrameCount(1_000))
+    // The tile's first cell is around the middle of the source, not the head.
+    expect(tile.frames[0].sourceTime).toBeGreaterThan(full.frames[0].sourceTime)
+    expect(tile.frames.at(-1)!.sourceTime).toBeLessThan(full.frames.at(-1)!.sourceTime)
+  })
+
+  it('clamps a viewport that runs past the clip edge', () => {
+    const tile = filmstripSamples(clip, asset, 1_000, 44, { startPx: 900, widthPx: 500 })!
+    expect(tile.tileStartPx).toBe(900)
+    expect(tile.tileWidthPx).toBe(100)
+  })
+
+  it('keys a scrolled tile differently from the full strip', () => {
+    const head = filmstripSamples(clip, asset, 10_000, 44, { startPx: 0, widthPx: 1_000 })!
+    const middle = filmstripSamples(clip, asset, 10_000, 44, { startPx: 5_000, widthPx: 1_000 })!
+    expect(
+      filmstripCacheKey(
+        clip,
+        asset,
+        middle.widthBucket,
+        middle.heightBucket,
+        middle.tileStartPx,
+        middle.tileWidthPx,
+      ),
+    ).not.toBe(
+      filmstripCacheKey(
+        clip,
+        asset,
+        head.widthBucket,
+        head.heightBucket,
+        head.tileStartPx,
+        head.tileWidthPx,
+      ),
+    )
+  })
+})
+
+describe('filmstripPlan key (0.18.0)', () => {
+  it('uses the untiled base key when no viewport is present', () => {
+    const asset = videoAsset()
+    const a = filmstripPlan(videoClip(), asset, 500, 44)!
+    const b = filmstripPlan(videoClip(), asset, 520, 44)!
+    // Both layout widths bucket to 512: the untiled plan must share the base
+    // key instead of embedding each raw width.
+    expect(a.key).toBe(b.key)
+    expect(a.key.endsWith(':512x44')).toBe(true)
+  })
+
+  it('keeps the tile start and raw tile width when a viewport is present', () => {
+    const asset = videoAsset()
+    const clip = videoClip({ duration: 9 })
+    const tiled = filmstripPlan(clip, asset, 10_000, 44, { startPx: 0, widthPx: 1_000 })!
+    expect(tiled.key.endsWith(':0:1000')).toBe(true)
+    const head = filmstripPlan(clip, asset, 10_000, 44, { startPx: 0, widthPx: 1_000 })!
+    expect(tiled.key).toBe(head.key)
   })
 })
 

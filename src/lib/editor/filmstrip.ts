@@ -41,6 +41,22 @@ export interface FilmstripFrame {
 
 export interface FilmstripSamples extends FilmstripBuckets {
   frames: FilmstripFrame[]
+  /** Tile left relative to the clip, in layout pixels (0 when not tiled). */
+  tileStartPx: number
+  /** Tile width in layout pixels. */
+  tileWidthPx: number
+  /** Ordered source-time window this clip reads (0.18.0). */
+  sourceStart: number
+  sourceEnd: number
+  /**
+   * Split-reuse tolerance: just over half one cell's source span (0.18.0).
+   * A split re-phases the cell grid, so an exact one-frame lookup would miss
+   * every cell of the right half. Half a cell is the sampling granularity the
+   * strip already has, and the window above keeps reuse inside the clip.
+   */
+  cacheTolerance: number
+  /** Whether to decode one tile ahead for a future split (0.18.0). */
+  prefetch: boolean
 }
 
 /** What one clip needs from the runtime cache. */
@@ -51,6 +67,28 @@ export interface FilmstripPlan extends FilmstripBuckets {
   /** Key without the buckets, for the previous-strip fallback. */
   sourceKey: string
   frames: FilmstripFrame[]
+  /** Tile left relative to the clip, in layout pixels (0 when not tiled). */
+  tileStartPx: number
+  /** Tile width in layout pixels. */
+  tileWidthPx: number
+  /** Ordered source-time window this clip reads (0.18.0). */
+  sourceStart: number
+  sourceEnd: number
+  /** Split-reuse tolerance in source seconds (0.18.0). */
+  cacheTolerance: number
+  /** Whether to decode one tile ahead for a future split (0.18.0). */
+  prefetch: boolean
+}
+
+/** The visible part of a clip, relative to its own left edge (0.18.0). */
+export interface FilmstripViewport {
+  startPx: number
+  widthPx: number
+  /**
+   * False for the bounded head tile of an off-screen clip: nobody can split
+   * there yet, so decoding a tile ahead would only delay the ready marker.
+   */
+  prefetch?: boolean
 }
 
 const num = (value: number) => (Number.isFinite(value) ? value.toFixed(4) : '0')
@@ -96,25 +134,60 @@ export function filmstripSamples(
   asset: MediaAsset | undefined,
   widthPx: number,
   heightPx: number,
+  viewport?: FilmstripViewport,
 ): FilmstripSamples | null {
   if (!asset || asset.missing || asset.kind !== 'video') return null
   if (clip.audioOnly || clip.text !== undefined || clip.sequenceId) return null
   if (!(clip.duration > 0)) return null
-  const buckets = filmstripBuckets(widthPx, heightPx)
+  const tile = viewportTile(widthPx, viewport)
+  const buckets = filmstripBuckets(tile.widthPx, heightPx)
   if (!buckets) return null
-  const count = filmstripFrameCount(widthPx)
+  const count = filmstripFrameCount(tile.widthPx)
   if (count === 0) return null
 
   const frames: FilmstripFrame[] = []
   for (let i = 0; i < count; i++) {
-    const local = clamp(((i + 0.5) / count) * clip.duration, 0, clip.duration)
+    const layout = tile.startPx + ((i + 0.5) / count) * tile.widthPx
+    const local = clamp((layout / widthPx) * clip.duration, 0, clip.duration)
     frames.push({
       local,
       sourceTime: clampSourceTime(sourceTimeAt(clip, local), asset),
       x: (i + 0.5) / count,
     })
   }
-  return { frames, widthBucket: buckets.widthBucket, heightBucket: buckets.heightBucket }
+  // The clip's own source window, ordered for reverse clips. Reuse never
+  // reaches outside it, so a trimmed head cannot borrow the cut material.
+  const sourceStart = clampSourceTime(sourceTimeAt(clip, 0), asset)
+  const sourceEnd = clampSourceTime(sourceTimeAt(clip, clip.duration), asset)
+  // The visible tile's source span, not the whole clip's: a split keeps the
+  // same viewport and zoom, so this span (and the tolerance derived from it)
+  // barely moves and the right half's re-phased grid still lands on the left
+  // half's cached cells.
+  const tileLocalStart = (tile.startPx / widthPx) * clip.duration
+  const tileLocalEnd = ((tile.startPx + tile.widthPx) / widthPx) * clip.duration
+  const tileSourceStart = clampSourceTime(sourceTimeAt(clip, tileLocalStart), asset)
+  const tileSourceEnd = clampSourceTime(sourceTimeAt(clip, tileLocalEnd), asset)
+  const cellSpan = Math.abs(tileSourceEnd - tileSourceStart) / count
+  return {
+    frames,
+    widthBucket: buckets.widthBucket,
+    heightBucket: buckets.heightBucket,
+    tileStartPx: tile.startPx,
+    tileWidthPx: tile.widthPx,
+    sourceStart: Math.min(sourceStart, sourceEnd),
+    sourceEnd: Math.max(sourceStart, sourceEnd),
+    cacheTolerance: cellSpan * 0.55,
+    prefetch: viewport?.prefetch ?? true,
+  }
+}
+
+/** The visible tile, clamped into the clip. A bad viewport falls back to full. */
+function viewportTile(widthPx: number, viewport?: FilmstripViewport): FilmstripViewport {
+  if (!viewport) return { startPx: 0, widthPx }
+  const startPx = Math.max(0, Math.min(widthPx, viewport.startPx))
+  const width = Math.max(0, Math.min(widthPx - startPx, viewport.widthPx))
+  if (!(width > 0)) return { startPx: 0, widthPx }
+  return { startPx, widthPx: width }
 }
 
 /**
@@ -129,6 +202,29 @@ export function filmstripCanvasFits(widthBucket: number, heightBucket: number): 
     heightBucket > 0 &&
     widthBucket * heightBucket <= MAX_STRIP_PIXELS
   )
+}
+
+/**
+ * Source times to decode beyond the visible tile (0.18.0). A split's right
+ * half starts inside the visible tile and reads one tile width further, so
+ * the first generation prefetches that span; without it the split seeks the
+ * source for every cell past the tile edge.
+ */
+export function filmstripPrefetchTimes(plan: FilmstripPlan): number[] {
+  const frames = plan.frames
+  if (frames.length < 2) return []
+  const first = frames[0].sourceTime
+  const last = frames[frames.length - 1].sourceTime
+  const step = Math.abs(last - first) / (frames.length - 1)
+  if (!(step > 0)) return []
+  const forward = last >= first
+  const times: number[] = []
+  for (let i = 1; i <= frames.length; i++) {
+    const time = forward ? last + step * i : last - step * i
+    if (time < plan.sourceStart || time > plan.sourceEnd) break
+    times.push(time)
+  }
+  return times
 }
 
 /** The curve identity that changes a video strip when a time remap changes. */
@@ -180,8 +276,14 @@ export function filmstripCacheKey(
   asset: MediaAsset,
   widthBucket: number,
   heightBucket: number,
+  tileStartPx = 0,
+  tileWidthPx = widthBucket,
 ): string {
-  return `${filmstripSourceKey(clip, asset)}:${capWidth(widthBucket)}x${capHeight(heightBucket)}`
+  const base = `${filmstripSourceKey(clip, asset)}:${capWidth(widthBucket)}x${capHeight(heightBucket)}`
+  // The untiled key stays byte-identical for existing caches and tests.
+  if (tileStartPx === 0 && tileWidthPx === widthBucket) return base
+  const startBucket = Math.max(0, Math.round(tileStartPx / WIDTH_BUCKET_STEP) * WIDTH_BUCKET_STEP)
+  return `${base}:${startBucket}:${Math.max(1, Math.round(tileWidthPx))}`
 }
 
 /**
@@ -193,6 +295,7 @@ export function filmstripPlan(
   asset: MediaAsset | undefined,
   widthPx: number,
   heightPx: number,
+  viewport?: FilmstripViewport,
 ): FilmstripPlan | null {
   if (!asset || asset.missing) return null
   if (clip.audioOnly || clip.text !== undefined || clip.sequenceId) return null
@@ -205,13 +308,29 @@ export function filmstripPlan(
       sourceKey: filmstripSourceKey(clip, asset),
       frames: [],
       ...buckets,
+      tileStartPx: 0,
+      tileWidthPx: widthPx,
+      sourceStart: 0,
+      sourceEnd: 0,
+      cacheTolerance: 0,
+      prefetch: false,
     }
   }
-  const samples = filmstripSamples(clip, asset, widthPx, heightPx)
+  const samples = filmstripSamples(clip, asset, widthPx, heightPx, viewport)
   if (!samples) return null
   return {
     kind: 'video',
-    key: filmstripCacheKey(clip, asset, samples.widthBucket, samples.heightBucket),
+    key: filmstripCacheKey(
+      clip,
+      asset,
+      samples.widthBucket,
+      samples.heightBucket,
+      // An untiled plan passes the bucketed width, so two clips whose layout
+      // widths share a bucket share the base key. A real viewport keeps its
+      // tile start and raw tile width.
+      viewport ? samples.tileStartPx : 0,
+      viewport ? samples.tileWidthPx : samples.widthBucket,
+    ),
     sourceKey: filmstripSourceKey(clip, asset),
     ...samples,
   }
