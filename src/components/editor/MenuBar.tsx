@@ -135,7 +135,6 @@ export function MenuBar({
 
   const panelHidden = useWorkspaceStore((s) => s.hidden)
   const isMobile = useIsMobile()
-  const collapsed = useWorkspaceStore((s) => s.collapsed)
   const sizes = useWorkspaceStore((s) => s.sizes)
   const toggleHidden = useWorkspaceStore((s) => s.toggleHidden)
 
@@ -200,7 +199,6 @@ export function MenuBar({
     isMobile,
     workspaceDirty:
       PANEL_IDS.some((id) => panelHidden[id]) ||
-      PANEL_IDS.some((id) => collapsed[id]) ||
       sizes.media !== PANEL_BOUNDS.media.default ||
       sizes.source !== PANEL_BOUNDS.source.default ||
       sizes.inspector !== PANEL_BOUNDS.inspector.default ||
@@ -629,7 +627,10 @@ export function MenuBar({
         >
           {menus.map((menu) => (
             <MenubarMenu key={menu.spec.id}>
-              <MenubarTrigger className="h-7 shrink-0 px-2.5 text-[13px]">
+              <MenubarTrigger
+                className="h-7 shrink-0 px-2.5 text-[13px]"
+                data-testid={menu.spec.id === 'window' ? 'menubar-window' : undefined}
+              >
                 {menu.spec.label}
               </MenubarTrigger>
               <MenubarContent>

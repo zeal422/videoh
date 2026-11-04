@@ -13,7 +13,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── google80671fa4533bcad3.html  # Search Console verification file
 │   └── robots.txt           # allow all plus the sitemap URL
 ├── e2e/
-│   ├── battery.sh           # scripted UI battery (67 steps) driven by agent-browser
+│   ├── battery.sh           # scripted UI battery (70 steps) driven by agent-browser
 │   ├── battery.timing.sh    # battery copy that records per-step timing
 │   ├── fixtures/            # committed battery media, parity project, and provenance
 │   └── run-battery.sh       # runner: dev server, session cleanup, strict verdict
@@ -92,7 +92,8 @@ src/components/
 │   ├── apply-theme.ts            #   writes/removes `data-palette` on `<html>`
 │   ├── ReleaseNotesModal.tsx     #   welcome modal: last five versions, Help > What is new
 │   ├── Preloader.tsx             #   boot ripple grid behind the editor chunk import
-│   ├── PanelShell.tsx            #   resizable/collapsible panel frame
+│   ├── PanelShell.tsx            #   resizable panel frame: header, panel menu, content wrapper
+│   ├── PanelMenu.tsx             #   header Close Panel menu + DOM-order focus handoff
 │   ├── NamedSlider.tsx           #   slider wrapper that names the thumb
 │   ├── Toolbar.tsx               #   tools, history, tracks, save/open, export
 │   ├── MediaBin.tsx              #   import, relink, drag source, bin row selection
@@ -216,7 +217,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 93 test files (2132 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 93 test files (2163 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

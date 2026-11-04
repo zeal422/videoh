@@ -674,12 +674,11 @@ Stable hooks used across flows and tests:
 
 ## Workspace and menus
 
-- Every panel is resizable; panels that share a row can also collapse to a strip. A panel alone in
-  its row has no collapse control and is hidden or shown through the Window menu. With the preview
-  hidden the media/source pair fills the row and neither offers a collapse control: the survivor
-  cannot absorb the freed space, so the pair would otherwise keep a ghost strip and a dead chevron. Sizes, collapsed
-  state, and visibility persist across sessions (`src/lib/editor/workspace.ts`), and a corrupt stored
-  layout is sanitized instead of crashing.
+- Every panel is resizable and closable. Each desktop panel header offers a `Close Panel` menu, and
+  the Window menu restores a closed panel. Closing the last panel in a row unmounts that row and
+  returns its space to the other row; closing all six shows the empty-workspace recovery prompt.
+  Sizes and visibility persist across sessions (`src/lib/editor/workspace.ts`), and a corrupt stored
+  layout is sanitized instead of crashing. A legacy `collapsed` payload is ignored.
 - The menu bar mirrors Premiere Pro's menus with **no dead items** and **no fake shortcuts**: item
   enablement is computed from editor context, and the shortcut column only lists wired keys.
 - The right edge of the menu bar carries a **Full screen** button, outside `role="menubar"` so it

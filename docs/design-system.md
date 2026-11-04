@@ -219,19 +219,16 @@ them:
   `@lg:flex` against the panel's own width (`@container` on the preview section), so a narrow panel
   hides the slider rather than clipping the transport buttons.
 - **Responsive shell.** At ≥768 px the shell is the resizable panel workspace; below 768 px it falls
-  back to a fixed stacked layout. Panel sizes, collapsed state, and visibility persist via
-  `workspace.ts`. A panel alone in its row has no collapse control because the freed space has no
-  neighbour to absorb it; the Window menu hides it instead. With the preview hidden the media/source
-  pair fills the row, so neither panel offers a collapse control either: the survivor cannot absorb
-  the freed space, and a persisted collapse would render a ghost strip with a dead chevron.
+  back to a fixed stacked layout. Panel sizes and visibility persist via `workspace.ts`. Every
+  desktop panel header carries a panel menu with `Close Panel`; the Window menu restores it. A solo
+  group fills its row, and the empty state replaces the workspace when all six panels are closed.
   Double-click a resize handle to reset its neighbor, or use Window > Reset Workspace Layout; the
   action is enabled whenever the layout deviates from the default.
 - **The Source monitor is one of the six workspace panels** (`panel-source`, the upper row is
-  `media | source | preview`), built exactly like the inspector: a `PanelShell` plus a
-  `HandleWithReset` inside the upper `ResizablePanelGroup`. The Source Monitor sits before the
-  Program Monitor: in a shared row a collapsible panel's freed space flows into the panel to its
-  right, so it collapses into the unbounded Program Monitor instead of depending on a neighbour's
-  headroom. It follows the flex-chain rule above.
+  `media | source | preview`), built like the inspector: a `PanelShell` plus a `HandleWithReset`
+  inside the upper `ResizablePanelGroup`. The Source Monitor sits before the Program Monitor because
+  the preview is the row's auto-sized remainder; the observer maps Media and Source by their visible
+  order. It follows the flex-chain rule above.
   Its root is `flex min-h-0 flex-1 flex-col`, the preview host is `aspect-video shrink-0`, and the
   transport/marks rows sit under it. Desktop-only: the mobile `CompactLayout` mounts no workspace
   panels. Empty state is muted text ("No source selected"); the marked-span readout turns
@@ -240,16 +237,18 @@ them:
   `<img data-testid="source-image">` inside the same `aspect-video` black host instead, because a
   `<video>` cannot decode a PNG (left alone it showed a black box with a demuxer error).
 - **The bottom row is timeline plus captions, below the top row.** The Captions panel docks
-  to the right of the timeline (`panel-captions`, `side="bottom"`, same flex chain as every other
-  panel). The timeline fills the horizontal remainder with no stored width (like the Program Monitor
-  upstairs); only the captions width persists, while `sizes.timeline` keeps meaning the bottom
-  group's vertical share. The inspector shares the top row with the workspace, so the bottom row
-  spans the full width below it; the timeline fills that row and gives up width only while Captions
-  is open. It follows the flex-chain rule above.
+  to the right of the timeline (`panel-captions`, same flex chain as every other panel). The timeline
+  fills the horizontal remainder with no stored width (like the Program Monitor upstairs); only the
+  captions width persists, capped at 45 while both panels share the row, while `sizes.timeline` keeps
+  meaning the bottom group's vertical share (15 to 72 while both rows are visible). Solo rows fill.
+  The inspector shares the top row with the workspace, so the bottom row spans the full width below
+  it. It follows the flex-chain rule above.
 - **Reference geometry.** The desktop panel tree is `(media | source | preview | inspector) over
 (timeline | captions)`, with the inspector in the top row. Panel defaults are `PANEL_BOUNDS` shares
   of their own group: media 32 (about 24% of the full viewport beside the 26% inspector), source 24,
-  inspector 26 (top row), timeline 50 (stacked workspace height), captions 24.
+  inspector 26 (top row), timeline 50 (stacked workspace height), captions 24. The Program Monitor
+  uses the same 28px `PanelShell` header as the other panels, with its canvas, scopes, and transport
+  inside `PreviewPanel`.
   Track rows are 44px video, 40px audio, and 36px text, with a 168px sticky header. The header holds
   the kind icon, the truncated name, and three 24px controls: visibility/mute on video and text lanes,
   or `M`/`S` text buttons on audio lanes, plus the lock button everywhere. The clip count and a header

@@ -1,8 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RotateCcw, X } from 'lucide-react'
-import type { ImperativePanelHandle } from 'react-resizable-panels'
+import type { ImperativePanelGroupHandle, ImperativePanelHandle } from 'react-resizable-panels'
 
 import { Button } from '@/components/ui/button'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
@@ -30,7 +30,15 @@ import {
   useEditorStore,
   useStableDoc,
 } from '@/lib/editor/store'
-import { PANEL_BOUNDS, type PanelId, PANEL_IDS } from '@/lib/editor/workspace'
+import {
+  createResetTracker,
+  isExpectedPanelLayout,
+  PANEL_BOUNDS,
+  RESET_GROUP_SPECS,
+  type ExpectedPanelSlot,
+  type PanelId,
+  type ResetGroupId,
+} from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
 import {
   clearAutosave,
@@ -49,13 +57,13 @@ import { toast } from '@/hooks/use-toast'
  *
  *   menubar (top) · toolbar · [ (media | source | preview | inspector) over (timeline | captions) ] · status bar
  *
- * Desktop (≥768px): every region is a resizable, collapsible panel
+ * Desktop (≥768px): every region is a resizable panel
  * (react-resizable-panels). Sizes persist to localStorage; the Window menu
- * shows/hides panels; double-clicking a resize handle resets its neighbor.
- * The inspector shares the top row, so the timeline spans the full width
- * below it. Mobile: fixed stacked layout (panels fall back to their
- * pre-workspace form). The status bar acts as the always-pinned footer of the
- * application.
+ * and each panel header menu show/hide panels; double-clicking a resize handle
+ * resets its neighbor. The inspector shares the top row, so the timeline spans
+ * the full width below it. Mobile: fixed stacked layout (panels fall back to
+ * their pre-workspace form). The status bar acts as the always-pinned footer of
+ * the application.
  */
 export function EditorShell() {
   const [exportOpen, setExportOpen] = useState(false)
@@ -69,164 +77,195 @@ export function EditorShell() {
   const lockNotice = useEditorStore((s) => s.lockNotice)
   const hidden = useWorkspaceStore((s) => s.hidden)
   const sizes = useWorkspaceStore((s) => s.sizes)
-  const collapsed = useWorkspaceStore((s) => s.collapsed)
   const setSize = useWorkspaceStore((s) => s.setSize)
   const resetWorkspace = useWorkspaceStore((s) => s.resetWorkspace)
   const upperRowPanelCount =
     Number(!hidden.media) + Number(!hidden.source) + Number(!hidden.preview)
   const bottomRowPanelCount = Number(!hidden.timeline) + Number(!hidden.captions)
+  const showUpperRow = !hidden.media || !hidden.preview || !hidden.source
+  const showUpperArea = showUpperRow || !hidden.inspector
+  const showBottomArea = !hidden.timeline || !hidden.captions
 
   // Imperative handles for "double-click handle → reset neighbor to default".
   const panelRefs = useRef<Partial<Record<PanelId, ImperativePanelHandle | null>>>({})
   // The bottom group panel is a bare panel (no PanelShell chrome), so it
-  // carries its own ref: resetting the bottom height targets the group,
-  // not the timeline's width share inside it.
+  // carries its own ref: resetting the bottom height targets the group, not
+  // the timeline's width share inside it.
   const bottomPanelRef = useRef<ImperativePanelHandle | null>(null)
+  // Group refs feed the reset tracker's post-issue `getLayout()` reads, which
+  // count an already-default layout that emits no onLayout change.
+  const upperGroupRef = useRef<ImperativePanelGroupHandle | null>(null)
+  const topRowGroupRef = useRef<ImperativePanelGroupHandle | null>(null)
+  const bottomGroupRef = useRef<ImperativePanelGroupHandle | null>(null)
+  const verticalGroupRef = useRef<ImperativePanelGroupHandle | null>(null)
+  const resetWriteRef = useRef(false)
+
   const registerRef = useCallback((id: PanelId, ref: ImperativePanelHandle | null) => {
     panelRefs.current[id] = ref
   }, [])
-  const resetPanel = useCallback((id: PanelId) => {
-    const bounds = PANEL_BOUNDS[id as keyof typeof PANEL_BOUNDS]
-    if (bounds) panelRefs.current[id]?.resize(bounds.default)
+
+  const issueResetResizes = useCallback((groups: ResetGroupId[]) => {
+    const wanted = new Set(groups)
+    if (wanted.has('upper') && (upperGroupRef.current?.getLayout().length ?? 0) >= 2) {
+      panelRefs.current.media?.resize(PANEL_BOUNDS.media.default)
+      panelRefs.current.source?.resize(PANEL_BOUNDS.source.default)
+    }
+    if (wanted.has('top') && (topRowGroupRef.current?.getLayout().length ?? 0) === 2) {
+      panelRefs.current.inspector?.resize(PANEL_BOUNDS.inspector.default)
+    }
+    if (wanted.has('bottom') && (bottomGroupRef.current?.getLayout().length ?? 0) === 2) {
+      panelRefs.current.captions?.resize(PANEL_BOUNDS.captions.default)
+    }
+    if (wanted.has('vertical') && (verticalGroupRef.current?.getLayout().length ?? 0) === 2) {
+      bottomPanelRef.current?.resize(PANEL_BOUNDS.timeline.default)
+    }
   }, [])
 
-  /** Window › Reset Workspace Layout: clear the persisted workspace AND apply
-   * the defaults to the live panels. Mounted panels never re-read their
-   * defaultSize prop, so without the imperative resize the visible layout
-   * would stay squeezed and the layout engine would re-persist the old sizes
-   * over the reset. Panels hidden before the reset simply re-mount at their
-   * defaults (their refs are null until then). */
-  const handleResetLayout = useCallback(() => {
-    resetWorkspace()
-    for (const id of PANEL_IDS) {
-      // The timeline's height lives on the bottom group panel (its own size
-      // is a horizontal share now), so it resets with the group below.
-      if (id === 'timeline') continue
-      // A panel that was alone in its row cannot be resized until its hidden
-      // siblings mount again. Calling resize now hits the library's one-panel
-      // pivot and throws; the remounted siblings supply the defaults.
-      const wasSolo =
-        id === 'media' || id === 'source'
-          ? upperRowPanelCount < 2
-          : id === 'captions'
-            ? bottomRowPanelCount < 2
-            : false
-      if (wasSolo) continue
+  const readResetLayouts = useCallback(
+    (): Partial<Record<ResetGroupId, number[]>> => ({
+      upper: upperGroupRef.current?.getLayout(),
+      top: topRowGroupRef.current?.getLayout(),
+      bottom: bottomGroupRef.current?.getLayout(),
+      vertical: verticalGroupRef.current?.getLayout(),
+    }),
+    [],
+  )
+
+  const resetTracker = useMemo(
+    () =>
+      createResetTracker({
+        groups: RESET_GROUP_SPECS,
+        hooks: { issueResizes: issueResetResizes, readLayouts: readResetLayouts },
+        scheduleFrame: (callback) => requestAnimationFrame(callback),
+        cancelFrame: (handle) => cancelAnimationFrame(handle),
+        scheduleTimer: (callback, delayMs) => window.setTimeout(callback, delayMs),
+        cancelTimer: (handle) => window.clearTimeout(handle),
+      }),
+    [issueResetResizes, readResetLayouts],
+  )
+
+  // A user hide/show supersedes a pending reset. The reset's own store write is
+  // guarded so it does not cancel its own token.
+  useEffect(
+    () =>
+      useWorkspaceStore.subscribe((state, previous) => {
+        if (state.hidden === previous.hidden) return
+        if (resetWriteRef.current) return
+        resetTracker.cancel()
+      }),
+    [resetTracker],
+  )
+
+  // Cancel a pending reset when the shell unmounts: its timer and frame must
+  // not touch refs from a dead tree.
+  useEffect(() => () => resetTracker.cancel(), [resetTracker])
+
+  const resetPanel = useCallback(
+    (id: PanelId) => {
       const bounds = PANEL_BOUNDS[id as keyof typeof PANEL_BOUNDS]
-      const ref = panelRefs.current[id]
-      if (!bounds || !ref) continue
-      ref.expand()
-      ref.resize(bounds.default)
-    }
+      if (!bounds) return
+      if (id === 'timeline') return
+      if ((id === 'media' || id === 'source') && upperRowPanelCount < 2) return
+      if (id === 'inspector' && (!showUpperRow || hidden.inspector)) return
+      if (id === 'captions' && (hidden.timeline || hidden.captions)) return
+      panelRefs.current[id]?.resize(bounds.default)
+    },
+    [hidden.captions, hidden.inspector, hidden.timeline, showUpperRow, upperRowPanelCount],
+  )
+
+  const resetBottomRow = useCallback(() => {
+    if (!showUpperArea || !showBottomArea) return
     bottomPanelRef.current?.resize(PANEL_BOUNDS.timeline.default)
-  }, [bottomRowPanelCount, resetWorkspace, upperRowPanelCount])
+  }, [showBottomArea, showUpperArea])
+
+  const cancelPendingReset = useCallback(() => resetTracker.cancel(), [resetTracker])
+
+  /** Window › Reset Workspace Layout: persist defaults, then let the tracker
+   *  apply them to the live panels and wait for a post-issue layout per group. */
+  const handleResetLayout = useCallback(() => {
+    resetWriteRef.current = true
+    try {
+      resetWorkspace()
+    } finally {
+      resetWriteRef.current = false
+    }
+    resetTracker.begin()
+  }, [resetTracker, resetWorkspace])
 
   // Layout observers. Only persist while the measured panel is actually
   // rendered — otherwise group indices shift and would store the wrong panel.
   const handleTopRowLayout = useCallback(
     (layout: number[]) => {
-      // Top row: workspace | inspector. The inspector is always second when it
-      // is rendered.
-      if (!hidden.inspector && layout[1] !== undefined) setSize('inspector', layout[1])
+      const token = resetTracker.pendingToken()
+      if (token !== null) {
+        resetTracker.noteLayout(token, 'top', layout)
+        return
+      }
+      const expectedLength = showUpperRow ? 2 : 1
+      const entries: ExpectedPanelSlot[] = showUpperRow
+        ? [{ index: 1, bounds: PANEL_BOUNDS.inspector }]
+        : []
+      if (!isExpectedPanelLayout(layout, expectedLength, entries)) return
+      if (showUpperRow) setSize('inspector', layout[1])
     },
-    [hidden.inspector, setSize],
+    [resetTracker, setSize, showUpperRow],
   )
+
   const handleTimelineLayout = useCallback(
     (layout: number[]) => {
-      // The vertical group's second entry is the bottom group's height,
-      // whichever bottom panel is visible: persisting must not depend on the
-      // timeline itself being shown.
-      if ((!hidden.timeline || !hidden.captions) && layout[1] !== undefined) {
-        setSize('timeline', layout[1])
+      const token = resetTracker.pendingToken()
+      if (token !== null) {
+        resetTracker.noteLayout(token, 'vertical', layout)
+        return
       }
+      const bothRows = showUpperArea && showBottomArea
+      const entries: ExpectedPanelSlot[] = bothRows
+        ? [{ index: 1, bounds: PANEL_BOUNDS.timeline }]
+        : []
+      if (!isExpectedPanelLayout(layout, bothRows ? 2 : 1, entries)) return
+      if (bothRows) setSize('timeline', layout[1])
     },
-    [hidden.captions, hidden.timeline, setSize],
+    [resetTracker, setSize, showBottomArea, showUpperArea],
   )
-  /**
-   * Bottom row: `timeline | captions`. The timeline fills the remainder
-   * (like the preview upstairs) and only the captions width is stored; the
-   * captions sit second unless the timeline is hidden.
-   */
+
   const handleBottomRowLayout = useCallback(
     (layout: number[]) => {
-      // The timeline fills the remainder (like the preview upstairs) and only
-      // the captions width is stored — and only while both panels share the
-      // row. Alone, a panel fills the group past its maxSize, so recording
-      // that constrained size would persist a lie. A collapsed neighbour is
-      // the same lie: its survivor takes the freed width, and persisting that
-      // would reopen the panel at its maximum.
-      if (!hidden.timeline && !hidden.captions && !collapsed.timeline && !collapsed.captions) {
-        if (layout[1] !== undefined) setSize('captions', layout[1])
+      const token = resetTracker.pendingToken()
+      if (token !== null) {
+        resetTracker.noteLayout(token, 'bottom', layout)
+        return
       }
+      const bothVisible = !hidden.timeline && !hidden.captions
+      const entries: ExpectedPanelSlot[] = bothVisible
+        ? [{ index: 1, bounds: PANEL_BOUNDS.captions }]
+        : []
+      if (!isExpectedPanelLayout(layout, bottomRowPanelCount, entries)) return
+      if (bothVisible) setSize('captions', layout[1])
     },
-    [collapsed.captions, collapsed.timeline, hidden.captions, hidden.timeline, setSize],
+    [bottomRowPanelCount, hidden.captions, hidden.timeline, resetTracker, setSize],
   )
-  /** Double-click on the vertical timeline handle resets the bottom height. */
-  const resetBottomRow = useCallback(() => {
-    bottomPanelRef.current?.resize(PANEL_BOUNDS.timeline.default)
-  }, [])
 
-  /**
-   * Collapse intent snapshot for bottom-row mounts. Mount init rewrites live
-   * flags (any size the layout engine reports during init un-collapses its
-   * panel via setSize), so the enforcer below cannot trust them — and a
-   * mount-only effect would miss the mobile-to-desktop transition and
-   * hidden-to-visible mounts entirely. Captured on first render (before any
-   * mount can rewrite) and refreshed whenever either bottom panel is absent
-   * (mobile, or timeline or captions hidden): a snapshot frozen while the
-   * row is fully visible goes stale the moment the user expands a panel,
-   * and a later unhide would then slam it shut again against explicit
-   * intent. While any part of the row is absent no chevron can change the
-   * flags, so the capture stays correct indefinitely; live flags drive
-   * everything else.
-   */
-  const bottomCollapsedWant = useRef<Record<PanelId, boolean> | null>(null)
-  if (bottomCollapsedWant.current === null || isMobile || hidden.timeline || hidden.captions) {
-    bottomCollapsedWant.current = { ...useWorkspaceStore.getState().collapsed }
-  }
-  useEffect(() => {
-    // Cleanup cancels the frame, so under StrictMode double-mount (or any
-    // remount) the enforcement below still runs exactly once per real mount.
-    const timer = requestAnimationFrame(() => {
-      const workspace = useWorkspaceStore.getState()
-      const want = bottomCollapsedWant.current ?? workspace.collapsed
-      if (!isMobile && !workspace.hidden.timeline && want.timeline) {
-        if (!workspace.collapsed.timeline) workspace.setCollapsed('timeline', true)
-        panelRefs.current.timeline?.collapse()
-      }
-      if (!isMobile && !workspace.hidden.captions && want.captions) {
-        if (!workspace.collapsed.captions) workspace.setCollapsed('captions', true)
-        panelRefs.current.captions?.collapse()
-      }
-    })
-    return () => cancelAnimationFrame(timer)
-  }, [hidden.captions, hidden.timeline, isMobile])
-  /**
-   * Upper row: `media | source | preview`. A hidden panel is not rendered, so
-   * each panel's index is its position among the VISIBLE panels (0-based).
-   * Media: always 0 when present. Source: 0 when media is hidden, else 1.
-   * Preview: always last and fills the remainder, so it stores no size.
-   */
   const handleUpperRowLayout = useCallback(
     (layout: number[]) => {
+      const token = resetTracker.pendingToken()
+      if (token !== null) {
+        resetTracker.noteLayout(token, 'upper', layout)
+        return
+      }
       // Without the preview's auto remainder the fixed panels normalize to the
       // full row, and a lone panel is forced to fill it. Neither value is the
-      // user's chosen width, so do not persist either while the preview is
-      // hidden. This keeps media/source at their saved shares when the preview
-      // returns. The preview's auto remainder is what makes the fixed shares
-      // meaningful; while it is hidden the pair fills the row, so the observer
-      // stores nothing. That is intentional: a media/source divider resize is
-      // not persisted while the preview is hidden.
+      // user's chosen width, so persist nothing while the preview is hidden.
       if (hidden.preview) return
-      if (!hidden.media) {
-        if (layout[0] !== undefined) setSize('media', layout[0])
-      }
+      const entries: ExpectedPanelSlot[] = []
+      if (!hidden.media) entries.push({ index: 0, bounds: PANEL_BOUNDS.media })
       if (!hidden.source) {
-        const sourceIndex = hidden.media ? 0 : 1
-        if (layout[sourceIndex] !== undefined) setSize('source', layout[sourceIndex])
+        entries.push({ index: hidden.media ? 0 : 1, bounds: PANEL_BOUNDS.source })
       }
+      if (!isExpectedPanelLayout(layout, upperRowPanelCount, entries)) return
+      if (!hidden.media) setSize('media', layout[0])
+      if (!hidden.source) setSize('source', layout[hidden.media ? 0 : 1])
     },
-    [hidden.media, hidden.preview, hidden.source, setSize],
+    [hidden.media, hidden.preview, hidden.source, resetTracker, setSize, upperRowPanelCount],
   )
 
   // Autosave lifecycle: subscribe once; check for a restorable session on mount.
@@ -382,8 +421,6 @@ export function EditorShell() {
     useEditorStore.getState().setPendingRestore(null)
   }
 
-  const showUpperRow = !hidden.media || !hidden.preview || !hidden.source
-
   return (
     /* Theme lives on <html> (layout.tsx) so Radix portals — menubar dropdowns,
        dialogs, selects, toasts — inherit the dark tokens too, not just this div. */
@@ -427,113 +464,134 @@ export function EditorShell() {
 
       {isMobile ? (
         <CompactLayout />
+      ) : !showUpperArea && !showBottomArea ? (
+        <div
+          data-testid="workspace-empty"
+          className="text-muted-foreground flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
+        >
+          <p className="text-sm font-medium">No panels are open</p>
+          <p className="text-xs">
+            Open a panel from the Window menu or use Reset Workspace Layout.
+          </p>
+        </div>
       ) : (
         /* Root: top row (workspace | inspector) over the bottom row
            (timeline | captions). The inspector shares the top row, so the
            timeline spans the full width below it. */
         <ResizablePanelGroup
           direction="vertical"
+          ref={verticalGroupRef}
           className="min-h-0 flex-1"
           onLayout={handleTimelineLayout}
         >
-          <ResizablePanel id="panel-upper" order={1} className="min-h-0">
-            <ResizablePanelGroup
-              direction="horizontal"
-              className="min-h-0"
-              onLayout={handleTopRowLayout}
-            >
-              {/* Workspace column: the upper row (media | source | preview).
-                  The inspector's width comes out of this row, not the timeline
-                  below. */}
-              <ResizablePanel id="panel-workspace" order={1} className="min-h-0 min-w-0">
-                {showUpperRow ? (
-                  /* Upper row: media pool | source monitor | program monitor */
-                  <ResizablePanelGroup
-                    // The library keeps the previous layout array when the
-                    // auto-sized preview panel unmounts. Hiding it after
-                    // collapsing Media left a stale 3-panel layout and crashed
-                    // in callPanelCallbacks ("Panel data not found for index 2")
-                    // at the battery's short viewport. Remount on the preview
-                    // flag only, so the layout is rebuilt from the persisted
-                    // default sizes; Media/Source hides keep the group mounted
-                    // (verified at the battery viewport), and collapse/expand
-                    // does not change the key.
-                    key={`upper-${Number(!hidden.preview)}`}
-                    direction="horizontal"
-                    className="min-h-0"
-                    onLayout={handleUpperRowLayout}
+          {showUpperArea && (
+            <ResizablePanel key="upper" id="panel-upper" order={1} className="min-h-0">
+              <ResizablePanelGroup
+                direction="horizontal"
+                ref={topRowGroupRef}
+                className="min-h-0"
+                onLayout={handleTopRowLayout}
+              >
+                {/* Workspace column: the upper row (media | source | preview).
+                    The inspector's width comes out of this row, not the timeline
+                    below. */}
+                {showUpperRow && (
+                  <ResizablePanel
+                    key="workspace"
+                    id="panel-workspace"
+                    order={1}
+                    className="min-h-0 min-w-0"
                   >
-                    {!hidden.media && (
-                      <>
+                    <ResizablePanelGroup
+                      // The library keeps the previous layout array when the
+                      // auto-sized preview panel unmounts. Hiding it after
+                      // Hiding it after Media closed left a stale 3-panel layout
+                      // and crashed in callPanelCallbacks ("Panel data not found
+                      // for index 2") at the battery's short viewport. Remount on
+                      // the preview flag only, so the layout is rebuilt from the
+                      // persisted default sizes; Media/Source hides keep the group
+                      // mounted.
+                      key={`upper-${Number(!hidden.preview)}`}
+                      ref={upperGroupRef}
+                      direction="horizontal"
+                      className="min-h-0"
+                      onLayout={handleUpperRowLayout}
+                    >
+                      {!hidden.media && (
+                        <Fragment key="media">
+                          <PanelShell
+                            id="media"
+                            title="Media"
+                            order={1}
+                            minSize={PANEL_BOUNDS.media.min}
+                            maxSize={PANEL_BOUNDS.media.max}
+                            defaultSize={sizes.media}
+                            registerRef={registerRef}
+                            className="bg-card"
+                          >
+                            <MediaBin heading={false} className="min-h-0 flex-1" />
+                          </PanelShell>
+                          {(!hidden.source || !hidden.preview) && (
+                            <HandleWithReset
+                              ariaLabel="Resize media panel (double-click to reset)"
+                              onReset={() => resetPanel('media')}
+                              onGestureStart={cancelPendingReset}
+                            />
+                          )}
+                        </Fragment>
+                      )}
+                      {!hidden.source && (
                         <PanelShell
-                          id="media"
-                          title="Media"
-                          side="left"
-                          order={1}
-                          minSize={PANEL_BOUNDS.media.min}
-                          maxSize={PANEL_BOUNDS.media.max}
-                          defaultSize={sizes.media}
+                          key="source"
+                          id="source"
+                          title="Source Monitor"
+                          order={2}
+                          minSize={PANEL_BOUNDS.source.min}
+                          maxSize={PANEL_BOUNDS.source.max}
+                          defaultSize={sizes.source}
                           registerRef={registerRef}
                           className="bg-card"
-                          collapsible={!hidden.preview && upperRowPanelCount > 1}
                         >
-                          <MediaBin heading={false} className="min-h-0 flex-1" />
+                          <SourcePanel className="flex-1" />
                         </PanelShell>
-                        {(!hidden.source || !hidden.preview) && (
-                          <HandleWithReset
-                            ariaLabel="Resize media panel (double-click to reset)"
-                            onReset={() => resetPanel('media')}
-                          />
-                        )}
-                      </>
-                    )}
-                    {!hidden.source && (
-                      <PanelShell
-                        id="source"
-                        title="Source Monitor"
-                        side="left"
-                        order={2}
-                        minSize={PANEL_BOUNDS.source.min}
-                        maxSize={PANEL_BOUNDS.source.max}
-                        defaultSize={sizes.source}
-                        registerRef={registerRef}
-                        className="bg-card"
-                        collapsible={!hidden.preview && upperRowPanelCount > 1}
-                      >
-                        <SourcePanel className="flex-1" />
-                      </PanelShell>
-                    )}
-                    {!hidden.source && !hidden.preview && (
-                      <HandleWithReset
-                        ariaLabel="Resize source panel (double-click to reset)"
-                        onReset={() => resetPanel('source')}
-                      />
-                    )}
-                    {!hidden.preview && (
-                      /* `flex` on the Panel div is required: react-resizable-panels
-                         renders a plain block box, so without it PreviewPanel's
-                         flex column never inherits the panel height and the
-                         transport row gets clipped when this row is resized short. */
-                      <ResizablePanel id="panel-preview" order={3} className="flex min-h-0 min-w-0">
-                        <PreviewPanel />
-                      </ResizablePanel>
-                    )}
-                  </ResizablePanelGroup>
-                ) : (
-                  <div className="flex-1" />
+                      )}
+                      {!hidden.source && !hidden.preview && (
+                        <HandleWithReset
+                          key="source-handle"
+                          ariaLabel="Resize source panel (double-click to reset)"
+                          onReset={() => resetPanel('source')}
+                          onGestureStart={cancelPendingReset}
+                        />
+                      )}
+                      {!hidden.preview && (
+                        <PanelShell
+                          key="preview"
+                          id="preview"
+                          title="Program Monitor"
+                          order={3}
+                          minSize={0}
+                          registerRef={registerRef}
+                        >
+                          <PreviewPanel />
+                        </PanelShell>
+                      )}
+                    </ResizablePanelGroup>
+                  </ResizablePanel>
                 )}
-              </ResizablePanel>
 
-              {!hidden.inspector && (
-                <>
+                {showUpperRow && !hidden.inspector && (
                   <HandleWithReset
+                    key="inspector-handle"
                     ariaLabel="Resize inspector panel (double-click to reset)"
                     onReset={() => resetPanel('inspector')}
+                    onGestureStart={cancelPendingReset}
                   />
+                )}
+                {!hidden.inspector && (
                   <PanelShell
+                    key="inspector"
                     id="inspector"
                     title="Inspector"
-                    side="right"
                     order={2}
                     minSize={PANEL_BOUNDS.inspector.min}
                     maxSize={PANEL_BOUNDS.inspector.max}
@@ -543,21 +601,27 @@ export function EditorShell() {
                   >
                     <InspectorPanel className="flex-1" />
                   </PanelShell>
-                </>
-              )}
-            </ResizablePanelGroup>
-          </ResizablePanel>
+                )}
+              </ResizablePanelGroup>
+            </ResizablePanel>
+          )}
 
-          {(!hidden.timeline || !hidden.captions) && (
-            <>
-              <HandleWithReset
-                ariaLabel="Resize timeline panel (double-click to reset)"
-                onReset={resetBottomRow}
-              />
+          {showBottomArea && (
+            <Fragment key="bottom">
+              {showUpperArea && (
+                <HandleWithReset
+                  key="vertical-handle"
+                  ariaLabel="Resize timeline panel (double-click to reset)"
+                  onReset={resetBottomRow}
+                  onGestureStart={cancelPendingReset}
+                />
+              )}
               <ResizablePanel
                 id="panel-bottom"
                 order={2}
                 ref={bottomPanelRef}
+                minSize={PANEL_BOUNDS.timeline.min}
+                maxSize={showUpperArea ? PANEL_BOUNDS.timeline.max : undefined}
                 defaultSize={sizes.timeline}
                 className="min-h-0"
               >
@@ -567,55 +631,47 @@ export function EditorShell() {
                     vertical share. */}
                 <ResizablePanelGroup
                   direction="horizontal"
+                  ref={bottomGroupRef}
                   className="min-h-0"
                   onLayout={handleBottomRowLayout}
                 >
                   {!hidden.timeline && (
                     <PanelShell
+                      key="timeline"
                       id="timeline"
                       title="Timeline"
-                      side="bottom"
                       order={1}
                       minSize={PANEL_BOUNDS.timeline.min}
                       registerRef={registerRef}
-                      collapsible={bottomRowPanelCount > 1}
                     >
                       <TimelinePanel />
                     </PanelShell>
                   )}
                   {!hidden.timeline && !hidden.captions && (
                     <HandleWithReset
+                      key="captions-handle"
                       ariaLabel="Resize captions panel (double-click to reset)"
                       onReset={() => resetPanel('captions')}
+                      onGestureStart={cancelPendingReset}
                     />
                   )}
                   {!hidden.captions && (
                     <PanelShell
+                      key="captions"
                       id="captions"
                       title="Captions"
-                      side="bottom"
                       order={2}
                       minSize={PANEL_BOUNDS.captions.min}
-                      // No maxSize: either panel collapsing must fit inside
-                      // the other, and a cap refuses the collapse (leaving a
-                      // dead chevron and a persisted lie). Alone, the panel
-                      // fills the row instead of its stored width (mirrors the
-                      // timeline above). With a collapsed timeline it mounts
-                      // auto for the same reason: a fixed pair summing far
-                      // under 100 gets normalized and the 2.5 strip breaks at
-                      // minSize, while an auto member absorbs the slack instead.
-                      defaultSize={
-                        hidden.timeline || collapsed.timeline ? undefined : sizes.captions
-                      }
+                      maxSize={!hidden.timeline ? PANEL_BOUNDS.captions.max : undefined}
+                      defaultSize={hidden.timeline ? undefined : sizes.captions}
                       registerRef={registerRef}
-                      collapsible={bottomRowPanelCount > 1}
                     >
                       <CaptionsPanel />
                     </PanelShell>
                   )}
                 </ResizablePanelGroup>
               </ResizablePanel>
-            </>
+            </Fragment>
           )}
         </ResizablePanelGroup>
       )}
@@ -648,12 +704,22 @@ function CompactLayout() {
 }
 
 /** Resize handle with the double-click-to-reset affordance. */
-function HandleWithReset({ ariaLabel, onReset }: { ariaLabel: string; onReset: () => void }) {
+function HandleWithReset({
+  ariaLabel,
+  onReset,
+  onGestureStart,
+}: {
+  ariaLabel: string
+  onReset: () => void
+  onGestureStart?: () => void
+}) {
   return (
     <ResizableHandle
       aria-label={ariaLabel}
       title={ariaLabel}
       onDoubleClick={onReset}
+      onPointerDown={onGestureStart}
+      onKeyDown={onGestureStart}
       className="w-1.5 after:w-1.5 data-[panel-group-direction=vertical]:h-1.5 data-[panel-group-direction=vertical]:after:h-1.5"
     />
   )

@@ -3,8 +3,7 @@
  *
  * The workspace describes how the editor's panels are arranged:
  * - `sizes`     panel widths/heights as percentages WITHIN their panel group
- *               (preview has no stored size — it always fills the remainder)
- * - `collapsed` panels shrunk to a slim strip (expandable with one click)
+ *               (the preview has no stored size — it always fills the remainder)
  * - `hidden`    panels fully closed (restorable from the Window menu)
  *
  * All persistence goes through an injected `Storage` so the module stays
@@ -17,6 +16,8 @@ import { isAnimatableProperty } from './keyframes'
 import type { KeyframeProperty } from './types'
 
 export type PanelId = 'media' | 'preview' | 'source' | 'inspector' | 'timeline' | 'captions'
+export type PanelSizeId = 'media' | 'source' | 'inspector' | 'timeline' | 'captions'
+
 export interface PanelInfo {
   id: PanelId
   title: string
@@ -44,24 +45,13 @@ export interface PanelBounds {
   max: number
 }
 
-export const PANEL_BOUNDS: Record<
-  'media' | 'source' | 'inspector' | 'timeline' | 'captions',
-  PanelBounds
-> = {
+export const PANEL_BOUNDS: Record<PanelSizeId, PanelBounds> = {
   media: { default: 32, min: 12, max: 42 },
   source: { default: 24, min: 14, max: 44 },
   inspector: { default: 26, min: 16, max: 46 },
   timeline: { default: 50, min: 15, max: 72 },
   captions: { default: 24, min: 15, max: 45 },
 }
-
-/**
- * Size (percent) at or below which a collapsible panel counts as collapsed.
- * Must match `COLLAPSED_SIZE_PCT` used by the panel components.
- */
-export const COLLAPSED_SIZE_PCT = 2.5
-/** Tolerance when comparing persisted sizes against COLLAPSED_SIZE_PCT. */
-export const COLLAPSED_EPSILON = 0.6
 
 export interface WorkspaceState {
   sizes: {
@@ -71,7 +61,6 @@ export interface WorkspaceState {
     timeline: number
     captions: number
   }
-  collapsed: Record<PanelId, boolean>
   hidden: Record<PanelId, boolean>
   /**
    * Inspector keyframe graph height per property, in CSS pixels (0.18.0).
@@ -86,7 +75,7 @@ export const KEYFRAME_GRAPH_MAX_HEIGHT = 240
 
 export const WORKSPACE_STORAGE_KEY = 'web-video-editor:workspace:v1'
 
-/** Fresh default workspace (nothing hidden, nothing collapsed). */
+/** Fresh default workspace (nothing hidden). */
 export function defaultWorkspace(): WorkspaceState {
   return {
     sizes: {
@@ -95,14 +84,6 @@ export function defaultWorkspace(): WorkspaceState {
       inspector: PANEL_BOUNDS.inspector.default,
       timeline: PANEL_BOUNDS.timeline.default,
       captions: PANEL_BOUNDS.captions.default,
-    },
-    collapsed: {
-      media: false,
-      preview: false,
-      source: false,
-      inspector: false,
-      timeline: false,
-      captions: false,
     },
     hidden: {
       media: false,
@@ -133,6 +114,7 @@ function sanitizePanelIdSet(raw: unknown, panelIds: PanelId[]): Record<PanelId, 
 /**
  * Repair arbitrary parsed JSON into a valid WorkspaceState.
  * Guarantees: every field present, sizes within bounds, no unknown state.
+ * A legacy `collapsed` key is ignored (0.19.0 removed collapse).
  */
 export function sanitizeWorkspace(raw: unknown): WorkspaceState {
   const fallback = defaultWorkspace()
@@ -141,7 +123,7 @@ export function sanitizeWorkspace(raw: unknown): WorkspaceState {
   const obj = raw as Record<string, unknown>
 
   // Only known panel sizes are read; unknown keys are ignored (forward compat).
-  const sizeKeys = ['media', 'source', 'inspector', 'timeline', 'captions'] as const
+  const sizeKeys: PanelSizeId[] = ['media', 'source', 'inspector', 'timeline', 'captions']
   const sizes = { ...fallback.sizes }
   for (const key of sizeKeys) {
     const value = (obj.sizes as Record<string, unknown> | null)?.[key]
@@ -164,7 +146,6 @@ export function sanitizeWorkspace(raw: unknown): WorkspaceState {
   }
   return {
     sizes,
-    collapsed: sanitizePanelIdSet(obj.collapsed, panelIds),
     hidden: sanitizePanelIdSet(obj.hidden, panelIds),
     keyframeGraphHeights: heights,
   }
@@ -202,34 +183,16 @@ export function saveWorkspace(
   }
 }
 
-/** Immutable update helper: show/hide a panel (Window menu). */
+/** Immutable update helper: show/hide a panel (Window menu / panel menu). */
 export function withHidden(state: WorkspaceState, id: PanelId, hidden: boolean): WorkspaceState {
   return { ...state, hidden: { ...state.hidden, [id]: hidden } }
 }
 
-/** Immutable update helper: collapse/expand a panel (header chevron / handle drag). */
-export function withCollapsed(
-  state: WorkspaceState,
-  id: PanelId,
-  collapsed: boolean,
-): WorkspaceState {
-  return { ...state, collapsed: { ...state.collapsed, [id]: collapsed } }
-}
-
 /** Immutable update helper: store a panel size observed from the layout engine. */
-export function withSize(
-  state: WorkspaceState,
-  id: 'media' | 'source' | 'inspector' | 'timeline' | 'captions',
-  size: number,
-): WorkspaceState {
+export function withSize(state: WorkspaceState, id: PanelSizeId, size: number): WorkspaceState {
   const clamped = clamp(size, PANEL_BOUNDS[id].min, PANEL_BOUNDS[id].max)
   if (state.sizes[id] === clamped) return state
   return { ...state, sizes: { ...state.sizes, [id]: clamped } }
-}
-
-/** True when a persisted/observed size means "panel is collapsed". */
-export function isCollapsedSize(size: number): boolean {
-  return size <= COLLAPSED_SIZE_PCT + COLLAPSED_EPSILON
 }
 
 /** Immutable update for one Inspector keyframe graph height (0.18.0). */
@@ -244,5 +207,196 @@ export function withKeyframeGraphHeight(
   return {
     ...state,
     keyframeGraphHeights: { ...state.keyframeGraphHeights, [property]: clamped },
+  }
+}
+
+/** One persisted slot inside a group layout. */
+export interface ExpectedPanelSlot {
+  /** Index in the full group layout array. */
+  index: number
+  /** Bounds for the persisted size at that index. */
+  bounds: PanelBounds
+}
+
+/**
+ * Validate a full group layout against the current shape and the persisted
+ * slots. `expectedLength` is the number of mounted panels in the group, which
+ * is the layout length the library emits. Unmapped slots (auto-sized preview,
+ * workspace column, upper row, Timeline remainder) are never inspected.
+ */
+export function isExpectedPanelLayout(
+  layout: number[],
+  expectedLength: number,
+  entries: readonly ExpectedPanelSlot[],
+): boolean {
+  if (!Array.isArray(layout) || layout.length !== expectedLength) return false
+  for (const entry of entries) {
+    if (!Number.isInteger(entry.index) || entry.index < 0 || entry.index >= expectedLength) {
+      return false
+    }
+    const value = layout[entry.index]
+    if (typeof value !== 'number' || !Number.isFinite(value)) return false
+    if (value < entry.bounds.min || value > entry.bounds.max) return false
+  }
+  return true
+}
+
+export type ResetGroupId = 'upper' | 'top' | 'bottom' | 'vertical'
+
+export interface ResetGroupSpec {
+  id: ResetGroupId
+  expectedLength: number
+  entries: readonly ExpectedPanelSlot[]
+}
+
+/** The full reset layout: every panel visible after `resetWorkspace()`. */
+export const RESET_GROUP_SPECS: readonly ResetGroupSpec[] = [
+  {
+    id: 'upper',
+    expectedLength: 3,
+    entries: [
+      { index: 0, bounds: PANEL_BOUNDS.media },
+      { index: 1, bounds: PANEL_BOUNDS.source },
+    ],
+  },
+  { id: 'top', expectedLength: 2, entries: [{ index: 1, bounds: PANEL_BOUNDS.inspector }] },
+  { id: 'bottom', expectedLength: 2, entries: [{ index: 1, bounds: PANEL_BOUNDS.captions }] },
+  { id: 'vertical', expectedLength: 2, entries: [{ index: 1, bounds: PANEL_BOUNDS.timeline }] },
+]
+
+/** Work the reset tracker delegates to the shell. */
+export interface ResetTrackerHooks {
+  /** Imperatively resize the named groups to their default shares. */
+  issueResizes: (groups: ResetGroupId[]) => void
+  /** Read each mounted group's current layout synchronously. */
+  readLayouts: () => Partial<Record<ResetGroupId, number[]>>
+}
+
+export interface ResetTrackerOptions {
+  groups: readonly ResetGroupSpec[]
+  hooks: ResetTrackerHooks
+  scheduleFrame: (callback: () => void) => number
+  cancelFrame: (handle: number) => void
+  scheduleTimer: (callback: () => void, delayMs: number) => number
+  cancelTimer: (handle: number) => void
+  fallbackMs?: number
+  maxRearms?: number
+}
+
+export interface ResetTracker {
+  /** Start a generation and schedule its frame and fallback. */
+  begin: () => number
+  /** Record a post-issue layout; pre-issue layouts are ignored. */
+  noteLayout: (token: number, group: ResetGroupId, layout: number[]) => boolean
+  /** Cancel the pending reset and its timers. */
+  cancel: () => void
+  pendingToken: () => number | null
+  isIssued: () => boolean
+  completedGroups: () => ResetGroupId[]
+}
+
+/**
+ * Pure generation tracker for Reset Workspace Layout. It owns the timing
+ * decisions but delegates the imperative resizes and layout reads through
+ * injected hooks, so unit tests can drive the frame and fallback synchronously.
+ */
+export function createResetTracker(options: ResetTrackerOptions): ResetTracker {
+  const fallbackMs = options.fallbackMs ?? 1000
+  const maxRearms = options.maxRearms ?? 2
+  let seq = 0
+  let token: number | null = null
+  let issued = false
+  let completed = new Set<ResetGroupId>()
+  let rearms = 0
+  let frameHandle: number | null = null
+  let timerHandle: number | null = null
+
+  const cancelHandles = () => {
+    if (frameHandle !== null) {
+      options.cancelFrame(frameHandle)
+      frameHandle = null
+    }
+    if (timerHandle !== null) {
+      options.cancelTimer(timerHandle)
+      timerHandle = null
+    }
+  }
+
+  const clear = () => {
+    cancelHandles()
+    token = null
+    issued = false
+    completed = new Set()
+    rearms = 0
+  }
+
+  const remaining = () => options.groups.map((group) => group.id).filter((id) => !completed.has(id))
+
+  const observe = (activeToken: number, layouts: Partial<Record<ResetGroupId, number[]>>) => {
+    if (activeToken !== token || !issued) return
+    for (const group of options.groups) {
+      const layout = layouts[group.id]
+      if (!layout) continue
+      if (isExpectedPanelLayout(layout, group.expectedLength, group.entries)) {
+        completed.add(group.id)
+      }
+    }
+    if (remaining().length === 0) clear()
+  }
+
+  const runFrame = (activeToken: number) => {
+    frameHandle = null
+    if (activeToken !== token) return
+    issued = true
+    options.hooks.issueResizes(options.groups.map((group) => group.id))
+    observe(activeToken, options.hooks.readLayouts())
+  }
+
+  const runFallback = (activeToken: number) => {
+    timerHandle = null
+    if (activeToken !== token) return
+    const pending = remaining()
+    if (pending.length === 0) {
+      clear()
+      return
+    }
+    if (rearms >= maxRearms) {
+      clear()
+      return
+    }
+    rearms += 1
+    issued = true
+    options.hooks.issueResizes(pending)
+    observe(activeToken, options.hooks.readLayouts())
+    if (activeToken === token && remaining().length > 0) {
+      timerHandle = options.scheduleTimer(() => runFallback(activeToken), fallbackMs)
+    }
+  }
+
+  return {
+    begin: () => {
+      cancelHandles()
+      token = ++seq
+      issued = false
+      completed = new Set()
+      rearms = 0
+      const started = token
+      frameHandle = options.scheduleFrame(() => runFrame(started))
+      timerHandle = options.scheduleTimer(() => runFallback(started), fallbackMs)
+      return started
+    },
+    noteLayout: (activeToken, group, layout) => {
+      if (activeToken !== token || !issued) return false
+      const spec = options.groups.find((candidate) => candidate.id === group)
+      if (!spec) return false
+      if (!isExpectedPanelLayout(layout, spec.expectedLength, spec.entries)) return false
+      completed.add(group)
+      if (remaining().length === 0) clear()
+      return true
+    },
+    cancel: clear,
+    pendingToken: () => token,
+    isIssued: () => issued,
+    completedGroups: () => [...completed],
   }
 }

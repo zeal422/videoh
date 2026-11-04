@@ -85,7 +85,7 @@ Running the suite (these are the steps agents get wrong):
   and GoatCounter script. It never imports the editor store or browser engines.
 - `src/lib/seo.ts` — site constants, canonical URLs, page metadata, sitemap routes, and JSON-LD.
 - `src/lib/editor/__tests__/`: all tests (`*.test.ts(x)`), plus the mocked browser harness in `mocks/`.
-- `e2e/battery.sh`: 67-step UI battery, first step loads the public hero and its editor link (needs the
+- `e2e/battery.sh`: 70-step UI battery, first step loads the public hero and its editor link (needs the
   dev server + `agent-browser`). Drive it through `e2e/run-battery.sh` (`bun run battery`), which owns
   the server, the session, and the strict verdict.
 - `e2e/fixtures/` — committed battery media, the parity project, and `PROVENANCE.md`.

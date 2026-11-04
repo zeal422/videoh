@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.19.0',
+    date: '2026-11-04',
+    highlights: [
+      'Panels close and reopen from their header menu or the Window menu; there is no collapsed strip',
+      'The Program Monitor has a real header, so it closes and restores like every other panel',
+      'Closing the last panel in a row gives that height to the other row, and closing all six shows a recovery prompt',
+      'Saved layouts from before 0.19.0 load with collapse ignored and their panel sizes preserved',
+    ],
+  },
+  {
     version: '0.18.0',
     date: '2026-11-01',
     highlights: [

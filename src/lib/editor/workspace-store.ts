@@ -4,20 +4,19 @@ import { create } from 'zustand'
 
 import {
   defaultWorkspace,
-  isCollapsedSize,
   loadWorkspace,
   saveWorkspace,
-  withCollapsed,
   withHidden,
   withKeyframeGraphHeight,
   withSize,
   type PanelId,
+  type PanelSizeId,
   type WorkspaceState,
 } from './workspace'
 import type { KeyframeProperty } from './types'
 
 /**
- * UI-side workspace store (panel sizes / collapse / visibility).
+ * UI-side workspace store (panel sizes / visibility).
  *
  * Backed by the pure `workspace.ts` functions; every mutation is persisted to
  * localStorage (sizes are debounced because the layout engine reports many
@@ -27,9 +26,7 @@ import type { KeyframeProperty } from './types'
 interface WorkspaceStoreState extends WorkspaceState {
   setHidden: (id: PanelId, hidden: boolean) => void
   toggleHidden: (id: PanelId) => void
-  toggleCollapsed: (id: PanelId) => void
-  setCollapsed: (id: PanelId, collapsed: boolean) => void
-  setSize: (id: 'media' | 'source' | 'inspector' | 'timeline' | 'captions', size: number) => void
+  setSize: (id: PanelSizeId, size: number) => void
   setKeyframeGraphHeight: (property: KeyframeProperty, height: number) => void
   resetWorkspace: () => void
 }
@@ -69,28 +66,8 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set, get) => {
       get().setHidden(id, !get().hidden[id])
     },
 
-    toggleCollapsed: (id) => {
-      const next = withCollapsed(get(), id, !get().collapsed[id])
-      set(next)
-      persist(next)
-    },
-
-    setCollapsed: (id, collapsed) => {
-      if (get().collapsed[id] === collapsed) return
-      const next = withCollapsed(get(), id, collapsed)
-      set(next)
-      persist(next)
-    },
-
     setSize: (id, size) => {
-      // The layout engine reports collapsed strips (~2.5%) too — never store
-      // those as the panel's "expanded" size and keep the flag in sync so a
-      // drag-collapse is reflected by the Window menu after a reload.
-      if (isCollapsedSize(size)) {
-        get().setCollapsed(id, true)
-        return
-      }
-      const next = withCollapsed(withSize(get(), id, size), id, false)
+      const next = withSize(get(), id, size)
       if (next === get()) return
       set(next)
       // Sizes stream in continuously while dragging — debounce the writes.
@@ -115,8 +92,3 @@ export const useWorkspaceStore = create<WorkspaceStoreState>((set, get) => {
     },
   }
 })
-
-/** Maps a persisted size for a panel to its initial collapsed flag. */
-export function initialCollapsedFromSize(size: number | undefined): boolean {
-  return size !== undefined && isCollapsedSize(size)
-}

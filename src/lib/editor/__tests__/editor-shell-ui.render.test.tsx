@@ -12,6 +12,7 @@ import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { playbackRef } from '../playback/engine-ref'
 import { isTransientActive, useEditorStore } from '../store'
 import { useWorkspaceStore } from '../workspace-store'
+import { WORKSPACE_STORAGE_KEY } from '../workspace'
 import { downloadBlob } from '../export/mp4'
 import {
   createClip,
@@ -58,6 +59,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   h.uninstall()
 })
 
@@ -498,167 +500,497 @@ describe('CaptionsPanel (0.8.5)', () => {
   })
 })
 
-describe('EditorShell bottom-row wiring (static)', () => {
-  it('a lone bottom panel fills the row and records no constrained size', () => {
-    // Static lock: jsdom never runs the layout engine, so the lone-panel
-    // geometry is asserted on the source instead. The bottom row deliberately
-    // carries NO maxSize: either panel collapsing must fit inside the other,
-    // and a cap refuses the collapse (a dead chevron plus a persisted
-    // collapsed flag on an expanded panel). Alone, captions mounts without a
-    // defaultSize so it fills the row, and the width handler stores nothing.
-    const src = readFileSync('src/components/editor/EditorShell.tsx', 'utf8')
-    expect(src).not.toContain('PANEL_BOUNDS.timeline.max')
-    expect(src).not.toContain('PANEL_BOUNDS.captions.max')
-    // With a collapsed timeline captions mounts auto (an all-fixed pair
-    // summing far under 100 gets normalized and the strip breaks at
-    // minSize, while an auto member absorbs the slack instead).
-    expect(src).toContain('hidden.timeline || collapsed.timeline ? undefined : sizes.captions')
-    expect(src).toMatch(
-      /if \(\s*!hidden\.timeline &&\s*!hidden\.captions &&\s*!collapsed\.timeline &&\s*!collapsed\.captions\s*\)/,
-    )
-    // Persisted bottom collapse is enforced post-layout: a collapsed mount
-    // cannot survive nested-group init, so the shells mount expanded and
-    // the enforcer collapses flagged panels once layout settles. It reruns
-    // on visibility and viewport transitions (mobile-to-desktop, unhide),
-    // reading a snapshot the mount cannot have rewritten.
-    expect(src).toContain('requestAnimationFrame')
-    expect(src).toContain('bottomCollapsedWant')
-    expect(src).toContain('[hidden.captions, hidden.timeline, isMobile]')
-    // The intent snapshot refreshes on partial absence too: a snapshot
-    // frozen while the row is fully visible goes stale when the user
-    // expands a panel, and a later unhide would re-collapse it.
-    expect(src).toContain('hidden.timeline ||')
-    expect(src).toContain('hidden.captions')
+describe('EditorShell panel model (static locks)', () => {
+  it('has no collapse state, controls, or checks left in the workspace shell', () => {
+    const editor = readFileSync('src/components/editor/EditorShell.tsx', 'utf8')
     const shell = readFileSync('src/components/editor/PanelShell.tsx', 'utf8')
-    // No collapse-state subscriptions: the library fires both spuriously
-    // during mount init, reverting persisted flags before first paint. The
-    // store owns the flags (explicit setters, drag-size sync, and the
-    // post-transition reconcile).
-    expect(shell).not.toContain('onCollapse={')
-    expect(shell).not.toContain('onExpand={')
+    for (const source of [editor, shell]) {
+      expect(source).not.toContain('collapsed')
+      expect(source).not.toContain('collapsible')
+      expect(source).not.toContain('bottomCollapsedWant')
+      expect(source).not.toContain('isCollapsed')
+      expect(source).not.toContain('CollapseIcon')
+    }
+    expect(shell).toContain('PanelMenu')
+    expect(editor).not.toContain('side="left"')
+    expect(editor).not.toContain('side="right"')
+    expect(editor).not.toContain('side="bottom"')
+  })
+
+  it('keys the conditional panel children and leaves the groups unkeyed', () => {
+    const src = readFileSync('src/components/editor/EditorShell.tsx', 'utf8')
+    for (const key of [
+      'key="media"',
+      'key="source"',
+      'key="source-handle"',
+      'key="preview"',
+      'key="workspace"',
+      'key="inspector-handle"',
+      'key="inspector"',
+      'key="upper"',
+      'key="bottom"',
+      'key="timeline"',
+      'key="captions-handle"',
+      'key="captions"',
+    ]) {
+      expect(src).toContain(key)
+    }
+    // The preview flag is the only group key.
+    expect(src).toContain('key={`upper-${Number(!hidden.preview)}`}')
+  })
+
+  it('bounds the persisted bottom measurements and leaves solo groups uncapped', () => {
+    const src = readFileSync('src/components/editor/EditorShell.tsx', 'utf8')
+    expect(src).toContain('minSize={PANEL_BOUNDS.timeline.min}')
+    expect(src).toContain('maxSize={showUpperArea ? PANEL_BOUNDS.timeline.max : undefined}')
+    expect(src).toContain('maxSize={!hidden.timeline ? PANEL_BOUNDS.captions.max : undefined}')
+    expect(src).toContain('defaultSize={hidden.timeline ? undefined : sizes.captions}')
+    expect(src).not.toContain('hidden.timeline || collapsed.timeline')
+  })
+
+  it('guards the observers by shape and cancels a pending reset on gesture start', () => {
+    const src = readFileSync('src/components/editor/EditorShell.tsx', 'utf8')
+    expect(src).toContain('isExpectedPanelLayout')
+    expect(src).toContain('resetTracker.noteLayout')
+    expect(src).toContain('createResetTracker')
+    expect(src).toContain('getLayout()')
+    expect(src).toContain('onGestureStart={cancelPendingReset}')
+    expect(src).toContain('showUpperArea && showBottomArea')
   })
 })
 
-describe('EditorShell reference panel tree', () => {
-  it('mounts all six panels in the desktop workspace', () => {
+describe('EditorShell panel model (render)', () => {
+  const renderShell = () => {
     window.localStorage.setItem('releases:lastSeen', CURRENT_VERSION)
-    render(<EditorShell />)
-    for (const name of [
-      'Collapse Media panel',
-      'Collapse Source Monitor panel',
-      'Collapse Inspector panel',
-      'Collapse Timeline panel',
-      'Collapse Captions panel',
-    ]) {
-      expect(screen.getByRole('button', { name })).toBeInTheDocument()
+    return render(<EditorShell />)
+  }
+
+  // jsdom has no layout, and react-resizable-panels' global pointer listener
+  // sees every pointerdown as touching a zero-size handle and stops it before
+  // Radix. The keyboard path exercises the same trigger and item handlers.
+  const openPanelMenu = (id: string) => {
+    const trigger = screen.getByTestId(`panel-menu-${id}`)
+    trigger.focus()
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    return trigger
+  }
+
+  const selectClosePanel = () => {
+    const item = screen.getByRole('menuitem', { name: /close panel/i })
+    fireEvent.keyDown(item, { key: 'Enter' })
+  }
+
+  const openWindowMenu = () => {
+    const trigger = screen.getByTestId('menubar-window')
+    trigger.focus()
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    return trigger
+  }
+
+  it('mounts all six panels and a panel menu on every desktop header', () => {
+    renderShell()
+    for (const id of ['media', 'source', 'preview', 'inspector', 'timeline', 'captions']) {
+      expect(screen.getByTestId(`panel-menu-${id}`)).toBeInTheDocument()
     }
     expect(screen.getByTestId('preview-canvas')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /program monitor/i })).toBeInTheDocument()
   })
 
-  it('hides collapse for a panel alone in its row and clears a stale collapse', async () => {
-    window.localStorage.setItem('releases:lastSeen', CURRENT_VERSION)
-    const workspace = useWorkspaceStore.getState()
-    useWorkspaceStore.setState({
-      ...workspace,
-      hidden: { ...workspace.hidden, captions: true },
-      collapsed: { ...workspace.collapsed, timeline: true },
-    })
-    render(<EditorShell />)
+  it('closes a panel from its menu and restores it from the Window menu', async () => {
+    renderShell()
+    openPanelMenu('media')
+    selectClosePanel()
+    expect(document.getElementById('panel-media')).toBeNull()
+    expect(screen.queryByTestId('panel-menu-media')).not.toBeInTheDocument()
 
-    expect(
-      screen.queryByRole('button', { name: 'Collapse Timeline panel' }),
-    ).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Expand Timeline panel' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Collapse Media panel' })).toBeInTheDocument()
-    await waitFor(() => expect(useWorkspaceStore.getState().collapsed.timeline).toBe(false))
+    openWindowMenu()
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Media' }))
+    expect(document.getElementById('panel-media')).not.toBeNull()
+    expect(screen.getByTestId('panel-menu-media')).toBeInTheDocument()
   })
 
-  it('hides collapse for Media and Source while the preview is hidden and clears stale flags', async () => {
-    window.localStorage.setItem('releases:lastSeen', CURRENT_VERSION)
-    const workspace = useWorkspaceStore.getState()
+  it('closing every panel shows the empty state and Reset restores all six', async () => {
+    // Seed a non-default payload so the persisted-defaults assertion below
+    // fails if resetWorkspace() does not actually write the defaults.
+    window.localStorage.setItem(
+      WORKSPACE_STORAGE_KEY,
+      JSON.stringify({
+        sizes: { media: 12, source: 14, inspector: 16, timeline: 15, captions: 15 },
+        hidden: {},
+        keyframeGraphHeights: {},
+      }),
+    )
     useWorkspaceStore.setState({
-      ...workspace,
-      hidden: { ...workspace.hidden, preview: true },
+      hidden: {
+        media: true,
+        preview: true,
+        source: true,
+        inspector: true,
+        timeline: true,
+        captions: true,
+      },
     })
-    render(<EditorShell />)
+    renderShell()
+    expect(screen.getByTestId('workspace-empty')).toBeInTheDocument()
+    expect(screen.getByRole('menubar')).toBeInTheDocument()
 
-    // With no auto-sized preview, the survivor cannot absorb a collapse, so
-    // neither panel offers a chevron in either direction.
-    expect(screen.queryByRole('button', { name: 'Collapse Media panel' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Expand Media panel' })).not.toBeInTheDocument()
-    expect(
-      screen.queryByRole('button', { name: 'Collapse Source Monitor panel' }),
-    ).not.toBeInTheDocument()
-    expect(
-      screen.queryByRole('button', { name: 'Expand Source Monitor panel' }),
-    ).not.toBeInTheDocument()
+    openWindowMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: /reset workspace layout/i }))
+    await waitFor(() => {
+      for (const id of ['media', 'source', 'preview', 'inspector', 'timeline', 'captions']) {
+        expect(document.getElementById(`panel-${id}`)).not.toBeNull()
+      }
+    })
+    expect(screen.queryByTestId('workspace-empty')).not.toBeInTheDocument()
+    expect(useWorkspaceStore.getState().sizes).toEqual({
+      media: 32,
+      source: 24,
+      inspector: 26,
+      timeline: 50,
+      captions: 24,
+    })
+    const stored = () =>
+      JSON.parse(window.localStorage.getItem(WORKSPACE_STORAGE_KEY)!) as {
+        sizes: Record<string, number>
+      }
+    const defaults = {
+      media: 32,
+      source: 24,
+      inspector: 26,
+      timeline: 50,
+      captions: 24,
+    }
+    expect(stored().sizes).toEqual(defaults)
+    // The queued reset frame must not write a transient layout over the
+    // defaults the reset itself persisted.
+    await act(async () => {
+      await h.pump.pump(2)
+    })
+    expect(stored().sizes).toEqual(defaults)
+  })
 
-    // A stale persisted collapse must not turn into a ghost strip: the panel
-    // clears the flag without calling the library's collapse path.
+  it('a handle gesture before the reset frame cancels the pending resize', async () => {
+    // Make the layout dirty: Window > Reset Workspace Layout is disabled on a
+    // default layout, and without it begin() never schedules the frame under test.
+    const workspace = useWorkspaceStore.getState()
+    useWorkspaceStore.setState({ sizes: { ...workspace.sizes, media: 36 } })
+    renderShell()
+    openWindowMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: /reset workspace layout/i }))
+    // resetWorkspace() writes the default sizes synchronously, so the sizes
+    // alone cannot prove the queued reset was cancelled. Watch the schedulers
+    // the tracker cancels through and count the live frame before the gesture.
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame')
+    const clearTimer = vi.spyOn(window, 'clearTimeout')
+    const queuedBefore = h.pump.queued()
+    expect(queuedBefore).toBeGreaterThan(0)
+    const handle = screen.getByLabelText('Resize inspector panel (double-click to reset)')
+    // isPrimary must be set: react-resizable-panels treats a non-primary
+    // pointer as coordinates Infinity, which matches no handle.
+    fireEvent.pointerDown(handle, {
+      button: 0,
+      buttons: 1,
+      isPrimary: true,
+      pointerId: 1,
+      pointerType: 'mouse',
+    })
+    // One pending frame and its fallback timer must both be cancelled, and the
+    // frame must leave the pump queue.
+    expect(cancelFrame).toHaveBeenCalledTimes(1)
+    expect(clearTimer).toHaveBeenCalled()
+    expect(h.pump.queued()).toBe(queuedBefore - 1)
+    await act(async () => {
+      await h.pump.pump(2)
+    })
+    expect(useWorkspaceStore.getState().sizes).toEqual({
+      media: 32,
+      source: 24,
+      inspector: 26,
+      timeline: 50,
+      captions: 24,
+    })
+    expect(document.getElementById('panel-inspector')).not.toBeNull()
+    expect(screen.queryByTestId('workspace-empty')).not.toBeInTheDocument()
+  })
+
+  it('a store hide during a pending reset clears the token and keeps the hide', async () => {
+    const workspace = useWorkspaceStore.getState()
+    useWorkspaceStore.setState({ sizes: { ...workspace.sizes, media: 36 } })
+    renderShell()
+    openWindowMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: /reset workspace layout/i }))
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame')
+    const queuedBefore = h.pump.queued()
+    expect(queuedBefore).toBeGreaterThan(0)
     act(() => {
-      const current = useWorkspaceStore.getState()
+      useWorkspaceStore.getState().setHidden('media', true)
+    })
+    expect(cancelFrame).toHaveBeenCalledTimes(1)
+    expect(h.pump.queued()).toBe(queuedBefore - 1)
+    expect(useWorkspaceStore.getState().hidden.media).toBe(true)
+    expect(document.getElementById('panel-media')).toBeNull()
+    await act(async () => {
+      await h.pump.pump(2)
+    })
+    expect(document.getElementById('panel-media')).toBeNull()
+    expect(useWorkspaceStore.getState().sizes).toEqual({
+      media: 32,
+      source: 24,
+      inspector: 26,
+      timeline: 50,
+      captions: 24,
+    })
+  })
+
+  it('a Window checkbox hide during a pending reset clears the token and keeps the hide', async () => {
+    const workspace = useWorkspaceStore.getState()
+    useWorkspaceStore.setState({ sizes: { ...workspace.sizes, media: 36 } })
+    renderShell()
+    openWindowMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: /reset workspace layout/i }))
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('menuitem', { name: /reset workspace layout/i }),
+      ).not.toBeInTheDocument(),
+    )
+    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame')
+    const queuedBefore = h.pump.queued()
+    expect(queuedBefore).toBeGreaterThan(0)
+    openWindowMenu()
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Media' }))
+    expect(cancelFrame).toHaveBeenCalledTimes(1)
+    expect(h.pump.queued()).toBe(queuedBefore - 1)
+    expect(useWorkspaceStore.getState().hidden.media).toBe(true)
+    await act(async () => {
+      await h.pump.pump(2)
+    })
+    expect(document.getElementById('panel-media')).toBeNull()
+  })
+
+  it('closes and reopens every panel through its menu and the Window menu', async () => {
+    renderShell()
+    const cases: Array<[string, string, string]> = [
+      ['media', 'Media panel menu', 'Media'],
+      ['source', 'Source Monitor panel menu', 'Source Monitor'],
+      ['preview', 'Program Monitor panel menu', 'Program Monitor'],
+      ['inspector', 'Inspector panel menu', 'Inspector'],
+      ['timeline', 'Timeline panel menu', 'Timeline'],
+      ['captions', 'Captions panel menu', 'Captions'],
+    ]
+    for (const [id, menuName, windowName] of cases) {
+      openPanelMenu(id)
+      selectClosePanel()
+      expect(document.getElementById(`panel-${id}`)).toBeNull()
+      expect(screen.queryByTestId(`panel-menu-${id}`)).not.toBeInTheDocument()
+      openWindowMenu()
+      fireEvent.click(screen.getByRole('menuitemcheckbox', { name: windowName }))
+      expect(document.getElementById(`panel-${id}`)).not.toBeNull()
+      // Reopening a panel can restore focus through queued Radix work; let it
+      // settle before the next menu interaction.
+      await waitFor(() => expect(screen.getByTestId(`panel-menu-${id}`)).toBeInTheDocument())
+    }
+  })
+
+  it('hides the workspace column and keeps Inspector when the upper row is empty', () => {
+    const workspace = useWorkspaceStore.getState()
+    useWorkspaceStore.setState({
+      hidden: { ...workspace.hidden, media: true, source: true, preview: true },
+    })
+    renderShell()
+    expect(document.getElementById('panel-workspace')).toBeNull()
+    expect(document.getElementById('panel-inspector')).not.toBeNull()
+    expect(
+      screen.queryByLabelText('Resize inspector panel (double-click to reset)'),
+    ).not.toBeInTheDocument()
+  })
+
+  it('removes the upper row when its last panel closes', async () => {
+    const workspace = useWorkspaceStore.getState()
+    useWorkspaceStore.setState({
+      hidden: { ...workspace.hidden, media: true, source: true, preview: true },
+    })
+    renderShell()
+    openPanelMenu('inspector')
+    selectClosePanel()
+    await waitFor(() => expect(document.getElementById('panel-upper')).toBeNull())
+    expect(document.getElementById('panel-bottom')).not.toBeNull()
+  })
+
+  it('removes the bottom row when Timeline and Captions close', () => {
+    const workspace = useWorkspaceStore.getState()
+    useWorkspaceStore.setState({
+      hidden: { ...workspace.hidden, timeline: true, captions: true },
+    })
+    renderShell()
+    expect(document.getElementById('panel-bottom')).toBeNull()
+    expect(document.getElementById('panel-upper')).not.toBeNull()
+  })
+
+  it('moves focus to the DOM-next trigger after Close Panel', async () => {
+    renderShell()
+    const sourceTrigger = screen.getByTestId('panel-menu-source')
+    const triggersBefore = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid^="panel-menu-"]'),
+    )
+    expect(triggersBefore.indexOf(sourceTrigger)).toBe(1)
+    openPanelMenu('source')
+    selectClosePanel()
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByTestId('panel-menu-preview')),
+    )
+    // The catalog order would select Inspector, which is still mounted; this
+    // proves the anchor is the trigger's DOM index.
+    expect(screen.getByTestId('panel-menu-inspector')).toBeInTheDocument()
+  })
+
+  it('leaves Radix focus restoration intact for Escape', async () => {
+    renderShell()
+    const trigger = openPanelMenu('source')
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+    expect(document.getElementById('panel-source')).not.toBeNull()
+  })
+
+  it('moves focus to the first trigger when the last panel closes and others remain', async () => {
+    renderShell()
+    const captionsTrigger = screen.getByTestId('panel-menu-captions')
+    const triggers = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-testid^="panel-menu-"]'),
+    )
+    expect(triggers[triggers.length - 1]).toBe(captionsTrigger)
+    openPanelMenu('captions')
+    selectClosePanel()
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('panel-menu-media')))
+    expect(document.getElementById('panel-captions')).toBeNull()
+    expect(screen.getByTestId('panel-menu-timeline')).toBeInTheDocument()
+  })
+
+  it('leaves Radix focus restoration intact for an outside click', async () => {
+    renderShell()
+    const trigger = openPanelMenu('source')
+    // Radix attaches its document pointerdown listener on the next tick.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    fireEvent.pointerDown(document, {
+      button: 0,
+      buttons: 1,
+      clientX: 5000,
+      clientY: 5000,
+      isPrimary: true,
+      pointerId: 2,
+      pointerType: 'mouse',
+    })
+    await waitFor(() =>
+      expect(screen.queryByRole('menuitem', { name: /close panel/i })).not.toBeInTheDocument(),
+    )
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+    expect(document.getElementById('panel-source')).not.toBeNull()
+  })
+
+  it('moves focus to the Window trigger when the last panel closes', async () => {
+    useWorkspaceStore.setState({
+      hidden: {
+        media: false,
+        preview: true,
+        source: true,
+        inspector: true,
+        timeline: true,
+        captions: true,
+      },
+    })
+    renderShell()
+    openPanelMenu('media')
+    selectClosePanel()
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('menubar-window')))
+    expect(screen.getByTestId('workspace-empty')).toBeInTheDocument()
+  })
+
+  it('keeps the stored size when a panel is closed and reopened', async () => {
+    const workspace = useWorkspaceStore.getState()
+    useWorkspaceStore.setState({ sizes: { ...workspace.sizes, media: 36 } })
+    renderShell()
+    openPanelMenu('media')
+    selectClosePanel()
+    openWindowMenu()
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Media' }))
+    await waitFor(() => expect(document.getElementById('panel-media')).not.toBeNull())
+    expect(useWorkspaceStore.getState().sizes.media).toBe(36)
+  })
+
+  it('preserves the surviving panel DOM nodes across sibling closes', async () => {
+    renderShell()
+    const source = document.getElementById('panel-source')
+    const preview = document.getElementById('panel-preview')
+    openPanelMenu('media')
+    selectClosePanel()
+    expect(document.getElementById('panel-source')).toBe(source)
+    expect(document.getElementById('panel-preview')).toBe(preview)
+
+    openWindowMenu()
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Media' }))
+    const media = document.getElementById('panel-media')
+    openPanelMenu('source')
+    selectClosePanel()
+    expect(document.getElementById('panel-media')).toBe(media)
+    expect(document.getElementById('panel-preview')).toBe(preview)
+
+    const timeline = document.getElementById('panel-timeline')
+    openWindowMenu()
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Captions' }))
+    expect(document.getElementById('panel-timeline')).toBe(timeline)
+
+    const inspector = document.getElementById('panel-inspector')
+    const ws = useWorkspaceStore.getState()
+    act(() => {
       useWorkspaceStore.setState({
-        collapsed: { ...current.collapsed, media: true, source: true },
+        hidden: { ...ws.hidden, media: true, source: true, preview: true },
       })
     })
-    await waitFor(() => {
-      expect(useWorkspaceStore.getState().collapsed.media).toBe(false)
-      expect(useWorkspaceStore.getState().collapsed.source).toBe(false)
+    expect(document.getElementById('panel-inspector')).toBe(inspector)
+    act(() => {
+      useWorkspaceStore.setState({ hidden: { ...ws.hidden, preview: true } })
     })
-    expect(screen.queryByRole('button', { name: 'Expand Media panel' })).not.toBeInTheDocument()
-    expect(
-      screen.queryByRole('button', { name: 'Expand Source Monitor panel' }),
-    ).not.toBeInTheDocument()
+    expect(document.getElementById('panel-inspector')).toBe(inspector)
   })
 
-  it('the upper-row observer has no tautological preview guards', () => {
-    const src = readFileSync('src/components/editor/EditorShell.tsx', 'utf8')
-    const observer = src.slice(
-      src.indexOf('const handleUpperRowLayout'),
-      src.indexOf('// Autosave lifecycle'),
-    )
-    expect(observer).toContain('if (hidden.preview) return')
-    expect(observer).toContain('if (!hidden.media) {')
-    expect(observer).toContain('if (!hidden.source) {')
-    // The early return is the ONLY preview guard; the old conditions repeated
-    // `!hidden.preview` after it, which was always true and read as if a
-    // per-panel guard existed.
-    expect(observer).not.toContain('!hidden.preview')
+  it('keeps the Program Monitor volume across a bottom-row close and reopen', async () => {
+    renderShell()
+    const slider = screen.getByRole('slider', { name: 'Master volume' })
+    expect(slider).toHaveAttribute('aria-valuenow', '1')
+    fireEvent.keyDown(slider, { key: 'ArrowLeft' })
+    expect(slider).toHaveAttribute('aria-valuenow', '0.95')
+
+    openPanelMenu('timeline')
+    selectClosePanel()
+    openPanelMenu('captions')
+    selectClosePanel()
+    expect(document.getElementById('panel-bottom')).toBeNull()
+    expect(screen.getByRole('slider', { name: 'Master volume' })).toBe(slider)
+    expect(slider).toHaveAttribute('aria-valuenow', '0.95')
+
+    openWindowMenu()
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Timeline' }))
+    await waitFor(() => expect(document.getElementById('panel-bottom')).not.toBeNull())
+    expect(screen.getByRole('slider', { name: 'Master volume' })).toBe(slider)
+    expect(slider).toHaveAttribute('aria-valuenow', '0.95')
   })
 
-  it('stacks the inspector above the bottom row', () => {
-    const src = readFileSync('src/components/editor/EditorShell.tsx', 'utf8')
-    const upper = src.indexOf('id="panel-upper"')
-    const workspace = src.indexOf('id="panel-workspace"')
-    const media = src.indexOf('id="media"')
-    const preview = src.indexOf('id="panel-preview"')
-    const inspector = src.indexOf('id="inspector"')
-    const bottom = src.indexOf('id="panel-bottom"')
-    expect(upper).toBeGreaterThan(-1)
-    expect(workspace).toBeGreaterThan(upper)
-    expect(media).toBeGreaterThan(workspace)
-    expect(preview).toBeGreaterThan(media)
-    expect(inspector).toBeGreaterThan(preview)
-    expect(bottom).toBeGreaterThan(inspector)
-    // The root stacks the top row over the timeline; the inspector shares the
-    // top row with the workspace column instead of spanning the full height.
-    expect(src).toMatch(/direction="vertical"[\s\S]*?id="panel-upper"/)
-    expect(src).toMatch(
-      /id="panel-upper"[\s\S]*?direction="horizontal"[\s\S]*?id="panel-workspace"/,
-    )
-    // The shorter top-row height must keep every inspector section reachable.
-    const inspectorPanel = readFileSync('src/components/editor/InspectorPanel.tsx', 'utf8')
-    expect(inspectorPanel).toContain('editor-scroll')
-    expect(inspectorPanel).toContain('overflow-y-auto')
-    // A panel alone in its row has no collapse control; the counts guard both
-    // the shared-row chevron and the library's one-panel collapse path. With
-    // the preview hidden the media/source pair fills the row and has no
-    // auto-sized neighbour to absorb a collapse, so neither is collapsible.
-    expect(src).toContain('collapsible={!hidden.preview && upperRowPanelCount > 1}')
-    expect(src).toContain('collapsible={bottomRowPanelCount > 1}')
-    // Hiding the preview removes the auto remainder and normalizes the fixed
-    // panels, so the layout observer must not persist those forced sizes.
-    expect(src).toMatch(/handleUpperRowLayout[\s\S]*?if \(hidden\.preview\) return/)
+  it('preserves the bottom row DOM node across an upper-area close and reopen', async () => {
+    renderShell()
+    const bottom = document.getElementById('panel-bottom')
+    expect(bottom).not.toBeNull()
+    for (const id of ['media', 'source', 'preview', 'inspector'] as const) {
+      openPanelMenu(id)
+      selectClosePanel()
+    }
+    expect(document.getElementById('panel-upper')).toBeNull()
+    expect(document.getElementById('panel-bottom')).toBe(bottom)
+
+    openWindowMenu()
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Media' }))
+    await waitFor(() => expect(document.getElementById('panel-upper')).not.toBeNull())
+    expect(document.getElementById('panel-bottom')).toBe(bottom)
   })
 })
 

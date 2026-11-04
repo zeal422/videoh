@@ -108,7 +108,7 @@ export interface MenuContext {
   canAddMarker: boolean
   /** True = the panel is currently closed (Window menu checkboxes). */
   panelHidden: Record<PanelId, boolean>
-  /** True when the layout differs from the default (hidden, collapsed, or resized). */
+  /** True when the layout differs from the default (hidden or resized). */
   workspaceDirty: boolean
   /**
    * Viewport below 768 px: the shell mounts the fixed compact layout instead

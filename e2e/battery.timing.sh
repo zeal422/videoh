@@ -2626,70 +2626,375 @@ menu_snapping() { # snapping starts ON → one toggle must show "Snapping off"
 }
 
 # ————— Panels —————
-panels_collapse() {
-  ab find role button click --name 'Collapse Media panel' >/dev/null && sleep 0.5
-  snap | grep -q 'Expand Media panel' # stays collapsed: keeps workspace dirty for reset
+panel_w() { evaln "document.getElementById('$1')?.getBoundingClientRect().width ?? 0"; }
+panel_h() { evaln "document.getElementById('$1')?.getBoundingClientRect().height ?? 0"; }
+panel_present() { [ "$(evaln "document.getElementById('$1') ? 'present' : 'absent'")" = "present" ]; }
+panel_absent() { [ "$(evaln "document.getElementById('$1') ? 'present' : 'absent'")" = "absent" ]; }
+panel_close() { # $1 = panel menu accessible name
+  ab find role button click --name "$1" >/dev/null 2>&1 || {
+    echo "panels: could not open $1" >&2; return 1; }
+  sleep 0.3
+  ab find role menuitem click --name 'Close Panel' >/dev/null 2>&1 || {
+    echo "panels: Close Panel missing in $1" >&2; return 1; }
+  sleep 0.6
 }
-panels_collapse_pair() {
-  # A solo panel has no collapse control: react-resizable-panels needs a
-  # neighbour to absorb the freed space, and a one-panel group has no pivot.
-  # Hide Captions, prove the Timeline chevron is gone, then restore the row.
-  ab find role menuitem click --name 'Window' >/dev/null && sleep 0.3
-  ab find role menuitemcheckbox click --name 'Captions' >/dev/null || {
-    echo "panels: could not hide Captions" >&2; return 1; }
-  sleep 0.5
-  if snap | grep -q 'Collapse Timeline panel'; then
-    echo "panels: solo timeline still offers collapse" >&2
-    return 1
-  fi
-  ab find role menuitem click --name 'Window' >/dev/null && sleep 0.3
-  ab find role menuitemcheckbox click --name 'Captions' >/dev/null || {
-    echo "panels: could not show Captions" >&2; return 1; }
-  sleep 0.5
-  snap | grep -q 'Collapse Timeline panel' || {
-    echo "panels: timeline collapse control missing after Captions returns" >&2
-    return 1; }
-  ab find role button click --name 'Collapse Source Monitor panel' >/dev/null && sleep 0.5
-  ab find role button click --name 'Collapse Inspector panel' >/dev/null && sleep 0.5
-  # BOTH strips must be thin at the same time. Before the fix the Source Monitor
-  # could not collapse at all (it kept its full width with a strip drawn inside),
-  # and collapsing the Inspector reopened it, so this reads not-thin.
-  #
-  # The measurement MUST be the last command of the function. A bash function
-  # returns the status of its last command, battery.sh runs without `set -e`, and
-  # step() keys PASS/FAIL on that status. Appending ANY command after this line
-  # (an expand click, a sleep, a bare `true`) silently discards the verdict and
-  # the red proof stops working.
-  [ "$(evaln '(() => { const w = (id) => document.querySelector("[data-panel-id=" + id + "]").getBoundingClientRect().width; return (w("panel-source") < 80 && w("panel-inspector") < 80) ? "both-thin" : "not-thin"; })()')" = "both-thin" ]
+panel_toggle() { # $1 = Window menu checkbox label
+  ab find role menuitem click --name 'Window' >/dev/null 2>&1 || {
+    echo "panels: could not open Window" >&2; return 1; }
+  sleep 0.3
+  ab find role menuitemcheckbox click --name "$1" >/dev/null 2>&1 || {
+    echo "panels: Window checkbox missing for $1" >&2; return 1; }
+  sleep 0.6
 }
-panels_reset() {
-  ab find role menuitem click --name 'Window' >/dev/null && sleep 0.4
-  ab find role menuitem click --name 'Reset Workspace Layout' >/dev/null && sleep 0.8
+panel_defaults_ok() {
+  [ "$(evaln '(() => {
+    const w = (id) => document.getElementById(id)?.getBoundingClientRect().width ?? 0;
+    const h = (id) => document.getElementById(id)?.getBoundingClientRect().height ?? 0;
+    const pct = (part, whole) => whole > 0 ? (part / whole) * 100 : 0;
+    const media = pct(w("panel-media"), w("panel-workspace"));
+    const source = pct(w("panel-source"), w("panel-workspace"));
+    const inspector = pct(w("panel-inspector"), w("panel-upper"));
+    const captions = pct(w("panel-captions"), w("panel-bottom"));
+    const timeline = pct(h("panel-bottom"), h("panel-upper") + h("panel-bottom"));
+    const ok = Math.abs(media - 32) <= 2 && Math.abs(source - 24) <= 2 &&
+      Math.abs(inspector - 26) <= 2 && Math.abs(captions - 24) <= 2 &&
+      Math.abs(timeline - 50) <= 2;
+    return ok ? "ok" : `media=${media.toFixed(1)} source=${source.toFixed(1)} inspector=${inspector.toFixed(1)} captions=${captions.toFixed(1)} timeline=${timeline.toFixed(1)}`;
+  })()')" = "ok" ]
+}
+persisted_size() { # $1 = a key in workspace.sizes
+  evaln "(() => { try { const raw = localStorage.getItem('web-video-editor:workspace:v1'); if (!raw) return 'missing'; const sizes = JSON.parse(raw).sizes; return sizes && typeof sizes.$1 === 'number' ? sizes.$1.toFixed(1) : 'missing'; } catch { return 'bad'; } })()"
+}
+panels_close_media() {
+  local before after
+  before=$(panel_w panel-preview)
+  panel_close 'Media panel menu' || return 1
+  panel_absent panel-media || { echo "panels: Media did not close" >&2; return 1; }
+  panel_present panel-preview || { echo "panels: Program Monitor disappeared with Media" >&2; return 1; }
+  after=$(panel_w panel-preview)
+  [ "$(evaln "($after > $before + 2) ? 'grew' : 'same'")" = "grew" ] || {
+    echo "panels: Program Monitor did not expand after Media closed ($before -> $after)" >&2; return 1; }
+  panel_toggle 'Media' || return 1
+  panel_present panel-media || { echo "panels: Media did not return from Window" >&2; return 1; }
+}
+panels_close_preview() {
+  local before after media_before media_after source_before source_after
+  before=$(panel_w panel-workspace)
+  media_before=$(panel_w panel-media)
+  source_before=$(panel_w panel-source)
+  panel_close 'Program Monitor panel menu' || return 1
+  panel_absent panel-preview || { echo "panels: Program Monitor did not close" >&2; return 1; }
+  panel_present panel-workspace || { echo "panels: workspace column disappeared with the preview" >&2; return 1; }
+  after=$(panel_w panel-workspace)
+  [ "$(evaln "($after >= $before - 2) ? 'kept' : 'shrunk'")" = "kept" ] || {
+    echo "panels: workspace column shrank after the preview closed" >&2; return 1; }
+  media_after=$(panel_w panel-media)
+  source_after=$(panel_w panel-source)
+  [ "$(evaln "($media_after > $media_before + 2) ? 'grew' : 'same'")" = "grew" ] || {
+    echo "panels: Media did not expand after the preview closed ($media_before -> $media_after)" >&2; return 1; }
+  [ "$(evaln "($source_after > $source_before + 2) ? 'grew' : 'same'")" = "grew" ] || {
+    echo "panels: Source did not expand after the preview closed ($source_before -> $source_after)" >&2; return 1; }
+  [ "$(evaln '(() => { const m = document.getElementById("panel-media"); const s = document.getElementById("panel-source"); return (m || s) ? "ok" : "none"; })()')" = "ok" ] || {
+    echo "panels: no Media or Source left after closing the preview" >&2; return 1; }
+  panel_toggle 'Program Monitor' || return 1
+  panel_present panel-preview || { echo "panels: Program Monitor did not return" >&2; return 1; }
+}
+panels_hide_upper() {
+  local before after
+  panel_toggle 'Media' || return 1
+  panel_toggle 'Source' || return 1
+  panel_toggle 'Program Monitor' || return 1
+  before=$(panel_h panel-bottom)
+  panel_close 'Inspector panel menu' || return 1
+  panel_absent panel-upper || { echo "panels: upper row stayed mounted" >&2; return 1; }
+  panel_present panel-bottom || { echo "panels: bottom row disappeared with the upper row" >&2; return 1; }
+  after=$(panel_h panel-bottom)
+  [ "$(evaln "($after > $before + 2) ? 'grew' : 'same'")" = "grew" ] || {
+    echo "panels: bottom row did not reclaim the upper row height ($before -> $after)" >&2; return 1; }
+  ab find role menuitem click --name 'Window' >/dev/null 2>&1 && sleep 0.3
+  ab find role menuitem click --name 'Reset Workspace Layout' >/dev/null 2>&1 || {
+    echo "panels: reset after hiding the upper row failed" >&2; return 1; }
   ab wait --text 'Workspace layout reset'
+  panel_present panel-upper || { echo "panels: reset did not restore the upper row" >&2; return 1; }
 }
-panels_expand_after_reset() {
-  snap | grep -q 'Collapse Media panel'
+panels_close_bottom() {
+  local before after
+  before=$(panel_h panel-upper)
+  panel_close 'Timeline panel menu' || return 1
+  panel_close 'Captions panel menu' || return 1
+  panel_absent panel-bottom || { echo "panels: bottom group stayed mounted" >&2; return 1; }
+  panel_present panel-upper || { echo "panels: upper group disappeared with the bottom row" >&2; return 1; }
+  after=$(panel_h panel-upper)
+  [ "$(evaln "($after > $before + 2) ? 'grew' : 'same'")" = "grew" ] || {
+    echo "panels: upper group did not reclaim the bottom row height ($before -> $after)" >&2; return 1; }
+  panel_toggle 'Timeline' || return 1
+  panel_toggle 'Captions' || return 1
+  panel_present panel-bottom || { echo "panels: bottom row did not return" >&2; return 1; }
+}
+panels_hide_all() {
+  panel_close 'Timeline panel menu' || return 1
+  panel_close 'Captions panel menu' || return 1
+  panel_close 'Inspector panel menu' || return 1
+  panel_close 'Source Monitor panel menu' || return 1
+  panel_close 'Program Monitor panel menu' || return 1
+  panel_close 'Media panel menu' || return 1
+}
+panels_close_all() {
+  panels_hide_all || return 1
+  [ "$(evaln 'document.querySelector("[data-testid=workspace-empty]") ? "empty" : "not-empty"')" = "empty" ] || {
+    echo "panels: all-hidden state is not the empty workspace" >&2; return 1; }
+  [ "$(evaln 'document.querySelectorAll("[id^=panel-]").length')" = "0" ] || {
+    echo "panels: a panel node survived the all-hidden state" >&2; return 1; }
+  snap | grep -q 'Window' || { echo "panels: menubar disappeared with all panels" >&2; return 1; }
+  panel_toggle 'Media' || return 1
+  panel_present panel-media || { echo "panels: Window did not restore Media" >&2; return 1; }
+}
+panels_restore_full() {
+  ab find role menuitem click --name 'Window' >/dev/null 2>&1 && sleep 0.3
+  ab find role menuitem click --name 'Reset Workspace Layout' >/dev/null 2>&1 || {
+    echo "panels: setup reset failed" >&2; return 1; }
+  # The reset item is disabled on a default layout, so its toast may never
+  # appear. The store write is synchronous and the imperative resizes run on
+  # the next frame; a fixed settle is enough for this setup helper.
+  sleep 1
+}
+panels_reset_all() {
+  panels_restore_full || return 1
+  panels_hide_all || return 1
+  [ "$(evaln 'document.querySelector("[data-testid=workspace-empty]") ? "empty" : "not-empty"')" = "empty" ] || {
+    echo "panels: all-hidden state missing before reset" >&2; return 1; }
+  ab find role menuitem click --name 'Window' >/dev/null 2>&1 && sleep 0.3
+  ab find role menuitem click --name 'Reset Workspace Layout' >/dev/null 2>&1 || {
+    echo "panels: Reset Workspace Layout unavailable" >&2; return 1; }
+  ab wait --text 'Workspace layout reset'
+  sleep 1
+  for id in media source preview inspector timeline captions; do
+    panel_present "panel-$id" || { echo "panels: reset did not restore $id" >&2; return 1; }
+  done
+  panel_defaults_ok || { echo "panels: reset did not restore the default shares" >&2; return 1; }
+}
+panels_reset_reduced() {
+  panel_close 'Timeline panel menu' || return 1
+  panel_close 'Captions panel menu' || return 1
+  panel_toggle 'Media' || return 1
+  panel_toggle 'Source' || return 1
+  panel_toggle 'Program Monitor' || return 1
+  panel_close 'Inspector panel menu' || return 1
+  [ "$(evaln 'document.querySelector("[data-testid=workspace-empty]") ? "empty" : "not-empty"')" = "empty" ] || {
+    echo "panels: reduced layout did not reach the empty state" >&2; return 1; }
+  ab find role menuitem click --name 'Window' >/dev/null 2>&1 && sleep 0.3
+  ab find role menuitem click --name 'Reset Workspace Layout' >/dev/null 2>&1 || {
+    echo "panels: reset from the reduced layout failed" >&2; return 1; }
+  ab wait --text 'Workspace layout reset'
+  sleep 1
+  for id in media source preview inspector timeline captions; do
+    panel_present "panel-$id" || { echo "panels: reduced reset did not restore $id" >&2; return 1; }
+  done
+  panel_defaults_ok || { echo "panels: reduced reset did not restore the default shares" >&2; return 1; }
+}
+panels_resize_bounds() {
+  local share persisted started dragged
+  panels_restore_full || return 1
+
+  # Captions max: drag its left handle far left. The UI caps it at 45% of the
+  # bottom row, and the observer must persist the clamped width rather than the
+  # pre-drag value.
+  started=$(evaln '(() => {
+    const h = document.querySelector("[aria-label=\"Resize captions panel (double-click to reset)\"]");
+    if (!h) return "missing";
+    const r = h.getBoundingClientRect();
+    h.dispatchEvent(new PointerEvent("pointerdown", {
+      pointerId: 31, pointerType: "mouse", isPrimary: true, bubbles: true,
+      cancelable: true, composed: true, button: 0, buttons: 1,
+      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+    }));
+    return "ok";
+  })()')
+  [ "$started" = "ok" ] || { echo "panels: could not press the captions handle ($started)" >&2; return 1; }
+  sleep 0.3
+  dragged=$(evaln '(() => {
+    const h = document.querySelector("[aria-label=\"Resize captions panel (double-click to reset)\"]");
+    const row = document.getElementById("panel-bottom");
+    if (!h || !row) return "missing";
+    const r = h.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    const dx = -Math.round(row.getBoundingClientRect().width * 0.6);
+    const ev = (type, cx, buttons) => document.body.dispatchEvent(new PointerEvent(type, {
+      pointerId: 31, pointerType: "mouse", isPrimary: true, bubbles: true,
+      cancelable: true, composed: true, button: 0, buttons,
+      clientX: cx, clientY: y,
+    }));
+    ev("pointermove", x + dx, 1);
+    ev("pointermove", x + dx, 1);
+    ev("pointerup", x + dx, 0);
+    return "ok";
+  })()')
+  [ "$dragged" = "ok" ] || { echo "panels: could not drag the captions handle ($dragged)" >&2; return 1; }
+  sleep 0.8
+  share=$(evaln '(() => { const w = (id) => document.getElementById(id)?.getBoundingClientRect().width ?? 0; const whole = w("panel-bottom"); return whole > 0 ? ((w("panel-captions") / whole) * 100).toFixed(1) : "0.0"; })()')
+  persisted=$(persisted_size captions)
+  [ "$(evaln "Math.abs($share - 45) <= 2 ? 'ok' : 'off'")" = "ok" ] || {
+    echo "panels: captions stopped at $share%, not the 45% max" >&2; return 1; }
+  [ "$(evaln "Math.abs($persisted - $share) <= 2 ? 'ok' : 'off'")" = "ok" ] || {
+    echo "panels: persisted captions $persisted does not match the visible $share" >&2; return 1; }
+  [ "$(evaln "($persisted <= 45.5) ? 'ok' : 'over'")" = "ok" ] || {
+    echo "panels: persisted captions $persisted exceeds the 45% cap" >&2; return 1; }
+
+  # Timeline max: drag the vertical handle far up. The bottom share caps at 72%.
+  started=$(evaln '(() => {
+    const h = document.querySelector("[aria-label=\"Resize timeline panel (double-click to reset)\"]");
+    if (!h) return "missing";
+    const r = h.getBoundingClientRect();
+    h.dispatchEvent(new PointerEvent("pointerdown", {
+      pointerId: 32, pointerType: "mouse", isPrimary: true, bubbles: true,
+      cancelable: true, composed: true, button: 0, buttons: 1,
+      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+    }));
+    return "ok";
+  })()')
+  [ "$started" = "ok" ] || { echo "panels: could not press the timeline handle ($started)" >&2; return 1; }
+  sleep 0.3
+  dragged=$(evaln '(() => {
+    const h = document.querySelector("[aria-label=\"Resize timeline panel (double-click to reset)\"]");
+    const up = document.getElementById("panel-upper");
+    const bottom = document.getElementById("panel-bottom");
+    if (!h || !up || !bottom) return "missing";
+    const r = h.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    const dy = -Math.round((up.getBoundingClientRect().height + bottom.getBoundingClientRect().height) * 0.6);
+    const ev = (type, cy, buttons) => document.body.dispatchEvent(new PointerEvent(type, {
+      pointerId: 32, pointerType: "mouse", isPrimary: true, bubbles: true,
+      cancelable: true, composed: true, button: 0, buttons,
+      clientX: x, clientY: cy,
+    }));
+    ev("pointermove", y + dy, 1);
+    ev("pointermove", y + dy, 1);
+    ev("pointerup", y + dy, 0);
+    return "ok";
+  })()')
+  [ "$dragged" = "ok" ] || { echo "panels: could not drag the timeline handle up ($dragged)" >&2; return 1; }
+  sleep 0.8
+  share=$(evaln '(() => { const h = (id) => document.getElementById(id)?.getBoundingClientRect().height ?? 0; const whole = h("panel-upper") + h("panel-bottom"); return whole > 0 ? ((h("panel-bottom") / whole) * 100).toFixed(1) : "0.0"; })()')
+  persisted=$(persisted_size timeline)
+  [ "$(evaln "Math.abs($share - 72) <= 2 ? 'ok' : 'off'")" = "ok" ] || {
+    echo "panels: timeline stopped at $share%, not the 72% max" >&2; return 1; }
+  [ "$(evaln "Math.abs($persisted - $share) <= 2 ? 'ok' : 'off'")" = "ok" ] || {
+    echo "panels: persisted timeline $persisted does not match the visible $share" >&2; return 1; }
+
+  # Timeline min: drag the same handle far down. The bottom share floors at 15%.
+  started=$(evaln '(() => {
+    const h = document.querySelector("[aria-label=\"Resize timeline panel (double-click to reset)\"]");
+    if (!h) return "missing";
+    const r = h.getBoundingClientRect();
+    h.dispatchEvent(new PointerEvent("pointerdown", {
+      pointerId: 33, pointerType: "mouse", isPrimary: true, bubbles: true,
+      cancelable: true, composed: true, button: 0, buttons: 1,
+      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+    }));
+    return "ok";
+  })()')
+  [ "$started" = "ok" ] || { echo "panels: could not press the timeline handle again ($started)" >&2; return 1; }
+  sleep 0.3
+  dragged=$(evaln '(() => {
+    const h = document.querySelector("[aria-label=\"Resize timeline panel (double-click to reset)\"]");
+    const up = document.getElementById("panel-upper");
+    const bottom = document.getElementById("panel-bottom");
+    if (!h || !up || !bottom) return "missing";
+    const r = h.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    const dy = Math.round((up.getBoundingClientRect().height + bottom.getBoundingClientRect().height) * 0.8);
+    const ev = (type, cy, buttons) => document.body.dispatchEvent(new PointerEvent(type, {
+      pointerId: 33, pointerType: "mouse", isPrimary: true, bubbles: true,
+      cancelable: true, composed: true, button: 0, buttons,
+      clientX: x, clientY: cy,
+    }));
+    ev("pointermove", y + dy, 1);
+    ev("pointermove", y + dy, 1);
+    ev("pointerup", y + dy, 0);
+    return "ok";
+  })()')
+  [ "$dragged" = "ok" ] || { echo "panels: could not drag the timeline handle down ($dragged)" >&2; return 1; }
+  sleep 0.8
+  share=$(evaln '(() => { const h = (id) => document.getElementById(id)?.getBoundingClientRect().height ?? 0; const whole = h("panel-upper") + h("panel-bottom"); return whole > 0 ? ((h("panel-bottom") / whole) * 100).toFixed(1) : "0.0"; })()')
+  persisted=$(persisted_size timeline)
+  [ "$(evaln "Math.abs($share - 15) <= 2 ? 'ok' : 'off'")" = "ok" ] || {
+    echo "panels: timeline stopped at $share%, not the 15% min" >&2; return 1; }
+  [ "$(evaln "Math.abs($persisted - $share) <= 2 ? 'ok' : 'off'")" = "ok" ] || {
+    echo "panels: persisted timeline $persisted does not match the visible $share" >&2; return 1; }
+  [ "$(evaln "($persisted >= 14.5) ? 'ok' : 'under'")" = "ok" ] || {
+    echo "panels: persisted timeline $persisted is below the 15% floor" >&2; return 1; }
+
+  panels_restore_full || return 1
+  panel_defaults_ok || { echo "panels: bounds step did not restore the default shares" >&2; return 1; }
 }
 
-panels_preview_hide() {
-  # Collapse Media, then hide the Program Monitor. With no auto-sized preview
-  # the pair fills the row, so neither panel may keep a collapse control: the
-  # stale collapsed flag used to re-render a 29px ghost strip with a dead
-  # "Expand Media panel" chevron.
-  ab find role button click --name 'Collapse Media panel' >/dev/null && sleep 0.5
-  ab find role menuitem click --name 'Window' >/dev/null && sleep 0.3
-  ab find role menuitemcheckbox click --name 'Program Monitor' >/dev/null || {
-    echo "panels: could not hide the Program Monitor" >&2; return 1; }
+panels_double_click() {
+  # The bounds checks leave the layout at its defaults. A solo row has no handle
+  # at all; with Captions closed the horizontal captions handle must be gone.
+  # Then move the Inspector share off its default and prove the double-click
+  # restores it: from a default layout the final 26% check would pass even if
+  # resetPanel did nothing.
+  panels_resize_bounds || return 1
+  panel_close 'Captions panel menu' || return 1
+  [ "$(evaln 'document.querySelector("[aria-label=\"Resize captions panel (double-click to reset)\"]") ? "present" : "absent"')" = "absent" ] || {
+    echo "panels: solo timeline still renders a captions handle" >&2; return 1; }
+  panel_toggle 'Captions' || return 1
   sleep 0.5
-  [ "$(evaln '(() => { const d = document; const labels = [...d.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") || ""); const chevron = labels.some((l) => /^(?:Expand|Collapse) (?:Media|Source Monitor) panel$/.test(l)); return chevron ? "chevron" : "clean"; })()')" = "clean" ] || {
-    echo "panels: preview-hidden pair still offers a collapse control" >&2; return 1; }
-  # Reset must restore the preview and Media's collapse control.
-  ab find role menuitem click --name 'Window' >/dev/null && sleep 0.4
-  ab find role menuitem click --name 'Reset Workspace Layout' >/dev/null && sleep 0.8
-  ab wait --text 'Workspace layout reset'
-  [ "$(evaln '(() => { const d = document; return d.querySelector("[data-panel-id=panel-preview]") ? "preview" : "no-preview"; })()')" = "preview" ] || {
-    echo "panels: preview did not return after reset" >&2; return 1; }
-  snap | grep -q 'Collapse Media panel'
+
+  # The press goes to the handle; the move and release go to the gesture's
+  # body listeners, which attach on the render after the press. So the press is
+  # its own eval and then we wait, the same protocol as the other drag steps.
+  local started
+  started=$(evaln '(() => {
+    const h = document.querySelector("[aria-label=\"Resize inspector panel (double-click to reset)\"]");
+    if (!h) return "missing";
+    const r = h.getBoundingClientRect();
+    h.dispatchEvent(new PointerEvent("pointerdown", {
+      pointerId: 21, pointerType: "mouse", isPrimary: true, bubbles: true,
+      cancelable: true, composed: true, button: 0, buttons: 1,
+      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+    }));
+    return "ok";
+  })()')
+  [ "$started" = "ok" ] || { echo "panels: could not press the inspector handle ($started)" >&2; return 1; }
+  sleep 0.3
+
+  local dragged
+  dragged=$(evaln '(() => {
+    const h = document.querySelector("[aria-label=\"Resize inspector panel (double-click to reset)\"]");
+    const row = document.getElementById("panel-upper");
+    if (!h || !row) return "missing";
+    const r = h.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    const dx = Math.round(row.getBoundingClientRect().width * 0.1);
+    const ev = (type, cx, buttons) => document.body.dispatchEvent(new PointerEvent(type, {
+      pointerId: 21, pointerType: "mouse", isPrimary: true, bubbles: true,
+      cancelable: true, composed: true, button: 0, buttons,
+      clientX: cx, clientY: y,
+    }));
+    ev("pointermove", x + dx, 1);
+    ev("pointermove", x + dx, 1);
+    ev("pointerup", x + dx, 0);
+    return "ok";
+  })()')
+  [ "$dragged" = "ok" ] || { echo "panels: could not drag the inspector handle ($dragged)" >&2; return 1; }
+  sleep 0.8
+
+  local share
+  share=$(evaln '(() => { const w = (id) => document.getElementById(id)?.getBoundingClientRect().width ?? 0; const whole = w("panel-upper"); return whole > 0 ? ((w("panel-inspector") / whole) * 100).toFixed(1) : "0.0"; })()')
+  [ "$(evaln "Math.abs($share - 26) > 2 ? 'off' : 'default'")" = "off" ] || {
+    echo "panels: inspector drag left the share at $share%, not off the 26% default" >&2; return 1; }
+
+  [ "$(evaln '(() => { const h = document.querySelector("[aria-label=\"Resize inspector panel (double-click to reset)\"]"); if (!h) return "missing"; h.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); return "ok"; })()')" = "ok" ] || {
+    echo "panels: inspector resize handle missing" >&2; return 1; }
+  sleep 0.8
+  share=$(evaln '(() => { const w = (id) => document.getElementById(id)?.getBoundingClientRect().width ?? 0; const whole = w("panel-upper"); return whole > 0 ? ((w("panel-inspector") / whole) * 100).toFixed(1) : "0.0"; })()')
+  [ "$(evaln "Math.abs($share - 26) <= 2 ? 'ok' : 'off'")" = "ok" ] || {
+    echo "panels: double-click did not reset the inspector share (share $share%)" >&2; return 1; }
 }
 
 # ————— F8 autosave + save —————
@@ -2710,7 +3015,7 @@ f08_autosave() {
   local boot=0
   deadline=$((SECONDS + settle_s))
   while [ "$boot" != "1" ] && [ "$SECONDS" -lt "$deadline" ]; do
-    boot=$(evaln '(() => { const d = document; return (d.body.innerText.includes("Collapse Media panel") || d.querySelector("[data-testid=release-notes-modal]")) ? "1" : "0"; })()')
+    boot=$(evaln '(() => { const d = document; return (d.querySelector("[role=menubar]") || d.querySelector("[data-testid=release-notes-modal]")) ? "1" : "0"; })()')
     [ "$boot" = "1" ] || { boot=0; sleep 0.25; }
   done
   [ "$boot" = "1" ] || { echo "no editor boot after reload" >&2; return 1; }
@@ -3697,11 +4002,14 @@ step "f05b curve: handle drag reshapes an eased segment" f05b_curve_handles
 step "f08 ripple: Shift+Delete removes the pasted copy" f08_ripple_delete
 step "menus: all 9 application menus open"         menus_open
 step "menus: View > Snapping toggles off"          menu_snapping
-step "panels: collapse Media panel (strip shown)"  panels_collapse
-step "panels: solo guard + collapse Source and Inspector" panels_collapse_pair
-step "panels: Window > Reset Workspace Layout"     panels_reset
-step "panels: reset expanded Media again"          panels_expand_after_reset
-step "panels: hide preview after a collapse (no ghost strip)" panels_preview_hide
+step "panels: close Media from its panel menu"      panels_close_media
+step "panels: close Program Monitor from its header" panels_close_preview
+step "panels: hide the upper row and reclaim its height" panels_hide_upper
+step "panels: close the bottom row and reclaim its height" panels_close_bottom
+step "panels: close all panels and reopen one from Window" panels_close_all
+step "panels: reset from all hidden"                panels_reset_all
+step "panels: reset from a reduced layout"          panels_reset_reduced
+step "panels: resize bounds and double-click reset" panels_double_click
 step "f08 autosave: reload -> restore session"     f08_autosave
 step "f08 save: capture the .veproj.json download"  f08_capture_project
 step "f08 save: project download toast"            f08_save

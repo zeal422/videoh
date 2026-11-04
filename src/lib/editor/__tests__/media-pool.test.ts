@@ -207,9 +207,11 @@ describe('media pool layout + dedup wiring', () => {
     const shell = read('src/components/editor/PanelShell.tsx')
     // The wrapper div that hosts arbitrary panel children must constrain them.
     expect(shell).toMatch(/className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"/)
-    // The collapsed flag must be reconciled against the library, or a refused
-    // collapse leaves a strip drawn inside a full-width panel (0.7.3).
-    expect(shell).toMatch(/isCollapsed\(\)/)
+    // The header renders the shared panel menu and there is no collapse
+    // control or library reconciliation left.
+    expect(shell).toMatch(/<PanelMenu id=\{id\} title=\{title\} \/>/)
+    expect(shell).not.toContain('isCollapsed')
+    expect(shell).not.toContain('collapsible')
   })
 
   it('keeps the MediaBin list the scrollable, height-constrained element', () => {

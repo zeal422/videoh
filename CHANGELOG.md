@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.19.0] - 2026-11-04
+
+### Changed
+
+- **Premiere-style panel model.** Panels are now visible or closed, with no collapsed-strip state.
+  Every desktop panel header has a menu with `Close Panel`, and the Window menu remains the restore
+  path. `Reset Workspace Layout` restores the full default layout.
+- **Panel header menus.** The shared `PanelMenu` closes its own panel, keeps focus on the next panel
+  trigger in DOM order, and leaves Escape and outside-click focus restoration to Radix. The old
+  collapse chevron and strip are gone.
+- **Program Monitor header.** The Program Monitor is wrapped in `PanelShell` with a `Program Monitor`
+  title and close menu. The canvas, scopes, and transport stay inside `PreviewPanel`, and the compact
+  mobile layout keeps its headerless monitor.
+- **Row reclaim and empty state.** Closing the last panel in the upper row unmounts that row and gives
+  its height to the bottom row, and closing the last bottom panel does the reverse. Closing all six
+  panels shows a muted empty state that points at `Window` and `Reset Workspace Layout`; the menu bar,
+  toolbar, and status bar stay mounted.
+- **Panel bounds.** Captions and the vertical Timeline share are constrained to their persisted
+  `PANEL_BOUNDS` while both panels in the group are visible; solo groups still fill their row.
+
+### Fixed
+
+- Old workspace payloads with a `collapsed` flag load without it, and old collapsed-strip sizes clamp
+  to the panel minimum instead of restoring a tiny panel.
+
 ## [0.18.0] - 2026-11-01
 
 ### Added

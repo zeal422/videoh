@@ -3,29 +3,33 @@
  * Anti-regression tests for the workspace layout state (workspace.ts).
  *
  * Guards:
- * 1. Defaults + immutable update helpers (hidden/collapsed/size).
- * 2. `sanitizeWorkspace` never throws and clamps out-of-range/corrupt data.
+ * 1. Defaults + immutable update helpers (hidden/size).
+ * 2. `sanitizeWorkspace` never throws and clamps out-of-range/corrupt data,
+ *    including legacy collapse data from before 0.19.0.
  * 3. save/load round-trips through an injected storage; corrupt JSON falls
  *    back to defaults instead of crashing the editor on boot.
+ * 4. The layout-shape guard and the reset generation tracker.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  createResetTracker,
   defaultWorkspace,
-  isCollapsedSize,
+  isExpectedPanelLayout,
   KEYFRAME_GRAPH_MAX_HEIGHT,
   KEYFRAME_GRAPH_MIN_HEIGHT,
   loadWorkspace,
   PANEL_BOUNDS,
   PANELS,
+  RESET_GROUP_SPECS,
   sanitizeWorkspace,
   saveWorkspace,
-  withCollapsed,
   withHidden,
   withKeyframeGraphHeight,
   withSize,
   WORKSPACE_STORAGE_KEY,
   workspaceToJSON,
+  type ResetGroupId,
 } from '../workspace'
 import { useWorkspaceStore } from '../workspace-store'
 
@@ -38,8 +42,57 @@ function fakeStorage(initial: Record<string, string> = {}) {
   }
 }
 
+const FULL_RESET_LAYOUTS: Record<ResetGroupId, number[]> = {
+  upper: [PANEL_BOUNDS.media.default, PANEL_BOUNDS.source.default, 44],
+  top: [74, PANEL_BOUNDS.inspector.default],
+  bottom: [76, PANEL_BOUNDS.captions.default],
+  vertical: [50, PANEL_BOUNDS.timeline.default],
+}
+
+/** Deterministic tracker harness: capture the frame/timer callbacks. */
+function trackerHarness() {
+  const frames: Array<() => void> = []
+  const timers: Array<() => void> = []
+  const cancelledFrames: number[] = []
+  const cancelledTimers: number[] = []
+  const issued: ResetGroupId[][] = []
+  let layouts: Partial<Record<ResetGroupId, number[]>> = {}
+
+  const tracker = createResetTracker({
+    groups: RESET_GROUP_SPECS,
+    hooks: {
+      issueResizes: (groups) => issued.push(groups),
+      readLayouts: () => layouts,
+    },
+    scheduleFrame: (callback) => {
+      frames.push(callback)
+      return frames.length
+    },
+    cancelFrame: (handle) => cancelledFrames.push(handle),
+    scheduleTimer: (callback) => {
+      timers.push(callback)
+      return timers.length
+    },
+    cancelTimer: (handle) => cancelledTimers.push(handle),
+    fallbackMs: 1000,
+    maxRearms: 2,
+  })
+
+  return {
+    tracker,
+    issued,
+    cancelledFrames,
+    cancelledTimers,
+    setLayouts: (next: Partial<Record<ResetGroupId, number[]>>) => {
+      layouts = next
+    },
+    runFrame: (index = frames.length - 1) => frames[index]?.(),
+    runTimer: (index = timers.length - 1) => timers[index]?.(),
+  }
+}
+
 describe('defaults and catalog', () => {
-  it('default workspace: all panels visible, expanded, with bounded sizes', () => {
+  it('default workspace: all panels visible, with bounded sizes and no collapsed key', () => {
     const ws = defaultWorkspace()
     expect(ws.hidden).toEqual({
       media: false,
@@ -49,14 +102,7 @@ describe('defaults and catalog', () => {
       timeline: false,
       captions: false,
     })
-    expect(ws.collapsed).toEqual({
-      media: false,
-      preview: false,
-      source: false,
-      inspector: false,
-      timeline: false,
-      captions: false,
-    })
+    expect('collapsed' in ws).toBe(false)
     expect(ws.sizes.media).toBe(PANEL_BOUNDS.media.default)
     expect(ws.sizes.source).toBe(PANEL_BOUNDS.source.default)
     expect(ws.sizes.inspector).toBe(PANEL_BOUNDS.inspector.default)
@@ -110,12 +156,6 @@ describe('immutable update helpers', () => {
     expect(ws.hidden.media).toBe(false)
   })
 
-  it('withCollapsed toggles a single panel', () => {
-    const ws = withCollapsed(defaultWorkspace(), 'timeline', true)
-    expect(ws.collapsed.timeline).toBe(true)
-    expect(ws.collapsed.media).toBe(false)
-  })
-
   it('withSize clamps into panel bounds and keeps identity when equal', () => {
     const ws = defaultWorkspace()
     const clamped = withSize(ws, 'media', 500)
@@ -129,13 +169,6 @@ describe('immutable update helpers', () => {
     const ws = withSize(defaultWorkspace(), 'source', 500)
     expect(ws.sizes.source).toBe(PANEL_BOUNDS.source.max)
     expect(ws.sizes.source).toBeGreaterThan(0)
-  })
-
-  it('isCollapsedSize only matches collapsed-strip sizes', () => {
-    expect(isCollapsedSize(2.5)).toBe(true)
-    expect(isCollapsedSize(0)).toBe(true)
-    expect(isCollapsedSize(3.0)).toBe(true) // within tolerance
-    expect(isCollapsedSize(PANEL_BOUNDS.media.min)).toBe(false)
   })
 })
 
@@ -156,39 +189,30 @@ describe('sanitizeWorkspace', () => {
     expect(ws.sizes.timeline).toBe(PANEL_BOUNDS.timeline.min)
   })
 
-  it('a stored layout from before the Source panel simply lacks the key', () => {
-    // Forward-compat migration: the old four-panel shape loads as valid, with
-    // the new panel taking its default (and staying visible).
+  it('ignores a legacy collapsed payload and keeps hidden and sizes', () => {
     const legacy = sanitizeWorkspace({
       sizes: { media: 22, inspector: 30, timeline: 40 },
       collapsed: { media: true, preview: false, inspector: false, timeline: false },
-      hidden: { media: false, preview: false, inspector: false, timeline: false },
+      hidden: { timeline: true },
     })
-    expect(legacy.sizes.source).toBe(PANEL_BOUNDS.source.default)
-    expect(legacy.hidden.source).toBe(false)
-    expect(legacy.collapsed.media).toBe(true)
-  })
-
-  it('a stored layout from before the Captions panel simply lacks the key', () => {
-    // Same forward-compat migration one release later: the five-size shape
-    // loads as valid, with captions taking its default (and staying visible).
-    const legacy = sanitizeWorkspace({
-      sizes: { media: 22, source: 24, inspector: 30, timeline: 40 },
-      collapsed: { media: true, preview: false, source: false, inspector: false, timeline: false },
-      hidden: { media: false, preview: false, source: false, inspector: false, timeline: false },
-    })
-    expect(legacy.sizes.captions).toBe(PANEL_BOUNDS.captions.default)
-    expect(legacy.hidden.captions).toBe(false)
-    expect(legacy.collapsed.captions).toBe(false)
+    expect('collapsed' in legacy).toBe(false)
+    expect(legacy.hidden.timeline).toBe(true)
     expect(legacy.sizes.media).toBe(22)
+    expect(legacy.sizes.source).toBe(PANEL_BOUNDS.source.default)
   })
 
-  it('withSize stores the captions width inside its bounds', () => {
-    const ws = withSize(defaultWorkspace(), 'captions', 30)
-    expect(ws.sizes.captions).toBe(30)
-    expect(withSize(defaultWorkspace(), 'captions', 90).sizes.captions).toBe(
-      PANEL_BOUNDS.captions.max,
-    )
+  it('clamps a legacy collapsed-strip size to the panel minimum', () => {
+    const legacy = sanitizeWorkspace({ sizes: { media: 2.5, captions: 0 } })
+    expect(legacy.sizes.media).toBe(PANEL_BOUNDS.media.min)
+    expect(legacy.sizes.captions).toBe(PANEL_BOUNDS.captions.min)
+  })
+
+  it('never lets a hostile collapsed value reach the returned state', () => {
+    const hostile = sanitizeWorkspace({
+      collapsed: { media: 'yes', preview: 1, timeline: { open: true } },
+    })
+    expect('collapsed' in hostile).toBe(false)
+    expect(hostile).toEqual(defaultWorkspace())
   })
 
   it('ignores non-numeric and unknown size keys', () => {
@@ -200,34 +224,28 @@ describe('sanitizeWorkspace', () => {
     expect(ws.sizes.inspector).toBe(30)
   })
 
-  it('coerces hidden/collapsed flags to booleans and fills missing panels', () => {
+  it('coerces hidden flags to booleans and fills missing panels', () => {
     const ws = sanitizeWorkspace({
-      collapsed: { media: true, timeline: 'yes' },
       hidden: { preview: false, bogus: true },
     })
-    expect(ws.collapsed.media).toBe(true)
-    expect(ws.collapsed.timeline).toBe(false) // non-boolean → false
-    expect(ws.collapsed.preview).toBe(false) // missing → false
     expect(ws.hidden.preview).toBe(false)
     expect((ws.hidden as Record<string, unknown>)['bogus']).toBeUndefined()
   })
 })
 
 describe('persistence (injected storage)', () => {
-  it('round-trips through save/load', () => {
+  it('round-trips through save/load without a collapsed key', () => {
     const storage = fakeStorage()
     const ws = withHidden(
-      withSize(
-        withSize(withCollapsed(defaultWorkspace(), 'media', true), 'timeline', 50),
-        'source',
-        30,
-      ),
+      withSize(withSize(defaultWorkspace(), 'timeline', 50), 'source', 30),
       'preview',
       true,
     )
     saveWorkspace(ws, storage)
 
-    expect(storage.getItem(WORKSPACE_STORAGE_KEY)).toBeTruthy()
+    const raw = storage.getItem(WORKSPACE_STORAGE_KEY)
+    expect(raw).toBeTruthy()
+    expect(raw).not.toContain('collapsed')
     const loaded = loadWorkspace(storage)
     expect(loaded).toEqual(ws)
     // The new panel's size really survives the round trip (it is not dropped
@@ -254,6 +272,147 @@ describe('persistence (injected storage)', () => {
     const ws = withSize(defaultWorkspace(), 'inspector', 40)
     const parsed = sanitizeWorkspace(JSON.parse(workspaceToJSON(ws)))
     expect(parsed).toEqual(ws)
+  })
+})
+
+describe('layout-shape guard', () => {
+  const upperSlots = [
+    { index: 0, bounds: PANEL_BOUNDS.media },
+    { index: 1, bounds: PANEL_BOUNDS.source },
+  ]
+
+  it('accepts a full-group layout and ignores the unmapped auto-sized slot', () => {
+    expect(isExpectedPanelLayout([32, 24, 44], 3, upperSlots)).toBe(true)
+    // The preview is the unmapped third slot; its value is never inspected.
+    expect(isExpectedPanelLayout([32, 24, 99], 3, upperSlots)).toBe(true)
+  })
+
+  it('rejects length mismatches, out-of-range indices, and non-finite values', () => {
+    expect(isExpectedPanelLayout([32, 24], 3, upperSlots)).toBe(false)
+    expect(isExpectedPanelLayout([32, 24, 44, 0], 3, upperSlots)).toBe(false)
+    expect(isExpectedPanelLayout([32, Number.NaN, 44], 3, upperSlots)).toBe(false)
+    expect(isExpectedPanelLayout([32, 24, 44], 3, [{ index: 3, bounds: PANEL_BOUNDS.media }])).toBe(
+      false,
+    )
+  })
+
+  it('rejects per-panel bounds in both directions', () => {
+    expect(isExpectedPanelLayout([50, 24, 44], 3, upperSlots)).toBe(false)
+    expect(isExpectedPanelLayout([8, 24, 44], 3, upperSlots)).toBe(false)
+  })
+
+  it('rejects a forced 100 in a mapped two-panel slot', () => {
+    expect(isExpectedPanelLayout([100, 0], 2, [{ index: 1, bounds: PANEL_BOUNDS.inspector }])).toBe(
+      false,
+    )
+  })
+
+  it('accepts a solo top row with no mapped entries', () => {
+    expect(isExpectedPanelLayout([100], 1, [])).toBe(true)
+  })
+})
+
+describe('reset generation tracker', () => {
+  it('pre-resize layouts never count', () => {
+    const h = trackerHarness()
+    const token = h.tracker.begin()
+    expect(h.tracker.noteLayout(token, 'upper', FULL_RESET_LAYOUTS.upper)).toBe(false)
+    expect(h.tracker.completedGroups()).toEqual([])
+  })
+
+  it('an explicit post-issue read counts when no onLayout fired', () => {
+    const h = trackerHarness()
+    h.setLayouts(FULL_RESET_LAYOUTS)
+    h.tracker.begin()
+    h.runFrame()
+    expect(h.tracker.pendingToken()).toBeNull()
+    expect(h.tracker.completedGroups()).toEqual([])
+  })
+
+  it('an older token never clears or completes a newer one', () => {
+    const h = trackerHarness()
+    const first = h.tracker.begin()
+    const second = h.tracker.begin()
+    expect(h.tracker.noteLayout(first, 'upper', FULL_RESET_LAYOUTS.upper)).toBe(false)
+    h.setLayouts(FULL_RESET_LAYOUTS)
+    h.runFrame()
+    expect(h.tracker.pendingToken()).toBeNull()
+    expect(second).toBeGreaterThan(first)
+  })
+
+  it('a stale frame callback performs zero resizes', () => {
+    const h = trackerHarness()
+    h.tracker.begin()
+    h.tracker.begin()
+    h.runFrame(0)
+    expect(h.issued).toEqual([])
+  })
+
+  it('a cancel before the first frame makes that frame a no-op', () => {
+    const h = trackerHarness()
+    h.tracker.begin()
+    h.tracker.cancel()
+    h.runFrame()
+    expect(h.issued).toEqual([])
+    expect(h.tracker.pendingToken()).toBeNull()
+  })
+
+  it('an in-flight gesture cancel stops the fallback', () => {
+    const h = trackerHarness()
+    h.setLayouts({ upper: FULL_RESET_LAYOUTS.upper })
+    h.tracker.begin()
+    h.runFrame()
+    const before = h.issued.length
+    h.tracker.cancel()
+    h.runTimer()
+    expect(h.issued.length).toBe(before)
+  })
+
+  it('incomplete groups stay suppressed across a fallback and are re-applied exactly once', () => {
+    const h = trackerHarness()
+    h.setLayouts({ upper: FULL_RESET_LAYOUTS.upper })
+    h.tracker.begin()
+    h.runFrame()
+    expect(h.tracker.completedGroups()).toEqual(['upper'])
+    h.setLayouts(FULL_RESET_LAYOUTS)
+    h.runTimer()
+    expect(h.issued[1]).toEqual(['top', 'bottom', 'vertical'])
+    expect(h.tracker.pendingToken()).toBeNull()
+  })
+
+  it('completion requires every expected group', () => {
+    const h = trackerHarness()
+    h.setLayouts({
+      upper: FULL_RESET_LAYOUTS.upper,
+      top: FULL_RESET_LAYOUTS.top,
+      bottom: FULL_RESET_LAYOUTS.bottom,
+    })
+    h.tracker.begin()
+    h.runFrame()
+    expect(h.tracker.pendingToken()).not.toBeNull()
+    expect(h.tracker.completedGroups().sort()).toEqual(['bottom', 'top', 'upper'])
+  })
+
+  it('exhaustion clears the token without completion', () => {
+    const h = trackerHarness()
+    h.tracker.begin()
+    h.runFrame()
+    h.runTimer()
+    h.runTimer()
+    h.runTimer()
+    expect(h.tracker.pendingToken()).toBeNull()
+    expect(h.tracker.completedGroups()).toEqual([])
+  })
+
+  it('a setHidden cancel clears the token and discards completions', () => {
+    const h = trackerHarness()
+    h.setLayouts({ upper: FULL_RESET_LAYOUTS.upper })
+    h.tracker.begin()
+    h.runFrame()
+    expect(h.tracker.completedGroups()).toEqual(['upper'])
+    h.tracker.cancel()
+    expect(h.tracker.pendingToken()).toBeNull()
+    expect(h.tracker.completedGroups()).toEqual([])
   })
 })
 
@@ -318,5 +477,16 @@ describe('workspace store persistence (0.18.0)', () => {
     }
     expect(stored.keyframeGraphHeights.opacity).toBe(120)
     expect(stored.sizes.media).toBe(25)
+  })
+
+  it('setSize clamps and persists without a collapsed branch', () => {
+    useWorkspaceStore.getState().setSize('captions', 90)
+    expect(useWorkspaceStore.getState().sizes.captions).toBe(PANEL_BOUNDS.captions.max)
+    vi.advanceTimersByTime(400)
+    const stored = JSON.parse(localStorage.getItem(WORKSPACE_STORAGE_KEY)!) as {
+      sizes: { captions: number }
+    }
+    expect(stored.sizes.captions).toBe(PANEL_BOUNDS.captions.max)
+    expect('collapsed' in stored).toBe(false)
   })
 })

@@ -411,7 +411,7 @@ export function PreviewPanel() {
           data-testid="time-display"
         >
           {formatTransportTime(playhead)}{' '}
-          <span className="text-zinc-500">/ {formatTransportTime(duration)}</span>
+          <span className="hidden text-zinc-500 @lg:inline">/ {formatTransportTime(duration)}</span>
         </div>
 
         <div className="ml-4 hidden items-center gap-2 @lg:flex">

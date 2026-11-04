@@ -30,15 +30,18 @@ import { join } from 'node:path'
 const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8')
 
 describe('preview panel layout wiring', () => {
-  it('mounts panel-preview as a flex container so the section inherits its height', () => {
+  it('wraps panel-preview in PanelShell with a bounded flex content wrapper', () => {
     const shell = read('src/components/editor/EditorShell.tsx')
-    const at = shell.indexOf('panel-preview')
-    expect(at, 'EditorShell must render a panel-preview ResizablePanel').toBeGreaterThan(-1)
-    const element = shell.slice(at, shell.indexOf('/>', at))
-    expect(element).toMatch(/className="flex min-h-0 min-w-0"/)
-    // The Source Monitor must render before the preview panel: a middle panel's
-    // collapse cannot be absorbed, so the order is load-bearing (0.7.3).
-    expect(shell.indexOf('id="source"')).toBeLessThan(shell.indexOf('id="panel-preview"'))
+    const at = shell.indexOf('id="preview"')
+    expect(at, 'EditorShell must render the Program Monitor PanelShell').toBeGreaterThan(-1)
+    expect(shell.slice(at - 100, at + 200)).toContain('title="Program Monitor"')
+    // The PanelShell content wrapper is the flex column that lets the preview
+    // section inherit a bounded height.
+    const panelShell = read('src/components/editor/PanelShell.tsx')
+    expect(panelShell).toMatch(/className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"/)
+    // The Source Monitor must render before the Program Monitor: panel order is
+    // load-bearing for the upper-row observer mapping.
+    expect(shell.indexOf('id="source"')).toBeLessThan(shell.indexOf('id="preview"'))
   })
 
   it('keeps the transport row fixed-height and shrink-0 (always visible)', () => {
@@ -68,7 +71,11 @@ describe('preview panel layout wiring', () => {
     const shell = read('src/components/editor/EditorShell.tsx')
     // The imperative part — without it the reset only rewrites the store and
     // the squeezed layout stays on screen until reload.
-    expect(shell).toMatch(/handleResetLayout[\s\S]*?ref\.expand\(\)[\s\S]*?ref\.resize\(/)
+    expect(shell).toContain('createResetTracker')
+    expect(shell).toContain('issueResetResizes')
+    expect(shell).toContain('.resize(PANEL_BOUNDS.media.default)')
+    expect(shell).toContain('.resize(PANEL_BOUNDS.timeline.default)')
+    expect(shell).toContain('getLayout()')
     const menuBar = read('src/components/editor/MenuBar.tsx')
     expect(menuBar).toMatch(/case 'window.resetLayout':\s*onResetLayout\(\)/)
   })
