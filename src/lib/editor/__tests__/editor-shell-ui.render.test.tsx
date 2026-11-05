@@ -10,6 +10,7 @@ import { Toaster } from '@/components/ui/toaster'
 import { readFileSync } from 'node:fs'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { playbackRef } from '../playback/engine-ref'
+import { handlePreviewMediaError } from '../playback/preview'
 import { isTransientActive, useEditorStore } from '../store'
 import { useWorkspaceStore } from '../workspace-store'
 import { WORKSPACE_STORAGE_KEY } from '../workspace'
@@ -1228,6 +1229,79 @@ describe('decode recovery overlay', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     expect(screen.queryByTestId('media-decode-overlay')).not.toBeInTheDocument()
+  })
+
+  it('routes an audio-only failure to a toast without clearing a shared notice', async () => {
+    render(
+      <>
+        <EditorShell />
+        <Toaster />
+      </>,
+    )
+    act(() => {
+      useEditorStore.getState().setMediaError({
+        clipId: 'v1',
+        code: 3,
+        time: 20,
+        skippedTo: 26,
+        terminal: false,
+      })
+    })
+    expect(screen.getByTestId('media-decode-overlay')).toHaveTextContent('Skipped damaged media')
+
+    act(() => {
+      handlePreviewMediaError({
+        clipId: 'a1',
+        code: 3,
+        time: 12,
+        terminal: false,
+        audioOnly: true,
+      })
+    })
+
+    expect(useEditorStore.getState().mediaError).toMatchObject({ clipId: 'v1' })
+    expect(screen.getByTestId('media-decode-overlay')).toHaveTextContent('Skipped damaged media')
+    await waitFor(() => {
+      expect(screen.getByText('Audio could not be decoded')).toBeInTheDocument()
+    })
+    expect(screen.getByText(/The audio at 00:12.0 is muted/)).toBeInTheDocument()
+
+    act(() => {
+      handlePreviewMediaError({
+        clipId: 'a1',
+        code: 2,
+        time: 13,
+        terminal: false,
+        audioOnly: true,
+      })
+    })
+    await waitFor(() => {
+      expect(screen.getByText('Audio could not be loaded')).toBeInTheDocument()
+    })
+
+    act(() => {
+      handlePreviewMediaError({
+        clipId: 'a1',
+        code: 4,
+        time: 14,
+        terminal: false,
+        audioOnly: true,
+      })
+    })
+    await waitFor(() => {
+      expect(screen.getByText('Audio source is not supported')).toBeInTheDocument()
+    })
+
+    act(() => {
+      handlePreviewMediaError({
+        clipId: 'v1',
+        code: 4,
+        time: 30,
+        terminal: true,
+      })
+    })
+    expect(screen.getByTestId('media-decode-overlay')).toHaveTextContent('Damaged media')
+    expect(screen.getByTestId('media-decode-overlay')).toHaveTextContent('around 00:30.0')
   })
 })
 

@@ -2170,6 +2170,48 @@ describe('decode recovery (mocked browser)', () => {
     core.dispose()
   })
 
+  it('parks a reloaded video element on the keyframe when the scrub path owns the still', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const source: ScrubFrameSource = {
+      hasSink: () => true,
+      peek: () => undefined,
+      request: vi.fn(),
+      releaseClip: vi.fn(),
+      releaseAsset: vi.fn(),
+      reset: vi.fn(),
+      dispose: vi.fn(),
+      onFallback: () => () => undefined,
+    }
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 5,
+      createScrubSource: () => source,
+    })
+
+    // Materialize the playback element, then hand the paused still to WebCodecs.
+    await core.play()
+    await h.pump.pump(1)
+    core.pause()
+    core.seek(2)
+    const el = core['pool'].peek('c1') as HTMLVideoElement
+    // A browser load() resets the element to zero; the fake does not, so make
+    // the reload mimic the real state machine.
+    const load = el.load.bind(el)
+    el.load = () => {
+      load()
+      el.currentTime = 0
+    }
+    setMediaError(el, 3)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toMatchObject({ time: 2, skippedTo: 5, terminal: false })
+    expect(core.currentTime).toBeCloseTo(5, 5)
+    expect(el.currentTime).toBeGreaterThanOrEqual(5)
+    core.dispose()
+  })
+
   it('uses a verified keyframe that is less than one frame ahead', async () => {
     const { doc, asset } = makeDoc()
     addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
@@ -2703,34 +2745,36 @@ describe('decode recovery (mocked browser)', () => {
     })
 
     core.seek(2)
-    const videoEl = document.querySelector('video') as HTMLVideoElement
-    const audioEl = document.querySelector('audio') as HTMLAudioElement
-    audioEl.load = () => {
+    const c1El = core['pool'].peek('c1') as HTMLVideoElement
+    const c2El = core['pool'].peek('c2') as HTMLAudioElement
+    c2El.load = () => {
       loads++
       // The media error survives the successful reload.
-      Object.defineProperty(audioEl, 'error', { configurable: true, value: { code: 3 } })
-      audioEl.dispatchEvent(new Event('loadedmetadata'))
+      Object.defineProperty(c2El, 'error', { configurable: true, value: { code: 3 } })
+      c2El.dispatchEvent(new Event('loadedmetadata'))
     }
 
     // c1 terminalizes with no recovery in flight, so no recovery finally can
     // clear the queue. c2's error is then deferred behind the terminal.
-    setMediaError(videoEl, 4)
+    setMediaError(c1El, 4)
     await vi.waitFor(() => expect(notices).toHaveLength(1))
     expect(notices[0]).toMatchObject({ clipId: 'c1', terminal: true })
-    setMediaError(audioEl, 3)
+    setMediaError(c2El, 3)
     expect(core['deferredErrors'].size).toBe(1)
 
     // The seek clears the terminal and starts c2's recovery. The stale entry
     // must not start a second recovery after the first one drains.
     core.seek(4)
-    await vi.waitFor(() => expect(notices.some((n) => n?.clipId === 'c2')).toBe(true))
+    await vi.waitFor(() => expect(loads).toBe(1))
     await new Promise((resolve) => setTimeout(resolve, 0))
 
+    // The deferred error was handled once, in place: no timeline skip, no
+    // damaged-media notice, and no second reload.
     const c2Notices = notices.filter((n) => n?.clipId === 'c2')
-    expect(c2Notices).toHaveLength(1)
-    expect(c2Notices[0]).toMatchObject({ terminal: false, skippedTo: 10 })
+    expect(c2Notices).toHaveLength(0)
+    expect(core.currentTime).toBeCloseTo(4, 5)
     expect(loads).toBe(1)
-    expect(core['recoveryRecords'].get('c2')?.attempts).toBe(1)
+    expect(core['audioRecovery'].size).toBe(0)
     expect(core['deferredErrors'].size).toBe(0)
     core.dispose()
   })
@@ -2930,7 +2974,7 @@ describe('decode recovery (mocked browser)', () => {
     core.dispose()
   })
 
-  it('an audio-only element uses the source-time fallback, not video keyframes', async () => {
+  it('recovers an audio-only element in place and never moves the playhead', async () => {
     const { doc } = makeDoc()
     const audio = createMediaAsset({
       kind: 'audio',
@@ -2955,19 +2999,172 @@ describe('decode recovery (mocked browser)', () => {
     await core.play()
     await h.pump.pump(1)
     core.pause()
+    const before = core.currentTime
     const el = document.querySelector('audio') as HTMLAudioElement
     expect(el).toBeInstanceOf(HTMLAudioElement)
     setMediaError(el, 3)
 
-    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    await vi.waitFor(() => expect(core['audioRecovery'].size).toBe(0))
     expect(lookups).toBe(0)
+    expect(notices).toEqual([])
+    expect(core.currentTime).toBeCloseTo(before, 5)
+    expect(el.error).toBeNull()
+    expect(el.currentTime).toBeCloseTo(before, 3)
+    core.dispose()
+  })
+
+  it('mutes a repeatedly failing audio-only element without a timeline skip', async () => {
+    const { doc } = makeDoc()
+    const audio = createMediaAsset({
+      kind: 'audio',
+      name: 'a.m4a',
+      duration: 10,
+      url: 'blob:audio',
+    })
+    doc.media.push(audio)
+    doc.project.tracks[1].clips.push(
+      createClip({ id: 'a1', mediaId: audio.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, { onMediaError: (info) => notices.push(info) })
+
+    await core.play()
+    await h.pump.pump(1)
+    core.pause()
+    const before = core.currentTime
+    const el = document.querySelector('audio') as HTMLAudioElement
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(core['audioRecovery'].size).toBe(0))
+    setMediaError(el, 3)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
     expect(notices[0]).toMatchObject({
       clipId: 'a1',
-      time: 0,
-      skippedTo: 6,
+      time: before,
       terminal: false,
+      audioOnly: true,
     })
-    expect(core.currentTime).toBeCloseTo(6, 5)
+    expect(core.currentTime).toBeCloseTo(before, 5)
+    expect(core['failedAudioClips'].has('a1')).toBe(true)
+
+    // A later paused repaint skips the muted clip instead of restarting it.
+    core.refresh(before)
+    expect(notices).toHaveLength(1)
+    core.dispose()
+  })
+
+  it('recovers audio while a video recovery is in flight', async () => {
+    const { doc, asset } = makeDoc()
+    const audio = createMediaAsset({
+      kind: 'audio',
+      name: 'a.m4a',
+      duration: 10,
+      url: 'blob:audio',
+    })
+    doc.media.push(audio)
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    doc.project.tracks[1].clips.push(
+      createClip({ id: 'a1', mediaId: audio.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    const notices: (MediaErrorInfo | null)[] = []
+    const keyframe = deferred<number | undefined>()
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: () => keyframe.promise,
+    })
+
+    // Playback materializes both elements; a paused still alone only builds
+    // the video path for the picture.
+    await core.play()
+    await h.pump.pump(1)
+    core.pause()
+    core.seek(1)
+    const video = core['pool'].peek('c1') as HTMLVideoElement
+    const audioEl = core['pool'].peek('a1') as HTMLAudioElement
+    setMediaError(video, 3)
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBe('c1'))
+
+    // Audio recovery must not join the video single-flight queue: the
+    // picture recovery is still held, so a deferred audio error would never
+    // reload. It retries in place and leaves the clock where it is.
+    setMediaError(audioEl, 3)
+    await vi.waitFor(() => expect(core['audioRecovery'].size).toBe(0))
+
+    expect(core['recoveryInFlight']).toBe('c1')
+    expect(core['deferredErrors'].has('a1')).toBe(false)
+    expect(audioEl.error).toBeNull()
+    expect(notices).toEqual([])
+    expect(core.currentTime).toBeCloseTo(1, 5)
+
+    keyframe.resolve(5)
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toMatchObject({ clipId: 'c1', skippedTo: 5, terminal: false })
+    core.dispose()
+  })
+
+  it('clears a committed skip notice when playback reaches the timeline end', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, {
+      onMediaError: (info) => notices.push(info),
+      nextKeyframe: async () => 9.5,
+    })
+
+    await core.play()
+    await h.pump.pump(1)
+    h.lastAudioContext().currentTime = 9
+    await h.pump.pump(1)
+    const el = document.querySelector('video') as HTMLVideoElement
+    setMediaError(el, 3)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(core.isPlaying).toBe(true)
+    expect(core.currentTime).toBeCloseTo(9.5, 5)
+
+    // The end is inside the one-second linger window. Playback stops there,
+    // so the final sync has to clear the committed notice.
+    h.lastAudioContext().currentTime = 10
+    await h.pump.pump(1)
+    await vi.waitFor(() => expect(notices).toContainEqual(null))
+    expect(core.isPlaying).toBe(false)
+    expect(core.currentTime).toBeCloseTo(10, 5)
+    expect(core['recoveryRecords'].has('c1')).toBe(false)
+    core.dispose()
+  })
+
+  it('mutes an unsupported audio source without retrying it', async () => {
+    const { doc } = makeDoc()
+    const audio = createMediaAsset({
+      kind: 'audio',
+      name: 'a.m4a',
+      duration: 10,
+      url: 'blob:audio',
+    })
+    doc.media.push(audio)
+    doc.project.tracks[1].clips.push(
+      createClip({ id: 'a1', mediaId: audio.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    const notices: (MediaErrorInfo | null)[] = []
+    const { core } = makeCore(doc, { onMediaError: (info) => notices.push(info) })
+
+    await core.play()
+    await h.pump.pump(1)
+    core.pause()
+    const el = document.querySelector('audio') as HTMLAudioElement
+    const load = vi.spyOn(el, 'load')
+    setMediaError(el, 4)
+
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
+    expect(notices[0]).toMatchObject({
+      clipId: 'a1',
+      code: 4,
+      terminal: false,
+      audioOnly: true,
+    })
+    expect(load).not.toHaveBeenCalled()
+    expect(core['audioRecovery'].size).toBe(0)
+    expect(core['failedAudioClips'].has('a1')).toBe(true)
     core.dispose()
   })
 
@@ -3630,14 +3827,15 @@ describe('decode recovery (mocked browser)', () => {
     await h.pump.pump(1)
     expect(core.currentTime).toBeCloseTo(8.5, 5)
     expect(core['recoveryRecords'].has('c1')).toBe(false)
+    expect(notices[notices.length - 1]).toBeNull()
 
     // A later error starts a fresh attempt budget instead of inheriting the
     // old one.
     el = document.querySelector('video') as HTMLVideoElement
     setMediaError(el, 3)
-    await vi.waitFor(() => expect(notices).toHaveLength(2))
-    expect(notices[1]?.terminal).toBe(false)
-    expect(notices[1]?.time).toBeCloseTo(8.5, 5)
+    await vi.waitFor(() => expect(notices).toHaveLength(3))
+    expect(notices[2]?.terminal).toBe(false)
+    expect(notices[2]?.time).toBeCloseTo(8.5, 5)
     expect(core['recoveryRecords'].get('c1')?.attempts).toBe(1)
     core.dispose()
   })

@@ -79,6 +79,8 @@ export interface MediaErrorInfo {
   time: number
   skippedTo?: number
   terminal: boolean
+  /** True for an audio-only mute; the preview shows a toast, not the overlay. */
+  audioOnly?: boolean
 }
 
 interface RecoveryState {
@@ -232,6 +234,10 @@ const DECODE_SKIP_SOURCE_SECONDS = 6
 const RELOAD_TIMEOUT_MS = 5_000
 /** Recovery attempts before the record becomes terminal. */
 const MAX_RECOVERY_ATTEMPTS = 3
+/** How long a committed skip notice lingers after the playhead passes it. */
+const SKIP_NOTICE_LINGER_SECONDS = 1
+/** Repeated audio-only failures inside this window mute the clip instead of retrying. */
+const AUDIO_RETRY_WINDOW_MS = 2_000
 /** Scrub fallback attempts at the SAME timestamp before the neutral notice. */
 export const SCRUB_FALLBACK_ATTEMPTS = 3
 /** How long one scrub fallback attempt may take before it counts as failed. */
@@ -331,6 +337,16 @@ export class PlaybackCore {
   private terminalElements = new WeakSet<HTMLMediaElement>()
   /** Blend partners that errored; blending falls back to a single frame. */
   private failedPartners = new WeakSet<HTMLMediaElement>()
+  /**
+   * Audio-only clips recovering in place. This path is deliberately outside
+   * the single-flight video recovery: an audio decode failure must never pause
+   * the master clock or move the playhead.
+   */
+  private audioRecovery = new Set<string>()
+  /** Audio-only clips muted after a repeated in-place recovery failure. */
+  private failedAudioClips = new Set<string>()
+  /** Last in-place audio failure per element, to bound the retry. */
+  private audioFailures = new WeakMap<HTMLMediaElement, { count: number; at: number }>()
   private recoveryRecords = new Map<string, RecoveryState>()
   /** The range of the last notice shown for a clip, kept after the record clears. */
   private noticeRanges = new Map<string, { from: number; to: number }>()
@@ -411,6 +427,9 @@ export class PlaybackCore {
   }
 
   async play(from?: number): Promise<void> {
+    // A user play is the retry gesture for a clip muted after a failed audio
+    // reload; the next sync re-discovers the element error and reloads it once.
+    this.resetMutedAudio()
     this.recoveryEpoch++
     this.playToken++
     this.scrubInProgress = false
@@ -675,6 +694,8 @@ export class PlaybackCore {
     this.lastProjectEpoch = epoch
     this.terminalElements = new WeakSet()
     this.failedPartners = new WeakSet()
+    for (const clipId of [...this.failedAudioClips]) this.releaseClip(clipId)
+    this.failedAudioClips.clear()
     this.recoveryRecords.clear()
     this.noticeRanges.clear()
     this.deferredErrors.clear()
@@ -759,6 +780,14 @@ export class PlaybackCore {
       return
     }
     const code = el.error?.code ?? 0
+    // An audio-only element is not picture damage. Decode and network failures
+    // get the in-place reload; an unsupported source or an aborted load is
+    // muted at once, with the code preserved for the cause-specific toast.
+    if (el instanceof HTMLAudioElement) {
+      if (code === 2 || code === 3) this.recoverAudioError(clipId, el)
+      else this.muteAudioClip(clipId, el)
+      return
+    }
     if (this.recoveryInFlight !== null) {
       const owns =
         this.recoveryInFlight === clipId &&
@@ -858,7 +887,7 @@ export class PlaybackCore {
   }
 
   /** Drops a nonterminal record once playback has passed its skipped range. */
-  private clearPassedRecovery(t: number): void {
+  private clearPassedRecovery(t: number, atEnd = false): void {
     const frame = frameToTime(1, this.opts.getDoc().project.fps)
     for (const [clipId, record] of [...this.recoveryRecords]) {
       if (record.terminal) continue
@@ -875,10 +904,14 @@ export class PlaybackCore {
       // larger sequence times, including for a reversed clip. Do not use the
       // source-time direction here: it would keep a reverse clip's record
       // forever.
-      if (t - record.failedTo > frame) {
-        // The attempt budget resets, but the notice stays until the user seeks
-        // outside its range, dismisses it, or replaces the project.
+      if (atEnd || t - record.failedTo > frame + SKIP_NOTICE_LINGER_SECONDS) {
+        // The attempt budget resets and the notice clears shortly after the
+        // playhead is past the skipped range, so a recovered skip cannot look
+        // like a permanent error. At the sequence end there is no next tick,
+        // so the final sync clears the notice even inside the linger window.
         this.recoveryRecords.delete(clipId)
+        this.noticeRanges.delete(clipId)
+        this.opts.onMediaError?.(null, clipId)
       }
     }
   }
@@ -979,6 +1012,79 @@ export class PlaybackCore {
   private mapSourceToTimeline(clip: Clip, offset: number, source: number): number {
     const local = clampedClipLocalTime(clip, source)
     return clamp(offset + clip.start + local, 0, this.durationOf(this.opts.getDoc()))
+  }
+
+  /**
+   * Recovers an audio-only element in place. The master clock and playhead are
+   * never touched: a failed audio twin must not turn into a six-second video
+   * skip. One reload at the same read is allowed; a second failure inside the
+   * retry window mutes the clip and reports a toast-style notice.
+   */
+  private recoverAudioError(clipId: string, el: HTMLAudioElement): void {
+    if (this.failedAudioClips.has(clipId) || this.audioRecovery.has(clipId)) return
+    if (this.pool.peek(clipId) !== el) return
+    const now = performance.now()
+    const previous = this.audioFailures.get(el)
+    const count = previous && now - previous.at <= AUDIO_RETRY_WINDOW_MS ? previous.count + 1 : 1
+    this.audioFailures.set(el, { count, at: now })
+    if (count > 1) {
+      this.muteAudioClip(clipId, el)
+      return
+    }
+    this.audioRecovery.add(clipId)
+    if (!el.paused) el.pause()
+    this.endSeek(el)
+    void this.reloadElement(el)
+      .then((result) => {
+        try {
+          if (this.pool.peek(clipId) !== el || this.failedAudioClips.has(clipId)) return
+          if (result !== 'ok') {
+            this.muteAudioClip(clipId, el)
+            return
+          }
+          const doc = this.opts.getDoc()
+          const entry = this.activeClipList(doc).find((e) => e.clip.id === clipId)
+          if (!entry) return
+          const asset = findMedia(doc, entry.clip.mediaId)
+          if (!mediaPlayable(asset)) return
+          // The reload reset the element to the start. Park it on the current
+          // read without touching the master clock; the next sync resumes it.
+          const expected = clampSourceTime(
+            this.sourceTime(entry.clip, this.time, entry.offset),
+            asset,
+          )
+          this.seekElement(el, expected)
+        } finally {
+          this.audioRecovery.delete(clipId)
+        }
+      })
+      .catch((error) => {
+        console.error('[playback] audio recovery failed', clipId, error)
+      })
+  }
+
+  /** Mutes a clip whose audio element cannot be recovered in place. */
+  private muteAudioClip(clipId: string, el: HTMLAudioElement): void {
+    if (this.failedAudioClips.has(clipId)) return
+    this.failedAudioClips.add(clipId)
+    if (!el.paused) el.pause()
+    this.endSeek(el)
+    this.opts.onMediaError?.({
+      clipId,
+      code: el.error?.code ?? 3,
+      time: this.time,
+      terminal: false,
+      audioOnly: true,
+    })
+  }
+
+  /** Re-arms muted audio clips on a user play so the next sync retries them. */
+  private resetMutedAudio(): void {
+    for (const clipId of this.failedAudioClips) {
+      const el = this.pool.peek(clipId)
+      if (el) this.audioFailures.delete(el)
+    }
+    this.failedAudioClips.clear()
   }
 
   private async recoverDecodeError(clipId: string, el: HTMLMediaElement): Promise<void> {
@@ -1165,6 +1271,27 @@ export class PlaybackCore {
       record.failedTo = skipTo
       record.committed = true
       this.pool.releaseNext(clipId)
+      // A reload parks the element at 0, and the paused WebCodecs path never
+      // touches it. Park it on the committed keyframe here so the commit check
+      // below verifies a real seek instead of terminalizing a recoverable GOP.
+      if (el instanceof HTMLVideoElement) {
+        const parked = currentEntry()
+        if (parked) {
+          const start = parked.offset + parked.clip.start
+          const activeAtTarget = withinAncestorWindows(
+            skipTo,
+            start,
+            start + parked.clip.duration,
+            parked.ancestors,
+          )
+          if (activeAtTarget) {
+            this.seekElement(
+              el,
+              clampSourceTime(this.sourceTime(parked.clip, skipTo, parked.offset), asset),
+            )
+          }
+        }
+      }
       // Force the commit seek: a near-start keyframe can sit inside the still
       // seek dead zone, and a reload that left the element at zero must not be
       // mistaken for the keyframe.
@@ -1324,7 +1451,7 @@ export class PlaybackCore {
 
     if (this.time >= duration) {
       this.time = duration
-      this.syncMedia(this.time)
+      this.syncMedia(this.time, false, true)
       this.render(this.time)
       this.opts.onFrame?.(this.time)
       this.pause()
@@ -1386,6 +1513,11 @@ export class PlaybackCore {
       this.deferredErrors.delete(id)
       this.opts.onMediaError?.(null, id)
     }
+    // A deleted audio clip must retry if the edit is undone.
+    for (const id of [...this.failedAudioClips]) {
+      if (docIds.has(id)) continue
+      this.failedAudioClips.delete(id)
+    }
     // Scrub source (0.18.0): a deleted clip drops its sink and cached frame.
     // An asset whose effective URL changed (relink, proxy ready, proxy toggle)
     // or that left the bin releases its `Input`.
@@ -1405,9 +1537,9 @@ export class PlaybackCore {
   }
 
   /** Starts/stops elements, corrects drift, and updates per-clip gain. */
-  private syncMedia(t: number, forceSeek = false): void {
+  private syncMedia(t: number, forceSeek = false, atEnd = false): void {
     this.checkProjectEpoch()
-    this.clearPassedRecovery(t)
+    this.clearPassedRecovery(t, atEnd)
     const doc = this.opts.getDoc()
     this.releaseMissingClips()
     for (const { clip, track, offset, ancestors, audibleTracks } of this.activeClipList(doc)) {
@@ -1424,6 +1556,9 @@ export class PlaybackCore {
       // touch has always just had its element released. A compound container
       // (no media) falls through here too.
       if (!mediaPlayable(asset)) continue
+      // A muted audio-only clip stays silent until a user Play re-arms it; do
+      // not recreate or restart its failed element on every tick.
+      if (this.failedAudioClips.has(clip.id)) continue
       const start = offset + clip.start
       const active = withinAncestorWindows(t, start, start + clip.duration, ancestors)
       const el = this.pool.get(clip, asset, this.mediaUrl(asset))
@@ -1994,6 +2129,9 @@ export class PlaybackCore {
       // <video src=""> (decode error noise) for a still frame that can
       // never render. Same skip rule as syncMedia.
       if (asset.missing || !asset.url) continue
+      // A muted audio-only element is not recreated while paused; a user Play
+      // re-arms it (see resetMutedAudio).
+      if (this.failedAudioClips.has(clip.id)) continue
       const start = offset + clip.start
       const active = withinAncestorWindows(t, start, start + clip.duration, ancestors)
       if (!active) continue

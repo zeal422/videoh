@@ -124,8 +124,9 @@ terminal `BATTERY_EXIT=0`. The 0.16.4 dev and artifact runs on 2026-10-31 were b
 failed with terminal `BATTERY_EXIT=0`. The final 0.17.0 dev and artifact runs on 2026-11-01 were both
 67 passed, 0 failed with terminal `BATTERY_EXIT=0`. The 0.18.0 dev and artifact runs on 2026-11-01
 were also both 67 passed, 0 failed with terminal `BATTERY_EXIT=0`. The 0.19.0 dev and artifact runs on
-2026-11-04 were both 70 passed, 0 failed with terminal `BATTERY_EXIT=0`. Earlier 0.9.0 through 0.11.0 records covered both the dev
-server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
+2026-11-04 were both 70 passed, 0 failed with terminal `BATTERY_EXIT=0`. The 0.19.1 dev and artifact
+runs on 2026-11-04 were also both 70 passed, 0 failed with terminal `BATTERY_EXIT=0`. Earlier 0.9.0
+through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 
 See [testing.md](testing.md#end-to-end-battery) for the A/B two-tree recipe and the runner's full
 environment.

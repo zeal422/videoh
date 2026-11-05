@@ -487,15 +487,22 @@ Stable hooks used across flows and tests:
   first (Premiere behavior), so dragging the playhead can never inject a force-seek per pointer move
   into a running clock.
 - **Decode recovery.** A `MEDIA_ERR_DECODE` error pauses the core, reloads the same element, skips
-  to the next verified keyframe (or a bounded six-second source nudge for reversed, ramped, or
-  audio-only clips), and resumes if it was playing. A verified keyframe only has to advance past the
-  error position, even by less than one frame; the fallback needs one project frame. A failed reload
+  to the next verified keyframe (or a bounded six-second source nudge for reversed or ramped video
+  clips), and resumes if it was playing. A verified keyframe only has to advance past the
+  error position, even by less than one frame; the fallback needs one project frame. An audio-only
+  element, including the audio half of a linked A/V pair, never moves the master clock: a decode or
+  network failure gets one in-place reload at the same read, and a second failure inside the retry
+  window mutes that clip and reports a toast instead of the damaged-media overlay. An unsupported
+  source or an aborted load is muted at once. The toast names the cause. It bypasses the shared
+  overlay notice, so a picture-damage notice already on screen stays visible. A failed reload
   releases the element, keeps its
   attempt record, and resumes when it was playing so the next sync creates a fresh element. A
-  committed skip's record clears once the playhead passes its skipped range in timeline time. The
-  overlay reports the skipped range. A second
-  clip's error is deferred, then consumed once. A terminalization outside a recovery drops the
-  queue because no recovery finally runs to drain it; a user pause during a recovery also drops it.
+  committed skip's record clears once the playhead passes its skipped range in timeline time, and
+  its notice clears shortly after, including when playback stops at the sequence end. The
+  overlay reports the skipped range. A second clip's video error is deferred, then consumed once,
+  while an audio-only failure retries in place without waiting for the video recovery slot. A
+  terminalization outside a recovery drops the queue because no recovery finally runs to drain it;
+  a user pause during a recovery also drops it.
   A project replacement drains the queue through the new project's recovery and treats a stale
   recovery as not owning a reused clip id, so the new clip is synced and its error is deferred. A
   seek or play drains the rediscovered queue so the new position is handled; a recovery start
@@ -509,8 +516,10 @@ Stable hooks used across flows and tests:
   resolve a terminal element. A deleted clip drops its recovery record, notice range, and deferred
   error. A code 4 during resume cancels the pending `startPlayback` without marking a user
   cancellation. A clip removed or retimed during the resume is re-resolved after the await and emits
-  no stale notice; a retimed clip drops its stale record. The commit seek is forced, so a near-start
-  keyframe is not mistaken for the position `load()` left behind. An unexpected recovery throw is
+  no stale notice; a retimed clip drops its stale record. A reloaded video element is parked on the
+  committed keyframe before the commit check, and the commit seek is forced, so neither a near-start
+  keyframe nor the position `load()` left behind is mistaken for the target. An unexpected recovery
+  throw is
   logged as `[playback] decode recovery failed`.
   A partner-element error pauses the parked partner and disables blending for that
   read. A recovery target at the sequence end stays paused at the end. The overlay is latest-only,

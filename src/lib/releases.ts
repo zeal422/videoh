@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.19.1',
+    date: '2026-11-04',
+    highlights: [
+      'A damaged audio section recovers in place instead of pausing the monitor and skipping six seconds',
+      'A repeated audio decode failure mutes that clip and keeps the picture playing',
+      'A damaged video section skips to the next verified keyframe instead of stopping with "Damaged media"',
+      'The skipped-media notice clears once playback passes the skipped range',
+    ],
+  },
+  {
     version: '0.19.0',
     date: '2026-11-04',
     highlights: [

@@ -512,3 +512,27 @@ Action: each decode run now owns its Input across the lookup and disposes it on 
 What happened: a drop or reset cancelled a thumbnail decode and `ensure` rejected with the cancellation error. The only caller treats rejection as a decode failure and falls through to per-frame element seeks, so a run nobody wanted still looked like a fault.
 Would-have-caught: cancelling a pending default-decoder lookup with a drop and a reset, then asserting the promise resolves while the Input is disposed and never registered.
 Action: cancellation now throws a distinct error, and `ensure` resolves it only when the run is stale. Timeouts and genuine decode failures still reject, and the filmstrip caller stops before its prefetch decode when the job was cancelled.
+
+## 2026-11-04 - audio recovery contract change collided with old fallback locks
+
+What happened: the in-place audio recovery made `an audio-only element uses the source-time fallback` and the deferred-error audio fixture assert the removed six-second skip, so the focused suite went red until both were rewritten around the new contract.
+Would-have-caught: trigger 6 read as "a behavior change makes every test that asserts the old behavior an affected test," and trigger 5's rule that a rewritten lock still covers the invariant, not only the new path.
+Action: kept as a note; the audio tests now assert no timeline move and a muted fallback, and the deferred-error test still proves one reload and no replay.
+
+## 2026-11-04 - audio-only notice shared the picture-damage slot
+
+What happened: the 0.19.1 toast effect read an audio-only notice from `mediaError`, showed the toast, then called `clearMediaError()`. A terminal video notice written between the render and the passive effect would be erased, leaving a paused preview with no overlay. The review found it after the full gate was green.
+Would-have-caught: trigger 2 traced the notice from `PlaybackCore` to the store but stopped at the UI effect; the ownership rule is that a transient toast must not share a slot with a persistent overlay notice.
+Action: kept as a note; `preview.ts` now toasts audio-only notices in its `onMediaError` wiring and never calls `setMediaError` for them, and the UI test proves a picture-damage notice survives.
+
+## 2026-11-05 - end-of-playback skip clear and audio error code routing
+
+What happened: `clearPassedRecovery` only cleared after the playhead passed `failedTo` by one second plus a frame, but `tick` stops at the sequence end, so a committed skip inside that window never cleared. Separately, `handleElementError` routed every active `<audio>` error into decode recovery before reading `MediaError.code`, and the toast always said "Audio could not be decoded", so a code 4 source was retried and mislabeled. Both findings survived a green full gate.
+Would-have-caught: asserting the last `onMediaError(null)` after a skip near the end, and setting code 2 or 4 on an audio element and checking both the retry decision and the toast title.
+Action: kept as a note; the final sync clears committed skips with `atEnd`, audio routes code 1 and 4 to immediate mute, and `preview.ts` maps the code to a cause-specific title.
+
+## 2026-11-05 - audio recovery exception escaped the single-flight contract
+
+What happened: `handleElementError` intentionally routes audio before the video `recoveryInFlight` gate, but the architecture and flow docs described recovery as single-flight without the exception, and no test held a video recovery open while an audio error arrived.
+Would-have-caught: trigger 2 traced the branch but stopped at the comment; when a code path deliberately bypasses a shared gate, the documented contract and the test matrix both need an exception line.
+Action: kept as a note; the docs now name the audio exception and a lock holds a video recovery open while audio recovers in place.

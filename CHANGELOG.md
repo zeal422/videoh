@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.19.1] - 2026-11-04
+
+### Fixed
+
+- An audio-only decode failure, including the audio half of a linked A/V pair, now recovers in place
+  instead of pausing the preview and skipping six seconds of the timeline. A repeated failure mutes
+  that clip and shows a toast, so the picture keeps playing. An unsupported source or an aborted load
+  is muted at once, and the toast names the cause instead of calling every audio error a decode
+  failure. The audio toast is emitted from the preview's `onMediaError` wiring and never enters the
+  shared notice, so it cannot clear a picture-damage notice that is already showing. The skipped-media
+  overlay also clears shortly after the playhead passes the skipped range, including when playback
+  stops at the sequence end, instead of lingering until dismissed.
+- A reloaded video element is now parked on the committed keyframe before the decode-recovery commit
+  check. The paused WebCodecs path never touches that element, so without the seek the check saw the
+  zero `load()` leaves behind and terminalized a recoverable GOP. A real 15-minute H.264 file that
+  failed at 01:58.5 now skips to 02:04.3 and resumes playback.
+
+### Tests and docs
+
+- The suite moves to 93 files and 2,169 tests. The new regressions cover a committed skip clearing
+  when playback stops at the sequence end, an unsupported audio source muting without a reload, and
+  audio recovery continuing beside an in-flight video recovery. The audio-toast test now asserts
+  cause-specific copy, and the WebCodecs regression still drives a scrub sink and makes the reload
+  reset the element to zero.
+- Real-file verification used the 132.9 MB ice-climbing H.264 file. Seeking to 02:00.0 produced
+  audio decode errors only and no overlay, while 01:58.5 skipped to 02:04.3 in the editor, resumed
+  playback to 02:07.8, and cleared the notice. The full 15-minute playback was not run.
+- `bun run check` passes. The 70-step battery passed 70/70 on both the dev server and the standalone
+  artifact, each with terminal `BATTERY_EXIT=0`.
+- Docs updated: README, architecture, flows, testing, structure, roadmap, and this changelog. The
+  version atomically moves to `0.19.1` in `package.json`, `src/lib/releases.ts`, this changelog, and
+  the roadmap.
+
 ## [0.19.0] - 2026-11-04
 
 ### Changed
