@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.19.2] - 2026-11-05
+
+### Fixed
+
+- A user pause now repaints the paused frame at the playhead instead of leaving the frame that
+  playback started on. It snaps the pause time to the last video frame the element presented, so the
+  timecode and picture match instead of stepping back to the audio clock, and drops the cached still
+  frame for the active clips before the repaint, so a frame left at an earlier playhead cannot flash
+  before the new paused frame lands. Recovery, terminalization, sequence end, frame stepping, and
+  teardown stop through the same non-painting halt, so they do not gain a decode or a second
+  composite.
+- A seek that keeps reporting `seeking` for more than two seconds no longer skips the element
+  forever. `SEEK_STALL_MS` bounds the stall; the next sync retries the seek or the play call. This is
+  a bounded retry guarantee, not a repair for a browser seek that can never land.
+- Play warmup now refuses a tracked but ready frame. `finishIfReady` requires not seeking,
+  `readyState >= 2`, and no tracked seek, so the clock cannot start on a picture the sync path is
+  about to skip. `error` and the warmup timeout still resolve, and the timeout clears the dead entry.
+- Seek tracking is cleared at every stop and before a paused seek. `clearSeekTracking` calls
+  `endSeek` for each tracked element so the `seeked` listener attached by `beginSeek` is removed,
+  then clears the stall stamps. A paused `drawStill` also drops play-path tracking before it
+  positions an element, while keeping the one-shot repaint listener that reads the current playhead.
+
+### Tests and docs
+
+- The suite moves to 93 files and 2,180 tests. Eleven new regressions cover the stall-bound retry, pause
+  cleanup while playing, during play warmup, and at the sequence end, the tracked-but-ready warmup
+  guard, a user pause snapping to the last presented frame and dropping a stale cached frame before
+  the repaint, `drawStill` clearing
+  play-path tracking, a superseded paused seek repainting the current playhead, a pause painting the
+  requested WebCodecs frame when it lands, a stalled seek retried and its landed frame painted, and a
+  pause after a decode-recovery skip leaving the pending WebCodecs frame as the paint owner.
+- `bun run check` passes. Coverage is 94.67 statements, 90.25 branches, 96.56 functions, 96.76 lines.
+  The 70-step battery passed 70/70 on both the dev server and the standalone artifact on 2026-11-05,
+  each with terminal `BATTERY_EXIT=0`.
+- Manual verification used the committed `sample-video.mp4` for the transport smoke test, then the
+  15-minute `First-Person Ice Climbing up a 400ft Frozen Canyon.mp4` from Downloads for the
+  pause/resume flash. Canvas sampling showed the 00:00 frame hash returning after pause before the
+  cache drop, and the fixed build no longer showed that hash after any pause. The stuck-seek trigger
+  itself remains covered by the mocked regressions.
+- Docs updated: README, architecture, flows, testing, structure, deployment, seo, roadmap, and this
+  changelog. The version atomically moves to `0.19.2` in `package.json`, `src/lib/releases.ts`, this
+  changelog, and the roadmap.
+
 ## [0.19.1] - 2026-11-04
 
 ### Fixed

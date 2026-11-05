@@ -3,7 +3,11 @@ import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PlaybackCore, SCRUB_FALLBACK_TIMEOUT_MS, type MediaErrorInfo } from '../playback/core'
-import type { ScrubFrameRequest, ScrubFrameSource } from '../playback/scrub-source'
+import type {
+  ScrubFrameRequest,
+  ScrubFrameResult,
+  ScrubFrameSource,
+} from '../playback/scrub-source'
 import {
   FakeAudioContext,
   FakeBiquadFilterNode,
@@ -107,6 +111,25 @@ function makeCore(
   })
   const ctx = canvas.getContext('2d') as unknown as { calls: { op: string; args: unknown[] }[] }
   return { core, canvas, frames, ctx, playingChanges }
+}
+
+/** A scrub source stub; individual tests override the parts they drive. */
+function scrubSource(overrides: Partial<ScrubFrameSource> = {}): ScrubFrameSource {
+  return {
+    hasSink: () => false,
+    peek: () => undefined,
+    request: vi.fn(),
+    releaseClip: vi.fn(),
+    releaseAsset: vi.fn(),
+    reset: vi.fn(),
+    dispose: vi.fn(),
+    onFallback: () => () => undefined,
+    ...overrides,
+  }
+}
+
+function renderSpy(core: PlaybackCore) {
+  return vi.spyOn(core as unknown as { render: (t: number) => void }, 'render')
 }
 
 /** Master gain: the only node feeding the destination (reverse edge). */
@@ -2346,6 +2369,74 @@ describe('decode recovery (mocked browser)', () => {
     core.dispose()
   })
 
+  it('a pause after the skip leaves the pending WebCodecs frame as the paint owner', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    let cached: CanvasImageSource | undefined
+    let requested: {
+      request: ScrubFrameRequest
+      onFrame: (result: ScrubFrameResult) => void
+    } | null = null
+    const source = scrubSource({
+      hasSink: () => true,
+      peek: () => cached,
+      request: (request, onFrame) => {
+        requested = { request, onFrame }
+      },
+    })
+    const { core, frames, ctx } = makeCore(doc, {
+      createScrubSource: () => source,
+      nextKeyframe: async () => 5,
+    })
+
+    await core.play()
+    await h.pump.pump(1)
+    core.seek(2)
+    await h.pump.pump(1)
+    const el = document.querySelector('video') as HTMLVideoElement
+    primeVideoElement(el)
+    await h.pump.pump(1)
+    const audio = h.lastAudioContext()
+    audio.state = 'suspended'
+    const gate = deferred<void>()
+    FakeAudioContext.resumeGate = gate.promise
+
+    const drawsBeforeError = ctx.calls.filter((call) => call.op === 'drawImage').length
+    expect(drawsBeforeError).toBeGreaterThan(0)
+    setMediaError(el, 3)
+    await vi.waitFor(() => expect(core.currentTime).toBeCloseTo(5, 5))
+    expect(requested).not.toBeNull()
+    // The skip moved the playhead and its frame callback to 5, but the
+    // WebCodecs target has not arrived, so the canvas still holds the
+    // pre-error composite.
+    expect(frames.at(-1)).toBeCloseTo(5, 5)
+    expect(ctx.calls.filter((call) => call.op === 'drawImage')).toHaveLength(drawsBeforeError)
+
+    // The pause lands after the skip but before the 5 s frame decodes. It is a
+    // no-op for the paint: the recovery owns the redraw, and the canvas stays
+    // on the last composite until that frame lands.
+    core.pause()
+    expect(core.currentTime).toBeCloseTo(5, 5)
+    expect(core.isPlaying).toBe(false)
+    expect(ctx.calls.filter((call) => call.op === 'drawImage')).toHaveLength(drawsBeforeError)
+
+    // The pending frame still paints the committed target after the pause.
+    const frame = document.createElement('canvas')
+    cached = frame
+    requested!.onFrame({
+      clipId: 'c1',
+      frame,
+      sourceTime: requested!.request.sourceTime,
+      generation: requested!.request.generation,
+    })
+    expect(ctx.calls.some((call) => call.op === 'drawImage' && call.args[0] === frame)).toBe(true)
+
+    gate.resolve()
+    await vi.waitFor(() => expect(core['recoveryInFlight']).toBeNull())
+    FakeAudioContext.resumeGate = null
+    core.dispose()
+  })
+
   it('serializes two clip errors and drains the deferred one once', async () => {
     const { doc, asset } = makeDoc()
     addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
@@ -4086,4 +4177,426 @@ describe('decode recovery (mocked browser)', () => {
     expect(source).toContain('clampedClipLocalTime(')
     expect(source.match(/terminalizeRecovery\(/g)?.length ?? 0).toBeGreaterThanOrEqual(5)
   })
+})
+
+describe('paused preview recovery (mocked browser)', () => {
+  it('retries play when a seek never leaves the seeking state', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    const { core } = makeCore(doc, { createScrubSource: () => scrubSource() })
+    core.seek(0)
+    const el = core['pool'].peek(clip.id) as HTMLVideoElement
+    primeVideoElement(el)
+    Object.defineProperty(el, 'seeking', { configurable: true, get: () => true })
+    Object.defineProperty(el, 'currentTime', {
+      configurable: true,
+      get: () => 0,
+      set: () => undefined,
+    })
+    const playSpy = vi.spyOn(el, 'play')
+
+    await core.play()
+    await h.pump.pump(1)
+    const playsBefore = playSpy.mock.calls.length
+    await vi.waitFor(
+      async () => {
+        await h.pump.pump(1)
+        expect(playSpy.mock.calls.length).toBeGreaterThan(playsBefore)
+      },
+      { timeout: 6_000, interval: 25 },
+    )
+
+    expect(el.paused).toBe(false)
+    core.dispose()
+  }, 15_000)
+
+  it('clears a tracked seek when a user pause stops playback', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    const inactive = addVideoClip(doc, {
+      id: 'c2',
+      mediaId: asset.id,
+      start: 5,
+      duration: 5,
+      inPoint: 0,
+    })
+    const { core } = makeCore(doc)
+    const el = core['pool'].get(inactive, asset, asset.url) as HTMLVideoElement
+    const onSeeked = vi.fn()
+    el.addEventListener('seeked', onSeeked)
+    core['seekingEls'].set(el, { started: performance.now(), onSeeked })
+    const removeSpy = vi.spyOn(el, 'removeEventListener')
+
+    await core.play()
+    await h.pump.pump(1)
+    expect(core.isPlaying).toBe(true)
+    core.pause()
+
+    expect(removeSpy).toHaveBeenCalledWith('seeked', onSeeked)
+    expect(core['seekingEls'].size).toBe(0)
+    expect(core['seekingSince'].size).toBe(0)
+    core.dispose()
+  })
+
+  it('clears tracked seek state when pause arrives during play warmup', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    const { core } = makeCore(doc)
+    const el = core['pool'].get(clip, asset, asset.url) as HTMLVideoElement
+    const onSeeked = vi.fn()
+    el.addEventListener('seeked', onSeeked)
+    core['seekingEls'].set(el, { started: performance.now(), onSeeked })
+
+    const playPromise = core.play()
+    core.pause()
+    await playPromise
+
+    expect(core.isPlaying).toBe(false)
+    expect(core['seekingEls'].size).toBe(0)
+    expect(core['seekingSince'].size).toBe(0)
+    core.dispose()
+  })
+
+  it('clears tracked seek listeners when playback reaches the sequence end', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    addVideoClip(doc, {
+      id: 'c2',
+      mediaId: asset.id,
+      start: 0,
+      duration: 1,
+      inPoint: 0,
+    })
+    const { core } = makeCore(doc)
+
+    await core.play()
+    h.lastAudioContext().currentTime = 1.5
+    await h.pump.pump(1)
+    const el = core['pool'].peek('c2') as HTMLVideoElement
+    expect(el).toBeDefined()
+    expect(el.paused).toBe(true)
+    const onSeeked = vi.fn()
+    el.addEventListener('seeked', onSeeked)
+    core['seekingEls'].set(el, { started: performance.now(), onSeeked })
+    const removeSpy = vi.spyOn(el, 'removeEventListener')
+
+    h.lastAudioContext().currentTime = 10
+    await h.pump.pump(1)
+
+    expect(core.isPlaying).toBe(false)
+    expect(removeSpy).toHaveBeenCalledWith('seeked', onSeeked)
+    expect(core['seekingEls'].size).toBe(0)
+    expect(core['seekingSince'].size).toBe(0)
+    core.dispose()
+  })
+
+  it('waits for a tracked seek before accepting a ready frame at the start', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    const { core } = makeCore(doc, { createScrubSource: () => scrubSource() })
+    core.seek(0)
+    const el = core['pool'].peek(clip.id) as HTMLVideoElement
+    primeVideoElement(el)
+    Object.defineProperty(el, 'seeking', { configurable: true, value: false })
+    Object.defineProperty(el, 'currentTime', {
+      configurable: true,
+      get: () => 0,
+      set: () => undefined,
+    })
+    core['seekingEls'].set(el, { started: performance.now(), onSeeked: () => undefined })
+
+    const playPromise = core.play()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(core.isPlaying).toBe(false)
+
+    await playPromise
+    expect(core.isPlaying).toBe(true)
+    core.dispose()
+  })
+
+  it('repaints once on a user pause and not at the sequence end', async () => {
+    const makePlaying = async () => {
+      const { doc, asset } = makeDoc()
+      addVideoClip(doc, {
+        mediaId: asset.id,
+        start: 0,
+        duration: 10,
+        inPoint: 0,
+      })
+      const made = makeCore(doc)
+      await made.core.play()
+      await h.pump.pump(1)
+      expect(made.core.isPlaying).toBe(true)
+      return made
+    }
+
+    const first = await makePlaying()
+    const firstRender = renderSpy(first.core)
+    first.core.pause()
+    expect(firstRender).toHaveBeenCalledTimes(1)
+    expect(firstRender).toHaveBeenLastCalledWith(first.core.currentTime)
+    first.core.dispose()
+
+    const second = await makePlaying()
+    h.lastAudioContext().currentTime = 2
+    await h.pump.pump(1)
+    const secondRender = renderSpy(second.core)
+    second.core.pause()
+    expect(secondRender).toHaveBeenCalledTimes(1)
+    expect(secondRender).toHaveBeenLastCalledWith(second.core.currentTime)
+    second.core.dispose()
+
+    const third = await makePlaying()
+    const thirdRender = renderSpy(third.core)
+    h.lastAudioContext().currentTime = 10
+    await h.pump.pump(1)
+    expect(third.core.isPlaying).toBe(false)
+    expect(thirdRender).toHaveBeenCalledTimes(1)
+    third.core.pause()
+    expect(thirdRender).toHaveBeenCalledTimes(1)
+    third.core.dispose()
+  }, 15_000)
+
+  it('clears play-path seek tracking before a paused seek', () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    const { core } = makeCore(doc)
+    const el = core['pool'].get(clip, asset, asset.url) as HTMLVideoElement
+    primeVideoElement(el)
+    el.currentTime = 2.0001
+    const onSeeked = vi.fn()
+    el.addEventListener('seeked', onSeeked)
+    core['seekingEls'].set(el, { started: performance.now(), onSeeked })
+    const removeSpy = vi.spyOn(el, 'removeEventListener')
+
+    core.refresh(2)
+
+    expect(removeSpy).toHaveBeenCalledWith('seeked', onSeeked)
+    expect(core['seekingEls'].size).toBe(0)
+    core.dispose()
+  })
+
+  it('does not repaint an older time when a paused seek is superseded', () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    const { core } = makeCore(doc)
+    const el = core['pool'].get(clip, asset, asset.url) as HTMLVideoElement
+    primeVideoElement(el)
+    let position = 0
+    Object.defineProperty(el, 'currentTime', {
+      configurable: true,
+      get: () => position,
+      set: (v: number) => {
+        position = v
+      },
+    })
+    const listeners: Array<() => void> = []
+    const add = el.addEventListener.bind(el)
+    el.addEventListener = ((
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions,
+    ) => {
+      if (type === 'seeked') listeners.push(listener as () => void)
+      add(type, listener, options)
+    }) as typeof el.addEventListener
+    const renders: number[] = []
+    const render = renderSpy(core).mockImplementation((t) => {
+      renders.push(t)
+    })
+
+    core.refresh(2)
+    core.refresh(4)
+    expect(listeners.length).toBeGreaterThanOrEqual(2)
+    listeners[0]()
+
+    expect(renders[renders.length - 1]).toBeCloseTo(4, 5)
+    render.mockRestore()
+    core.dispose()
+  })
+
+  it('a pause drops a stale cached frame and paints the requested one when it lands', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    let requested: {
+      request: ScrubFrameRequest
+      onFrame: (result: ScrubFrameResult) => void
+    } | null = null
+    let cached: CanvasImageSource | undefined
+    const staleFrame = document.createElement('canvas')
+    cached = staleFrame
+    const source = scrubSource({
+      hasSink: () => true,
+      peek: () => cached,
+      releaseCachedFrame: () => {
+        cached = undefined
+      },
+      request: (request, onFrame) => {
+        requested = { request, onFrame }
+      },
+    })
+    const { core, ctx } = makeCore(doc, { createScrubSource: () => source })
+    const el = core['pool'].get(clip, asset, asset.url) as HTMLVideoElement
+    primeVideoElement(el)
+
+    await core.play()
+    await h.pump.pump(1)
+    presentFrame(el, 0.2)
+    const render = renderSpy(core)
+    const before = ctx.calls.length
+    core.pause()
+
+    expect(core.currentTime).toBeCloseTo(0.2, 5)
+    expect(render).toHaveBeenCalledTimes(1)
+    expect(requested).not.toBeNull()
+    expect(cached).toBeUndefined()
+    expect(ctx.calls.length).toBe(before)
+    expect(ctx.calls.some((call) => call.op === 'drawImage' && call.args[0] === staleFrame)).toBe(
+      false,
+    )
+
+    const frame = document.createElement('canvas')
+    cached = frame
+    requested!.onFrame({
+      clipId: clip.id,
+      frame,
+      sourceTime: requested!.request.sourceTime,
+      generation: requested!.request.generation,
+    })
+
+    expect(ctx.calls.length).toBeGreaterThan(before)
+    expect(ctx.calls.some((call) => call.op === 'drawImage')).toBe(true)
+    core.dispose()
+
+    const second = makeDoc()
+    const ended = addVideoClip(second.doc, {
+      id: 'ended',
+      mediaId: second.asset.id,
+      start: 0,
+      duration: 0.1,
+      inPoint: 0,
+    })
+    const activeTrack = createTrack('video', 2)
+    second.doc.project.tracks.push(activeTrack)
+    const active = createClip({
+      id: 'active',
+      mediaId: second.asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    activeTrack.clips.push(active)
+    const secondCore = makeCore(second.doc).core
+    secondCore.seek(0.2)
+    const endedEl = secondCore['pool'].get(
+      ended,
+      second.asset,
+      second.asset.url,
+    ) as HTMLVideoElement
+    secondCore['watchPresentedFrames'](endedEl)
+    presentFrame(endedEl, 0.1)
+    const activeEl = secondCore['pool'].peek(active.id) as HTMLVideoElement
+    secondCore['watchPresentedFrames'](activeEl)
+    presentFrame(activeEl, 0.2)
+
+    await secondCore.play()
+    secondCore.pause()
+
+    // The ended clip is first in activeClipList, but it is not active at the
+    // pause time; its 0.1 frame must not supply the pause time.
+    expect(secondCore.currentTime).toBeCloseTo(0.2, 5)
+    secondCore.dispose()
+  })
+
+  it('recovers the picture when a seek lasts longer than the stall bound', async () => {
+    const { doc, asset } = makeDoc()
+    const clip = addVideoClip(doc, {
+      id: 'c1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+    })
+    const { core, frames, ctx } = makeCore(doc, { createScrubSource: () => scrubSource() })
+    core.seek(0)
+    const el = core['pool'].peek(clip.id) as HTMLVideoElement
+    primeVideoElement(el)
+    let seeking = true
+    Object.defineProperty(el, 'seeking', { configurable: true, get: () => seeking })
+    const playSpy = vi.spyOn(el, 'play')
+
+    await core.play()
+    // The first tick after the warmup starts the stall interval and must not
+    // play yet. The retry lands after SEEK_STALL_MS (2,000 ms), so wait past
+    // it and assert a new play call, not just one that was already there.
+    await h.pump.pump(1)
+    const playsBefore = playSpy.mock.calls.length
+    const deadline = Date.now() + 2_600
+    while (Date.now() < deadline) {
+      await h.pump.pump(1)
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    expect(playSpy.mock.calls.length).toBeGreaterThan(playsBefore)
+
+    // The seek now lands. Advance the clock so the engine's drift correction
+    // seeks the element itself; the fake setter fires `seeked` on the move.
+    // Assert the composited frame, never a position the test wrote.
+    seeking = false
+    h.lastAudioContext().currentTime = 5
+    const drawsBefore = ctx.calls.filter((call) => call.op === 'drawImage').length
+    await h.pump.pump(1)
+
+    expect(frames.at(-1)).toBeCloseTo(5, 5)
+    expect(el.currentTime).toBeCloseTo(5, 3)
+    expect(ctx.calls.filter((call) => call.op === 'drawImage').length).toBeGreaterThan(drawsBefore)
+    core.dispose()
+  }, 15_000)
 })

@@ -97,6 +97,9 @@ describe('ScrubFrameCacheSource', () => {
     expect(onFrame).toHaveBeenCalledWith({ clipId: 'c1', frame, sourceTime: 1, generation: 1 })
     expect(source.peek('c1', 99, 1)).toBe(frame)
     expect(source.peek('c1', 99, 2)).toBeUndefined()
+
+    source.releaseCachedFrame('c1')
+    expect(source.peek('c1', 1, 1)).toBeUndefined()
   })
 
   it('drops an in-flight frame when a newer target arrives', async () => {
@@ -237,7 +240,7 @@ describe('ScrubFrameCacheSource', () => {
     expect(frameB.closed).toBe(false)
   })
 
-  it('drops an in-flight frame after the clip is released', async () => {
+  it('drops an in-flight frame after a clip release or a cache-only drop', async () => {
     const decoder = new FakeDecoder()
     const source = new ScrubFrameCacheSource(decoder)
     const frame = new FakeBitmap()
@@ -251,6 +254,30 @@ describe('ScrubFrameCacheSource', () => {
     expect(frame.closed).toBe(true)
     expect(onFrame).not.toHaveBeenCalled()
     expect(source.peek('c1', 1, 1)).toBeUndefined()
+
+    const decoder2 = new FakeDecoder()
+    const source2 = new ScrubFrameCacheSource(decoder2)
+    const frame2 = new FakeBitmap()
+    const onFrame2 = vi.fn()
+
+    source2.request(request(), onFrame2)
+    source2.releaseCachedFrame('c1')
+    decoder2.resolveNext(frame2 as unknown as CanvasImageSource)
+    await flush()
+
+    expect(frame2.closed).toBe(true)
+    expect(onFrame2).not.toHaveBeenCalled()
+    expect(source2.peek('c1', 1, 1)).toBeUndefined()
+    expect(decoder2.releasedClips).toEqual([])
+
+    const frame3 = new FakeBitmap()
+    const onFrame3 = vi.fn()
+    source2.request(request({ sourceTime: 2 }), onFrame3)
+    decoder2.resolveNext(frame3 as unknown as CanvasImageSource)
+    await flush()
+
+    expect(onFrame3).toHaveBeenCalled()
+    expect(source2.peek('c1', 2, 1)).toBe(frame3)
   })
 
   it('drops an in-flight frame or failure after the asset is released', async () => {

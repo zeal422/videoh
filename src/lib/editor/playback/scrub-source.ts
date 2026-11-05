@@ -54,6 +54,13 @@ export interface ScrubFrameSource {
   hasSink(assetId: string, effectiveUrl: string): boolean
   /** The last good frame for the clip, when its generation still matches. */
   peek(clipId: string, sourceTime: number, generation: number): CanvasImageSource | undefined
+  /**
+   * Drops the cached still frame and invalidates queued or in-flight decodes
+   * for a clip, keeping the decoder warm. A user pause uses this so a frame
+   * left at an earlier playhead cannot be drawn before the new paused frame
+   * lands, even if an older decode was still in flight.
+   */
+  releaseCachedFrame?(clipId: string): void
   request(request: ScrubFrameRequest, onFrame: ScrubFrameListener): void
   releaseClip(clipId: string): void
   releaseAsset(assetId: string, effectiveUrl: string): void
@@ -136,6 +143,18 @@ export class ScrubFrameCacheSource implements ScrubFrameSource {
     const cached = this.cache.get(clipId)
     if (!cached || cached.generation !== generation) return undefined
     return cached.frame
+  }
+
+  releaseCachedFrame(clipId: string): void {
+    this.invalidateClip(clipId)
+  }
+
+  /** Bumps the clip epoch and clears queued/in-flight work plus the cached frame. */
+  private invalidateClip(clipId: string): void {
+    this.clipEpochs.set(clipId, (this.clipEpochs.get(clipId) ?? 0) + 1)
+    this.latest.delete(clipId)
+    this.active.delete(clipId)
+    this.dropCached(clipId)
   }
 
   request(request: ScrubFrameRequest, onFrame: ScrubFrameListener): void {
@@ -242,10 +261,7 @@ export class ScrubFrameCacheSource implements ScrubFrameSource {
   }
 
   releaseClip(clipId: string): void {
-    this.clipEpochs.set(clipId, (this.clipEpochs.get(clipId) ?? 0) + 1)
-    this.latest.delete(clipId)
-    this.active.delete(clipId)
-    this.dropCached(clipId)
+    this.invalidateClip(clipId)
     this.decoder.releaseClip(clipId)
   }
 

@@ -72,7 +72,7 @@ src/components/
 ├── site/                         # public site, no editor store or browser-engine imports
 │   ├── SiteHeader.tsx            #   transparent favicon bars + wordmark, About, GitHub, tracked gradient Open editor CTA
 │   ├── SiteFooter.tsx            #   public links, real contact mailto, MIT license, VectorMedia credit, local-media tagline
-│   ├── Hero.tsx                  #   landing composition: hero, feature strip, product, tools, privacy, CTA, FAQ
+│   ├── Hero.tsx                  #   landing composition: hero, feature strip, product, tools, privacy, FAQ, CTA
 │   ├── TimelineHero.tsx          #   angled CSS timeline card on an offset back plate, one rose playhead, bottom-right orange glow
 │   ├── FeatureStrip.tsx          #   four promises in a gap-px segmented strip
 │   ├── ScrollDownLink.tsx        #   minimal animated scroll cue that jumps to the product section
@@ -217,7 +217,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 93 test files (2169 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 93 test files (2180 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

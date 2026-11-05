@@ -80,7 +80,7 @@ All colours are authored in `oklch()`. Use the semantic utilities (`bg-backgroun
 
 The public site at `/` shares the editor's dark base, rose playhead, and amber secondary accent, but it
 is not the editor shell. It is a server-rendered landing page with its own header, footer, hero,
-product proof, privacy story, CTA, FAQ, and legal pages.
+product proof, privacy story, FAQ, CTA, and legal pages.
 
 - **Site palette.** `.site-theme` in `globals.css` scopes the marketing palette: `--site-bg` (#080512),
   `--site-panel`, `--site-border`, the muted text pair, and the rose, pink, amber, orange, violet, and
@@ -95,8 +95,8 @@ product proof, privacy story, CTA, FAQ, and legal pages.
   a thin violet SVG arrow sits above the card, floating clear of its top edge. Amber stays a small
   secondary accent, never a second playhead.
 - **Sections.** The landing page is one server-rendered composition in `Hero.tsx`: hero, four-item
-  feature strip, product showcase, full-bleed gradient tools band, privacy panel, closing CTA, and
-  FAQ. The hero is at least `100svh` minus the header, so the product section starts below the fold.
+  feature strip, product showcase, full-bleed gradient tools band, privacy panel, FAQ, and closing
+  CTA. The hero is at least `100svh` minus the header, so the product section starts below the fold.
   The feature strip follows the hero copy with a small gap. A minimal scroll cue sits under the
   strip and links to the product section; its chevron bobs with motion-safe and the click scrolls
   smoothly, or jumps instantly when reduced motion is requested. The FAQ follows the privacy panel,
@@ -156,7 +156,7 @@ product proof, privacy story, CTA, FAQ, and legal pages.
   `focus-visible:ring-2`. Plain links keep the browser focus outline. Navigation uses plain anchors,
   so no router test scaffolding is needed.
 - **Responsive.** The hero stacks below `lg`; the feature strip is four, two, then one column; the
-  product showcase, tools band, privacy panel, CTA, and FAQ stack below `lg`. The tools tiles stay
+  product showcase, tools band, privacy panel, FAQ, and CTA stack below `lg`. The tools tiles stay
   five across but shrink, the tools heading wraps below 360px, and the privacy panel becomes a
   vertical stack. The privacy heading wraps below `xl` and stays on one line at `xl`, where the left
   column widens. The header wraps rather than clipping.

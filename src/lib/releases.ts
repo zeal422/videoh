@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.19.2',
+    date: '2026-11-05',
+    highlights: [
+      'A user pause lands on the last presented frame and drops the stale still frame before repainting the paused frame',
+      'A seek that keeps reporting seeking for more than two seconds stops being skipped, and the engine retries',
+      'Play warmup refuses a tracked but stale frame, so the clock cannot start on an old picture',
+      'Paused seek tracking is cleared at every stop and before a paused seek, so a landed seek cannot leak into the next play',
+      'A deferred WebCodecs pause frame paints when it arrives',
+    ],
+  },
+  {
     version: '0.19.1',
     date: '2026-11-04',
     highlights: [

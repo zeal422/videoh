@@ -35,7 +35,7 @@ Stable hooks used across flows and tests:
 - `/` is the public landing page. It has no preloader and no editor shell. The header, hero, and
   closing CTA link to `/editor`; the hero and CTA also link to the public GitHub source. The page
   composes the angled timeline hero, feature strip, product showcase, tools band, privacy panel,
-  CTA, and a visible FAQ before the closing CTA.
+  a visible FAQ, and the closing CTA.
 - `/editor` renders `EditorBoot`. The preloader stays up for the client-only shell import plus the
   3.2s minimum show, then the editor appears. A rejected import shows Try again, and a second failure
   offers Reload page. The public route never mounts this boot.
@@ -481,9 +481,17 @@ Stable hooks used across flows and tests:
   activates itself instead of toggling playback. Play warms the active elements before starting the
   clock: a paused scrub's behind `<video>` is seeked and both A/V halves wait for readiness, while a
   resume at the parked position does not re-seek. The monitor holds the paused frame instead of black.
+  A user pause stops the clock and snaps the pause time to the last video frame the element
+  presented, so the timecode and picture match. It drops the cached still frame for the active clips
+  before it repaints the paused frame; a frame left at an earlier playhead cannot flash first. The
+  stop path detaches tracked seek listeners, while internal recovery, terminal, sequence-end, and
+  frame-step halts do not repaint. A pause during a decode recovery leaves that clip to the
+  recovery: it does not force a new decode, and the canvas may still show the pre-error frame until
+  the recovery's frame or element seek lands.
 - Scrubbing while paused requests a WebCodecs frame for each active video clip and redraws when it
   lands, keeping the last good frame while a decode is pending. A clip without a usable sink falls
-  back to re-seeking its `<video>` and redrawing on `seeked`. Scrubbing while playing pauses playback
+  back to re-seeking its `<video>` and redrawing on `seeked`. The paused draw clears play-path seek
+  tracking before positioning an element. Scrubbing while playing pauses playback
   first (Premiere behavior), so dragging the playhead can never inject a force-seek per pointer move
   into a running clock.
 - **Decode recovery.** A `MEDIA_ERR_DECODE` error pauses the core, reloads the same element, skips
@@ -496,7 +504,9 @@ Stable hooks used across flows and tests:
   source or an aborted load is muted at once. The toast names the cause. It bypasses the shared
   overlay notice, so a picture-damage notice already on screen stays visible. A failed reload
   releases the element, keeps its
-  attempt record, and resumes when it was playing so the next sync creates a fresh element. A
+  attempt record, and resumes when it was playing so the next sync creates a fresh element. An
+  element that keeps reporting `seeking` longer than `SEEK_STALL_MS` stops being skipped; the next
+  sync retries the seek or the play call instead of leaving the picture on the start frame. A
   committed skip's record clears once the playhead passes its skipped range in timeline time, and
   its notice clears shortly after, including when playback stops at the sequence end. The
   overlay reports the skipped range. A second clip's video error is deferred, then consumed once,

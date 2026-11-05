@@ -185,6 +185,13 @@ const PRIME_TIMEOUT_MS = 1_200
  */
 const SEEK_QUIET_MS = 350
 /**
+ * How long an element may keep reporting `seeking` before the sync path stops
+ * trusting it. A genuinely slow decode gets this long; a seek the browser
+ * never completes stops starving the clip after the bound, and the next sync
+ * retries the seek or the play call instead of skipping forever.
+ */
+const SEEK_STALL_MS = 2_000
+/**
  * How far behind its read position a frame may sit and still be the frame the
  * element is showing. The presented frame's timestamp is at most one source
  * frame before the read, so a window this wide admits every sane source rate
@@ -320,6 +327,15 @@ export class PlaybackCore {
    * each rAF re-seeked a seek that never completed).
    */
   private seekingEls = new Map<HTMLMediaElement, { started: number; onSeeked: () => void }>()
+  /**
+   * When each element was first seen reporting `seeking` without a tracked
+   * map entry or across a long decode. The map entry's `started` cannot serve
+   * this purpose: it is stamped at seek issue, so a warmup that spans two
+   * timeouts would expire it before the first tick. This stamp starts at the
+   * first observation and is cleared when `seeking` goes false or the seek is
+   * ended.
+   */
+  private seekingSince = new Map<HTMLMediaElement, number>()
   /**
    * The media timestamp of the frame each element last PRESENTED (0.7.0), from
    * requestVideoFrameCallback. Sub-frame-rate blending needs the timestamps of
@@ -526,40 +542,119 @@ export class PlaybackCore {
    * normal recovery path instead of hanging Play.
    */
   private waitForMediaReady(el: HTMLMediaElement): Promise<void> {
-    if (!el.seeking && el.readyState >= 2) return Promise.resolve()
+    if (this.mediaReady(el)) return Promise.resolve()
     return new Promise((resolve) => {
       let done = false
+      let timedOut = false
       let timer: ReturnType<typeof setTimeout> | undefined
       const finish = (): void => {
         if (done) return
         done = true
-        el.removeEventListener('loadeddata', finish)
-        el.removeEventListener('canplay', finish)
-        el.removeEventListener('seeked', finish)
+        el.removeEventListener('loadeddata', finishIfReady)
+        el.removeEventListener('canplay', finishIfReady)
+        el.removeEventListener('seeked', finishIfReady)
         el.removeEventListener('error', finish)
         if (timer !== undefined) clearTimeout(timer)
+        if (timedOut) this.endSeek(el)
         resolve()
       }
-      timer = setTimeout(finish, PRIME_TIMEOUT_MS)
-      el.addEventListener('loadeddata', finish)
-      el.addEventListener('canplay', finish)
-      el.addEventListener('seeked', finish)
+      const finishIfReady = (): void => {
+        if (done || !this.mediaReady(el)) return
+        finish()
+      }
+      timer = setTimeout(() => {
+        timedOut = true
+        finish()
+      }, PRIME_TIMEOUT_MS)
+      el.addEventListener('loadeddata', finishIfReady)
+      el.addEventListener('canplay', finishIfReady)
+      el.addEventListener('seeked', finishIfReady)
       el.addEventListener('error', finish)
       // A synchronous seek (or a source that was already ready) can settle
       // between the first check and the listeners above.
-      if (el.error || (!el.seeking && el.readyState >= 2)) finish()
+      if (el.error || this.mediaReady(el)) finish()
     })
   }
 
+  /** Ready to present, no seek in flight, and no tracked seek still pending. */
+  private mediaReady(el: HTMLMediaElement): boolean {
+    return !el.seeking && el.readyState >= 2 && !this.seekingEls.has(el)
+  }
+
   pause(): void {
+    const wasPlaying = this.halt()
+    if (!wasPlaying) return
+    this.dropPausedScrubFrames()
+    const presented = this.pauseTimeFromPresentedFrame()
+    if (presented !== undefined) this.time = presented
+    if (this.time >= this.durationOf(this.opts.getDoc()) - 1e-4) return
+    this.refresh(this.time)
+  }
+
+  /**
+   * The timeline time of the last video frame the decoder presented, when it
+   * is close enough to the clock to be the frame the user is watching. Pausing
+   * on the audio-clock time would redraw the frame at that time and step the
+   * picture backwards from the frame already on screen.
+   */
+  private pauseTimeFromPresentedFrame(): number | undefined {
+    const doc = this.opts.getDoc()
+    for (const { clip, track, offset, ancestors } of this.activeClipList(doc)) {
+      if (track.kind === 'text' || track.kind === 'audio' || clip.audioOnly) continue
+      const start = offset + clip.start
+      if (!withinAncestorWindows(this.time, start, start + clip.duration, ancestors)) continue
+      const el = this.pool.peek(clip.id)
+      if (!el) continue
+      const source = this.presentedTimes.get(el)
+      if (source === undefined) continue
+      const candidate = this.mapSourceToTimeline(clip, offset, source)
+      if (Math.abs(candidate - this.time) <= DRIFT_THRESHOLD) return candidate
+    }
+    return undefined
+  }
+
+  /**
+   * A user pause is a playhead discontinuity for the still cache: the last
+   * cached frame can be from the start of playback, seconds behind the pause
+   * point. Drop it before the pause refresh so the render preflight keeps the
+   * last playing composite instead of flashing that old frame. The decoder
+   * stays warm; only the cached bitmap goes.
+   */
+  private dropPausedScrubFrames(): void {
+    if (!this.scrub) return
+    for (const { clip, track } of this.activeClipList(this.opts.getDoc())) {
+      if (track.kind === 'text' || track.kind === 'audio' || clip.audioOnly) continue
+      this.scrub.releaseCachedFrame?.(clip.id)
+    }
+  }
+
+  /**
+   * Stops playback without painting. User pauses paint through `pause()`;
+   * recovery, terminalization, sequence end, frame stepping, and teardown use
+   * this body so they do not gain a decode or a second composite.
+   *
+   * Returns true when playback was active.
+   */
+  private halt(): boolean {
     this.recoveryEpoch++
     this.playToken++
     if (this.recoveryInFlight !== null) this.recoveryCancelDiscard = true
-    if (!this.playingState) return
+    if (!this.playingState) {
+      this.clearSeekTracking()
+      return false
+    }
     this.playingState = false
     cancelAnimationFrame(this.raf)
     this.pool.pauseAll()
+    this.clearSeekTracking()
     this.opts.onPlayingChange?.(false)
+    return true
+  }
+
+  /** Removes every tracked seek listener and drops the stall stamps. */
+  private clearSeekTracking(): void {
+    for (const el of [...this.seekingEls.keys()]) this.endSeek(el)
+    this.seekingSince.clear()
   }
 
   toggle(): void {
@@ -579,7 +674,14 @@ export class PlaybackCore {
     }
   }
 
-  /** Paused repaint for doc edits: no epoch bump, no recovery cancellation. */
+  /**
+   * Paused repaint for doc edits: no epoch bump, no recovery cancellation.
+   * `drawStill` skips a recovering clip and leaves its element to the
+   * recovery. A user pause bumps the recovery epoch and cancels that recovery,
+   * so the clip may not repaint on this pass. The pause is a no-op for the
+   * paint: the recovery owns the redraw, and the canvas may still hold the
+   * pre-error frame until the recovery's WebCodecs frame or element seek lands.
+   */
   refresh(t: number, scrub = false): void {
     this.scrubInProgress = scrub
     this.refreshing = true
@@ -608,7 +710,7 @@ export class PlaybackCore {
   stepFrames(n: number): void {
     const { fps } = this.opts.getDoc().project
     const target = Math.max(0, Math.round(this.time * fps) + n) / fps
-    this.pause()
+    this.halt()
     this.seek(target)
   }
 
@@ -844,7 +946,7 @@ export class PlaybackCore {
     }
     const inFlight = this.recoveryInFlight === clipId
     if (inFlight) this.haltForTerminal()
-    else this.pause()
+    else this.halt()
     this.terminalElements.add(el)
     const partner = this.pool.peekNext(clipId)
     if (partner) this.endSeek(partner)
@@ -883,6 +985,7 @@ export class PlaybackCore {
     this.playingState = false
     cancelAnimationFrame(this.raf)
     this.pool.pauseAll()
+    this.clearSeekTracking()
     if (wasPlaying) this.opts.onPlayingChange?.(false)
   }
 
@@ -1107,7 +1210,7 @@ export class PlaybackCore {
       if (!mediaPlayable(asset)) return
       const wasPlaying = this.playingState
       const t = this.time
-      this.pause()
+      this.halt()
       const epoch = this.recoveryEpoch
       recoveryEpochAtStart = epoch
       this.recoveryEpochOwner = epoch
@@ -1396,7 +1499,7 @@ export class PlaybackCore {
   }
 
   dispose(): void {
-    this.pause()
+    this.halt()
     this.pool.dispose()
     this.imageCache.clear()
     for (const el of [...this.seekingEls.keys()]) this.endSeek(el) // detach listeners too
@@ -1454,7 +1557,7 @@ export class PlaybackCore {
       this.syncMedia(this.time, false, true)
       this.render(this.time)
       this.opts.onFrame?.(this.time)
-      this.pause()
+      this.halt()
       this.opts.onEnd?.()
       return
     }
@@ -1768,7 +1871,19 @@ export class PlaybackCore {
 
   /** True while the element has a seek in flight (and keeps tracking it). */
   private trackingSeek(el: HTMLMediaElement): boolean {
-    if (el.seeking) return true
+    if (el.seeking) {
+      const since = this.seekingSince.get(el)
+      if (since === undefined) {
+        this.seekingSince.set(el, performance.now())
+        return true
+      }
+      if (performance.now() - since > SEEK_STALL_MS) {
+        this.endSeek(el)
+        return false
+      }
+      return true
+    }
+    this.seekingSince.delete(el)
     const entry = this.seekingEls.get(el)
     if (!entry) return false
     if (performance.now() - entry.started > SEEK_QUIET_MS) {
@@ -1820,6 +1935,7 @@ export class PlaybackCore {
   }
 
   private endSeek(el: HTMLMediaElement): void {
+    this.seekingSince.delete(el)
     const entry = this.seekingEls.get(el)
     if (!entry) return
     el.removeEventListener('seeked', entry.onSeeked)
@@ -2120,6 +2236,11 @@ export class PlaybackCore {
     const pendingErrors: { clipId: string; el: HTMLMediaElement }[] = []
     for (const { clip, track, offset, ancestors } of this.activeClipList(doc)) {
       if (track.kind === 'text') continue
+      // A doc-edit refresh during recovery leaves the clip to the recovery,
+      // which paints its committed skip target. A user pause also cancels the
+      // recovery through the epoch, so this clip may not repaint on the pause
+      // pass; the recovery's pending frame or element seek still owns the
+      // redraw, and the pause does not force a new decode.
       if (this.refreshing && this.recoveryInFlight === clip.id && !this.recoveryIsStale()) {
         continue
       }
@@ -2191,6 +2312,10 @@ export class PlaybackCore {
         this.endSeek(el)
         continue
       }
+      // A paused repaint owns this seek. Drop any play-path tracking first so
+      // a landed seek cannot be mistaken for an in-flight one on the next play,
+      // and so the one-shot listener below is the only repaint owner.
+      this.endSeek(el)
       const seekTarget = parkedTarget(expected)
       if (
         Math.abs(el.currentTime - seekTarget) > 1e-9 &&
@@ -2227,6 +2352,8 @@ export class PlaybackCore {
       if (next.error) this.handleElementError(clip.id, next)
       if (this.failedPartners.has(next)) continue
       this.watchPresentedFrames(next)
+      // Same ownership rule as the primary element above.
+      this.endSeek(next)
       const target = clampSourceTime(partner, asset)
       if (Math.abs(next.currentTime - target) > PARTNER_SEEK_EPS) {
         try {

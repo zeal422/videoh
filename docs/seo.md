@@ -48,7 +48,7 @@ Do not add thin pages for every query. The hero, About, Privacy, Terms, and Cont
 
 | Route      | Indexable | Purpose                                                                                                  |
 | ---------- | --------- | -------------------------------------------------------------------------------------------------------- |
-| `/`        | yes       | Landing page: angled timeline hero, feature strip, product showcase, tools band, privacy panel, CTA, FAQ |
+| `/`        | yes       | Landing page: angled timeline hero, feature strip, product showcase, tools band, privacy panel, FAQ, CTA |
 | `/about`   | yes       | Product story, open source, privacy, contact                                                             |
 | `/privacy` | yes       | Local media, browser storage, GoatCounter, Vercel                                                        |
 | `/terms`   | yes       | Free service, MIT license, no warranty, acceptable use                                                   |
@@ -132,7 +132,7 @@ GitHub is a credibility and contribution channel, not the primary acquisition go
 ## Release checklist
 
 - [x] `bun run check` is green.
-- [x] The last recorded dev and artifact batteries are 70/70 with a terminal `BATTERY_EXIT=0` (0.19.1, 2026-11-04).
+- [x] The last recorded dev and artifact batteries are 70/70 with a terminal `BATTERY_EXIT=0` (0.19.2, 2026-11-05).
 - [x] `robots.txt`, `sitemap.xml`, and the verification file return 200 in production.
 - [x] The production metadata check passes for `/` and `/editor`.
 - [x] Production returns no `X-Robots-Tag`; `site-seo.test.ts` locks the preview header.
