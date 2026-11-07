@@ -552,7 +552,7 @@ describe('EditorShell panel model (static locks)', () => {
   it('guards the observers by shape and cancels a pending reset on gesture start', () => {
     const src = readFileSync('src/components/editor/EditorShell.tsx', 'utf8')
     expect(src).toContain('isExpectedPanelLayout')
-    expect(src).toContain('resetTracker.noteLayout')
+    expect(src).toContain('resetTrackerRef.current?.noteLayout')
     expect(src).toContain('createResetTracker')
     expect(src).toContain('getLayout()')
     expect(src).toContain('onGestureStart={cancelPendingReset}')

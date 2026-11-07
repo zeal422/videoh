@@ -5,6 +5,40 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.19.4] - 2026-11-07
+
+### Changed
+
+- Dev tooling moves within current majors: eslint 9.39.5, eslint-config-next 16.4.5, Vitest 5.1.0
+  with coverage 5.1.0, jsdom 30.1.3, and Tailwind 4.3.5. Targeted overrides move `@babel/core`,
+  `@humanfs/node`, `browserslist`, `flatted`, `source-map-js`, and `zod` to patched versions without
+  changing runtime dependencies.
+- New React hook lint rules from the refresh found four real ref and effect issues. The viewport hook
+  now uses `useSyncExternalStore`, the editor boot retry resets in the click handler, and the reset
+  tracker and handle drag keep ref reads out of render.
+
+### Security
+
+- The full Content Security Policy is enforced in production instead of shipped Report-Only.
+  `script-src` still allows inline scripts, and `worker-src 'self' blob:` covers mediabunny's blob
+  workers. Development and test keep the narrow `frame-ancestors`/`base-uri`/`object-src` policy, and
+  the GoatCounter origin stays in `connect-src`.
+- The audit drops from 62 entries to 15. The remaining `minimatch`, `brace-expansion`, and `picomatch`
+  copies are nested dev-only packages under ESLint plugins and micromatch. Bun 1.3.14 does not support
+  nested or version-scoped overrides, so a parent-scoped pin would force a cross-major version into
+  `typescript-estree` or Vite; that fix is deferred to a Bun 1.4 tooling change.
+
+### Tests and docs
+
+- Header tests assert exactly one enforced `Content-Security-Policy`, no Report-Only header, the full
+  production policy including `worker-src 'self' blob:`, preview `X-Robots-Tag`, the development and
+  test narrow policy, and the GoatCounter origin.
+- `bun run check` passes with 95 files and 2,223 tests. Coverage is 94.78 statements, 90.32 branches,
+  96.71 functions, 96.84 lines.
+- The dev and artifact batteries are 70/70 with terminal `BATTERY_EXIT=0`; the artifact run reused
+  the standalone server.
+- Deployment, SEO, testing, roadmap, and release notes are synced.
+
 ## [0.19.3] - 2026-11-06
 
 ### Changed

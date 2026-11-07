@@ -83,16 +83,22 @@ ids that would otherwise mismatch between server and client. The preloader stays
 minimum show while the editor chunk loads.
 
 Every response carries the safe security headers from `next.config.ts`: `X-Content-Type-Options:
-nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, and an
-enforced `Content-Security-Policy` with `frame-ancestors 'none'; base-uri 'self'; object-src
-'none'`. `poweredByHeader: false` keeps the standalone server from advertising Next. Production also
-ships the full resource policy as `Content-Security-Policy-Report-Only`; it is not enforced until the
-artifact battery and the manual editor pass are clean. The GoatCounter endpoint origin is added to
-that policy's `connect-src` when `NEXT_PUBLIC_GOATCOUNTER_URL` is set.
+nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, and `X-Frame-Options: DENY`.
+`poweredByHeader: false` keeps the standalone server from advertising Next. Production enforces the
+full resource policy in `Content-Security-Policy`, including `worker-src 'self' blob:` for
+mediabunny's blob workers; `script-src` still allows inline scripts. Development and test keep the
+narrow `frame-ancestors 'none'; base-uri 'self'; object-src 'none'` policy so HMR and the dev overlay
+are not blocked. No response carries `Content-Security-Policy-Report-Only`. The GoatCounter endpoint
+origin is added to `connect-src` when `NEXT_PUBLIC_GOATCOUNTER_URL` is set. If enforcement fails,
+restore the full policy to `Content-Security-Policy-Report-Only`, keep the narrow enforced policy, and
+redeploy the previous release.
 
 Preview deployments add `X-Robots-Tag: noindex, nofollow` through `next.config.ts` when
 `VERCEL_ENV=preview`. Production, development, and unset environments return no such header. A unit
 test locks that behavior.
+
+`headers()` is evaluated at build time and baked into the routes manifest. Verify the header set
+against a real production build or preview deployment, not only the unit test.
 
 ## Environment
 
@@ -142,7 +148,9 @@ were also both 67 passed, 0 failed with terminal `BATTERY_EXIT=0`. The 0.19.0 de
 runs on 2026-11-04 were also both 70 passed, 0 failed with terminal `BATTERY_EXIT=0`. The 0.19.2 dev
 and artifact runs on 2026-11-05 were also both 70 passed, 0 failed with terminal `BATTERY_EXIT=0`. The
 0.19.3 dev run on 2026-11-06 started its own dev server and passed 70/70 with `BATTERY_EXIT=0`; the
-artifact run reused the standalone server and also passed 70/70 with `BATTERY_EXIT=0`.
+artifact run reused the standalone server and also passed 70/70 with `BATTERY_EXIT=0`. The 0.19.4 dev
+run on 2026-11-07 started its own dev server and passed 70/70 with `BATTERY_EXIT=0`; the artifact run
+reused the standalone server and also passed 70/70 with `BATTERY_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 
@@ -169,8 +177,8 @@ After promotion, run the full production check block with `BASE_URL=https://vide
 3. Confirm `/` and `/editor` return `X-Content-Type-Options: nosniff`, `Referrer-Policy:
 strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, and a `Content-Security-Policy`
    containing `frame-ancestors 'none'`.
-4. Confirm the production artifact returns `Content-Security-Policy-Report-Only` and no
-   `X-Powered-By`.
+4. Confirm the production artifact returns the full enforced `Content-Security-Policy`, no
+   `Content-Security-Policy-Report-Only`, and no `X-Powered-By`.
 5. Confirm Search Console verifies the URL-prefix property and accepts the sitemap.
 6. Confirm GoatCounter receives a page view and a custom event, or is intentionally disabled.
 7. Keep the Search Console verification file public after verification.

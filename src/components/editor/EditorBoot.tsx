@@ -44,7 +44,6 @@ export function EditorBoot() {
   }, [])
   useEffect(() => {
     let cancelled = false
-    setFailed(false)
     void Promise.all([
       import('@/components/editor/EditorShell'),
       new Promise((resolve) => setTimeout(resolve, MIN_SHOW_MS)),
@@ -68,7 +67,13 @@ export function EditorBoot() {
         <div className="flex max-w-xs flex-col items-center gap-3 text-center" role="alert">
           <p className="text-sm text-muted-foreground">The editor failed to load.</p>
           <div className="flex gap-2">
-            <Button type="button" onClick={() => setAttempt((a) => a + 1)}>
+            <Button
+              type="button"
+              onClick={() => {
+                setFailed(false)
+                setAttempt((a) => a + 1)
+              }}
+            >
               Try again
             </Button>
             {attempt >= 1 && (

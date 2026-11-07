@@ -853,13 +853,14 @@ function KeyframeGraph({
     which: 'out' | 'in'
     startIndex: number
     pointerId: number
+    token: number
   } | null>(null)
   useEffect(() => {
     if (!handleDrag) return
     const store = useEditorStore.getState()
     const onMove = (e: PointerEvent) => {
       if (e.pointerId !== handleDrag.pointerId) return
-      if (currentTransientToken() !== tokenRef.current) return
+      if (currentTransientToken() !== handleDrag.token) return
       const rect = wrapRef.current?.getBoundingClientRect()
       if (!rect || rect.width <= 0 || rect.height <= 0) return
       const live = useEditorStore.getState().doc
@@ -946,14 +947,6 @@ function KeyframeGraph({
     // `handleDrag` carries the pointer id: a re-grab re-runs the effect with
     // the new owner, the same handover the dot drag gets from its state.
   }, [handleDrag, clip.id, clip.duration, property, mirrored])
-
-  const onHandlePointerDown = (which: 'out' | 'in', e: ReactPointerEvent) => {
-    e.stopPropagation()
-    if (activeStart === null) return
-    if (refuseLockedClip(clip.id)) return
-    tokenRef.current = useEditorStore.getState().beginTransient(e.pointerId)
-    setHandleDrag({ which, startIndex: activeStart, pointerId: e.pointerId })
-  }
 
   const onHandleKeyDown = (which: 'out' | 'in', e: ReactKeyboardEvent) => {
     if (activeStart === null) return
@@ -1072,7 +1065,13 @@ function KeyframeGraph({
               aria-valuetext={`x ${stored.x.toFixed(2)}, y ${stored.y.toFixed(2)}`}
               className="absolute size-2.5 -translate-x-1/2 translate-y-1/2 cursor-grab rounded-full border border-amber-600 bg-amber-400"
               style={{ left: `${pos.x}%`, bottom: `${pos.y}%` }}
-              onPointerDown={(e) => onHandlePointerDown(which, e)}
+              onPointerDown={(e) => {
+                e.stopPropagation()
+                if (activeStart === null) return
+                if (refuseLockedClip(clip.id)) return
+                const token = useEditorStore.getState().beginTransient(e.pointerId)
+                setHandleDrag({ which, startIndex: activeStart, pointerId: e.pointerId, token })
+              }}
               onKeyDown={(e) => onHandleKeyDown(which, e)}
             />
           )

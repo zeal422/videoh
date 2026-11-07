@@ -66,7 +66,7 @@ Do not add thin pages for every query. The hero, About, Privacy, Terms, and Cont
 - [x] `/editor` carries `noindex, follow`.
 - [x] Preview deployments carry `X-Robots-Tag: noindex, nofollow`; production does not.
 - [x] Every response carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, and an enforced `Content-Security-Policy` with `frame-ancestors 'none'`.
-- [x] Production carries the full `Content-Security-Policy-Report-Only` policy and no `X-Powered-By`.
+- [x] Production enforces the full `Content-Security-Policy`, carries no `Content-Security-Policy-Report-Only`, and returns no `X-Powered-By`.
 - [x] The home page renders `SoftwareApplication` and `FAQPage` JSON-LD.
 - [x] The FAQ stays visible after privacy and before the closing CTA, so the FAQPage content is on the page.
 - [x] The CTA closes the page after the FAQ.
@@ -136,7 +136,7 @@ GitHub is a credibility and contribution channel, not the primary acquisition go
 ## Release checklist
 
 - [x] `bun run check` is green.
-- [x] The last recorded dev and artifact batteries are 70/70 with a terminal `BATTERY_EXIT=0` (0.19.3, 2026-11-06).
+- [x] The last recorded dev and artifact batteries are 70/70 with a terminal `BATTERY_EXIT=0` (0.19.4, 2026-11-07).
 - [x] `robots.txt`, `sitemap.xml`, and the verification file return 200 in production.
 - [x] The production metadata check passes for `/` and `/editor`.
 - [x] Production returns no `X-Robots-Tag`; `site-seo.test.ts` locks the preview header.

@@ -536,3 +536,21 @@ Action: kept as a note; the final sync clears committed skips with `atEnd`, audi
 What happened: `handleElementError` intentionally routes audio before the video `recoveryInFlight` gate, but the architecture and flow docs described recovery as single-flight without the exception, and no test held a video recovery open while an audio error arrived.
 Would-have-caught: trigger 2 traced the branch but stopped at the comment; when a code path deliberately bypasses a shared gate, the documented contract and the test matrix both need an exception line.
 Action: kept as a note; the docs now name the audio exception and a lock holds a video recovery open while audio recovers in place.
+
+## 2026-11-07 - `bun update` added transitive tools as runtime dependencies
+
+What happened: `bun update vite source-map-js picomatch browserslist @humanfs/node ajv minimatch` put those packages in `package.json` `dependencies` because Bun 1.3 treats an unknown transitive name as a direct add. The plan forbids runtime dependency changes.
+Would-have-caught: trigger 1's baseline plus `git diff -- package.json` immediately after every package-manager command, before any audit or gate work.
+Action: removed the added entries, kept dev-only overrides, and verified the 24 direct runtime versions are unchanged against `HEAD:bun.lock`.
+
+## 2026-11-07 - stale artifact server made a battery run invalid
+
+What happened: a manual-pass server from an earlier build was still holding port 3001. The new `PORT=3001 bun run start` failed with EADDRINUSE, but the probe still saw HTTP 200 from the old server. The artifact battery then ran against the old 0.19.3 build and failed nine steps because the 0.19.4 release notes marker no longer matched.
+Would-have-caught: trigger 1's server check read as a hard precondition: a non-000 probe before starting means stop and identify the owning process, not proceed. Also verify the release version in the served chunk before the battery.
+Action: stopped the stale process group, confirmed 3001 was free, started the fresh 0.19.4 build, and reran the battery to 70/70. The invalid result was not reported.
+
+## 2026-11-07 - Bun 1.3.14 has no nested or version-scoped overrides
+
+What happened: the plan called for parent-scoped overrides for `minimatch`, `brace-expansion`, and `picomatch`. Bun 1.3.14 warns that nested overrides are unsupported and ignores `pkg@^range` keys. Top-level pins would force a cross-major version into `typescript-estree` or Vite.
+Would-have-caught: check the installed package-manager version and its override feature set before writing a plan that depends on nested overrides.
+Action: kept the safe top-level fixes, documented the remaining three dev-only package families, and deferred the parent-scoped pins to a Bun 1.4 tooling change.

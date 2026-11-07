@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.19.4',
+    date: '2026-11-07',
+    highlights: [
+      'The full Content Security Policy is enforced in production, covering media, blob workers, and the editor',
+      'Development keeps a narrow policy so HMR and the dev overlay stay clean',
+      'Dev tooling moves to eslint 9.39.5, eslint-config-next 16.4.5, Vitest 5.1, jsdom 30.1.3, and Tailwind 4.3.5',
+      'The security audit shrinks from 62 entries to 15, and every remaining copy is dev-only',
+      'No editor feature, project format, or analytics contract changed',
+    ],
+  },
+  {
     version: '0.19.3',
     date: '2026-11-06',
     highlights: [

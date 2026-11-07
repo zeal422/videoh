@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { RotateCcw, X } from 'lucide-react'
 import type { ImperativePanelGroupHandle, ImperativePanelHandle } from 'react-resizable-panels'
 
@@ -38,6 +38,7 @@ import {
   type ExpectedPanelSlot,
   type PanelId,
   type ResetGroupId,
+  type ResetTracker,
 } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
 import {
@@ -131,34 +132,36 @@ export function EditorShell() {
     [],
   )
 
-  const resetTracker = useMemo(
-    () =>
-      createResetTracker({
-        groups: RESET_GROUP_SPECS,
-        hooks: { issueResizes: issueResetResizes, readLayouts: readResetLayouts },
-        scheduleFrame: (callback) => requestAnimationFrame(callback),
-        cancelFrame: (handle) => cancelAnimationFrame(handle),
-        scheduleTimer: (callback, delayMs) => window.setTimeout(callback, delayMs),
-        cancelTimer: (handle) => window.clearTimeout(handle),
-      }),
-    [issueResetResizes, readResetLayouts],
-  )
+  const resetTrackerRef = useRef<ResetTracker | null>(null)
 
-  // A user hide/show supersedes a pending reset. The reset's own store write is
-  // guarded so it does not cancel its own token.
-  useEffect(
-    () =>
-      useWorkspaceStore.subscribe((state, previous) => {
-        if (state.hidden === previous.hidden) return
-        if (resetWriteRef.current) return
-        resetTracker.cancel()
-      }),
-    [resetTracker],
-  )
+  // Create the tracker in an effect: its hooks read the panel refs, and those
+  // reads must stay outside render.
+  useEffect(() => {
+    const tracker = createResetTracker({
+      groups: RESET_GROUP_SPECS,
+      hooks: { issueResizes: issueResetResizes, readLayouts: readResetLayouts },
+      scheduleFrame: (callback) => requestAnimationFrame(callback),
+      cancelFrame: (handle) => cancelAnimationFrame(handle),
+      scheduleTimer: (callback, delayMs) => window.setTimeout(callback, delayMs),
+      cancelTimer: (handle) => window.clearTimeout(handle),
+    })
+    resetTrackerRef.current = tracker
 
-  // Cancel a pending reset when the shell unmounts: its timer and frame must
-  // not touch refs from a dead tree.
-  useEffect(() => () => resetTracker.cancel(), [resetTracker])
+    // A user hide/show supersedes a pending reset. The reset's own store write
+    // is guarded so it does not cancel its own token.
+    const unsubscribe = useWorkspaceStore.subscribe((state, previous) => {
+      if (state.hidden === previous.hidden) return
+      if (resetWriteRef.current) return
+      tracker.cancel()
+    })
+    return () => {
+      unsubscribe()
+      // Cancel on unmount: its timer and frame must not touch refs from a dead
+      // tree.
+      tracker.cancel()
+      resetTrackerRef.current = null
+    }
+  }, [issueResetResizes, readResetLayouts])
 
   const resetPanel = useCallback(
     (id: PanelId) => {
@@ -178,7 +181,7 @@ export function EditorShell() {
     bottomPanelRef.current?.resize(PANEL_BOUNDS.timeline.default)
   }, [showBottomArea, showUpperArea])
 
-  const cancelPendingReset = useCallback(() => resetTracker.cancel(), [resetTracker])
+  const cancelPendingReset = useCallback(() => resetTrackerRef.current?.cancel(), [])
 
   /** Window › Reset Workspace Layout: persist defaults, then let the tracker
    *  apply them to the live panels and wait for a post-issue layout per group. */
@@ -189,16 +192,16 @@ export function EditorShell() {
     } finally {
       resetWriteRef.current = false
     }
-    resetTracker.begin()
-  }, [resetTracker, resetWorkspace])
+    resetTrackerRef.current?.begin()
+  }, [resetWorkspace])
 
   // Layout observers. Only persist while the measured panel is actually
   // rendered — otherwise group indices shift and would store the wrong panel.
   const handleTopRowLayout = useCallback(
     (layout: number[]) => {
-      const token = resetTracker.pendingToken()
+      const token = resetTrackerRef.current?.pendingToken() ?? null
       if (token !== null) {
-        resetTracker.noteLayout(token, 'top', layout)
+        resetTrackerRef.current?.noteLayout(token, 'top', layout)
         return
       }
       const expectedLength = showUpperRow ? 2 : 1
@@ -208,14 +211,14 @@ export function EditorShell() {
       if (!isExpectedPanelLayout(layout, expectedLength, entries)) return
       if (showUpperRow) setSize('inspector', layout[1])
     },
-    [resetTracker, setSize, showUpperRow],
+    [setSize, showUpperRow],
   )
 
   const handleTimelineLayout = useCallback(
     (layout: number[]) => {
-      const token = resetTracker.pendingToken()
+      const token = resetTrackerRef.current?.pendingToken() ?? null
       if (token !== null) {
-        resetTracker.noteLayout(token, 'vertical', layout)
+        resetTrackerRef.current?.noteLayout(token, 'vertical', layout)
         return
       }
       const bothRows = showUpperArea && showBottomArea
@@ -225,14 +228,14 @@ export function EditorShell() {
       if (!isExpectedPanelLayout(layout, bothRows ? 2 : 1, entries)) return
       if (bothRows) setSize('timeline', layout[1])
     },
-    [resetTracker, setSize, showBottomArea, showUpperArea],
+    [setSize, showBottomArea, showUpperArea],
   )
 
   const handleBottomRowLayout = useCallback(
     (layout: number[]) => {
-      const token = resetTracker.pendingToken()
+      const token = resetTrackerRef.current?.pendingToken() ?? null
       if (token !== null) {
-        resetTracker.noteLayout(token, 'bottom', layout)
+        resetTrackerRef.current?.noteLayout(token, 'bottom', layout)
         return
       }
       const bothVisible = !hidden.timeline && !hidden.captions
@@ -242,14 +245,14 @@ export function EditorShell() {
       if (!isExpectedPanelLayout(layout, bottomRowPanelCount, entries)) return
       if (bothVisible) setSize('captions', layout[1])
     },
-    [bottomRowPanelCount, hidden.captions, hidden.timeline, resetTracker, setSize],
+    [bottomRowPanelCount, hidden.captions, hidden.timeline, setSize],
   )
 
   const handleUpperRowLayout = useCallback(
     (layout: number[]) => {
-      const token = resetTracker.pendingToken()
+      const token = resetTrackerRef.current?.pendingToken() ?? null
       if (token !== null) {
-        resetTracker.noteLayout(token, 'upper', layout)
+        resetTrackerRef.current?.noteLayout(token, 'upper', layout)
         return
       }
       // Without the preview's auto remainder the fixed panels normalize to the
@@ -265,7 +268,7 @@ export function EditorShell() {
       if (!hidden.media) setSize('media', layout[0])
       if (!hidden.source) setSize('source', layout[hidden.media ? 0 : 1])
     },
-    [hidden.media, hidden.preview, hidden.source, resetTracker, setSize, upperRowPanelCount],
+    [hidden.media, hidden.preview, hidden.source, setSize, upperRowPanelCount],
   )
 
   // Autosave lifecycle: subscribe once; check for a restorable session on mount.

@@ -1,19 +1,16 @@
 import type { NextConfig } from 'next'
 
 /**
- * Enforced on every response. `frame-ancestors` is the modern frame guard;
- * `X-Frame-Options: DENY` keeps older browsers covered, and the rest are the
- * low-risk static protections that need no per-route tuning.
+ * Always-on static protections. The CSP is added once in `headers()`: the full
+ * policy in production and the narrow policy in development and test.
  */
 const SAFE_SECURITY_HEADERS = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
   { key: 'X-Frame-Options', value: 'DENY' },
-  {
-    key: 'Content-Security-Policy',
-    value: "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
-  },
 ]
+
+const NARROW_CONTENT_SECURITY_POLICY = "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
 
 /** The GoatCounter endpoint origin, when configured and parseable. */
 function goatcounterOrigin(): string | undefined {
@@ -27,10 +24,10 @@ function goatcounterOrigin(): string | undefined {
 }
 
 /**
- * The full policy ships Report-Only in production first. Enforcing it in the
- * same release would turn an unnoticed violation into a broken editor.
+ * The full resource policy. Production enforces it; development and test keep
+ * the narrow policy so HMR and the dev overlay are not blocked.
  */
-function reportOnlyPolicy(): string {
+function fullContentSecurityPolicy(): string {
   const connect = ["'self'", 'blob:']
   const origin = goatcounterOrigin()
   if (origin) connect.push(origin)
@@ -45,7 +42,7 @@ function reportOnlyPolicy(): string {
     "img-src 'self' data: blob:",
     "media-src 'self' blob: data:",
     "font-src 'self'",
-    "worker-src 'self'",
+    "worker-src 'self' blob:",
     `connect-src ${connect.join(' ')}`,
     "frame-src 'none'",
     "manifest-src 'self'",
@@ -62,11 +59,13 @@ const nextConfig: NextConfig = {
     if (process.env.VERCEL_ENV === 'preview') {
       headers.push({ key: 'X-Robots-Tag', value: 'noindex, nofollow' })
     }
-    // `next dev` and tests keep a clean console; the standalone artifact runs
-    // with NODE_ENV=production, so the artifact battery exercises the policy.
-    if (process.env.NODE_ENV === 'production') {
-      headers.push({ key: 'Content-Security-Policy-Report-Only', value: reportOnlyPolicy() })
-    }
+    headers.push({
+      key: 'Content-Security-Policy',
+      value:
+        process.env.NODE_ENV === 'production'
+          ? fullContentSecurityPolicy()
+          : NARROW_CONTENT_SECURITY_POLICY,
+    })
     return [{ source: '/:path*', headers }]
   },
 }

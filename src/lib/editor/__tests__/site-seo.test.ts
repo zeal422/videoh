@@ -235,15 +235,34 @@ const SAFE_HEADERS = [
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
   { key: 'X-Frame-Options', value: 'DENY' },
-  {
-    key: 'Content-Security-Policy',
-    value: "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
-  },
 ]
 
-async function headerMap(): Promise<Map<string, string>> {
+const FULL_POLICY = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "media-src 'self' blob: data:",
+  "font-src 'self'",
+  "worker-src 'self' blob:",
+  "connect-src 'self' blob:",
+  "frame-src 'none'",
+  "manifest-src 'self'",
+].join('; ')
+
+const NARROW_POLICY = "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+
+async function headerEntries() {
   const rules = await nextConfig.headers?.()
-  return new Map(rules?.[0]?.headers.map(({ key, value }) => [key, value]) ?? [])
+  return rules?.[0]?.headers ?? []
+}
+
+async function headerMap(): Promise<Map<string, string>> {
+  return new Map((await headerEntries()).map(({ key, value }) => [key, value]))
 }
 
 describe('security headers', () => {
@@ -254,11 +273,18 @@ describe('security headers', () => {
   it('enforces the safe headers in every environment', async () => {
     for (const nodeEnv of ['development', 'test', 'production', '']) {
       vi.stubEnv('NODE_ENV', nodeEnv)
-      const headers = await headerMap()
-      expect(headers.get('X-Content-Type-Options')).toBe('nosniff')
-      expect(headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin')
-      expect(headers.get('X-Frame-Options')).toBe('DENY')
+      const entries = await headerEntries()
+      const headers = new Map(entries.map(({ key, value }) => [key, value]))
+      for (const { key, value } of SAFE_HEADERS) expect(headers.get(key)).toBe(value)
       expect(headers.get('Content-Security-Policy')).toContain("frame-ancestors 'none'")
+      const names = entries.map(({ key }) => key.toLowerCase())
+      expect(new Set(names).size).toBe(names.length)
+      expect(
+        entries.filter(({ key }) => key.toLowerCase() === 'content-security-policy'),
+      ).toHaveLength(1)
+      expect(
+        entries.filter(({ key }) => key.toLowerCase() === 'content-security-policy-report-only'),
+      ).toHaveLength(0)
     }
     expect(nextConfig.poweredByHeader).toBe(false)
   })
@@ -266,7 +292,10 @@ describe('security headers', () => {
   it('adds X-Robots-Tag only for preview deployments', async () => {
     vi.stubEnv('VERCEL_ENV', 'preview')
     vi.stubEnv('NODE_ENV', 'production')
-    expect((await headerMap()).get('X-Robots-Tag')).toBe('noindex, nofollow')
+    const preview = await headerMap()
+    expect(preview.get('X-Robots-Tag')).toBe('noindex, nofollow')
+    expect(preview.get('Content-Security-Policy')).toBe(FULL_POLICY)
+    expect(preview.has('Content-Security-Policy-Report-Only')).toBe(false)
 
     for (const env of ['production', 'development', '']) {
       vi.stubEnv('VERCEL_ENV', env)
@@ -274,32 +303,18 @@ describe('security headers', () => {
     }
   })
 
-  it('ships the full policy Report-Only only in production', async () => {
+  it('enforces the full policy in production and the narrow policy elsewhere', async () => {
     vi.stubEnv('VERCEL_ENV', 'production')
     vi.stubEnv('NODE_ENV', 'production')
     const production = await headerMap()
-    expect(production.get('Content-Security-Policy-Report-Only')).toBe(
-      [
-        "default-src 'self'",
-        "base-uri 'self'",
-        "object-src 'none'",
-        "frame-ancestors 'none'",
-        "form-action 'self'",
-        "script-src 'self' 'unsafe-inline'",
-        "style-src 'self' 'unsafe-inline'",
-        "img-src 'self' data: blob:",
-        "media-src 'self' blob: data:",
-        "font-src 'self'",
-        "worker-src 'self'",
-        "connect-src 'self' blob:",
-        "frame-src 'none'",
-        "manifest-src 'self'",
-      ].join('; '),
-    )
+    expect(production.get('Content-Security-Policy')).toBe(FULL_POLICY)
+    expect(production.has('Content-Security-Policy-Report-Only')).toBe(false)
 
     for (const nodeEnv of ['development', 'test', '']) {
       vi.stubEnv('NODE_ENV', nodeEnv)
-      expect((await headerMap()).has('Content-Security-Policy-Report-Only')).toBe(false)
+      const headers = await headerMap()
+      expect(headers.get('Content-Security-Policy')).toBe(NARROW_POLICY)
+      expect(headers.has('Content-Security-Policy-Report-Only')).toBe(false)
     }
   })
 
@@ -307,10 +322,10 @@ describe('security headers', () => {
     vi.stubEnv('VERCEL_ENV', 'production')
     vi.stubEnv('NODE_ENV', 'production')
     vi.stubEnv('NEXT_PUBLIC_GOATCOUNTER_URL', 'https://videoh.goatcounter.com/count')
-    const headers = await headerMap()
-    const policy = headers.get('Content-Security-Policy-Report-Only') ?? ''
-    expect(policy).toContain('connect-src')
-    expect(policy).toContain('https://videoh.goatcounter.com')
+    const policy = (await headerMap()).get('Content-Security-Policy') ?? ''
+    expect(policy).toMatch(/connect-src[^;]*https:\/\/videoh\.goatcounter\.com/)
     expect(policy).not.toContain('gc.zgo.at')
+    const scriptSrc = policy.slice(policy.indexOf('script-src'), policy.indexOf('style-src'))
+    expect(scriptSrc).not.toContain('goatcounter')
   })
 })
