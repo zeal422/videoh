@@ -26,10 +26,16 @@ function identityCubeText(size: number): string {
 import {
   FPS_MAX,
   FPS_MIN,
+  GAIN_MAX,
+  GAIN_MIN,
+  MAX_TIMELINE_SECONDS,
   PROJECT_MAX_H,
   PROJECT_MAX_W,
   PROJECT_MIN_H,
   PROJECT_MIN_W,
+  TRANSITION_MAX,
+  TRANSITION_MIN,
+  WAVEFORM_BUCKETS,
 } from '../constants'
 
 afterEach(() => {
@@ -393,6 +399,196 @@ describe('deserializeDoc', () => {
     expect(style.fontSize).toBe(99)
     expect(style.color).toBe('#ffffff')
     expect(style.align).toBe('center')
+  })
+})
+
+describe('trust-boundary validation', () => {
+  it('keeps a JPEG data thumbnail and drops an external one', () => {
+    const data = {
+      version: 1,
+      project: { tracks: [{ kind: 'video', clips: [] }] },
+      media: [
+        {
+          id: 'good',
+          kind: 'video',
+          name: 'good.mp4',
+          duration: 10,
+          thumbnail: 'data:image/jpeg;base64,AAAA',
+        },
+        {
+          id: 'bad',
+          kind: 'video',
+          name: 'bad.mp4',
+          duration: 10,
+          thumbnail: 'https://attacker.example/x.png',
+        },
+      ],
+    }
+    const { doc } = deserializeDoc(data)
+    expect(doc.media[0].thumbnail).toBe('data:image/jpeg;base64,AAAA')
+    expect(doc.media[1].thumbnail).toBeUndefined()
+  })
+
+  it('keeps a valid waveform and drops a wrong-length or hostile one', () => {
+    const good = Array.from({ length: WAVEFORM_BUCKETS }, () => 0.5)
+    const data = {
+      version: 1,
+      project: { tracks: [{ kind: 'audio', clips: [] }] },
+      media: [
+        { id: 'good', kind: 'audio', name: 'good.mp3', duration: 10, waveformPeaks: good },
+        { id: 'short', kind: 'audio', name: 'short.mp3', duration: 10, waveformPeaks: [0.5] },
+        {
+          id: 'hole',
+          kind: 'audio',
+          name: 'hole.mp3',
+          duration: 10,
+          waveformPeaks: good.map((value, i) => (i === 3 ? undefined : value)),
+        },
+        {
+          id: 'wild',
+          kind: 'audio',
+          name: 'wild.mp3',
+          duration: 10,
+          waveformPeaks: good.map((value, i) => (i === 3 ? 2 : value)),
+        },
+      ],
+    }
+    const { doc } = deserializeDoc(data)
+    expect(doc.media[0].waveformPeaks).toEqual(good)
+    expect(doc.media[1].waveformPeaks).toBeUndefined()
+    expect(doc.media[2].waveformPeaks).toBeUndefined()
+    expect(doc.media[3].waveformPeaks).toBeUndefined()
+  })
+
+  it('clamps a finite gain and drops a non-finite one', () => {
+    const load = (gain: unknown) =>
+      deserializeDoc({
+        version: 1,
+        project: {
+          tracks: [{ kind: 'video', clips: [{ id: 'c1', mediaId: 'm1', gain }] }],
+        },
+        media: [{ id: 'm1', kind: 'video', duration: 10 }],
+      }).doc.project.tracks[0].clips[0]
+    expect(load(-5).gain).toBe(GAIN_MIN)
+    expect(load(9).gain).toBe(GAIN_MAX)
+    expect(load(0.5).gain).toBe(0.5)
+    expect(load(1).gain).toBe(1)
+    expect(load(Infinity).gain).toBeUndefined()
+  })
+
+  it('clamps a finite transition duration and drops a non-finite one', () => {
+    const load = (duration: unknown) =>
+      deserializeDoc({
+        version: 1,
+        project: {
+          tracks: [
+            {
+              kind: 'video',
+              clips: [{ id: 'c1', transitionOut: { type: 'wipe', duration } }],
+            },
+          ],
+        },
+      }).doc.project.tracks[0].clips[0].transitionOut
+    expect(load(100)?.duration).toBe(TRANSITION_MAX)
+    expect(load(0.05)?.duration).toBe(TRANSITION_MIN)
+    expect(load(0.5)?.duration).toBe(0.5)
+    expect(load(Infinity)).toBeUndefined()
+    expect(load(0)).toBeUndefined()
+  })
+
+  it('clamps a known asset inPoint to the asset duration', () => {
+    const { doc } = deserializeDoc({
+      version: 1,
+      project: {
+        tracks: [{ kind: 'video', clips: [{ id: 'c1', mediaId: 'm1', inPoint: 1e308 }] }],
+      },
+      media: [{ id: 'm1', kind: 'video', duration: 10 }],
+    })
+    expect(doc.project.tracks[0].clips[0].inPoint).toBe(10)
+  })
+})
+
+describe('timeline cap migration', () => {
+  const clip = (overrides: Record<string, unknown>) => ({
+    id: `clip_${String(overrides.id ?? 'x')}`,
+    start: 0,
+    duration: 1,
+    ...overrides,
+  })
+  const load = (clips: Record<string, unknown>[], markers?: Record<string, unknown>[]) =>
+    deserializeDoc({
+      version: 1,
+      project: { tracks: [{ kind: 'video', clips }], ...(markers ? { markers } : {}) },
+    })
+
+  it('clamps a legacy 30-hour clip to the cap and warns once', () => {
+    const { doc, warnings } = load([clip({ id: 'long', start: 0, duration: 30 * 3600 })])
+    expect(doc.project.tracks[0].clips).toHaveLength(1)
+    expect(doc.project.tracks[0].clips[0].duration).toBe(MAX_TIMELINE_SECONDS)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('24-hour')
+    expect(warnings[0]).toContain('1 clip')
+  })
+
+  it('clamps a finite over-cap end when the clip starts before the cap', () => {
+    const { doc, warnings } = load([
+      clip({ id: 'near', start: MAX_TIMELINE_SECONDS - 100, duration: 1000 }),
+    ])
+    expect(doc.project.tracks[0].clips[0].duration).toBe(100)
+    expect(doc.project.tracks[0].clips[0].start).toBe(MAX_TIMELINE_SECONDS - 100)
+    expect(warnings).toHaveLength(1)
+  })
+
+  it('drops a clip that starts at or past the cap and keeps the rest', () => {
+    const { doc, warnings } = load([
+      clip({ id: 'past', start: MAX_TIMELINE_SECONDS + 1, duration: 10 }),
+      clip({ id: 'ok', start: 1, duration: 2 }),
+    ])
+    expect(doc.project.tracks[0].clips.map((c) => c.id)).toEqual(['ok'])
+    expect(warnings).toEqual([expect.stringContaining('Dropped 1 clip')])
+  })
+
+  it('drops a non-finite end from overflow instead of retaining it uncapped', () => {
+    const { doc, warnings } = load([clip({ id: 'overflow', start: 1e308, duration: 1e308 })])
+    expect(doc.project.tracks[0].clips).toHaveLength(0)
+    expect(warnings).toEqual([expect.stringContaining('overflowed')])
+  })
+
+  it('drops markers above the cap in both scopes with a warning', () => {
+    const data = {
+      version: 1,
+      project: {
+        tracks: [
+          {
+            kind: 'video',
+            clips: [
+              {
+                id: 'c1',
+                start: 0,
+                duration: 1,
+                markers: [
+                  { id: 'clip_in', time: 1 },
+                  { id: 'clip_out', time: MAX_TIMELINE_SECONDS + 1 },
+                ],
+              },
+            ],
+          },
+        ],
+        markers: [
+          { id: 'project_in', time: 1 },
+          { id: 'project_out', time: MAX_TIMELINE_SECONDS + 1 },
+        ],
+      },
+    }
+    const { doc, warnings } = deserializeDoc(data)
+    expect(doc.project.markers?.map((m) => m.id)).toEqual(['project_in'])
+    expect(doc.project.tracks[0].clips[0].markers?.map((m) => m.id)).toEqual(['clip_in'])
+    expect(warnings).toEqual([expect.stringContaining('Dropped 2 markers')])
+  })
+
+  it('leaves a normal project with an empty warning list', () => {
+    const { warnings } = load([clip({ id: 'ok', start: 0, duration: 2 })])
+    expect(warnings).toEqual([])
   })
 })
 

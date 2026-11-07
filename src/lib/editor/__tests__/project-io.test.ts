@@ -1,9 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { loadProjectFile } from '../project-io'
+import { loadProjectFile, openProjectFile } from '../project-io'
 import { createDoc } from '../factories'
 import { parseSerializedDoc, serializeDoc } from '../serialization'
+
+const toastMock = vi.hoisted(() => vi.fn())
+
+vi.mock('@/hooks/use-toast', () => ({ toast: toastMock }))
 
 /**
  * loadProjectFile is the File > Open / toolbar-open entry: it receives the
@@ -18,16 +22,69 @@ describe('loadProjectFile (picker path)', () => {
   it('round-trips a saved project FILE, not just an already-parsed object', async () => {
     const json = JSON.stringify(serializeDoc(createDoc()), null, 2)
     const file = new File([json], 'roundtrip.veproj.json', { type: 'application/json' })
-    const doc = await loadProjectFile(file)
+    const { doc } = await loadProjectFile(file)
     const fresh = createDoc()
     expect(doc.project.name).toBe(fresh.project.name)
     expect(doc.project.tracks.length).toBe(fresh.project.tracks.length)
     expect(doc.media).toEqual([])
   })
 
+  it('returns the timeline migration warnings with the parsed doc', async () => {
+    const json = JSON.stringify({
+      version: 1,
+      project: {
+        tracks: [{ kind: 'video', clips: [{ id: 'long', start: 0, duration: 30 * 3600 }] }],
+      },
+    })
+    const file = new File([json], 'legacy.veproj.json', { type: 'application/json' })
+    const { doc, warnings } = await loadProjectFile(file)
+    expect(doc.project.tracks[0].clips[0].duration).toBe(86_400)
+    expect(warnings).toEqual([expect.stringContaining('24-hour')])
+  })
+
   it('rejects non-JSON text with the parse error, not a validation error', async () => {
     const file = new File(['{nope'], 'broken.veproj.json', { type: 'application/json' })
     await expect(loadProjectFile(file)).rejects.toThrow('File is not valid JSON')
+  })
+})
+
+describe('openProjectFile warning surface', () => {
+  it('shows the migration warning in the project-loaded toast', async () => {
+    toastMock.mockClear()
+    const json = JSON.stringify({
+      version: 1,
+      project: {
+        tracks: [{ kind: 'video', clips: [{ id: 'long', start: 0, duration: 30 * 3600 }] }],
+      },
+    })
+    const file = new File([json], 'legacy.veproj.json', { type: 'application/json' })
+    await openProjectFile(file)
+    expect(toastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Project loaded',
+        description: expect.stringContaining('24-hour'),
+      }),
+    )
+  })
+
+  it('separates the relink notice from the migration warning', async () => {
+    toastMock.mockClear()
+    const json = JSON.stringify({
+      version: 1,
+      project: {
+        tracks: [
+          {
+            kind: 'video',
+            clips: [{ id: 'long', mediaId: 'm1', start: 0, duration: 30 * 3600 }],
+          },
+        ],
+      },
+      media: [{ id: 'm1', kind: 'video', name: 'a.mp4', duration: 10 }],
+    })
+    const file = new File([json], 'legacy-media.veproj.json', { type: 'application/json' })
+    await openProjectFile(file)
+    const description = toastMock.mock.calls[0]?.[0]?.description as string
+    expect(description).toContain('1 media file(s) need relinking. Trimmed')
   })
 })
 

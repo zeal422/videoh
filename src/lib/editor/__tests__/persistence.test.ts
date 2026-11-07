@@ -157,4 +157,18 @@ describe('autosave', () => {
     )
     expect(readValidAutosave()).toBeTruthy()
   })
+
+  it('parseAutosave returns the timeline migration warnings', async () => {
+    const { parseAutosave } = await import('../persistence')
+    const { doc, warnings } = parseAutosave(
+      JSON.stringify({
+        version: 1,
+        project: {
+          tracks: [{ kind: 'video', clips: [{ id: 'long', start: 0, duration: 30 * 3600 }] }],
+        },
+      }),
+    )
+    expect(doc.project.tracks[0].clips[0].duration).toBe(86_400)
+    expect(warnings).toEqual([expect.stringContaining('24-hour')])
+  })
 })

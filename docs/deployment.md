@@ -82,6 +82,14 @@ effect import in `src/components/editor/EditorBoot.tsx`, because the starter doc
 ids that would otherwise mismatch between server and client. The preloader stays up for the 3.2s
 minimum show while the editor chunk loads.
 
+Every response carries the safe security headers from `next.config.ts`: `X-Content-Type-Options:
+nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, and an
+enforced `Content-Security-Policy` with `frame-ancestors 'none'; base-uri 'self'; object-src
+'none'`. `poweredByHeader: false` keeps the standalone server from advertising Next. Production also
+ships the full resource policy as `Content-Security-Policy-Report-Only`; it is not enforced until the
+artifact battery and the manual editor pass are clean. The GoatCounter endpoint origin is added to
+that policy's `connect-src` when `NEXT_PUBLIC_GOATCOUNTER_URL` is set.
+
 Preview deployments add `X-Robots-Tag: noindex, nofollow` through `next.config.ts` when
 `VERCEL_ENV=preview`. Production, development, and unset environments return no such header. A unit
 test locks that behavior.
@@ -109,6 +117,12 @@ default). It exits nonzero on a `FAIL` and on a run that produced fewer results 
 Open editor link; the second opens `/editor`; the third clears storage and opens a fresh editor.
 `results*.txt` and `tool-results/` are gitignored.
 
+The runner reuses any HTTP server already on port 3000, so each run needs a server-type preflight.
+Before the dev run, confirm `curl -s -o /dev/null -w '%{http_code}' http://localhost:3000` prints
+`000`, and require `starting the dev server` in the log. Before the artifact run, start the
+standalone server yourself and require `using the server already serving` with no
+`starting the dev server` line. A 70/70 result on the wrong server type is not a valid result.
+
 The dev server is not the shipped artifact. To verify the build that actually ships, serve the
 standalone output and let the runner reuse it (it starts a server only on the default port when
 nothing is serving it):
@@ -126,7 +140,9 @@ failed with terminal `BATTERY_EXIT=0`. The final 0.17.0 dev and artifact runs on
 were also both 67 passed, 0 failed with terminal `BATTERY_EXIT=0`. The 0.19.0 dev and artifact runs on
 2026-11-04 were both 70 passed, 0 failed with terminal `BATTERY_EXIT=0`. The 0.19.1 dev and artifact
 runs on 2026-11-04 were also both 70 passed, 0 failed with terminal `BATTERY_EXIT=0`. The 0.19.2 dev
-and artifact runs on 2026-11-05 were also both 70 passed, 0 failed with terminal `BATTERY_EXIT=0`.
+and artifact runs on 2026-11-05 were also both 70 passed, 0 failed with terminal `BATTERY_EXIT=0`. The
+0.19.3 dev run on 2026-11-06 started its own dev server and passed 70/70 with `BATTERY_EXIT=0`; the
+artifact run reused the standalone server and also passed 70/70 with `BATTERY_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 
@@ -150,9 +166,14 @@ After promotion, run the full production check block with `BASE_URL=https://vide
 
 1. Confirm the statuses, exact metadata, sitemap, robots, verification file, and both JSON-LD blocks.
 2. Confirm production has no `X-Robots-Tag` on `/` or `/editor`.
-3. Confirm Search Console verifies the URL-prefix property and accepts the sitemap.
-4. Confirm GoatCounter receives a page view and a custom event, or is intentionally disabled.
-5. Keep the Search Console verification file public after verification.
+3. Confirm `/` and `/editor` return `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, and a `Content-Security-Policy`
+   containing `frame-ancestors 'none'`.
+4. Confirm the production artifact returns `Content-Security-Policy-Report-Only` and no
+   `X-Powered-By`.
+5. Confirm Search Console verifies the URL-prefix property and accepts the sitemap.
+6. Confirm GoatCounter receives a page view and a custom event, or is intentionally disabled.
+7. Keep the Search Console verification file public after verification.
 
 Rollback: promote the last known-good Vercel deployment or redeploy the restored `HEAD`, then rerun the
 expectation set that matches the release now deployed. Do not apply the 0.11.0 checks to a pre-0.11.0

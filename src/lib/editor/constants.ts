@@ -4,6 +4,14 @@ import type { KeyframeProperty } from './types'
 /** Clips can never become shorter than this (seconds). */
 export const MIN_CLIP_DURATION = 0.1
 
+/**
+ * Upper bound for a clip end and a marker time (seconds). A loaded project
+ * above this has over-cap clip ends clamped and over-cap markers dropped, both
+ * with a warning; new clip and marker edits are refused. Marker drag handlers
+ * also clamp to the sequence or clip end.
+ */
+export const MAX_TIMELINE_SECONDS = 86_400
+
 /** Minimum gap left when splitting a clip (seconds from each side). */
 export const MIN_SPLIT_HEADROOM = 0.1
 

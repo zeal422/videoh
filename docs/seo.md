@@ -65,6 +65,8 @@ Do not add thin pages for every query. The hero, About, Privacy, Terms, and Cont
 - [x] The Search Console verification file is public and byte-exact.
 - [x] `/editor` carries `noindex, follow`.
 - [x] Preview deployments carry `X-Robots-Tag: noindex, nofollow`; production does not.
+- [x] Every response carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, and an enforced `Content-Security-Policy` with `frame-ancestors 'none'`.
+- [x] Production carries the full `Content-Security-Policy-Report-Only` policy and no `X-Powered-By`.
 - [x] The home page renders `SoftwareApplication` and `FAQPage` JSON-LD.
 - [x] The FAQ stays visible after privacy and before the closing CTA, so the FAQPage content is on the page.
 - [x] The CTA closes the page after the FAQ.
@@ -85,7 +87,7 @@ Search Console is the source for impressions and clicks. Do not infer those from
 
 ## GoatCounter
 
-GoatCounter is the only analytics service. It is cookieless and supports custom events. The landing page discloses it in the privacy section and the "Does videoh track me?" FAQ, so the local-media promise stays accurate without claiming "no tracking".
+GoatCounter is the only analytics service. It is cookieless and supports custom events. The app sends one-way `sendBeacon` requests; `count.js` is not loaded in any route, so no third-party script runs in the app's origin. The landing page discloses it in the privacy section and the "Does videoh track me?" FAQ, so the local-media promise stays accurate without claiming "no tracking".
 
 ### Setup
 
@@ -103,19 +105,21 @@ GoatCounter is the only analytics service. It is cookieless and supports custom 
 | `contact-email`  | Footer mailto and contact page mailto           | `TrackedLink` then `trackClick` |
 | `first-export`   | First successful MP4 export per browser profile | `trackExportSuccess`            |
 | `export-success` | Every successful MP4 export                     | `trackExportSuccess`            |
-| Page view        | Public pages and `/editor`                      | GoatCounter script              |
+| Page view        | Public pages and `/editor`                      | `trackPageView` beacon          |
 
-Every custom event is sent with `event: true`. Export events also use `no_session: true` so rapid exports are counted individually.
+Every custom event is sent with `event: true`; page views do not set it. Export events also use `no_session: true` so rapid exports are counted individually.
+
+### Opt-out
+
+The footer and privacy page render a visible analytics control. It writes the same `localStorage.skipgc = 't'` flag GoatCounter's own `#toggle-goatcounter` link used, and `#toggle-goatcounter` remains an alias on public pages. The shared sender checks that flag before every page view, event, and the first-export marker.
 
 ### Limits
 
 - GoatCounter cannot measure cross-day return visits without persistent identifiers. Do not invent a return-visit metric.
 - Ad blockers can block GoatCounter. Search Console remains the source for search impressions and clicks.
 - Clearing site data, private windows, and new browser profiles reset the first-export marker, so the conversion can count again.
-- Events fired before the script is ready are queued in memory. Each event gets its own five-second retry window from when it is queued. If the script loads before that event's bound, it is handed off once. If it never loads, each event is dropped after its own bound. Delivery is best effort.
+- Delivery is one beacon attempt. A blocked or rejected beacon is dropped; there is no timer or retry queue. A failed first-export beacon clears the marker so a later export can try again.
 - A click before React hydration is not tracked. This is an accepted boundary.
-- A not-ready click uses `navigator.sendBeacon` so navigation does not drop the event. If `sendBeacon` is unavailable or returns false, the click falls back to the queue.
-- If the page unloads before a queued `first-export` flushes, the marker remains and that conversion is lost. This is the at-most-once boundary.
 
 ## English only
 
@@ -132,7 +136,7 @@ GitHub is a credibility and contribution channel, not the primary acquisition go
 ## Release checklist
 
 - [x] `bun run check` is green.
-- [x] The last recorded dev and artifact batteries are 70/70 with a terminal `BATTERY_EXIT=0` (0.19.2, 2026-11-05).
+- [x] The last recorded dev and artifact batteries are 70/70 with a terminal `BATTERY_EXIT=0` (0.19.3, 2026-11-06).
 - [x] `robots.txt`, `sitemap.xml`, and the verification file return 200 in production.
 - [x] The production metadata check passes for `/` and `/editor`.
 - [x] Production returns no `X-Robots-Tag`; `site-seo.test.ts` locks the preview header.

@@ -1338,3 +1338,42 @@ describe('track lock notice (0.14.0)', () => {
     expect(useEditorStore.getState().doc.project.tracks[0].clips).toHaveLength(1)
   })
 })
+
+describe('autosave restore migration warning', () => {
+  it('shows the timeline warning in the Session restored toast', async () => {
+    window.localStorage.setItem('releases:lastSeen', CURRENT_VERSION)
+    const autosave = JSON.stringify({
+      version: 1,
+      savedAt: '2026-11-06T00:00:00.000Z',
+      project: {
+        id: 'p1',
+        name: 'Legacy',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [
+          {
+            id: 'v1',
+            kind: 'video',
+            name: 'V1',
+            clips: [{ id: 'long', mediaId: 'm1', start: 0, duration: 30 * 3600 }],
+          },
+        ],
+      },
+      media: [{ id: 'm1', kind: 'video', name: 'a.mp4', duration: 10 }],
+    })
+    window.localStorage.setItem('web-video-editor:autosave:v1', autosave)
+
+    render(
+      <>
+        <EditorShell />
+        <Toaster />
+      </>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore' }))
+    expect(await screen.findByText('Session restored')).toBeInTheDocument()
+    expect(screen.getByText(/1 media file\(s\) need relinking\. Trimmed/)).toBeInTheDocument()
+    expect(screen.getByText(/24-hour timeline limit/)).toBeInTheDocument()
+  })
+})

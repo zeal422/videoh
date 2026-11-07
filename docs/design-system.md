@@ -131,7 +131,8 @@ product proof, privacy story, FAQ, CTA, and legal pages.
   emerald checks, and a gradient shield. The shield uses the same lucide Shield silhouette as the
   "Your data is yours" feature icon, scaled up, with a smaller copy of the same path inset as the
   inner shield. It is rendered at 170x180 so it reads as a security shield, not a crest. The copy
-  keeps the local-media promise and discloses optional analytics.
+  keeps the local-media promise and discloses optional analytics; the footer carries the visible
+  analytics opt-out control.
 - **FAQ.** The visible FAQ is a two-column definition list with bordered rows. It stays on the page
   because the home route emits FAQPage JSON-LD; do not move the questions behind a client-only
   accordion or remove them without removing the structured data.

@@ -392,7 +392,7 @@ export function EditorShell() {
     try {
       const json = pendingRestore
       if (!json) return
-      const { doc } = parseAutosave(json)
+      const { doc, warnings } = parseAutosave(json)
       // Installing a project invalidates any in-flight project load; the bump
       // and the install are one step, so no load can land in between them.
       bumpProjectGeneration()
@@ -400,14 +400,19 @@ export function EditorShell() {
       useEditorStore.getState().replaceDoc(doc)
       useEditorStore.getState().setPendingRestore(null)
       const remaining = doc.media.filter((asset) => asset.missing).length
+      const description = [
+        remaining > 0
+          ? `${remaining} media file(s) need relinking.`
+          : doc.media.length > 0
+            ? `All ${doc.media.length} media file(s) are back online.`
+            : undefined,
+        ...warnings,
+      ]
+        .filter(Boolean)
+        .join(' ')
       toast({
         title: 'Session restored',
-        description:
-          remaining > 0
-            ? `${remaining} media file(s) need relinking`
-            : doc.media.length > 0
-              ? `All ${doc.media.length} media file(s) are back online`
-              : undefined,
+        description: description || undefined,
       })
     } catch {
       toast({ title: 'Restore failed', variant: 'destructive' })

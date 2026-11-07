@@ -31,7 +31,7 @@ import { evaluateKeyframes, integrateKeyframes } from '../keyframes'
 import { LUT_LIBRARY_MAX_CHARS, lutLibraryChars, parseCubeLut } from '../lut'
 import { relinkPatchFrom } from '../media/relink'
 import type { Clip, Doc, EffectEntry, Keyframe, MediaAsset, ProjectLut, Track } from '../types'
-import { MIN_CLIP_DURATION, WAVEFORM_BUCKETS } from '../constants'
+import { MIN_CLIP_DURATION, MAX_TIMELINE_SECONDS, WAVEFORM_BUCKETS } from '../constants'
 
 /** A 2-cube in `.cube` row order (red fastest): enough to exercise the model. */
 const CUBE_3D = [
@@ -192,6 +192,25 @@ describe('relinkMedia patch boundary', () => {
     ]
     for (const patch of patches) {
       expect(() => applyCommand(doc, relinkCommand(videoAsset.id, patch))).toThrow(
+        EditorCommandError,
+      )
+    }
+  })
+
+  it('accepts only a JPEG data thumbnail under the size cap', () => {
+    const { doc, videoAsset } = makeDoc()
+    const valid = 'data:image/jpeg;base64,AAAA'
+    const next = applyCommand(doc, relinkCommand(videoAsset.id, { thumbnail: valid }))
+    expect(next.media[0].thumbnail).toBe(valid)
+
+    for (const thumbnail of [
+      'https://attacker.example/x.png',
+      '//attacker.example/x.png',
+      'blob:https://videoh.vercel.app/123',
+      'data:image/svg+xml;base64,PHN2Zz4=',
+      `data:image/jpeg;base64,${'A'.repeat(600 * 1024)}`,
+    ]) {
+      expect(() => applyCommand(doc, relinkCommand(videoAsset.id, { thumbnail }))).toThrow(
         EditorCommandError,
       )
     }
@@ -2650,7 +2669,36 @@ describe('markers (0.5.5)', () => {
       applyCommand(doc, { type: 'addSequenceMarker', marker: { id: 'm', time: Number.NaN } }),
     ).toThrow(EditorCommandError)
     expect(() =>
+      applyCommand(doc, {
+        type: 'addSequenceMarker',
+        marker: { id: 'm', time: MAX_TIMELINE_SECONDS + 1 },
+      }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
       applyCommand(doc, { type: 'addSequenceMarker', marker: { id: '', time: 1 } }),
+    ).toThrow(EditorCommandError)
+    const atCap = applyCommand(doc, {
+      type: 'addSequenceMarker',
+      marker: { id: 'at-cap', time: MAX_TIMELINE_SECONDS },
+    })
+    expect(atCap.project.markers?.[0].time).toBe(MAX_TIMELINE_SECONDS)
+  })
+
+  it('rejects an over-cap sequence or clip marker move', () => {
+    const { doc, clipId } = docWithClip()
+    const withMarkers = applyCommands(doc, [
+      { type: 'addSequenceMarker', marker: { id: 'sm', time: 1 } },
+      { type: 'addClipMarker', clipId, marker: { id: 'cm', time: 1 } },
+    ])
+    const over = MAX_TIMELINE_SECONDS + 1
+    expect(() =>
+      applyCommand(withMarkers, { type: 'moveSequenceMarker', markerId: 'sm', time: over }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
+      applyCommand(withMarkers, { type: 'moveClipMarker', clipId, markerId: 'cm', time: over }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
+      applyCommand(doc, { type: 'addClipMarker', clipId, marker: { id: 'cm2', time: over } }),
     ).toThrow(EditorCommandError)
   })
 
@@ -3527,5 +3575,120 @@ describe('effects commands (0.8.6)', () => {
     })
     const keys = trimmed.project.tracks[1].clips[0].effects?.[0].keyframes?.left
     expect(keys?.map((k) => k.time)).toEqual([0, 8])
+  })
+})
+
+describe('timeline cap commands', () => {
+  it('addClip refuses a new clip whose end exceeds the cap', () => {
+    const { doc, videoAsset } = makeDoc()
+    const lane = videoTrack(doc)
+    const before = JSON.stringify(doc)
+    for (const clip of [
+      createClip({
+        id: 'c1',
+        mediaId: videoAsset.id,
+        start: MAX_TIMELINE_SECONDS - 1,
+        duration: 10,
+      }),
+      createClip({ id: 'c2', mediaId: videoAsset.id, start: 1e308, duration: 1e308 }),
+    ]) {
+      expect(() => applyCommand(doc, { type: 'addClip', trackId: lane.id, clip })).toThrow(
+        EditorCommandError,
+      )
+    }
+    expect(JSON.stringify(doc)).toBe(before)
+  })
+
+  it('moveClip refuses a position that would push the end past the cap', () => {
+    const { doc, videoAsset } = makeDoc()
+    const lane = videoTrack(doc)
+    const added = applyCommand(doc, {
+      type: 'addClip',
+      trackId: lane.id,
+      clip: createClip({ id: 'c1', mediaId: videoAsset.id, start: 0, duration: 2 }),
+    })
+    const before = JSON.stringify(added)
+    expect(() =>
+      applyCommand(added, {
+        type: 'moveClip',
+        clipId: 'c1',
+        trackId: lane.id,
+        start: MAX_TIMELINE_SECONDS - 1,
+      }),
+    ).toThrow(EditorCommandError)
+    expect(JSON.stringify(added)).toBe(before)
+  })
+
+  it('trimClip refuses a duration that would end past the cap', () => {
+    const { doc, videoAsset } = makeDoc()
+    const lane = videoTrack(doc)
+    const added = applyCommand(doc, {
+      type: 'addClip',
+      trackId: lane.id,
+      clip: createClip({ id: 'c1', mediaId: videoAsset.id, start: 0, duration: 2 }),
+    })
+    const before = JSON.stringify(added)
+    expect(() =>
+      applyCommand(added, {
+        type: 'trimClip',
+        clipId: 'c1',
+        edge: 'tail',
+        start: 0,
+        inPoint: 0,
+        duration: MAX_TIMELINE_SECONDS,
+      }),
+    ).toThrow(EditorCommandError)
+    expect(JSON.stringify(added)).toBe(before)
+  })
+
+  it('allows the 1e-6 boundary tolerance but rejects a larger overrun', () => {
+    const { doc } = makeDoc()
+    const image = createMediaAsset({ id: 'img1', kind: 'image', name: 'still.png', duration: 0 })
+    doc.media.push(image)
+    const lane = videoTrack(doc)
+    const accepted = applyCommand(doc, {
+      type: 'addClip',
+      trackId: lane.id,
+      clip: createClip({
+        id: 'edge',
+        mediaId: image.id,
+        start: MAX_TIMELINE_SECONDS - 1,
+        duration: 1 + 5e-7,
+      }),
+    })
+    expect(accepted.project.tracks[0].clips[0].duration).toBe(1 + 5e-7)
+
+    expect(() =>
+      applyCommand(doc, {
+        type: 'addClip',
+        trackId: lane.id,
+        clip: createClip({
+          id: 'over',
+          mediaId: image.id,
+          start: MAX_TIMELINE_SECONDS - 1,
+          duration: 1 + 1e-5,
+        }),
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('caption commands refuse cues that end past the cap', () => {
+    const { doc } = makeDoc()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'importCaptions',
+        cues: [{ start: MAX_TIMELINE_SECONDS - 1, duration: 2, text: 'Late' }],
+      }),
+    ).toThrow(EditorCommandError)
+
+    const withTrack = applyCommand(doc, { type: 'addTrack', kind: 'text' })
+    const trackId = withTrack.project.tracks.find((t) => t.kind === 'text')!.id
+    expect(() =>
+      applyCommand(withTrack, {
+        type: 'addCaptionCue',
+        trackId,
+        start: MAX_TIMELINE_SECONDS - 1,
+      }),
+    ).toThrow(EditorCommandError)
   })
 })

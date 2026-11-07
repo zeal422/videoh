@@ -1,7 +1,6 @@
 import { Geist, Geist_Mono } from 'next/font/google'
 import './globals.css'
 import { Toaster } from '@/components/ui/toaster'
-import { GoatCounter } from '@/components/site/GoatCounter'
 import { ROOT_METADATA } from '@/lib/seo'
 
 const geistSans = Geist({
@@ -28,7 +27,6 @@ export default function RootLayout({
       >
         {children}
         <Toaster />
-        <GoatCounter />
       </body>
     </html>
   )

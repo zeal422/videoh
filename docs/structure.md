@@ -46,14 +46,14 @@ at `/editor`. The only optional integration is GoatCounter analytics, configured
 ```text
 src/app/
 ├── (site)/
-│   ├── layout.tsx          # public header/footer, skip link, Instrument Serif display variable
+│   ├── layout.tsx          # public header/footer, skip link, Instrument Serif display variable, page-view beacon
 │   ├── page.tsx            # indexable hero at / plus both JSON-LD blocks
 │   ├── about/page.tsx
 │   ├── privacy/page.tsx
 │   ├── terms/page.tsx
 │   └── contact/page.tsx
 ├── editor/page.tsx    # server wrapper with noindex metadata around EditorBoot
-├── layout.tsx        # root metadata: Geist fonts, dark <html>, <Toaster>, GoatCounter
+├── layout.tsx        # root metadata: Geist fonts, dark <html>, <Toaster>
 ├── sitemap.ts        # MetadataRoute.Sitemap from INDEXABLE_ROUTES
 ├── opengraph-image.tsx # 1200x630 social card
 ├── globals.css       # Tailwind 4 entry + tokens + public-site motion + editor scrollbars
@@ -83,7 +83,8 @@ src/components/
 │   ├── FaqSection.tsx            #   visible FAQ after privacy, before the closing CTA
 │   ├── LegalPage.tsx             #   shared legal page shell
 │   ├── TrackedLink.tsx           #   plain anchor that calls trackClick
-│   └── GoatCounter.tsx           #   optional page-view script
+│   ├── AnalyticsToggle.tsx       #   visible `skipgc` opt-out in the footer and privacy page
+│   └── PageViewBeacon.tsx        #   visit-scoped page view plus the one `#toggle-goatcounter` hash alias
 ├── editor/                       # editor UI (see architecture.md for responsibilities)
 │   ├── EditorBoot.tsx            #   client-only shell import, 3.2s preloader, retry/reload
 │   ├── EditorShell.tsx           #   panel workspace layout + autosave/restore + gesture safety net + release-notes auto-open
@@ -141,7 +142,7 @@ src/hooks/
 src/lib/
 ├── releases.ts           # hand-curated release notes for the welcome modal (version-locked to package.json)
 ├── seo.ts                # site constants, canonical, pageMetadata, INDEXABLE_ROUTES, JSON-LD
-├── analytics.ts          # GoatCounter custom events, click beacon, first-export marker
+├── analytics.ts          # page-view and event beacons, `skipgc` opt-out, first-export marker
 └── utils.ts              # shadcn `cn()` class-merge helper
 ```
 
@@ -217,7 +218,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 93 test files (2180 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 95 test files (2223 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

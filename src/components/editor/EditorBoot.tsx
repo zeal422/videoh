@@ -1,12 +1,13 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ComponentType } from 'react'
 
 import { Preloader } from '@/components/editor/Preloader'
 import { applyTheme, themeStorage } from '@/components/editor/apply-theme'
 import { Button } from '@/components/ui/button'
 import { readTheme } from '@/lib/editor/theme'
+import { trackPageView } from '@/lib/analytics'
 
 /**
  * videoh, a browser-based editor.
@@ -30,8 +31,16 @@ export function EditorBoot() {
   const [Shell, setShell] = useState<ComponentType | null>(null)
   const [failed, setFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)
+  const pageViewSent = useRef(false)
   useEffect(() => {
     applyTheme(readTheme(themeStorage()))
+  }, [])
+  useEffect(() => {
+    // One editor page view per mount. The ref survives Strict Mode's double
+    // effect but not an unmount, so navigating away and back sends again.
+    if (pageViewSent.current) return
+    pageViewSent.current = true
+    trackPageView(window.location.pathname)
   }, [])
   useEffect(() => {
     let cancelled = false

@@ -1,16 +1,16 @@
 /**
  * Browser-bound analytics for GoatCounter.
  *
- * Page views come from the external script. Custom events and navigation
- * clicks come from this module. The endpoint is optional: when
- * NEXT_PUBLIC_GOATCOUNTER_URL is empty, every entry point returns before
- * queueing, starting timers, or setting the first-export marker.
+ * Delivery is a beacon: no third-party script runs in the app's origin, so
+ * nothing external can read `localStorage` or the in-memory project. The
+ * endpoint is optional: when NEXT_PUBLIC_GOATCOUNTER_URL is empty, every entry
+ * point returns before building a URL or touching the first-export marker.
  *
- * Delivery is best effort. A queued event is removed when count() returns
- * without throwing. GoatCounter exposes no acknowledgement, so that means
- * handed off, not confirmed delivered. Each queued event expires
- * RETRY_WINDOW_MS after it entered the queue; a newer event does not inherit
- * an older event's deadline.
+ * The sender still prefers `window.goatcounter.count` when another page has
+ * loaded the script (the partial and alternative deployments), but the
+ * recommended deployment has no script and every event takes the beacon path.
+ * There is no retry queue: with no script to become ready, a failed beacon
+ * would only leave a timer that can never flush.
  */
 
 export interface TrackEventOptions {
@@ -21,29 +21,13 @@ type GoatCounterOptions = { path: string; event?: boolean; no_session?: boolean 
 
 interface GoatCounterApi {
   count?: (options: GoatCounterOptions) => void
-  url?: (options: GoatCounterOptions) => string
-}
-
-interface EventPayload {
-  name: string
-  noSession: boolean
-  firstExport: boolean
-}
-
-interface QueuedEvent extends EventPayload {
-  queuedAt: number
 }
 
 export const FIRST_EXPORT_KEY = 'videoh:first-export'
-const READY_EVENT = 'videoh:analytics-ready'
-const RETRY_INTERVAL_MS = 250
-const RETRY_WINDOW_MS = 5000
-const MAX_QUEUE = 20
+export const ANALYTICS_OPT_OUT_KEY = 'skipgc'
+export const ANALYTICS_OPT_OUT_EVENT = 'videoh:analytics-opt-out'
 
-let queue: QueuedEvent[] = []
-let timer: ReturnType<typeof setInterval> | null = null
 let firstExportGuard = false
-let readyListener: (() => void) | null = null
 
 function endpoint(): string {
   return process.env.NEXT_PUBLIC_GOATCOUNTER_URL?.trim() ?? ''
@@ -61,6 +45,41 @@ function storage(): Storage | null {
   } catch {
     return null
   }
+}
+
+/** True when this browser opted out through the footer control or its alias. */
+export function isAnalyticsOptedOut(): boolean {
+  try {
+    return storage()?.getItem(ANALYTICS_OPT_OUT_KEY) === 't'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Writes the same origin-scoped `skipgc` flag GoatCounter's own toggle used.
+ * Returns false when storage is unavailable, the write throws, or the value
+ * cannot be read back. The caller decides whether to announce success.
+ */
+export function setAnalyticsOptedOut(disabled: boolean): boolean {
+  const store = storage()
+  if (!store) return false
+  try {
+    if (disabled) store.setItem(ANALYTICS_OPT_OUT_KEY, 't')
+    else store.removeItem(ANALYTICS_OPT_OUT_KEY)
+    const persisted = store.getItem(ANALYTICS_OPT_OUT_KEY)
+    if (disabled ? persisted !== 't' : persisted !== null) return false
+  } catch {
+    return false
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(ANALYTICS_OPT_OUT_EVENT))
+  }
+  return true
+}
+
+function analyticsAllowed(): boolean {
+  return endpoint() !== '' && !isAnalyticsOptedOut()
 }
 
 function hasFirstExportMarker(): boolean {
@@ -93,14 +112,14 @@ function rejectFirstExport(): void {
   firstExportGuard = false
 }
 
-function sendNow(event: EventPayload): boolean {
+function sendNow(name: string, event: boolean, noSession: boolean): boolean {
   const api = siteApi()
   if (!api || typeof api.count !== 'function') return false
   try {
     api.count({
-      path: event.name,
-      event: true,
-      no_session: event.noSession,
+      path: name,
+      event,
+      no_session: noSession,
     })
     return true
   } catch {
@@ -108,121 +127,12 @@ function sendNow(event: EventPayload): boolean {
   }
 }
 
-function ensureReadyListener(): void {
-  if (readyListener || typeof window === 'undefined') return
-  readyListener = () => flushQueue()
-  window.addEventListener(READY_EVENT, readyListener)
-}
-
-function ensureTimer(): void {
-  if (timer !== null || typeof window === 'undefined') return
-  timer = setInterval(flushQueue, RETRY_INTERVAL_MS)
-}
-
-function stopTimer(): void {
-  if (timer === null) return
-  clearInterval(timer)
-  timer = null
-}
-
-function enqueue(event: EventPayload): boolean {
-  ensureReadyListener()
-  if (event.firstExport && queue.some((item) => item.firstExport)) return false
-  if (queue.length >= MAX_QUEUE) {
-    const generic = queue.findIndex((item) => !item.firstExport)
-    if (generic < 0) return false
-    queue.splice(generic, 1)
-  }
-  queue.push({ ...event, queuedAt: Date.now() })
-  ensureTimer()
-  return true
-}
-
-function flushQueue(): void {
-  if (typeof window === 'undefined' || queue.length === 0) {
-    stopTimer()
-    return
-  }
-  const now = Date.now()
-  let droppedFirstExport = false
-  for (let i = 0; i < queue.length;) {
-    if (now - queue[i].queuedAt < RETRY_WINDOW_MS) {
-      i += 1
-      continue
-    }
-    const dropped = queue[i]
-    queue.splice(i, 1)
-    if (dropped.firstExport) droppedFirstExport = true
-  }
-  if (droppedFirstExport) rejectFirstExport()
-  if (queue.length === 0) {
-    stopTimer()
-    return
-  }
-  const api = siteApi()
-  if (!api || typeof api.count !== 'function') return
-  for (let i = 0; i < queue.length;) {
-    const event = queue[i]
-    if (sendNow(event)) {
-      queue.splice(i, 1)
-      continue
-    }
-    if (event.firstExport) {
-      queue.splice(i, 1)
-      rejectFirstExport()
-      continue
-    }
-    i += 1
-  }
-  if (queue.length === 0) stopTimer()
-}
-
-export function trackEvent(name: string, options: TrackEventOptions = {}): void {
-  if (!endpoint()) return
-  const event: EventPayload = {
-    name,
-    noSession: options.noSession ?? false,
-    firstExport: false,
-  }
-  if (sendNow(event)) return
-  enqueue(event)
-}
-
-export function trackClick(name: string): void {
+function buildBeaconUrl(name: string, event: boolean, noSession: boolean): string {
   const target = endpoint()
-  if (!target) return
-  const api = siteApi()
-  if (api && typeof api.count === 'function') {
-    try {
-      api.count({ path: name, event: true })
-      return
-    } catch {
-      // Fall through to the beacon so navigation still carries the click.
-    }
-  }
-  const beaconUrl = buildBeaconUrl(api, name, target)
-  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
-    try {
-      if (navigator.sendBeacon(beaconUrl)) return
-    } catch {
-      // Fall through to the queue.
-    }
-  }
-  enqueue({ name, noSession: false, firstExport: false })
-}
-
-function buildBeaconUrl(api: GoatCounterApi | undefined, name: string, target: string): string {
-  if (api && typeof api.url === 'function') {
-    try {
-      const url = api.url({ path: name, event: true })
-      if (url) return url
-    } catch {
-      // Fall back to the documented field mapping.
-    }
-  }
   const params = new URLSearchParams({
     p: name,
-    e: 'true',
+    ...(event ? { e: 'true' } : {}),
+    ...(noSession ? { no_session: 'true' } : {}),
     r: document.referrer,
     t: document.title,
     s: String(window.screen.width),
@@ -231,6 +141,40 @@ function buildBeaconUrl(api: GoatCounterApi | undefined, name: string, target: s
     rnd: randomId(),
   })
   return `${target}${target.includes('?') ? '&' : '?'}${params.toString()}`
+}
+
+function sendBeacon(name: string, event: boolean, noSession: boolean): boolean {
+  if (typeof navigator === 'undefined' || typeof navigator.sendBeacon !== 'function') return false
+  try {
+    return navigator.sendBeacon(buildBeaconUrl(name, event, noSession))
+  } catch {
+    return false
+  }
+}
+
+/** Script API first (when present), then one beacon. A failure drops the event. */
+function deliver(name: string, event: boolean, noSession: boolean): boolean {
+  if (sendNow(name, event, noSession)) return true
+  return sendBeacon(name, event, noSession)
+}
+
+/**
+ * Sends one page view. The caller owns visit deduplication: a page view is a
+ * navigation event, not something a re-render may repeat.
+ */
+export function trackPageView(pathname: string): void {
+  if (!analyticsAllowed()) return
+  deliver(pathname, false, false)
+}
+
+export function trackEvent(name: string, options: TrackEventOptions = {}): void {
+  if (!analyticsAllowed()) return
+  deliver(name, true, options.noSession ?? false)
+}
+
+export function trackClick(name: string): void {
+  if (!analyticsAllowed()) return
+  deliver(name, true, false)
 }
 
 function botFlag(): number {
@@ -262,29 +206,18 @@ function randomId(): string {
 }
 
 export function trackExportSuccess(): void {
-  if (!endpoint()) return
+  if (!analyticsAllowed()) return
   if (!hasFirstExportMarker() && !firstExportGuard) {
     firstExportGuard = true
     writeFirstExportMarker()
-    const event: EventPayload = { name: 'first-export', noSession: true, firstExport: true }
-    if (!sendNow(event)) {
-      if (siteApi() && typeof siteApi()?.count === 'function') {
-        rejectFirstExport()
-      } else if (!enqueue(event)) {
-        rejectFirstExport()
-      }
-    }
+    // A failed beacon clears the marker: with no script there is no retry
+    // queue, so leaving it set would claim an event that never left the page.
+    if (!deliver('first-export', true, true)) rejectFirstExport()
   }
-  trackEvent('export-success', { noSession: true })
+  deliver('export-success', true, true)
 }
 
 /** Clear module state between tests. Production code never calls this. */
 export function resetAnalyticsForTests(): void {
-  stopTimer()
-  queue = []
   firstExportGuard = false
-  if (readyListener && typeof window !== 'undefined') {
-    window.removeEventListener(READY_EVENT, readyListener)
-  }
-  readyListener = null
 }

@@ -19,6 +19,8 @@ import {
   FPS_MIN,
   KEYFRAME_PROPERTY_BOUNDS,
   MAX_SEQUENCE_DEPTH,
+  MAX_TIMELINE_SECONDS,
+  MIN_CLIP_DURATION,
   PROJECT_MAX_H,
   PROJECT_MAX_W,
   PROJECT_MIN_H,
@@ -51,6 +53,12 @@ import {
   lutGridByteLength,
 } from './lut'
 import { applyMarkerPatch, isMarkerColor } from './markers'
+import {
+  isValidWaveformPeaks,
+  sanitizeGain,
+  sanitizeThumbnail,
+  sanitizeTransitionDuration,
+} from './project-validation'
 import {
   createBuiltinTextPresets,
   createDefaultTextStyle,
@@ -146,6 +154,7 @@ export function serializeDoc(doc: Doc, savedAt = new Date().toISOString()): Seri
 export function parseSerializedDoc(text: string): {
   doc: Doc
   missingMediaIds: string[]
+  warnings: string[]
 } {
   let data: unknown
   try {
@@ -156,10 +165,48 @@ export function parseSerializedDoc(text: string): {
   return deserializeDoc(data)
 }
 
+/**
+ * Migration counters for values a previous release accepted that the current
+ * timeline cap cannot represent. One warning per class is surfaced to the
+ * user; the file itself is never rewritten until they save.
+ */
+interface HydrationStats {
+  trimmedClips: number
+  droppedOverCapClips: number
+  droppedOverflowClips: number
+  droppedMarkers: number
+}
+
+function hydrationWarnings(stats: HydrationStats): string[] {
+  const warnings: string[] = []
+  if (stats.trimmedClips > 0) {
+    warnings.push(
+      `Trimmed ${stats.trimmedClips} clip${stats.trimmedClips === 1 ? '' : 's'} to the ${MAX_TIMELINE_SECONDS / 3600}-hour timeline limit.`,
+    )
+  }
+  if (stats.droppedOverCapClips > 0) {
+    warnings.push(
+      `Dropped ${stats.droppedOverCapClips} clip${stats.droppedOverCapClips === 1 ? '' : 's'} that started past the ${MAX_TIMELINE_SECONDS / 3600}-hour timeline limit.`,
+    )
+  }
+  if (stats.droppedOverflowClips > 0) {
+    warnings.push(
+      `Dropped ${stats.droppedOverflowClips} clip${stats.droppedOverflowClips === 1 ? '' : 's'} whose end overflowed the supported timeline range.`,
+    )
+  }
+  if (stats.droppedMarkers > 0) {
+    warnings.push(
+      `Dropped ${stats.droppedMarkers} marker${stats.droppedMarkers === 1 ? '' : 's'} past the ${MAX_TIMELINE_SECONDS / 3600}-hour timeline limit.`,
+    )
+  }
+  return warnings
+}
+
 /** Validates an unknown parsed value and converts it into a live Doc. */
 export function deserializeDoc(data: unknown): {
   doc: Doc
   missingMediaIds: string[]
+  warnings: string[]
 } {
   if (typeof data !== 'object' || data === null) {
     throw new SerializationError('Invalid project file: root is not an object')
@@ -182,10 +229,16 @@ export function deserializeDoc(data: unknown): {
     hydrateMedia(raw as Record<string, unknown>),
   )
 
-  const projectMarkers = hydrateMarkers(projectRaw.markers)
+  const stats: HydrationStats = {
+    trimmedClips: 0,
+    droppedOverCapClips: 0,
+    droppedOverflowClips: 0,
+    droppedMarkers: 0,
+  }
+  const projectMarkers = hydrateMarkers(projectRaw.markers, stats)
   const projectDefaults = hydrateKeyframeDefaults(projectRaw.keyframeDefaults)
   const projectLuts = hydrateLuts(projectRaw.luts)
-  const projectSequences = hydrateSequences(projectRaw.sequences, media)
+  const projectSequences = hydrateSequences(projectRaw.sequences, media, stats)
   const projectPresets = hydrateTextPresets(projectRaw.textPresets)
   const project: Project = {
     id: typeof projectRaw.id === 'string' ? projectRaw.id : 'proj_loaded',
@@ -202,7 +255,7 @@ export function deserializeDoc(data: unknown): {
     ...(projectLuts ? { luts: projectLuts } : {}),
     ...(projectSequences ? { sequences: projectSequences } : {}),
     ...(projectPresets ? { textPresets: projectPresets } : {}),
-    tracks: hydrateTracks(projectRaw.tracks, media),
+    tracks: hydrateTracks(projectRaw.tracks, media, stats),
   }
 
   // Identity is the invariant the recursive lookups rest on: a repeated track,
@@ -269,11 +322,11 @@ export function deserializeDoc(data: unknown): {
   dropBadMattes(project.tracks)
   for (const sequence of project.sequences ?? []) dropBadMattes(sequence.tracks)
 
-  return { doc, missingMediaIds }
+  return { doc, missingMediaIds, warnings: hydrationWarnings(stats) }
 }
 
 /** Hydrates a track list (root or a compound sequence). */
-function hydrateTracks(rawTracks: unknown, media: MediaAsset[]): Track[] {
+function hydrateTracks(rawTracks: unknown, media: MediaAsset[], stats: HydrationStats): Track[] {
   return (Array.isArray(rawTracks) ? (rawTracks as Record<string, unknown>[]) : []).map((t) => {
     const kind = (t.kind === 'audio' || t.kind === 'text' ? t.kind : 'video') as TrackKind
     const rawName = typeof t.name === 'string' ? t.name.trim() : ''
@@ -297,15 +350,20 @@ function hydrateTracks(rawTracks: unknown, media: MediaAsset[]): Track[] {
       // command layer applies.
       ...(t.solo === true && kind === 'audio' ? { solo: true as const } : {}),
       ...(t.locked === true ? { locked: true as const } : {}),
-      clips: (Array.isArray(t.clips) ? (t.clips as Record<string, unknown>[]) : []).map((c) =>
-        hydrateClip(c, media),
-      ),
+      clips: (Array.isArray(t.clips) ? (t.clips as Record<string, unknown>[]) : []).flatMap((c) => {
+        const clip = hydrateClip(c, media, stats)
+        return clip ? [clip] : []
+      }),
     }
   })
 }
 
 /** Hydrates the project's compound sequences, dropping non-object entries. */
-function hydrateSequences(raw: unknown, media: MediaAsset[]): Sequence[] | undefined {
+function hydrateSequences(
+  raw: unknown,
+  media: MediaAsset[],
+  stats: HydrationStats,
+): Sequence[] | undefined {
   if (!Array.isArray(raw)) return undefined
   const sequences: Sequence[] = []
   for (const entry of raw) {
@@ -314,7 +372,7 @@ function hydrateSequences(raw: unknown, media: MediaAsset[]): Sequence[] | undef
     sequences.push({
       id: typeof s.id === 'string' && s.id ? s.id : `seq_${Math.random().toString(36).slice(2)}`,
       name: typeof s.name === 'string' && s.name ? s.name : 'Compound Clip',
-      tracks: hydrateTracks(s.tracks, media),
+      tracks: hydrateTracks(s.tracks, media, stats),
     })
   }
   return sequences.length > 0 ? sequences : undefined
@@ -434,6 +492,7 @@ function assertSequenceGraph(project: Project): void {
 function hydrateMedia(raw: Record<string, unknown>): MediaAsset {
   const kind =
     raw.kind === 'video' || raw.kind === 'audio' || raw.kind === 'image' ? raw.kind : 'video'
+  const thumbnail = sanitizeThumbnail(raw.thumbnail)
   return {
     id: typeof raw.id === 'string' ? raw.id : `media_${Math.random().toString(36).slice(2)}`,
     name: typeof raw.name === 'string' ? raw.name : 'Media',
@@ -442,19 +501,58 @@ function hydrateMedia(raw: Record<string, unknown>): MediaAsset {
     width: numOr(raw.width, 0),
     height: numOr(raw.height, 0),
     url: '', // object URLs can never persist — asset starts "missing"
-    ...(typeof raw.thumbnail === 'string' ? { thumbnail: raw.thumbnail } : {}),
+    ...(thumbnail ? { thumbnail } : {}),
     ...(typeof raw.hasAudio === 'boolean' ? { hasAudio: raw.hasAudio } : {}),
-    ...(Array.isArray(raw.waveformPeaks) ? { waveformPeaks: raw.waveformPeaks as number[] } : {}),
+    ...(isValidWaveformPeaks(raw.waveformPeaks) ? { waveformPeaks: [...raw.waveformPeaks] } : {}),
     missing: true,
   }
 }
 
-function hydrateClip(raw: Record<string, unknown>, media: MediaAsset[]): Clip {
+function hydrateClip(
+  raw: Record<string, unknown>,
+  media: MediaAsset[],
+  stats: HydrationStats,
+): Clip | undefined {
+  const start = Math.max(0, numOr(raw.start, 0))
+  let duration = Math.max(0.05, numOr(raw.duration, 1))
+  // A previous release accepted any finite start/duration. Migration stays
+  // compatible with those files: clamp the end to the cap and warn, and drop
+  // only a clip the cap cannot represent. A non-finite sum is overflow from
+  // two finite values (1e308 + 1e308), not a legacy edit, so it is dropped
+  // rather than clamped to a meaningless end.
+  const end = start + duration
+  if (!Number.isFinite(end)) {
+    stats.droppedOverflowClips += 1
+    return undefined
+  }
+  if (end > MAX_TIMELINE_SECONDS) {
+    if (start >= MAX_TIMELINE_SECONDS) {
+      stats.droppedOverCapClips += 1
+      return undefined
+    }
+    const clamped = MAX_TIMELINE_SECONDS - start
+    if (clamped < MIN_CLIP_DURATION) {
+      stats.droppedOverCapClips += 1
+      return undefined
+    }
+    duration = clamped
+    stats.trimmedClips += 1
+  }
+  const asset =
+    typeof raw.mediaId === 'string' ? media.find((entry) => entry.id === raw.mediaId) : undefined
+  let inPoint = Math.max(0, numOr(raw.inPoint, 0))
+  // When the asset's duration survived the file, clamp the source offset at
+  // the trust boundary too. A missing/zero-duration asset keeps the stored
+  // value for relink; the offline export clamps the decoded buffer as the
+  // second line of defense.
+  if (asset && Number.isFinite(asset.duration) && asset.duration > 0) {
+    inPoint = Math.min(inPoint, asset.duration)
+  }
   const clip: Clip = {
     id: typeof raw.id === 'string' ? raw.id : `clip_${Math.random().toString(36).slice(2)}`,
-    start: Math.max(0, numOr(raw.start, 0)),
-    duration: Math.max(0.05, numOr(raw.duration, 1)),
-    inPoint: Math.max(0, numOr(raw.inPoint, 0)),
+    start,
+    duration,
+    inPoint,
   }
   if (typeof raw.mediaId === 'string') clip.mediaId = raw.mediaId
   if (typeof raw.linkId === 'string') clip.linkId = raw.linkId
@@ -464,7 +562,8 @@ function hydrateClip(raw: Record<string, unknown>, media: MediaAsset[]): Clip {
   // Compound clip reference (0.8.1). Kept only when it names a hydrated
   // sequence; the caller drops a dangling one after the whole project is built.
   if (typeof raw.sequenceId === 'string' && raw.sequenceId) clip.sequenceId = raw.sequenceId
-  if (typeof raw.gain === 'number') clip.gain = raw.gain
+  const gain = sanitizeGain(raw.gain)
+  if (gain !== undefined) clip.gain = gain
   if (typeof raw.muted === 'boolean') clip.muted = raw.muted
   if (typeof raw.opacity === 'number' && Number.isFinite(raw.opacity)) {
     const opacity = Math.min(1, Math.max(0, raw.opacity))
@@ -561,45 +660,47 @@ function hydrateClip(raw: Record<string, unknown>, media: MediaAsset[]): Clip {
     clip.text = raw.text
     clip.style = hydrateStyle(raw.style as Record<string, unknown> | undefined)
   }
-  if (
-    typeof raw.transitionOut === 'object' &&
-    raw.transitionOut !== null &&
-    typeof (raw.transitionOut as Record<string, unknown>).duration === 'number'
-  ) {
+  if (typeof raw.transitionOut === 'object' && raw.transitionOut !== null) {
     const rawTransition = raw.transitionOut as Record<string, unknown>
-    const rawType = rawTransition.type
-    const rawDirection = rawTransition.direction
-    const rawEdge = rawTransition.edge
-    clip.transitionOut = {
-      type:
-        rawType === 'dipToBlack' || rawType === 'wipe' || rawType === 'slide' || rawType === 'push'
-          ? rawType
-          : 'crossfade',
-      duration: (raw.transitionOut as { duration: number }).duration,
-    }
-    // Spatial fields stay absent when absent: readers default direction to
-    // left, edge to hard and feather to 0.1. Present-but-unknown values
-    // are dropped so they degrade the same way.
-    if (
-      rawDirection === 'left' ||
-      rawDirection === 'right' ||
-      rawDirection === 'up' ||
-      rawDirection === 'down'
-    ) {
-      clip.transitionOut.direction = rawDirection
-    }
-    if (rawEdge === 'hard' || rawEdge === 'feathered') {
-      clip.transitionOut.edge = rawEdge
-    }
-    if ('feather' in rawTransition) {
-      const rawFeather = rawTransition.feather
-      clip.transitionOut.feather =
-        typeof rawFeather === 'number' && Number.isFinite(rawFeather)
-          ? Math.min(0.5, Math.max(0, rawFeather))
-          : 0.1
+    const duration = sanitizeTransitionDuration(rawTransition.duration)
+    if (duration !== undefined) {
+      const rawType = rawTransition.type
+      const rawDirection = rawTransition.direction
+      const rawEdge = rawTransition.edge
+      clip.transitionOut = {
+        type:
+          rawType === 'dipToBlack' ||
+          rawType === 'wipe' ||
+          rawType === 'slide' ||
+          rawType === 'push'
+            ? rawType
+            : 'crossfade',
+        duration,
+      }
+      // Spatial fields stay absent when absent: readers default direction to
+      // left, edge to hard and feather to 0.1. Present-but-unknown values
+      // are dropped so they degrade the same way.
+      if (
+        rawDirection === 'left' ||
+        rawDirection === 'right' ||
+        rawDirection === 'up' ||
+        rawDirection === 'down'
+      ) {
+        clip.transitionOut.direction = rawDirection
+      }
+      if (rawEdge === 'hard' || rawEdge === 'feathered') {
+        clip.transitionOut.edge = rawEdge
+      }
+      if ('feather' in rawTransition) {
+        const rawFeather = rawTransition.feather
+        clip.transitionOut.feather =
+          typeof rawFeather === 'number' && Number.isFinite(rawFeather)
+            ? Math.min(0.5, Math.max(0, rawFeather))
+            : 0.1
+      }
     }
   }
-  const markers = hydrateMarkers(raw.markers)
+  const markers = hydrateMarkers(raw.markers, stats)
   if (markers) clip.markers = markers
   if (Array.isArray(raw.effects)) {
     const seen = new Set<string>()
@@ -716,7 +817,7 @@ function hydrateEffectEntry(raw: unknown): EffectEntry | undefined {
  * (absent), duplicate ids in the same scope are dropped, and an empty result
  * stays undefined so hydrated docs (and the files saved from them) stay clean.
  */
-function hydrateMarkers(raw: unknown): Marker[] | undefined {
+function hydrateMarkers(raw: unknown, stats: HydrationStats): Marker[] | undefined {
   if (!Array.isArray(raw)) return undefined
   const seen = new Set<string>()
   const markers: Marker[] = []
@@ -724,6 +825,10 @@ function hydrateMarkers(raw: unknown): Marker[] | undefined {
     if (typeof entry !== 'object' || entry === null) continue
     const rec = entry as Record<string, unknown>
     if (typeof rec.time !== 'number' || !Number.isFinite(rec.time) || rec.time < 0) continue
+    if (rec.time > MAX_TIMELINE_SECONDS) {
+      stats.droppedMarkers += 1
+      continue
+    }
     const id =
       typeof rec.id === 'string' && rec.id
         ? rec.id

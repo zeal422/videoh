@@ -55,6 +55,7 @@ export default defineConfig({
         'src/lib/editor/offline.ts',
         'src/lib/editor/proxy.ts',
         'src/lib/editor/serialization.ts',
+        'src/lib/editor/project-validation.ts',
         'src/lib/editor/store.ts',
         'src/lib/editor/persistence.ts',
         'src/lib/editor/workspace.ts',

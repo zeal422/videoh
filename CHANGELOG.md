@@ -5,6 +5,55 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.19.3] - 2026-11-06
+
+### Changed
+
+- The timeline has a 24-hour upper bound (`MAX_TIMELINE_SECONDS`). A previously accepted project with a
+  finite clip end beyond the limit loads with the clip end clamped and a migration warning; a clip
+  that starts past the limit, or whose clamped duration would fall below `MIN_CLIP_DURATION`, is
+  dropped with a warning. A non-finite `start + duration` from two finite values (`1e308 + 1e308`) is
+  dropped as overflow. The project-open toast and the autosave `Session restored` toast both surface
+  the warning, and new add, move, trim, and caption commands refuse an over-cap end.
+- Hydration validates `gain`, `transitionOut.duration`, `waveformPeaks`, `thumbnail`, and a known
+  asset's `inPoint`, using the same validators as the relink command. The offline audio mix also clamps
+  `inPoint` to the decoded buffer before `source.start`.
+- Next.js moves to 16.4.5 with sharp 0.35.5 and postcss 8.5.23.
+
+### Security
+
+- Every response now carries `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, and an enforced `Content-Security-Policy`
+  with `frame-ancestors 'none'; base-uri 'self'; object-src 'none'`. Production also ships the full
+  resource policy as `Content-Security-Policy-Report-Only`, and `poweredByHeader` is off.
+- Project thumbnails are accepted only as `data:image/jpeg;base64,` URLs under 512 KiB, at both
+  hydration and relink. A crafted project can no longer make the media bin or filmstrip request an
+  external host.
+- The GoatCounter `count.js` script is no longer loaded on any route. Page views and custom events use
+  one-way `sendBeacon` requests, so no third-party JavaScript runs in the app's origin beside the
+  autosave. The shared sender honors `skipgc`, and a failed first-export beacon clears its marker.
+- The footer and privacy page add a visible analytics opt-out, `#toggle-goatcounter` remains an alias
+  on public pages, and Help > Analytics Settings opens the privacy control from the editor.
+- Residual audit triage: no `next` or `sharp` advisory remains. Next pins postcss 8.5.23, nanoid
+  3.3.19, and baseline-browser-mapping 2.11.35; the remaining source-map-js entry is build-only
+  through Next's CSS pipeline. The flagged postcss 8.5.6, nanoid 3.3.11, and
+  baseline-browser-mapping 2.9.15 copies are dev-only under `@tailwindcss/postcss` and `eslint`. The
+  source-map-js 1.2.1 copies are build-only under Next's CSS pipeline and dev-only under
+  `@tailwindcss/postcss`, `vitest`, `vite`, and `jsdom`. None is part of the client bundle or the
+  standalone request path. The dev-tooling update stays a separate change.
+
+### Tests and docs
+
+- The suite moves to 95 files and 2,223 tests. New coverage locks the shared validators, the timeline
+  migration and overflow drop, the warning surfaces, the offline `inPoint` clamp, the beacon sender,
+  visit-scoped page views, the analytics opt-out, and the security headers.
+- README, architecture, deployment, seo, design-system, testing, structure, and the roadmap are
+  updated for the headers, analytics placement, and timeline bound.
+- `bun run check` passes. Coverage is 94.78 statements, 90.34 branches, 96.71 functions, 96.84 lines.
+  The 70-step battery passed 70/70 on both the dev server and the standalone artifact on 2026-11-06,
+  each with terminal `BATTERY_EXIT=0`. The dev log shows `starting the dev server`; the artifact log
+  shows `using the server already serving` with no dev-server start.
+
 ## [0.19.2] - 2026-11-05
 
 ### Fixed

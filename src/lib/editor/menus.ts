@@ -68,6 +68,7 @@ export type MenuActionId =
   | 'window.resetLayout'
   | 'help.shortcuts'
   | 'help.releaseNotes'
+  | 'help.analytics'
   | 'help.about'
 
 /** Snapshot of editor/workspace facts the menu states are derived from. */
@@ -551,6 +552,12 @@ export const MENU_SPECS: MenuSpec[] = [
         kind: 'item',
         label: 'Keyboard Shortcuts…',
         action: 'help.shortcuts',
+      },
+      {
+        id: 'help.analytics',
+        kind: 'item',
+        label: 'Analytics Settings…',
+        action: 'help.analytics',
       },
       { id: 'help.about', kind: 'item', label: 'About videoh', action: 'help.about' },
     ],

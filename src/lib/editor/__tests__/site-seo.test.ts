@@ -215,33 +215,102 @@ describe('site files', () => {
     expect(source).toContain("alt = 'videoh, open-source video editing in your browser'")
   })
 
-  it('consumes ROOT_METADATA from the root layout instead of duplicating it', () => {
+  it('mounts the page-view beacon on the site layout and no third-party script in the root', () => {
     const layout = read('src/app/layout.tsx')
     expect(layout).toContain("import { ROOT_METADATA } from '@/lib/seo'")
     expect(layout).toContain('export const metadata = ROOT_METADATA')
-    expect(layout).toContain('<GoatCounter />')
+    expect(layout).not.toContain('GoatCounter')
+    expect(layout).not.toContain('gc.zgo.at')
     expect(layout).not.toContain('Web Video Editor')
+
+    const siteLayout = read('src/app/(site)/layout.tsx')
+    expect(siteLayout).toContain(
+      "import { PageViewBeacon } from '@/components/site/PageViewBeacon'",
+    )
+    expect(siteLayout).toContain('<PageViewBeacon />')
   })
 })
 
-describe('preview noindex header', () => {
+const SAFE_HEADERS = [
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'X-Frame-Options', value: 'DENY' },
+  {
+    key: 'Content-Security-Policy',
+    value: "frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+  },
+]
+
+async function headerMap(): Promise<Map<string, string>> {
+  const rules = await nextConfig.headers?.()
+  return new Map(rules?.[0]?.headers.map(({ key, value }) => [key, value]) ?? [])
+}
+
+describe('security headers', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
   })
 
-  it('returns X-Robots-Tag only for preview deployments', async () => {
+  it('enforces the safe headers in every environment', async () => {
+    for (const nodeEnv of ['development', 'test', 'production', '']) {
+      vi.stubEnv('NODE_ENV', nodeEnv)
+      const headers = await headerMap()
+      expect(headers.get('X-Content-Type-Options')).toBe('nosniff')
+      expect(headers.get('Referrer-Policy')).toBe('strict-origin-when-cross-origin')
+      expect(headers.get('X-Frame-Options')).toBe('DENY')
+      expect(headers.get('Content-Security-Policy')).toContain("frame-ancestors 'none'")
+    }
+    expect(nextConfig.poweredByHeader).toBe(false)
+  })
+
+  it('adds X-Robots-Tag only for preview deployments', async () => {
     vi.stubEnv('VERCEL_ENV', 'preview')
-    const preview = await nextConfig.headers?.()
-    expect(preview).toEqual([
-      {
-        source: '/:path*',
-        headers: [{ key: 'X-Robots-Tag', value: 'noindex, nofollow' }],
-      },
-    ])
+    vi.stubEnv('NODE_ENV', 'production')
+    expect((await headerMap()).get('X-Robots-Tag')).toBe('noindex, nofollow')
 
     for (const env of ['production', 'development', '']) {
       vi.stubEnv('VERCEL_ENV', env)
-      expect(await nextConfig.headers?.()).toEqual([])
+      expect((await headerMap()).has('X-Robots-Tag')).toBe(false)
     }
+  })
+
+  it('ships the full policy Report-Only only in production', async () => {
+    vi.stubEnv('VERCEL_ENV', 'production')
+    vi.stubEnv('NODE_ENV', 'production')
+    const production = await headerMap()
+    expect(production.get('Content-Security-Policy-Report-Only')).toBe(
+      [
+        "default-src 'self'",
+        "base-uri 'self'",
+        "object-src 'none'",
+        "frame-ancestors 'none'",
+        "form-action 'self'",
+        "script-src 'self' 'unsafe-inline'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "media-src 'self' blob: data:",
+        "font-src 'self'",
+        "worker-src 'self'",
+        "connect-src 'self' blob:",
+        "frame-src 'none'",
+        "manifest-src 'self'",
+      ].join('; '),
+    )
+
+    for (const nodeEnv of ['development', 'test', '']) {
+      vi.stubEnv('NODE_ENV', nodeEnv)
+      expect((await headerMap()).has('Content-Security-Policy-Report-Only')).toBe(false)
+    }
+  })
+
+  it('adds the configured GoatCounter origin to connect-src only', async () => {
+    vi.stubEnv('VERCEL_ENV', 'production')
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('NEXT_PUBLIC_GOATCOUNTER_URL', 'https://videoh.goatcounter.com/count')
+    const headers = await headerMap()
+    const policy = headers.get('Content-Security-Policy-Report-Only') ?? ''
+    expect(policy).toContain('connect-src')
+    expect(policy).toContain('https://videoh.goatcounter.com')
+    expect(policy).not.toContain('gc.zgo.at')
   })
 })

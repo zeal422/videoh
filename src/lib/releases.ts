@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.19.3',
+    date: '2026-11-06',
+    highlights: [
+      'Project files with clips or markers beyond the 24-hour timeline limit load with a clear migration warning instead of breaking the timeline',
+      'Thumbnail, waveform, gain, and transition data from a project file are validated, so a crafted file cannot make the browser contact another host',
+      'The editor no longer loads third-party analytics JavaScript; page views and export events use privacy-friendly beacons',
+      'A visible analytics opt-out sits in the site footer and privacy page, and the editor Help menu links to it',
+      'Next.js moves to 16.4.5, and every response now sends frame, content-type, and referrer protections',
+    ],
+  },
+  {
     version: '0.19.2',
     date: '2026-11-05',
     highlights: [

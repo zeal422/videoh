@@ -579,6 +579,9 @@ export function MenuBar({
           case 'help.shortcuts':
             setShortcutsOpen(true)
             break
+          case 'help.analytics':
+            window.open('/privacy#analytics-settings', '_blank', 'noopener,noreferrer')
+            break
           case 'help.about':
             setAboutOpen(true)
             break

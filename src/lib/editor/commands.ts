@@ -11,6 +11,7 @@ import {
   GAIN_MIN,
   KEYFRAME_PROPERTY_BOUNDS,
   MAX_SEQUENCE_DEPTH,
+  MAX_TIMELINE_SECONDS,
   MIN_CLIP_DURATION,
   MIN_SPLIT_HEADROOM,
   FPS_MAX,
@@ -31,7 +32,6 @@ import {
   TINT_MIN,
   TRANSITION_MAX,
   TRANSITION_MIN,
-  WAVEFORM_BUCKETS,
 } from './constants'
 import {
   clipFitsTrack,
@@ -79,6 +79,7 @@ import {
 } from './keyframes'
 import { applyMarkerPatch, reIdMarkers } from './markers'
 import { parseKeyColor } from './chroma-key'
+import { isValidWaveformPeaks, sanitizeThumbnail } from './project-validation'
 import { MAX_SRT_TIME_SECONDS } from './srt'
 import { maxTransitionDuration, TRANSITION_FEATHER_DEFAULT } from './transition'
 import {
@@ -567,17 +568,16 @@ function invalidRelinkFile(): EditorCommandError {
   return new EditorCommandError('Invalid relink file')
 }
 
-/** A dense WAVEFORM_BUCKETS array of finite 0..1 numbers. */
-function isValidWaveformPeaks(value: unknown): value is number[] {
-  if (!Array.isArray(value) || value.length !== WAVEFORM_BUCKETS) return false
-  for (let i = 0; i < WAVEFORM_BUCKETS; i++) {
-    // `every` skips holes, so a sparse array would slip through; an explicit
-    // own-index check makes a missing entry fail.
-    if (!Object.prototype.hasOwnProperty.call(value, i)) return false
-    const peak = value[i]
-    if (typeof peak !== 'number' || !Number.isFinite(peak) || peak < 0 || peak > 1) return false
+/** Refuses an edit whose clip end the timeline cap cannot represent. */
+function assertClipEndWithinTimeline(start: number, duration: number): void {
+  const end = start + duration
+  // The rest of the command layer compares against source bounds with the
+  // same epsilon; an end a rounding step over the cap is still the cap.
+  if (!Number.isFinite(end) || end > MAX_TIMELINE_SECONDS + 1e-6) {
+    throw new EditorCommandError(
+      `Clip end must be within the ${MAX_TIMELINE_SECONDS / 3600}-hour timeline limit`,
+    )
   }
-  return true
 }
 
 /**
@@ -637,8 +637,9 @@ export function sanitizeRelinkPatch(
         break
       }
       case 'thumbnail': {
-        if (typeof value !== 'string') throw new EditorCommandError('Invalid relink patch')
-        sanitized.thumbnail = value
+        const thumbnail = sanitizeThumbnail(value)
+        if (thumbnail === undefined) throw new EditorCommandError('Invalid relink patch')
+        sanitized.thumbnail = thumbnail
         break
       }
       case 'hasAudio': {
@@ -937,6 +938,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       // (paste/move are the paths the create-time guard cannot see).
       assertCompoundCycle(doc, clip, findTrackIn(doc, track.id)?.sequenceId)
       clampClipToMedia(doc, clip)
+      assertClipEndWithinTimeline(clip.start, clip.duration)
       track.clips.push(clip)
       if (clip.sequenceId && maxSequenceDepth(doc) > MAX_SEQUENCE_DEPTH) {
         track.clips = track.clips.filter((c) => c.id !== clip.id)
@@ -964,7 +966,9 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       if (!Number.isFinite(command.start)) {
         throw new EditorCommandError('Invalid clip position')
       }
-      clip.start = Math.max(0, command.start)
+      const nextStart = Math.max(0, command.start)
+      assertClipEndWithinTimeline(nextStart, clip.duration)
+      clip.start = nextStart
       if (movedTrack) {
         found.track.clips = found.track.clips.filter((c) => c.id !== clip.id)
         target.clips.push(clip)
@@ -1282,6 +1286,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
         }
       }
       const track = requireTrack(doc, foundTrackId(doc, clip.id))
+      assertClipEndWithinTimeline(clip.start, clip.duration)
       track.clips.sort((a, b) => a.start - b.start)
       return
     }
@@ -1749,6 +1754,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
         ) {
           throw new EditorCommandError('Invalid caption cue')
         }
+        assertClipEndWithinTimeline(cue.start, cue.duration)
       }
       const track = {
         id: uid('track'),
@@ -1792,6 +1798,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       if (startMs > limitMs || startMs + 2000 > limitMs) {
         throw new EditorCommandError('Caption is past the supported range')
       }
+      assertClipEndWithinTimeline(command.start, 2)
       track.clips.push(
         createTextClip({
           start: command.start,
@@ -2213,6 +2220,11 @@ function presetNameTaken(doc: Doc, name: string, exceptId?: string): boolean {
 function markerTime(time: number): number {
   if (!Number.isFinite(time) || time < 0) {
     throw new EditorCommandError('Marker time must be a non-negative number')
+  }
+  if (time > MAX_TIMELINE_SECONDS) {
+    throw new EditorCommandError(
+      `Marker time must be within the ${MAX_TIMELINE_SECONDS / 3600}-hour timeline limit`,
+    )
   }
   return time
 }

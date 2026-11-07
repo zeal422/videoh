@@ -18,6 +18,7 @@ import {
 } from 'mediabunny'
 import { EQ_DB_MAX, EQ_DB_MIN } from '../constants'
 import {
+  SOURCE_END_MARGIN,
   clampSourceTime,
   docDuration,
   findClip,
@@ -988,8 +989,15 @@ async function scheduleTracks(
       // makes a flat curve's audio span duration * static / curve timeline
       // seconds and bleed over the next clip (the mirror case ends early). The
       // span is the timeline span clamped to the container's end, converted to
-      // source seconds at that same rate.
-      source.start(startAt, clip.inPoint, timelineSpan * constantRate)
+      // source seconds at that same rate. The offset is clamped to the DECODED
+      // buffer here: hydration clamps a known asset duration, but a missing
+      // asset (or a hostile hand-built doc) can still carry an offset past the
+      // real end, and `source.start` is not a trust boundary.
+      const sourceOffset = Math.min(
+        Math.max(0, clip.inPoint),
+        Math.max(0, buffer.duration - SOURCE_END_MARGIN),
+      )
+      source.start(startAt, sourceOffset, timelineSpan * constantRate)
       if (constantRate !== 1) source.playbackRate.value = constantRate
     }
   }

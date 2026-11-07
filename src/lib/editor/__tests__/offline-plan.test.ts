@@ -2052,8 +2052,10 @@ describe('track solo (0.14.0)', () => {
   })
 
   /** Schedule `doc` through the shipped MP4 mix and return source start times. */
-  async function mixStarts(doc: Doc): Promise<number[]> {
-    const starts: number[] = []
+  async function mixSourceStarts(
+    doc: Doc,
+  ): Promise<{ when: number; offset: number; duration: number }[]> {
+    const starts: { when: number; offset: number; duration: number }[] = []
     class FakeOfflineContext {
       destination = {}
       sampleRate = 48000
@@ -2069,7 +2071,8 @@ describe('track solo (0.14.0)', () => {
           buffer: null,
           playbackRate: new FakeParam(),
           connect: () => undefined,
-          start: (when: number) => starts.push(when),
+          start: (when: number, offset: number, duration: number) =>
+            starts.push({ when, offset, duration }),
         }
       }
       decodeAudioData(): Promise<AudioBuffer> {
@@ -2093,6 +2096,26 @@ describe('track solo (0.14.0)', () => {
     }
     return starts
   }
+
+  async function mixStarts(doc: Doc): Promise<number[]> {
+    return (await mixSourceStarts(doc)).map((entry) => entry.when)
+  }
+
+  it('clamps a hostile inPoint to the decoded buffer before source.start', async () => {
+    const clip = createClip({
+      id: 'ca1',
+      mediaId: 'ms',
+      start: 0,
+      duration: 2,
+      inPoint: 1e308,
+      audioOnly: true,
+    })
+    const hostile = soloProject([createTrack('audio', 1, { id: 'a1', clips: [clip] })])
+    const [scheduled] = await mixSourceStarts(hostile)
+    expect(scheduled).toBeDefined()
+    // fakeBuffer() is 1 second; the last readable instant is 0.99.
+    expect(scheduled!.offset).toBeLessThanOrEqual(1 - 0.01)
+  })
 
   it('the shipped MP4 mix schedules the same audible set as the plan', async () => {
     const cases: { name: string; doc: Doc; expected: number[] }[] = [

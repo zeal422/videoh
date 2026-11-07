@@ -1,4 +1,5 @@
 import { CONTACT_EMAIL, GITHUB_URL, LICENSE_URL } from '@/lib/seo'
+import { AnalyticsToggle } from '@/components/site/AnalyticsToggle'
 import { TrackedLink } from '@/components/site/TrackedLink'
 
 /**
@@ -63,14 +64,17 @@ export function SiteFooter() {
         </div>
         <div className="flex flex-col gap-2 border-t border-white/5 pt-6 text-xs text-[var(--site-muted-2)] sm:flex-row sm:items-center sm:justify-between">
           <p>© 2026 videoh. By VectorMedia for everyone.</p>
-          <TrackedLink
-            href={`mailto:${CONTACT_EMAIL}`}
-            event="contact-email"
-            aria-label={`Email ${CONTACT_EMAIL}`}
-            className="underline-offset-4 hover:text-[var(--site-text)] hover:underline"
-          >
-            {CONTACT_EMAIL}
-          </TrackedLink>
+          <div className="flex flex-wrap items-center gap-4">
+            <AnalyticsToggle />
+            <TrackedLink
+              href={`mailto:${CONTACT_EMAIL}`}
+              event="contact-email"
+              aria-label={`Email ${CONTACT_EMAIL}`}
+              className="underline-offset-4 hover:text-[var(--site-text)] hover:underline"
+            >
+              {CONTACT_EMAIL}
+            </TrackedLink>
+          </div>
         </div>
       </div>
     </footer>

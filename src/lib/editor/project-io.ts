@@ -36,13 +36,13 @@ export function downloadProjectJSON(): string {
 }
 
 /** Parse + validate a saved project file into a Doc (throws on invalid JSON/version). */
-export async function loadProjectFile(file: File): Promise<Doc> {
+export async function loadProjectFile(file: File): Promise<{ doc: Doc; warnings: string[] }> {
   const text = await file.text()
   // Parse the text HERE: deserializeDoc validates an already-parsed value, and
   // feeding it the raw string failed every real open with "root is not an
   // object" (autosave restore used parseSerializedDoc and worked).
-  const { doc } = parseSerializedDoc(text)
-  return doc
+  const { doc, warnings } = parseSerializedDoc(text)
+  return { doc, warnings }
 }
 
 /**
@@ -155,15 +155,21 @@ export function isCurrentProjectLoad(loadId: number): boolean {
 export async function openProjectFile(file: File): Promise<void> {
   const loadId = bumpProjectGeneration()
   try {
-    const doc = await loadProjectFile(file)
+    const { doc, warnings } = await loadProjectFile(file)
     if (!isCurrentProjectLoad(loadId)) return // a newer request superseded this one
     // The old project's proxy object URLs belong to it; revoke them.
     revokeAllProxies()
     useEditorStore.getState().replaceDoc(doc)
     const remaining = doc.media.filter((asset) => asset.missing).length
+    const description = [
+      remaining > 0 ? `${remaining} media file(s) need relinking.` : undefined,
+      ...warnings,
+    ]
+      .filter(Boolean)
+      .join(' ')
     toast({
       title: 'Project loaded',
-      description: remaining > 0 ? `${remaining} media file(s) need relinking` : undefined,
+      description: description || undefined,
     })
   } catch (error) {
     if (!isCurrentProjectLoad(loadId)) return

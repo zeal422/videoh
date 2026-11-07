@@ -9,6 +9,11 @@ const analytics = vi.hoisted(() => ({
   trackClick: vi.fn(),
   trackEvent: vi.fn(),
   trackExportSuccess: vi.fn(),
+  trackPageView: vi.fn(),
+  isAnalyticsOptedOut: vi.fn(() => false),
+  setAnalyticsOptedOut: vi.fn(),
+  ANALYTICS_OPT_OUT_EVENT: 'videoh:analytics-opt-out',
+  ANALYTICS_OPT_OUT_KEY: 'skipgc',
 }))
 
 vi.mock('@/lib/analytics', () => analytics)

@@ -1,4 +1,5 @@
 import { LegalPage } from '@/components/site/LegalPage'
+import { AnalyticsToggle } from '@/components/site/AnalyticsToggle'
 import { CONTACT_EMAIL, GITHUB_URL, pageMetadata } from '@/lib/seo'
 
 export const metadata = pageMetadata({
@@ -53,6 +54,15 @@ export default function PrivacyPage() {
         receive your media or project contents. Ad blockers can prevent these requests, so the
         numbers are a lower bound.
       </p>
+      <div id="analytics-settings" className="flex flex-col gap-3">
+        <p>
+          Analytics are optional. Use the footer control, or open <code>#toggle-goatcounter</code>{' '}
+          on this page, to opt out. The preference is stored in your browser as{' '}
+          <code>localStorage.skipgc</code>; while it is set to <code>t</code>, the app sends no page
+          views, click events, export events, or first-export marker.
+        </p>
+        <AnalyticsToggle />
+      </div>
 
       <h2>Hosting</h2>
       <p>

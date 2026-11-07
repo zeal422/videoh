@@ -159,7 +159,7 @@ bun run test:coverage  # v8 coverage + thresholds
 bun run battery        # 70-step UI battery (needs agent-browser; reuses :3000 or starts a server)
 ```
 
-Current state: **2180 tests across 93 files, all passing**. Coverage is enforced at 70/60/75/70 over
+Current state: **2223 tests across 95 files, all passing**. Coverage is enforced at 70/60/75/70 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -175,7 +175,9 @@ timeline hero, feature strip, product showcase, tools band, privacy panel, FAQ, 
 is the `noindex, follow` editor, and `/about`, `/privacy`, `/terms`, and `/contact` are public pages.
 `/sitemap.xml`, `/robots.txt`, and the Search Console verification file are served from the app and
 `public/`. The source is MIT licensed; see [LICENSE](LICENSE) and [CONTRIBUTING.md](CONTRIBUTING.md).
-Optional GoatCounter analytics use `NEXT_PUBLIC_GOATCOUNTER_URL`; see [docs/seo.md](docs/seo.md).
+Optional GoatCounter analytics use `NEXT_PUBLIC_GOATCOUNTER_URL`; page views and events are sent as
+`sendBeacon` requests with no third-party script, and the footer privacy control opts out through
+`skipgc`. See [docs/seo.md](docs/seo.md).
 
 ## Project structure
 
@@ -186,7 +188,7 @@ src/lib/editor/            # state core (commands, store, serialization) + brows
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, landing sections, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 93 test files (2180 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 95 test files (2223 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations
