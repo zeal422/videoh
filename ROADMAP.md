@@ -165,9 +165,6 @@ bounded export memory and proxies (0.8.0), and nested sequences / compound clips
 
 ## Deferred maintenance
 
-- **Audit cleanup after Bun 1.4:** the 15 dev-only entries cleared in 0.19.5
-  with within-range bumps plus one scoped override. Preview deployability
-  remains the open check.
 - **Nonce CSP migration:** revisit `script-src 'unsafe-inline'` only if the
   threat model changes. The nonce path forces dynamic rendering; see
   `CHANGELOG.md` 0.19.4.
