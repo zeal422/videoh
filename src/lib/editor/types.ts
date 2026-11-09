@@ -490,12 +490,5 @@ export interface Doc {
   media: MediaAsset[]
 }
 
-/** Playback-time view of a media asset resolved for a specific clip. */
-export interface ResolvedMediaRef {
-  asset: MediaAsset
-  /** Video element (per-clip) for video assets; image element for images. */
-  el?: HTMLVideoElement | HTMLImageElement
-}
-
 /** Per-property keyframe arrays, time-sorted, clip-local times. */
 export type KeyframeMap = Partial<Record<KeyframeProperty, Keyframe[]>>

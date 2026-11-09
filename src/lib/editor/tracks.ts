@@ -82,11 +82,6 @@ export function lockedTrackForClip(doc: Doc, clipId: string): Track | undefined 
   return track?.locked ? track : undefined
 }
 
-/** Lock check for a clip edit that carries its link group (move/trim/split). */
-export function lockedTrackForClipGroup(doc: Doc, clipId: string): Track | undefined {
-  return firstLockedTrackForClips(doc, [clipId])
-}
-
 /**
  * Removes the tracks an edit left empty.
  *

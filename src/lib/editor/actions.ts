@@ -2,7 +2,6 @@ import type { EditorCommand } from './commands'
 import { firstFreeCaptionsName } from './commands'
 import {
   activeTracks,
-  clipFitsTrack,
   createClip,
   createTextClip,
   docDuration,
@@ -743,11 +742,6 @@ export function commandsToPlaceSource(
     })
   }
   return { commands, refusal: null }
-}
-
-/** True when the given clip could be dropped onto the track (UI affordance). */
-export function canDropClip(doc: Doc, clip: Clip, track: Track): boolean {
-  return clipFitsTrack(doc, clip, track)
 }
 
 // ————— compound clips (0.8.1) —————

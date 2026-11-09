@@ -14,13 +14,8 @@ export interface PlaybackController {
   stepFrames(n: number): void
   /** Master output volume 0..1 (preview only; export always uses full mix). */
   setMasterVolume(v: number): void
-  /** True while export is using a separate engine instance. */
-  readonly isExporting: boolean
 }
 
 export const playbackRef: { current: PlaybackController | null } = {
   current: null,
 }
-
-/** True while an export session is running (suspends preview work). */
-export const exportStateRef: { current: boolean } = { current: false }

@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.19.6] - 2026-11-09
+
+### Removed
+
+- Remove dead declarations from the editor state core, playback, and export layers, plus an unused `PanelShell` header prop. No runtime behavior changes.
+
+### Tests and docs
+
+- The architecture map drops the removed API entries. `bun run check` stays green at 95 files and 2,223 tests.
+
 ## [0.19.5] - 2026-11-09
 
 ### Security

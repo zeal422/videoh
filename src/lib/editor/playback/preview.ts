@@ -1,6 +1,5 @@
 'use client'
 
-import { docDuration } from '../factories'
 import { nextVideoKeyframe } from '../media/keyframes'
 import { effectiveMediaUrl } from '../media/proxies'
 import { useEditorStore } from '../store'
@@ -71,9 +70,6 @@ export function attachPreviewEngine(canvas: HTMLCanvasElement): PlaybackControll
     seek: (t: number) => core?.seek(t),
     stepFrames: (n: number) => core?.stepFrames(n),
     setMasterVolume: (v: number) => core?.setMasterVolume(v),
-    get isExporting() {
-      return playbackRef.current?.isExporting ?? false
-    },
   }
   playbackRef.current = controller
   return controller
@@ -92,9 +88,4 @@ export function refreshPausedPreview(): void {
   if (core && !core.isPlaying) {
     core.refresh(useEditorStore.getState().playhead)
   }
-}
-
-/** Convenience: seek to the end of the timeline. */
-export function seekToEnd(): void {
-  playbackRef.current?.seek(docDuration(useEditorStore.getState().doc))
 }

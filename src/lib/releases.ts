@@ -22,6 +22,16 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.19.6',
+    date: '2026-11-09',
+    highlights: [
+      'Unused declarations are removed from the editor state core, playback, and export layers',
+      'An unused panel header prop is gone, leaving a smaller internal UI surface',
+      'No editor command, project format, export, UI, or analytics behavior changes',
+      'The full test suite stays green at 2,223 tests',
+    ],
+  },
+  {
     version: '0.19.5',
     date: '2026-11-09',
     highlights: [

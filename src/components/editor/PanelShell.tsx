@@ -10,7 +10,7 @@ import type { PanelId } from '@/lib/editor/workspace'
 import { PanelMenu } from './PanelMenu'
 
 /**
- * A workspace panel frame: a slim header (title, panel menu, optional actions)
+ * A workspace panel frame: a slim header (title and panel menu)
  * wrapped in a resizable `Panel`. Closing is handled by the panel menu and the
  * Window menu; there is no strip state. The parent registers the imperative
  * panel handle so a double-click on a resize handle can reset the neighboring
@@ -23,7 +23,6 @@ export function PanelShell({
   maxSize,
   defaultSize,
   order,
-  headerActions,
   children,
   registerRef,
   className,
@@ -35,8 +34,6 @@ export function PanelShell({
   defaultSize?: number
   /** Stable position within its group (required for dynamically rendered panels). */
   order?: number
-  /** Optional controls rendered at the end of the header row. */
-  headerActions?: React.ReactNode
   children: React.ReactNode
   registerRef?: (id: PanelId, ref: ImperativePanelHandle | null) => void
   className?: string
@@ -64,7 +61,6 @@ export function PanelShell({
             {title}
           </h2>
           <div className="flex items-center gap-0.5">
-            {headerActions}
             <PanelMenu id={id} title={title} />
           </div>
         </div>

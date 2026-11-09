@@ -462,15 +462,6 @@ export function exportFrameTimes(doc: Doc): number[] {
   return times
 }
 
-/** All frame plans for the export (video + audio), in order. */
-export function planExport(doc: Doc): { video: FramePlan[]; audio: AudioFramePlan[] } {
-  const times = exportFrameTimes(doc)
-  return {
-    video: times.map((t) => planVideoFrame(doc, t)),
-    audio: times.map((t) => planAudioFrame(doc, t)),
-  }
-}
-
 /** Asset ids referenced by video draws (for the decode warmup). */
 export function videoAssetIds(plan: FramePlan[]): Set<string> {
   const ids = new Set<string>()
