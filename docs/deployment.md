@@ -150,7 +150,9 @@ and artifact runs on 2026-11-05 were also both 70 passed, 0 failed with terminal
 0.19.3 dev run on 2026-11-06 started its own dev server and passed 70/70 with `BATTERY_EXIT=0`; the
 artifact run reused the standalone server and also passed 70/70 with `BATTERY_EXIT=0`. The 0.19.4 dev
 run on 2026-11-07 started its own dev server and passed 70/70 with `BATTERY_EXIT=0`; the artifact run
-reused the standalone server and also passed 70/70 with `BATTERY_EXIT=0`.
+reused the standalone server and also passed 70/70 with `BATTERY_EXIT=0`. The 0.19.5 dev run on
+2026-11-09 started its own dev server and passed 70/70 with `BATTERY_EXIT=0`; the artifact run reused
+the standalone server and also passed 70/70 with `BATTERY_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 
@@ -160,7 +162,10 @@ environment.
 ## Hosting
 
 Vercel runs the Next.js app and serves the static files copied from `public/`. No database or object
-storage is required because projects and media stay in the browser.
+storage is required because projects and media stay in the browser. The repository's `vercel.json`
+installs Bun 1.4.x explicitly and runs `bun install --frozen-lockfile`: a package/lockfile mismatch
+fails the build instead of re-resolving, and the explicit install is required because the committed
+`bun.lock` is `lockfileVersion: 3`, which Bun older than 1.4 cannot read.
 
 Before promoting a production deployment, check the candidate deployment, not the production domain:
 

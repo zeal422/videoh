@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.19.5',
+    date: '2026-11-09',
+    highlights: [
+      'The security audit is clean: the last 15 dev-only advisories are gone',
+      'Bun moves to 1.4.4, and no runtime dependency or editor behavior changes',
+      'Deployments install Bun explicitly with a frozen lockfile, so a dependency mismatch fails the build instead of drifting',
+      'Existing projects, media, and analytics behave exactly as before',
+      'The full test suite and both 70-step batteries stay green',
+    ],
+  },
+  {
     version: '0.19.4',
     date: '2026-11-07',
     highlights: [

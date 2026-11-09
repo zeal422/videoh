@@ -554,3 +554,12 @@ Action: stopped the stale process group, confirmed 3001 was free, started the fr
 What happened: the plan called for parent-scoped overrides for `minimatch`, `brace-expansion`, and `picomatch`. Bun 1.3.14 warns that nested overrides are unsupported and ignores `pkg@^range` keys. Top-level pins would force a cross-major version into `typescript-estree` or Vite.
 Would-have-caught: check the installed package-manager version and its override feature set before writing a plan that depends on nested overrides.
 Action: kept the safe top-level fixes, documented the remaining three dev-only package families, and deferred the parent-scoped pins to a Bun 1.4 tooling change.
+
+## 2026-11-08 - release commit composition
+
+What happened: the 0.19.4 release bundled CSP enforcement, a dev-tooling
+refresh, and four hook fixes in one commit. A reviewer flagged the release as
+hard to bisect, though each change was individually correct and the fixes were
+forced by the tooling gate.
+Would-have-caught: one ticket, one commit, one gate (scope discipline).
+Action: kept as a note.

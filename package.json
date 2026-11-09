@@ -1,6 +1,6 @@
 {
   "name": "videoh",
-  "version": "0.19.4",
+  "version": "0.19.5",
   "private": true,
   "license": "MIT",
   "scripts": {
@@ -20,6 +20,7 @@
   "overrides": {
     "@babel/core": "7.29.13",
     "@humanfs/node": "0.16.8",
+    "@typescript-eslint/typescript-estree>minimatch": "^11.0.5",
     "browserslist": "4.29.5",
     "flatted": "3.4.4",
     "source-map-js": "1.2.2",

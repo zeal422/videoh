@@ -31,29 +31,21 @@ The pure state core is deliberately browser-free so it runs in Node. Browser API
 exercised with mocked storage or File inputs, while their DOM-only paths are covered by the battery.
 Browser-path modules are tested through the mocked harness or by static wiring assertions.
 
-## Known dev-only audit warnings
+## Dev audit state
 
-After 0.19.4, `bun audit` reports 15 path entries across three package families. All three are
-development-only and never enter the shipped app. Bun 1.3.14 cannot scope an override to a parent
-package or a version range, and a global pin would force a cross-major helper into a tool that does
-not support it, so these pins are deferred to a Bun 1.4 tooling change.
+After the 0.19.5 Bun 1.4.4 tooling update, `bun audit` reports no vulnerabilities
+(572 packages checked), and `bun audit --prod` was already clean. The last 15
+dev-only entries cleared through within-range `bun audit fix` bumps for
+`brace-expansion`, `minimatch`, and `picomatch`, plus one scoped override for
+the TypeScript ESTree chain: `@typescript-eslint/typescript-estree>minimatch`
+at `^11.0.5`. That scoped rule writes `bun.lock` as `lockfileVersion: 3`,
+which Bun older than 1.4 cannot read, so `vercel.json` carries an explicit
+install (`installCommand`) until a preview proves the build Bun.
 
-- `minimatch` 3.1.2. Paths: `node_modules/eslint-plugin-import/node_modules/minimatch`,
-  `node_modules/eslint-plugin-jsx-a11y/node_modules/minimatch`,
-  `node_modules/eslint-plugin-react/node_modules/minimatch`. Advisories: GHSA-3ppc-4f35-3m26,
-  GHSA-7r86-cg39-jmmj, GHSA-23c5-xmqv-rm74, GHSA-g3hv-75wg-m249.
-- `brace-expansion` 1.1.12. Paths: `node_modules/brace-expansion`,
-  `node_modules/eslint/node_modules/minimatch/node_modules/brace-expansion`,
-  `node_modules/@eslint/config-array/node_modules/minimatch/node_modules/brace-expansion`,
-  `node_modules/@eslint/eslintrc/node_modules/minimatch/node_modules/brace-expansion`. Advisories:
-  GHSA-mh99-v99m-4gvg, GHSA-rgw5-rvv9-x895, GHSA-f886-m6hf-6m8v, GHSA-3jxr-9vmj-r5cp,
-  GHSA-6j4f-fj2g-mc7p, GHSA-q2hr-2g5m-vwhr, GHSA-qhr7-859c-m2p7.
-- `picomatch` 2.3.1. Path: `node_modules/micromatch/node_modules/picomatch`. Advisories:
-  GHSA-3v7f-55p6-f55p, GHSA-c2c7-rcm5-vvqj.
-
-Reason for all three: development-only copies. A parent-scoped pin would keep the fix inside the tool
-that pulled the old copy in, but Bun 1.3.14 does not support that form, so the update waits for Bun
-1.4.
+Timing medians on the same dependency graph, warm cache: `bun install
+--frozen-lockfile` 24 ms to 21 ms, and one single-file vitest run 822 ms to
+823 ms. The test run shows no measurable change, and the install difference is
+within noise.
 
 ## Track solo and lock (0.14.0)
 
@@ -360,7 +352,8 @@ both 70 passed, 0 failed with terminal `BATTERY_EXIT=0`. At 0.19.3 on 2026-11-06
 its own server and the artifact run reused the standalone server; both were 70 passed, 0 failed with
 terminal `BATTERY_EXIT=0`. At 0.19.4 on 2026-11-07, the dev run started its own server and the
 artifact run reused the standalone server; both were 70 passed, 0 failed with terminal
-`BATTERY_EXIT=0`.
+`BATTERY_EXIT=0`. At 0.19.5 on 2026-11-09, the dev run started its own server and the artifact run
+reused the standalone server; both were 70 passed, 0 failed with terminal `BATTERY_EXIT=0`.
 
 ### Two trees (A/B)
 

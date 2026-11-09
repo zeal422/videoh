@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.19.5] - 2026-11-09
+
+### Security
+
+- `bun audit` is clean. The last 15 dev-only entries clear through within-range
+  `bun audit fix` bumps for `brace-expansion`, `minimatch`, and `picomatch`,
+  plus one scoped override, `@typescript-eslint/typescript-estree>minimatch`
+  at `^11.0.5`. The lockfile moves to `lockfileVersion: 3`, which Bun older
+  than 1.4 cannot read; `vercel.json` installs Bun explicitly with
+  `--frozen-lockfile` so a package/lockfile mismatch fails the deployment
+  instead of re-resolving.
+
+### Changed
+
+- Bun moves from 1.3.14 to 1.4.4. No runtime dependency version changes and no
+  editor behavior changes. `bun run check` stays green at 95 files and 2,223
+  tests, and the dev and artifact batteries stay 70/70 with `BATTERY_EXIT=0`.
+- Timing medians on the same dependency graph show no measurable change: the
+  warm-cache install moved from 24 ms to 21 ms and one single-file vitest run
+  from 822 ms to 823 ms.
+
+### Tests and docs
+
+- `docs/testing.md` records the clean audit, the scoped override, the v3
+  consequence, and the explicit install guard. `ROADMAP.md` gains the
+  deferred-maintenance tracker, deployment notes name the guard, and
+  `LESSONS.md` records the release-commit composition lesson.
+
 ## [0.19.4] - 2026-11-07
 
 ### Changed
