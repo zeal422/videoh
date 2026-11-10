@@ -2,25 +2,31 @@ import type { EditorCommand } from './commands'
 import { firstFreeCaptionsName } from './commands'
 import {
   activeTracks,
-  createClip,
   createTextClip,
   docDuration,
   findClip,
-  firstCompatibleTrack,
   firstTargetedTrack,
   sequenceTracks,
+  trackKindForMedia,
   uid,
 } from './factories'
-import { DEFAULT_IMAGE_DURATION, DEFAULT_TEXT_DURATION, MIN_SPLIT_HEADROOM } from './constants'
+import { DEFAULT_TEXT_DURATION, MIN_SPLIT_HEADROOM } from './constants'
+import { type PlacementMode, type SourceRange } from './sequence-ops'
 import {
-  normalizePlacementSpan,
-  planInsert,
-  planOverwrite,
-  type PlacementMode,
-  type PlacementRefusal,
-  type SourceRange,
-} from './sequence-ops'
-import { assetHasAudio, canLinkClips, linkedClips, resolveSelectionGroups } from './links'
+  avPairCommands,
+  clipFromAsset,
+  pendingTrackId,
+  planMediaPlacement,
+  resolveMediaTarget,
+  type PlacementOutcome,
+} from './placement'
+import {
+  assetHasAudio,
+  canLinkClips,
+  linkedClips,
+  resolveSelectionGroups,
+  splitGroupIsUnlocked,
+} from './links'
 import {
   createMarker,
   markerFromSelection,
@@ -29,7 +35,7 @@ import {
   type MarkerSelection,
 } from './markers'
 import { clamp } from './time'
-import type { Clip, Doc, MediaAsset, MediaKind, TextStyle, Track, TrackKind } from './types'
+import type { Clip, Doc, MediaAsset, TextStyle } from './types'
 
 /**
  * High-level UI actions that compose MULTIPLE commands into a single undoable
@@ -37,152 +43,9 @@ import type { Clip, Doc, MediaAsset, MediaKind, TextStyle, Track, TrackKind } fr
  * Call them with `store.apply(commandsToAddMedia(...))`.
  */
 
-/** Track id the UI pre-generates for a to-be-created track inside a composite action. */
-function pendingTrackId(): string {
-  return uid('track')
-}
-
-/** The track kind that hosts the given media kind (images go on video tracks). */
-export function trackKindForMedia(kind: MediaKind): 'video' | 'audio' {
-  return kind === 'audio' ? 'audio' : 'video'
-}
-
-/** The source window a placement maps onto its clips (ranged source edits). */
-interface SourceWindow {
-  inPoint: number
-  duration: number
-}
-
-/** Whole-asset placement duration (images have no intrinsic length). */
-function clipDurationFor(asset: MediaAsset): number {
-  return asset.kind === 'image' || asset.duration <= 0 ? DEFAULT_IMAGE_DURATION : asset.duration
-}
-
-function clipFromAsset(asset: MediaAsset, start: number, sourceWindow?: SourceWindow | null): Clip {
-  return createClip({
-    mediaId: asset.id,
-    start: Math.max(0, start),
-    duration: sourceWindow ? sourceWindow.duration : clipDurationFor(asset),
-    inPoint: sourceWindow ? sourceWindow.inPoint : 0,
-  })
-}
-
-/**
- * A video asset with audio becomes a LINKED PAIR (Premiere A/V links): the
- * video part on the resolved video track and an audio-only twin on the first
- * audio track, sharing one `linkId`. The twin is the pair's sole audio
- * carrier (the engine shadows the video part's embedded audio — links.ts),
- * so the user gets independent video/audio lanes they can unlink, cut or
- * delete separately.
- */
-function avPairCommands(
-  doc: Doc,
-  asset: MediaAsset,
-  start: number,
-  videoTrackId: string,
-  /** When the doc has no audio track: the atIndex for the one to create. */
-  audioTrackAtIndex?: number,
-  /** Lanes the user turned off: the twin avoids them (legacy lane when none fit). */
-  untargetedTrackIds: readonly string[] = [],
-  /** Ranged source placement: the SAME window on both halves (equal spans). */
-  sourceWindow?: SourceWindow | null,
-  sequenceId?: string,
-): EditorCommand[] {
-  const linkId = uid('link')
-  const videoClip: Clip = { ...clipFromAsset(asset, start, sourceWindow), linkId }
-  const audioClip: Clip = {
-    ...clipFromAsset(asset, start, sourceWindow),
-    linkId,
-    audioOnly: true,
-  }
-  const commands: EditorCommand[] = []
-
-  const audioTrack = resolveAudioTwinTrack(doc, untargetedTrackIds, sequenceId)
-  let audioTrackId: string
-  if (audioTrack) {
-    audioTrackId = audioTrack.id
-  } else {
-    // Explicit atIndex (instead of the default head-of-kind insert) avoids
-    // the convention re-sort, which would clobber an explicitly layered
-    // track order.
-    audioTrackId = pendingTrackId()
-    commands.push({
-      type: 'addTrack',
-      kind: 'audio',
-      trackId: audioTrackId,
-      atIndex: audioTrackAtIndex ?? sequenceTracks(doc, sequenceId).length,
-      ...(sequenceId ? { sequenceId } : {}),
-    })
-  }
-  commands.push({ type: 'addClip', trackId: videoTrackId, clip: videoClip })
-  commands.push({ type: 'addClip', trackId: audioTrackId, clip: audioClip })
-  return commands
-}
-
-/**
- * Commands that place a media asset at `start`: on `trackId` when compatible
- * (positional, so targeting does not apply), otherwise on the first TARGETED
- * compatible track, falling back to the first compatible track when nothing of
- * that kind is targeted, otherwise on a newly created track.
- * Returns null for impossible placements.
- *
- * A video asset with a decodable audio track is placed as a LINKED PAIR:
- * video part on the video track + audio-only twin on the audio track
- * (Premiere-style A/V split on insert).
- */
-/**
- * The lane a lane-less placement lands on, in the documented order: the
- * pointed lane when it fits, then the first TARGETED compatible lane, then
- * the first compatible lane, then a newly created one. `newTrackId` is set
- * only for the created case (the caller emits the `addTrack` command).
- */
-function resolveMediaTarget(
-  doc: Doc,
-  asset: MediaAsset,
-  trackId: string | undefined,
-  untargetedTrackIds: readonly string[],
-  sequenceId?: string,
-): { target: Track; newTrackId: string | null } {
-  const requested = trackId
-    ? sequenceTracks(doc, sequenceId).find((t) => t.id === trackId)
-    : undefined
-  let target: Track | undefined =
-    requested && trackFitsAsset(requested, asset.kind) ? requested : undefined
-  if (!target) {
-    target = firstTargetedTrack(
-      doc,
-      untargetedTrackIds,
-      (t) => trackFitsAsset(t, asset.kind),
-      sequenceId,
-    )
-  }
-  if (!target) {
-    // Nothing targeted of that kind: the legacy order still applies.
-    target = firstCompatibleTrack(doc, asset.kind, sequenceId)
-  }
-  if (!target) {
-    const kind = trackKindForMedia(asset.kind)
-    const newId = pendingTrackId()
-    return { target: { id: newId, kind, name: '', clips: [] }, newTrackId: newId }
-  }
-  return { target, newTrackId: null }
-}
-
-/**
- * The audio lane an A/V pair's twin lands on: the first TARGETED audio lane,
- * else the legacy first audio lane. Shared by the pair builder and the
- * placement planner, so both resolve the same twin lane.
- */
-function resolveAudioTwinTrack(
-  doc: Doc,
-  untargetedTrackIds: readonly string[],
-  sequenceId?: string,
-): Track | undefined {
-  return (
-    firstTargetedTrack(doc, untargetedTrackIds, (t) => t.kind === 'audio', sequenceId) ??
-    sequenceTracks(doc, sequenceId).find((t) => t.kind === 'audio')
-  )
-}
+// ————— add-media routes —————
+// The lane resolution, A/V pair builder, and source-window helpers live in
+// `placement.ts`. These routes keep their existing signatures.
 
 export function commandsToAddMedia(
   doc: Doc,
@@ -192,6 +55,7 @@ export function commandsToAddMedia(
   untargetedTrackIds: readonly string[] = [],
   sequenceId?: string,
 ): EditorCommand[] | null {
+  if (!Number.isFinite(start)) return null
   const { target, newTrackId } = resolveMediaTarget(
     doc,
     asset,
@@ -249,6 +113,7 @@ export function commandsToAddMediaInNewTrack(
   untargetedTrackIds: readonly string[] = [],
   sequenceId?: string,
 ): EditorCommand[] {
+  if (!Number.isFinite(start)) return []
   const kind = trackKindForMedia(asset.kind)
   const newId = pendingTrackId()
   const commands: EditorCommand[] = [
@@ -285,6 +150,7 @@ export function commandsToAddText(
   // nothing, so `T` behavior is unchanged.
   style?: TextStyle,
 ): EditorCommand[] {
+  if (!Number.isFinite(start)) return []
   const commands: EditorCommand[] = []
   let textTrack =
     firstTargetedTrack(doc, untargetedTrackIds, (t) => t.kind === 'text', sequenceId) ??
@@ -455,14 +321,19 @@ export function commandsToSplitClipsAt(
 
 /**
  * Premiere "Add Edit" (Ctrl+K) with NO selection: splits every clip on every
- * track that the playhead crosses (link groups treated as units).
+ * unlocked track that the playhead crosses (link groups treated as units).
+ * Locked lanes are skipped: because the cut is implicit across all tracks, one
+ * locked crossing clip must not refuse the otherwise eligible clips. A linked
+ * group with any locked member is skipped whole.
  */
 export function commandsToSplitAllAt(
   doc: Doc,
   atTime: number,
   activeSequencePath: readonly string[] = [],
 ): EditorCommand[] | null {
-  const all = activeTracks(doc, activeSequencePath).flatMap((t) => t.clips)
+  const all = activeTracks(doc, activeSequencePath)
+    .flatMap((t) => t.clips)
+    .filter((clip) => splitGroupIsUnlocked(doc, clip.id))
   return splitGroupMembers(
     doc,
     resolveSelectionGroups(
@@ -570,37 +441,10 @@ function requireTrackIdOf(doc: Doc, clipId: string): string {
 }
 
 /**
- * Lane/material compatibility (the same rule `commandsToAddMedia` applies):
- * video/image material goes on video lanes, audio on audio lanes, text clips
- * only on text lanes. Exported for the drop routing's explicit kind check.
- */
-export function trackFitsAsset(track: Track, kind: MediaKind): boolean {
-  if (track.kind === 'text') return false
-  if (track.kind === 'video') return kind === 'video' || kind === 'image'
-  return kind === 'audio'
-}
-
-/**
- * Outcome of a placement action: a command batch to apply, or the refusal
- * that stopped it (the UI maps each reason to its one toast). `commands` and
- * `refusal` are mutually exclusive; a successful batch carries a null refusal.
- */
-export interface PlacementOutcome {
-  commands: EditorCommand[] | null
-  refusal: PlacementRefusal | null
-}
-
-function refused(refusal: PlacementRefusal): PlacementOutcome {
-  return { commands: null, refusal }
-}
-
-/**
- * A lane-drop placement in insert or overwrite mode: resolve the placement
- * lanes (the pointed/compatible lane plus, for an A/V pair, the same audio
- * twin lane the pair builder uses), plan the displacement through the shared
- * planner, then append the placement itself. One undoable batch.
- * `place` mode delegates to `commandsToAddMedia` (today's behavior,
- * including its silent lane relocation).
+ * A lane-drop placement in insert or overwrite mode: the shared planner owns
+ * lane resolution, the displacement plan, and the placed clip or A/V pair.
+ * `place` mode delegates to `commandsToAddMedia` (today's behavior, including
+ * its silent lane relocation).
  */
 export function commandsToPlaceMedia(
   doc: Doc,
@@ -611,69 +455,24 @@ export function commandsToPlaceMedia(
   untargetedTrackIds: readonly string[] = [],
   sequenceId?: string,
 ): PlacementOutcome {
+  if (!Number.isFinite(start)) return { commands: null, refusal: 'time' }
   if (mode === 'place') {
     const commands = commandsToAddMedia(doc, asset, start, trackId, untargetedTrackIds, sequenceId)
-    return commands ? { commands, refusal: null } : refused('span')
+    return commands ? { commands, refusal: null } : { commands: null, refusal: 'span' }
   }
-  // The span pre-check runs before anything is built, so a refused placement
-  // never reaches `addClip`'s own floor mid-batch.
-  const span = normalizePlacementSpan(clipDurationFor(asset))
-  if (span === null) return refused('span')
-
-  const { target, newTrackId } = resolveMediaTarget(
-    doc,
-    asset,
+  return planMediaPlacement(doc, asset, start, mode, {
     trackId,
     untargetedTrackIds,
     sequenceId,
-  )
-  const paired = asset.kind === 'video' && assetHasAudio(asset)
-  const laneIds = [target.id]
-  if (paired) {
-    const twin = resolveAudioTwinTrack(doc, untargetedTrackIds, sequenceId)
-    if (twin) laneIds.push(twin.id)
-  }
-  const plan =
-    mode === 'insert'
-      ? planInsert(doc, laneIds, start, span, sequenceId)
-      : planOverwrite(doc, laneIds, start, span, sequenceId)
-  if (!plan.commands) return refused(plan.refusal)
-
-  const commands: EditorCommand[] = []
-  if (newTrackId) {
-    commands.push({
-      type: 'addTrack',
-      kind: trackKindForMedia(asset.kind),
-      trackId: newTrackId,
-      ...(sequenceId ? { sequenceId } : {}),
-    })
-  }
-  commands.push(...plan.commands)
-  if (paired) {
-    commands.push(
-      ...avPairCommands(
-        doc,
-        asset,
-        start,
-        target.id,
-        undefined,
-        untargetedTrackIds,
-        null,
-        sequenceId,
-      ),
-    )
-  } else {
-    commands.push({ type: 'addClip', trackId: target.id, clip: clipFromAsset(asset, start) })
-  }
-  return { commands, refusal: null }
+  })
 }
 
 /**
  * Three-point placement from the Source monitor: the marked source range (or
  * the whole asset) lands at the sequence playhead in insert or overwrite
  * mode. The lane resolution is the targeting rule (no pointed lane on this
- * route); images ignore `range` and take `DEFAULT_IMAGE_DURATION`. Both
- * halves of an A/V pair receive the SAME window, so the pair stays aligned.
+ * route); images ignore `range`. Both halves of an A/V pair receive the SAME
+ * window, so the pair stays aligned.
  */
 export function commandsToPlaceSource(
   doc: Doc,
@@ -684,65 +483,29 @@ export function commandsToPlaceSource(
   untargetedTrackIds: readonly string[] = [],
   sequenceId?: string,
 ): PlacementOutcome {
-  const effective = asset.kind === 'image' || asset.duration <= 0 ? null : range
-  const base = effective ? effective.outPoint - effective.inPoint : clipDurationFor(asset)
-  const span = normalizePlacementSpan(base)
-  if (span === null) return refused('span')
-  const sourceWindow: SourceWindow | null = effective
-    ? { inPoint: Math.max(0, effective.inPoint), duration: span }
-    : null
-
-  const { target, newTrackId } = resolveMediaTarget(
-    doc,
-    asset,
-    undefined,
+  // `place` is not a Source-monitor mode; the route has always treated every
+  // non-insert mode as overwrite.
+  return planMediaPlacement(doc, asset, start, mode === 'insert' ? 'insert' : 'overwrite', {
+    range,
     untargetedTrackIds,
     sequenceId,
-  )
-  const paired = asset.kind === 'video' && assetHasAudio(asset)
-  const laneIds = [target.id]
-  if (paired) {
-    const twin = resolveAudioTwinTrack(doc, untargetedTrackIds, sequenceId)
-    if (twin) laneIds.push(twin.id)
-  }
-  const plan =
-    mode === 'insert'
-      ? planInsert(doc, laneIds, start, span, sequenceId)
-      : planOverwrite(doc, laneIds, start, span, sequenceId)
-  if (!plan.commands) return refused(plan.refusal)
-
-  const commands: EditorCommand[] = []
-  if (newTrackId) {
-    commands.push({
-      type: 'addTrack',
-      kind: trackKindForMedia(asset.kind),
-      trackId: newTrackId,
-      ...(sequenceId ? { sequenceId } : {}),
-    })
-  }
-  commands.push(...plan.commands)
-  if (paired) {
-    commands.push(
-      ...avPairCommands(
-        doc,
-        asset,
-        start,
-        target.id,
-        undefined,
-        untargetedTrackIds,
-        sourceWindow,
-        sequenceId,
-      ),
-    )
-  } else {
-    commands.push({
-      type: 'addClip',
-      trackId: target.id,
-      clip: clipFromAsset(asset, start, sourceWindow),
-    })
-  }
-  return { commands, refusal: null }
+  })
 }
+
+// Re-exported for the add-media routes and existing callers/tests. The leaf
+// definitions live in `placement.ts` and `factories.ts`.
+export {
+  avPairCommands,
+  clipDurationFor,
+  clipFromAsset,
+  planMediaPlacement,
+  resolveAudioTwinTrack,
+  resolveMediaTarget,
+  type MediaPlacementOptions,
+  type PlacementOutcome,
+  type SourceWindow,
+} from './placement'
+export { trackFitsAsset, trackKindForMedia } from './factories'
 
 // ————— compound clips (0.8.1) —————
 

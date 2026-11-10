@@ -16,7 +16,6 @@ import {
   VideoSampleSink,
   VideoSampleSource,
 } from 'mediabunny'
-import { EQ_DB_MAX, EQ_DB_MIN } from '../constants'
 import {
   SOURCE_END_MARGIN,
   clampSourceTime,
@@ -38,7 +37,7 @@ import {
   paintSoftRectMask,
   paintSpatialMask,
 } from '../playback/compositor'
-import { denoiseFilters } from '../playback/denoise'
+import { buildAudioChain } from '../playback/audio-chain'
 import { applyChromaKeyToRgba, buildMatteMask, parseKeyColor } from '../chroma-key'
 import {
   areBlurSamplesIdentical,
@@ -51,7 +50,6 @@ import {
   isCropConsumed,
   resolveMatteTrack,
 } from '../effects'
-import { clamp } from '../time'
 import {
   blendWeight,
   clipCrossfadeSchedule,
@@ -920,8 +918,6 @@ async function scheduleTracks(
       // Crossfade ramps live on their own node: the preview mixer multiplies
       // them into the clip gain, and two gain nodes multiply the same way.
       const xfade = ctx.createGain()
-      const panner = ctx.createStereoPanner()
-      panner.pan.value = clampPan(clip.pan ?? 0)
 
       // Volume automation: one pure schedule (plan side) applied here, shifted
       // into the sequence's absolute timeline by `offset`.
@@ -936,50 +932,13 @@ async function scheduleTracks(
         else xfade.gain.setValueAtTime(ev.value, t)
       }
 
-      // EQ + compressor chain (same topology as the preview graph). The band
-      // gains are clamped to the shared limits exactly like the preview, so a
-      // malformed doc (a hand-edited file) cannot render two different mixes.
-      let head: AudioNode = source
-      if (clip.eq) {
-        const low = ctx.createBiquadFilter()
-        low.type = 'lowshelf'
-        low.frequency.value = 200
-        low.gain.value = clamp(clip.eq.low, EQ_DB_MIN, EQ_DB_MAX)
-        const mid = ctx.createBiquadFilter()
-        mid.type = 'peaking'
-        mid.frequency.value = 1000
-        mid.Q.value = 1
-        mid.gain.value = clamp(clip.eq.mid, EQ_DB_MIN, EQ_DB_MAX)
-        const high = ctx.createBiquadFilter()
-        high.type = 'highshelf'
-        high.frequency.value = 4000
-        high.gain.value = clamp(clip.eq.high, EQ_DB_MIN, EQ_DB_MAX)
-        head.connect(low)
-        low.connect(mid)
-        mid.connect(high)
-        head = high
-      }
-      if (clip.denoise) {
-        for (const filter of denoiseFilters(ctx)) {
-          head.connect(filter)
-          head = filter
-        }
-      }
-      if (clip.compressor) {
-        const comp = ctx.createDynamicsCompressor()
-        comp.threshold.value = -24
-        comp.knee.value = 12
-        comp.ratio.value = 4
-        comp.attack.value = 0.005
-        comp.release.value = 0.18
-        head.connect(comp)
-        head = comp
-      }
-
+      // EQ, denoise, panner, compressor: the same builder the preview uses.
+      // Panning therefore precedes both the compressor and the gain stage, and
+      // a malformed doc (a hand-edited file) cannot render two different mixes.
+      const { head } = buildAudioChain(ctx, source, clip)
       head.connect(gain)
       gain.connect(xfade)
-      xfade.connect(panner)
-      panner.connect(master)
+      xfade.connect(master)
 
       // The curve (any shape) overrides the static rate; a flat curve's rate
       // is a constant the buffer source resamples exactly like a speed.
@@ -1051,10 +1010,6 @@ function docHasAudibleClips(doc: Doc): boolean {
     )
   }
   return scan(doc.project.tracks)
-}
-
-function clampPan(p: number): number {
-  return Math.min(1, Math.max(-1, p))
 }
 
 /** Decodes an audio file into an AudioBuffer via the offline context. */

@@ -131,6 +131,8 @@ any of them. The editor's own components live in `src/components/editor/`.
 ```text
 src/hooks/
 ├── editor/useEditorKeyboard.ts   # global keyboard map (Premiere-verified); see README
+├── editor/action-context.ts      # browser-bound adapter filling the pure executor's snapshot/callbacks
+├── editor/useKeyframeGraphDrag.ts # keyframe dot pointer lifetime + transient token, math in keyframe-graph-gesture.ts
 ├── editor/gesture-state.ts       # isAutomationGestureLive: the tool-change guard shared with the toolbar
 ├── use-mobile.ts                 # responsive breakpoint hook (shadcn)
 └── use-toast.ts                  # toast store (shadcn)
@@ -153,7 +155,7 @@ stores. This is the layer that unit tests target.
 
 ```text
 src/lib/editor/
-├── types.ts              # Doc / Project / Track / Clip / MediaAsset / TextStyle
+├── types.ts              # Doc / Project / Track / Clip / MediaAsset / TextStyle / PendingRestore
 ├── constants.ts          # all tuning constants and limits
 ├── factories.ts          # uid + create* constructors, finders, compatibility checks, sourceTimeAt
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
@@ -167,9 +169,11 @@ src/lib/editor/
 ├── slip.ts               # pure Slip planner: source-window bounds, shared linked-pair delta
 ├── pen.ts                # pure keyframe Pen helpers: property selection, sampling, add/remove/nudge (0.16.0)
 ├── sequence-ops.ts       # insert/overwrite placement planner + source in/out range helpers (pure)
+├── placement.ts          # shared lane-drop / Source-monitor batch planner: lanes, A/V pair, source window (pure)
 ├── marquee.ts            # marquee (box) selection: lane-space rect math + group resolution (pure)
 ├── markers.ts            # markers: source-anchored clip mapping, navigation, colors, selection (pure)
 ├── keyframes.ts          # keyframe evaluation (linear + eased, from exact data or preset names), sanitize/clamp, split redistribution
+├── keyframe-graph-gesture.ts # pure keyframe-graph dot drag/nudge math (0.20.0)
 ├── ease-segment.ts       # per-segment easing DATA: bezier quad storage + exact de Casteljau subdivision
 ├── bezier.ts             # pure cubic-bezier timing solver for the easing presets
 ├── ducking.ts            # auto-duck keyframe analysis from waveform peaks
@@ -185,14 +189,15 @@ src/lib/editor/
 ├── links.ts              # multi-selection / A/V link-group helpers
 ├── clipboard.ts          # copy / cut / paste (module memory, outside undo)
 ├── actions.ts            # multi-command UI actions (add media/text, group ops, ripple delete)
+├── action-executor.ts    # policy-free dispatch for the menu, toolbar, and keyboard (pure)
 ├── store.ts              # zustand store: doc, history, transients, selection, playhead, zoom
 ├── serialization.ts      # .veproj.json v4 (v1, v2 and v3 still load): serialize / parse / hydrate
-├── persistence.ts        # debounced localStorage autosave + restore
+├── persistence.ts        # debounced localStorage autosave; readValidAutosave returns a typed PendingRestore
 ├── workspace.ts          # panel + keyframe-graph layout state (pure)
 ├── workspace-store.ts    # zustand wrapper over workspace.ts (layout + graph heights)
 ├── theme.ts              # appearance palette ids/labels + preference read/write (pure)
 ├── menus.ts              # menu bar model (pure)
-├── project-io.ts         # save / open / import-media browser helpers
+├── project-io.ts         # save / open / import-media browser helpers; installProject is the one install path
 ├── timeline-drop.ts      # drop-target geometry for drop-between-tracks
 ├── tracks.ts             # solo audibility + lock checks, removes the tracks an edit leaves empty (prune)
 ├── timeline-scroll.ts    # drag edge auto-scroll geometry + the shared zoom step (pure)
@@ -209,6 +214,7 @@ src/lib/editor/
 │   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate, blend partner, decode recovery
 │   ├── compositor.ts     # drawFrame + the draws the exporter shares: contain-fit geometry, text, crossfade, blends, the 3D LUT pass
 │   ├── denoise.ts        # noise-reduction biquad chain, shared by the preview mixer and the export mix
+│   ├── audio-chain.ts    # shared shaping builder: EQ, denoise, always-on panner (before compressor), compressor
 │   ├── scrub-source.ts   # WebCodecs paused/scrub frame source (worker or main-thread sink)
 │   ├── scrub-worker.ts   # module worker behind scrub-source: Inputs, CanvasSinks, coalesced decode
 │   ├── preview.ts        # preview engine singleton (attach/detach)
@@ -218,7 +224,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 95 test files (2223 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 100 test files (2302 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

@@ -3,10 +3,12 @@
  * transient (drag) commits, and doc replacement.
  */
 import { beforeEach, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import {
   activeTransientPointerId,
   currentTransientToken,
   isTransientActive,
+  normalizeCommittedState,
   stableDocForRender,
   useEditorStore,
 } from '../store'
@@ -551,6 +553,153 @@ describe('decode-recovery overlay state', () => {
     useEditorStore.getState().replaceDoc(createDoc())
     expect(useEditorStore.getState().mediaError).toBeNull()
     expect(useEditorStore.getState().projectEpoch).toBe(epoch + 1)
+  })
+})
+
+describe('pending restore (0.20.0)', () => {
+  it('stores a typed restore object and clears it on demand', () => {
+    const restore = { doc: createDoc(), warnings: ['trimmed'] }
+    useEditorStore.getState().setPendingRestore(restore)
+    expect(useEditorStore.getState().pendingRestore).toBe(restore)
+
+    useEditorStore.getState().clearPendingRestore()
+    expect(useEditorStore.getState().pendingRestore).toBeNull()
+  })
+})
+
+describe('GestureSlot and committed-state normalization (0.20.0)', () => {
+  const emptyState = () => ({
+    activeSequencePath: [],
+    selections: [],
+    selectedMarker: null,
+    eyedropper: null,
+    sourceAssetId: null,
+  })
+
+  it('GestureSlot is the only reader/writer of the transient fields', () => {
+    const source = readFileSync(new URL('../store.ts', import.meta.url), 'utf8')
+    const match = source.match(/class GestureSlot \{[\s\S]*?\n\}/)
+    expect(match).not.toBeNull()
+    const classBody = match![0]
+    // Comments can name a field without touching it; check executable text.
+    const outside = source
+      .replace(classBody, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '')
+    for (const field of ['baseDoc', 'display', 'pointer', 'slotToken']) {
+      expect(classBody).toContain(`private ${field}`)
+      expect(outside).not.toMatch(new RegExp(`\\b${field}\\b`))
+    }
+  })
+
+  it('drops deleted selection ids and a dangling marker selection', () => {
+    const doc = createDoc()
+    const next = normalizeCommittedState(
+      doc,
+      {
+        ...emptyState(),
+        selections: ['gone', 'also-gone'],
+        selectedMarker: { scope: 'sequence', markerId: 'gone' },
+      },
+      'commit',
+    )
+    expect(next.selections).toEqual([])
+    expect(next.selection).toBeNull()
+    expect(next.selectedMarker).toBeNull()
+  })
+
+  it('keeps valid ids in order, dedupes them, and drops dangling ids', () => {
+    const doc = createDoc()
+    doc.project.tracks[0].clips.push(createClip({ id: 'keep', start: 0, duration: 1 }))
+    const next = normalizeCommittedState(
+      doc,
+      { ...emptyState(), selections: ['keep', 'gone', 'keep', 'also-gone'] },
+      'commit',
+    )
+    expect(next.selections).toEqual(['keep'])
+    expect(next.selection).toBe('keep')
+  })
+
+  it('truncates a partially valid path at the first broken edge', () => {
+    const doc = createDoc()
+    const rootVideo = doc.project.tracks.find((t) => t.kind === 'video')!
+    rootVideo.clips.push({ id: 'rootA', sequenceId: 'A', start: 0, duration: 1, inPoint: 0 })
+    doc.project.sequences = [
+      { id: 'A', name: 'A', tracks: [{ id: 'ta', kind: 'video', name: 'V1', clips: [] }] },
+      { id: 'B', name: 'B', tracks: [{ id: 'tb', kind: 'video', name: 'V1', clips: [] }] },
+    ]
+
+    const next = normalizeCommittedState(
+      doc,
+      { ...emptyState(), activeSequencePath: ['A', 'B'] },
+      'commit',
+    )
+    expect(next.activeSequencePath).toEqual(['A'])
+  })
+
+  it('truncates an active path whose sequence was pruned', () => {
+    const doc = createDoc()
+    const next = normalizeCommittedState(
+      doc,
+      { ...emptyState(), activeSequencePath: ['gone'] },
+      'commit',
+    )
+    expect(next.activeSequencePath).toEqual([])
+  })
+
+  it('normalizes eyedropper and source state on apply, but not on commit', () => {
+    const doc = createDoc()
+    const state = {
+      ...emptyState(),
+      eyedropper: { clipId: 'gone', effectId: 'effect' },
+      sourceAssetId: 'gone',
+    }
+
+    expect(normalizeCommittedState(doc, state, 'apply')).toMatchObject({
+      eyedropper: null,
+      sourceAssetId: null,
+      sourceIn: null,
+      sourceOut: null,
+      sourcePlayhead: 0,
+    })
+    const commit = normalizeCommittedState(doc, state, 'commit')
+    expect(commit).not.toHaveProperty('eyedropper')
+    expect(commit).not.toHaveProperty('sourceAssetId')
+    const undo = normalizeCommittedState(doc, state, 'undo')
+    expect(undo.eyedropper).toBeNull()
+    expect(undo).not.toHaveProperty('sourceAssetId')
+    const redo = normalizeCommittedState(doc, state, 'redo')
+    expect(redo.eyedropper).toBeNull()
+    expect(redo).not.toHaveProperty('sourceAssetId')
+  })
+
+  it('commitTransient preserves eyedropper and source state while apply clears it', () => {
+    const media = createMediaAsset({
+      kind: 'video',
+      name: 'source.mp4',
+      duration: 10,
+      url: 'blob:source',
+    })
+    useEditorStore.setState({ doc: { ...createDoc(), media: [media] } })
+    useEditorStore.getState().setEyedropper({ clipId: 'gone', effectId: 'effect' })
+    useEditorStore.getState().setSourceAsset(media.id)
+    useEditorStore.getState().setSourcePlayhead(1)
+
+    useEditorStore.getState().beginTransient(1)
+    useEditorStore
+      .getState()
+      .applyTransient({ type: 'setProjectSettings', patch: { name: 'changed' } })
+    useEditorStore.getState().commitTransient()
+
+    expect(useEditorStore.getState().eyedropper).toEqual({
+      clipId: 'gone',
+      effectId: 'effect',
+    })
+    expect(useEditorStore.getState().sourceAssetId).toBe(media.id)
+
+    useEditorStore.getState().apply({ type: 'removeMediaAsset', mediaId: media.id })
+    expect(useEditorStore.getState().eyedropper).toBeNull()
+    expect(useEditorStore.getState().sourceAssetId).toBeNull()
   })
 })
 

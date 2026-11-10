@@ -243,8 +243,10 @@ describe('media pool layout + dedup wiring', () => {
     expect(io).toMatch(/export function isCurrentProjectLoad/)
     expect(io).toMatch(/export async function openProjectFile\(file: File\)/)
     expect(io).toMatch(/export async function openProjectFromPicker/)
-    // The menu picks; the toolbar hands over the File it already has.
-    expect(read('src/components/editor/MenuBar.tsx')).toMatch(/openProjectFromPicker\(\)/)
+    // The menu delegates through the shared executor; the toolbar hands over
+    // the File it already has.
+    expect(read('src/components/editor/MenuBar.tsx')).toMatch(/executeAction/)
+    expect(read('src/hooks/editor/action-context.ts')).toMatch(/openProjectFromPicker\(\)/)
     expect(read('src/components/editor/Toolbar.tsx')).toMatch(/openProjectFile\(file\)/)
     for (const path of ['src/components/editor/Toolbar.tsx', 'src/components/editor/MenuBar.tsx']) {
       // No component may keep its own private load counter anymore.
@@ -276,22 +278,34 @@ describe('media pool layout + dedup wiring', () => {
     expect(toolbar).toMatch(/if \(file\) void handleLoadFile\(file\)/)
   })
 
-  it('invalidates in-flight loads whenever a project is installed another way', () => {
-    // File > New installs an empty project without an await of its own; the
-    // bump stops a pending open from overwriting it. The restore path bumps
-    // too, in the same step as its install.
+  it('routes every project install through one installProject path', () => {
+    // File > New and the autosave restore both used to inline bump + revoke +
+    // replaceDoc (and the restore also cleared the banner by hand). One helper
+    // now owns the whole install, so no path can leave a stale restore banner
+    // or a load that can clobber a newer project.
     const menu = read('src/components/editor/MenuBar.tsx')
-    const newCase = menu.indexOf("case 'file.newProject':")
-    const bumpAt = menu.indexOf('bumpProjectGeneration()')
-    const installAt = menu.indexOf('store.replaceDoc(createDoc())')
-    expect(newCase).toBeGreaterThan(-1)
-    expect(bumpAt).toBeGreaterThan(newCase)
-    expect(installAt).toBeGreaterThan(bumpAt)
+    expect(menu).toMatch(/executeAction/)
+    const context = read('src/hooks/editor/action-context.ts')
+    const menuInstallAt = context.indexOf('installProject(createDoc())')
+    expect(menuInstallAt).toBeGreaterThan(-1)
+    expect(context).not.toMatch(/store\.replaceDoc\(createDoc\(\)\)/)
 
     const shell = read('src/components/editor/EditorShell.tsx')
-    const shellBumpAt = shell.indexOf('bumpProjectGeneration()')
-    const shellInstallAt = shell.indexOf('.replaceDoc(doc)')
-    expect(shellBumpAt).toBeGreaterThan(-1)
-    expect(shellInstallAt).toBeGreaterThan(shellBumpAt)
+    expect(shell).toMatch(/installProject\(doc\)/)
+    expect(shell).not.toMatch(/\.replaceDoc\(doc\)/)
+
+    const io = read('src/lib/editor/project-io.ts')
+    const installAt = io.indexOf('export function installProject')
+    const installEnd = io.indexOf('\n}', installAt)
+    expect(installAt).toBeGreaterThan(-1)
+    const body = io.slice(installAt, installEnd)
+    const bumpAt = body.indexOf('bumpProjectGeneration()')
+    const revokeAt = body.indexOf('revokeAllProxies()')
+    const replaceAt = body.indexOf('.replaceDoc(doc)')
+    const clearAt = body.indexOf('clearPendingRestore()')
+    expect(bumpAt).toBeGreaterThan(-1)
+    expect(revokeAt).toBeGreaterThan(bumpAt)
+    expect(replaceAt).toBeGreaterThan(revokeAt)
+    expect(clearAt).toBeGreaterThan(replaceAt)
   })
 })

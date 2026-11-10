@@ -560,6 +560,17 @@ export function TimelinePanel() {
       t = applySnap(t, points, SNAP_THRESHOLD_PX / store.pxPerSec).time
     }
 
+    // A non-finite drop time has no position to place at. The lane and
+    // new-track paths both use `t`, so refuse once before either can build.
+    if (!Number.isFinite(t)) {
+      toast({
+        title: 'Placement refused',
+        description: placementRefusalMessage('time'),
+        variant: 'destructive',
+      })
+      return
+    }
+
     if (target.mode === 'lane') {
       const track = tracks[target.index]
       const incompatible = !trackFitsAsset(track, asset.kind)

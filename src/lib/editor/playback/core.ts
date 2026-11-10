@@ -9,8 +9,8 @@ import {
   sourceTimeAt,
 } from '../factories'
 import { blendPartnerTime, blendWeight } from '../frame-blend'
-import { denoiseFilters } from './denoise'
-import { EQ_DB_MAX, EQ_DB_MIN, KEYFRAME_TIMEOUT_MS, SPEED_MAX, SPEED_MIN } from '../constants'
+import { buildAudioChain } from './audio-chain'
+import { KEYFRAME_TIMEOUT_MS, SPEED_MAX, SPEED_MIN } from '../constants'
 import { crossfadeFactor } from '../transition'
 import { hasLinkedAudioTwin, linkGroupChangesRate } from '../links'
 import { animatedValue, constantTimeScaleRate, hasTimeScaleRamp } from '../keyframes'
@@ -307,10 +307,6 @@ export class PlaybackCore {
     { gain: GainNode; sig: string; nodes: AudioNode[]; el: HTMLMediaElement }
   >()
   private masterVolume = 1
-  /** EQ band frequencies for the three-band biquad stack. */
-  private static readonly EQ_LO = 200
-  private static readonly EQ_MID = 1000
-  private static readonly EQ_HIGH = 4000
 
   private raf = 0
   private playingState = false
@@ -2029,54 +2025,8 @@ export class PlaybackCore {
       }
       if (!entry) {
         const gain = this.audio.createGain()
-        const nodes: AudioNode[] = []
-        let head: AudioNode = node
-        // Three-band EQ (low shelf / mid peak / high shelf) when configured.
-        if (clip.eq) {
-          const low = this.audio.createBiquadFilter()
-          low.type = 'lowshelf'
-          low.frequency.value = PlaybackCore.EQ_LO
-          low.gain.value = clamp(clip.eq.low, EQ_DB_MIN, EQ_DB_MAX)
-          const mid = this.audio.createBiquadFilter()
-          mid.type = 'peaking'
-          mid.frequency.value = PlaybackCore.EQ_MID
-          mid.Q.value = 1
-          mid.gain.value = clamp(clip.eq.mid, EQ_DB_MIN, EQ_DB_MAX)
-          const high = this.audio.createBiquadFilter()
-          high.type = 'highshelf'
-          high.frequency.value = PlaybackCore.EQ_HIGH
-          high.gain.value = clamp(clip.eq.high, EQ_DB_MIN, EQ_DB_MAX)
-          head.connect(low)
-          low.connect(mid)
-          mid.connect(high)
-          head = high
-          nodes.push(low, mid, high)
-        }
-        if (clip.denoise) {
-          for (const filter of denoiseFilters(this.audio)) {
-            head.connect(filter)
-            head = filter
-            nodes.push(filter)
-          }
-        }
-        if (clip.compressor) {
-          const comp = this.audio.createDynamicsCompressor()
-          comp.threshold.value = -24
-          comp.knee.value = 12
-          comp.ratio.value = 4
-          comp.attack.value = 0.005
-          comp.release.value = 0.18
-          head.connect(comp)
-          head = comp
-          nodes.push(comp)
-        }
-        if ((clip.pan ?? 0) !== 0 && 'createStereoPanner' in this.audio) {
-          const panner = this.audio.createStereoPanner()
-          panner.pan.value = clamp(clip.pan ?? 0, -1, 1)
-          head.connect(panner)
-          head = panner
-          nodes.push(panner)
-        }
+        // EQ, denoise, panner, compressor: one shared topology with export.
+        const { head, nodes } = buildAudioChain(this.audio, node, clip)
         head.connect(gain)
         gain.connect(this.masterGain)
         entry = { gain, sig, nodes, el }

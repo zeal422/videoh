@@ -81,7 +81,10 @@ export interface MenuContext {
   selectionCount: number
   /** The timeline holds at least one clip (Select All is meaningful). */
   hasClips: boolean
-  /** The playhead is strictly inside at least one selected clip (split is possible). */
+  /**
+   * "Add Edit" is possible: with a selection, the playhead is strictly inside
+   * at least one selected group; with none, it crosses a splittable clip.
+   */
   canSplit: boolean
   /** The selected clip has a `muted` flag (audio-bearing media). */
   selectionHasAudio: boolean
@@ -238,7 +241,7 @@ export const MENU_SPECS: MenuSpec[] = [
       {
         id: 'clip.split',
         kind: 'item',
-        label: 'Split at Playhead',
+        label: 'Add Edit',
         action: 'clip.split',
         shortcut: 'Ctrl+K',
         enabled: canSplit,

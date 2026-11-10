@@ -496,6 +496,22 @@ export function clipFitsTrack(doc: Doc, clip: Clip, track: Track): boolean {
 }
 
 /**
+ * Lane/material compatibility (the same rule every placement route applies):
+ * video/image material goes on video lanes, audio on audio lanes, text clips
+ * only on text lanes.
+ */
+export function trackFitsAsset(track: Track, kind: MediaKind): boolean {
+  if (track.kind === 'text') return false
+  if (track.kind === 'video') return kind === 'video' || kind === 'image'
+  return kind === 'audio'
+}
+
+/** The track kind that hosts the given media kind (images go on video tracks). */
+export function trackKindForMedia(kind: MediaKind): 'video' | 'audio' {
+  return kind === 'audio' ? 'audio' : 'video'
+}
+
+/**
  * First track (topmost) that can host the given media kind, if any. Scoped to
  * the owner sequence (`sequenceId` undefined = root).
  */
@@ -504,11 +520,7 @@ export function firstCompatibleTrack(
   kind: MediaKind,
   sequenceId?: string,
 ): Track | undefined {
-  return sequenceTracks(doc, sequenceId).find((t) => {
-    if (t.kind === 'text') return false
-    if (t.kind === 'video') return kind === 'video' || kind === 'image'
-    return kind === 'audio'
-  })
+  return sequenceTracks(doc, sequenceId).find((track) => trackFitsAsset(track, kind))
 }
 
 /**

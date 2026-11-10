@@ -168,8 +168,8 @@ Stable hooks used across flows and tests:
 - The status bar reads "N clips selected"; linked clips show a link badge and both halves highlight.
 - **Right-click** a clip for the context menu (Cut, Copy, Paste at playhead, Split at playhead,
   Duplicate, Link, Unlink, Ripple Delete, Delete). Right-click keeps an existing multi-selection.
-- **Ctrl+L** is a smart toggle: unlinks when the selection is linked, otherwise links it. `Link` needs
-  ≥2 non-text clips from ≥2 distinct groups.
+- **Ctrl+L** is a smart toggle: unlinks when the selection is linked, otherwise links it. The Clip > Link
+  menu row links or merges only; Unlink is explicit. `Link` needs ≥2 non-text clips from ≥2 distinct groups.
 - **Razor tool (`C`)** cuts the clicked clip's group exactly at the pointer; `V` returns to select.
 - **Ripple trim (`B`)** trims one clip edge and shifts every later clip on the SAME track by the
   same end delta. The edited clip's start stays anchored. A head trim changes the duration, and on a
@@ -227,8 +227,9 @@ Stable hooks used across flows and tests:
   behavior: its head shows the span's HIGH source end and its tail the LOW one, so a head move holds the
   low anchor and a tail move holds the high one, and either edge reveals the source on its own side
   rather than sliding the picture under the drag.
-- **Split** — `Ctrl+K` (Add Edit) splits every clip the playhead crosses; with a selection it splits
-  only the selected groups. Both halves of a link group re-pair with a single fresh `linkId`.
+- **Split** — `Ctrl+K` (Add Edit) splits every unlocked clip the playhead crosses; locked lanes and
+  any link group with a locked member are skipped. With a selection it splits only the selected groups.
+  Both halves of a link group re-pair with a single fresh `linkId`.
 - **Duplicate (`Ctrl+Shift+/`)** copies the group butt-to-tail with an independent fresh link.
 - **Delete** removes the whole link group; **Ripple Delete (`Shift+Del`)** also closes the gap on each
   affected track (merged removed intervals, so crossfade overlaps never double-count).

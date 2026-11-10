@@ -1,6 +1,6 @@
 import { isTransientActive, editorStore } from './store'
 import { parseSerializedDoc, serializeDoc } from './serialization'
-import type { Doc } from './types'
+import type { Doc, PendingRestore } from './types'
 
 /**
  * Local autosave: debounced writes of the serialized doc to localStorage.
@@ -38,13 +38,17 @@ export function clearAutosave(): void {
   }
 }
 
-/** Validates autosaved JSON. Returns the text if usable, else null. */
-export function readValidAutosave(): string | null {
+/**
+ * Validates autosaved JSON and returns the parsed restore object, or null.
+ * Parsing happens once here: the banner stores this typed object, and the
+ * restore path installs its doc without re-parsing the raw text.
+ */
+export function readValidAutosave(): PendingRestore | null {
   const json = readAutosave()
   if (!json) return null
   try {
-    parseSerializedDoc(json)
-    return json
+    const { doc, warnings } = parseSerializedDoc(json)
+    return { doc, warnings }
   } catch {
     return null
   }
@@ -80,9 +84,4 @@ export function initAutosave(): () => void {
     if (timer) clearTimeout(timer)
     unsubscribe()
   }
-}
-
-/** Parsers autosave JSON into a doc (throws if corrupt). */
-export function parseAutosave(json: string): ReturnType<typeof parseSerializedDoc> {
-  return parseSerializedDoc(json)
 }

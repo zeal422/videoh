@@ -9,7 +9,7 @@ import { markerSelectionExists, type MarkerSelection } from './markers'
 import type { PlacementMode } from './sequence-ops'
 import { pruneEmptiedTracks, pruneOrphanSequences } from './tracks'
 import type { ProxyEntry } from './proxy'
-import type { Doc, Track } from './types'
+import type { Doc, PendingRestore, Track } from './types'
 
 /**
  * Editor store (zustand).
@@ -151,8 +151,8 @@ export interface EditorState {
 
   autosaveStatus: AutosaveStatus
   autosavedAt: number | null
-  /** Serialized JSON awaiting user confirmation for restore (startup banner). */
-  pendingRestore: string | null
+  /** Parsed, validated autosave awaiting user confirmation (startup banner). */
+  pendingRestore: PendingRestore | null
   /**
    * The latest command refused because a track was locked (0.14.0). Session
    * state, never in the Doc and never undoable: the shell watches it and shows
@@ -249,7 +249,9 @@ export interface EditorState {
   selectTrackClips: (trackId: string) => void
   setAutosaveStatus: (status: AutosaveStatus) => void
   markAutosaved: () => void
-  setPendingRestore: (json: string | null) => void
+  setPendingRestore: (restore: PendingRestore | null) => void
+  /** Dismiss the restore banner (install, discard, or failed restore). */
+  clearPendingRestore: () => void
 }
 
 /**
@@ -281,42 +283,69 @@ function normalizeSourceState(
 }
 
 /**
- * Internal transient bookkeeping (kept outside the reactive state shape).
+ * The live gesture slot (0.20.0). One module-local object owns the transient
+ * bookkeeping that used to be four top-level variables:
  *
- * `transientBase` is the live gesture's snapshot. `transientToken` is a
- * monotonic id handed to a drag by `beginTransient()` and bumped whenever the
- * slot ends (commit, cancel, or a foreign apply/undo/redo): a drag whose token
- * no longer matches knows its gesture is gone and must not apply further
- * frames (they would mutate the doc with no undo entry). `transientPointerId`
- * records which pointer owns the gesture so a stray pointer cannot end it.
+ * - `base` is the live gesture's snapshot.
+ * - `displayDoc` is the pre-gesture doc the stable panels keep rendering.
+ * - `token` is a monotonic id handed to a drag by `beginTransient()` and bumped
+ *   whenever the slot ends (commit, cancel, or a foreign apply/undo/redo): a
+ *   drag whose token no longer matches knows its gesture is gone and must not
+ *   apply further frames (they would mutate the doc with no undo entry).
+ * - `pointerId` records which pointer owns the gesture so a stray pointer
+ *   cannot end it.
  */
-let transientBase: Doc | null = null
-/**
- * The pre-gesture doc the stable panels keep rendering while a transient drag
- * is live (0.18.0). Every pointer frame changes `doc`, and re-rendering the
- * menubar, toolbar, media bin, and dialogs for a clip move was most of the
- * commit cost. They subscribe through `useStableDoc`, so a transient frame
- * leaves them untouched; the commit or cancel installs a new doc and they
- * update once.
- */
-let transientDisplayDoc: Doc | null = null
-let transientToken = 0
-let transientPointerId: number | null = null
+class GestureSlot {
+  private baseDoc: Doc | null = null
+  private display: Doc | null = null
+  private pointer: number | null = null
+  private slotToken = 0
+
+  get isActive(): boolean {
+    return this.baseDoc !== null
+  }
+
+  get base(): Doc | null {
+    return this.baseDoc
+  }
+
+  get displayDoc(): Doc | null {
+    return this.display
+  }
+
+  get pointerId(): number | null {
+    return this.pointer
+  }
+
+  get token(): number {
+    return this.slotToken
+  }
+
+  /** Snapshots `base` and returns the new gesture token. */
+  begin(base: Doc, pointerId?: number): number {
+    this.baseDoc = structuredClone(base)
+    this.display = base
+    this.pointer = pointerId ?? null
+    return ++this.slotToken
+  }
+
+  /** Ends the slot: invalidates the live token and forgets its pointer. */
+  end(): void {
+    this.baseDoc = null
+    this.display = null
+    this.pointer = null
+    this.slotToken++
+  }
+}
+
+const gesture = new GestureSlot()
 /** Monotonic id for lock refusals, so the shell reacts to each new one. */
 let lockNoticeId = 0
 
-/** Ends the gesture slot: invalidates the live token and forgets its pointer. */
-function endTransient() {
-  transientBase = null
-  transientDisplayDoc = null
-  transientPointerId = null
-  transientToken++
-}
-
 /** Restores the base doc over a live gesture's in-flight frames. */
 function rollbackToBase(set: (partial: Partial<EditorState>) => void, get: () => EditorState) {
-  const base = transientBase
-  endTransient()
+  const base = gesture.base
+  gesture.end()
   if (base) {
     const path = normalizeActivePath(base, get().activeSequencePath)
     set({
@@ -383,6 +412,60 @@ function normalizeActivePath(doc: Doc, path: readonly string[]): string[] {
   return out
 }
 
+/** The four commit paths whose post-commit normalization differs in scope. */
+export type CommitMode = 'apply' | 'commit' | 'undo' | 'redo'
+
+/** The current session fields `normalizeCommittedState` reads. */
+export interface CommittedStateInput {
+  activeSequencePath: readonly string[]
+  selections: string[]
+  selectedMarker: MarkerSelection | null
+  eyedropper: EditorState['eyedropper']
+  sourceAssetId: string | null
+}
+
+/**
+ * The post-commit normalization every mutation path shares, with the per-path
+ * differences kept explicit instead of copied:
+ *
+ * - all modes: truncate the active path, drop dangling selection ids, drop a
+ *   marker selection whose marker is gone.
+ * - `apply`: also disarm a stale eyedropper and drop a source selection whose
+ *   asset was removed.
+ * - `undo`/`redo`: also clear the eyedropper (the old code did this
+ *   unconditionally), but leave source state alone.
+ * - `commit`: touches neither eyedropper nor source state, matching the
+ *   transient commit path's documented behavior.
+ */
+export function normalizeCommittedState(
+  doc: Doc,
+  state: CommittedStateInput,
+  mode: CommitMode,
+): Partial<EditorState> {
+  const activeSequencePath = normalizeActivePath(doc, state.activeSequencePath)
+  const next: Partial<EditorState> = {
+    activeSequencePath,
+    ...normalizeSelections(doc, state.selections, activeSequencePath),
+    selectedMarker: normalizeMarkerSelection(doc, state.selectedMarker),
+  }
+  if (mode === 'undo' || mode === 'redo') {
+    next.eyedropper = null
+  } else if (mode === 'apply') {
+    const armed = state.eyedropper
+    const eyedropperAlive =
+      armed !== null &&
+      (() => {
+        const entry = findClip(doc, armed.clipId)?.clip.effects?.find(
+          (e) => e.id === armed.effectId,
+        )
+        return entry?.type === 'chromaKey'
+      })()
+    if (!eyedropperAlive) next.eyedropper = null
+    Object.assign(next, normalizeSourceState(doc, state))
+  }
+  return next
+}
+
 export const useEditorStore = create<EditorState>((set, get) => ({
   doc: createDoc(),
   past: [],
@@ -444,38 +527,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // compound takes its sequence with it. Both ride in the same history entry
     // as the edit, so undo restores them.
     const pruned = pruneOrphanSequences(pruneEmptiedTracks(doc, next))
-    const path = normalizeActivePath(pruned, get().activeSequencePath)
-    // An armed eyedropper whose clip or chroma entry vanished disarms.
-    const armed = get().eyedropper
-    const eyedropperAlive =
-      armed !== null &&
-      (() => {
-        const entry = findClip(pruned, armed.clipId)?.clip.effects?.find(
-          (e) => e.id === armed.effectId,
-        )
-        return entry?.type === 'chromaKey'
-      })()
     set({
       doc: pruned,
-      activeSequencePath: path,
       past: [...past, doc].slice(-HISTORY_LIMIT),
       future: [],
-      // Commands may delete selected clips: drop dangling selection ids.
-      ...(eyedropperAlive ? {} : { eyedropper: null }),
-      ...normalizeSelections(pruned, get().selections, path),
-      selectedMarker: normalizeMarkerSelection(pruned, get().selectedMarker),
-      // A removed media asset takes the Source monitor's selection with it.
-      ...normalizeSourceState(pruned, get()),
+      ...normalizeCommittedState(pruned, get(), 'apply'),
     })
     return true
   },
 
-  beginTransient: (pointerId) => {
-    transientBase = structuredClone(get().doc)
-    transientDisplayDoc = get().doc
-    transientPointerId = pointerId ?? null
-    return ++transientToken
-  },
+  beginTransient: (pointerId) => gesture.begin(get().doc, pointerId),
 
   applyTransient: (command) => {
     // Slider previews (InspectorPanel, EffectControls) apply transient frames
@@ -507,9 +568,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   resetTransient: () => {
-    if (!transientBase) return
-    const base = transientBase
-    // Keep the gesture open: do NOT call `endTransient`, or the next frame's
+    if (!gesture.isActive) return
+    const base = gesture.base as Doc
+    // Keep the gesture open: do NOT call `gesture.end`, or the next frame's
     // token check would fail and the release would have nothing to commit.
     // Commands clone the live doc before mutating, so installing the base
     // object here cannot mutate the snapshot itself.
@@ -521,34 +582,29 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   commitTransient: () => {
     const { doc, past } = get()
-    if (!transientBase) return
-    const base = transientBase
+    if (!gesture.isActive) return
+    const base = gesture.base as Doc
     // Prune only now, on commit: mid-gesture the source lane is legitimately
     // empty for a frame, and removing it would delete the lane being dragged out of.
     const pruned = pruneOrphanSequences(pruneEmptiedTracks(base, doc))
     const changed = JSON.stringify(base) !== JSON.stringify(pruned)
     // Clear the transient flag BEFORE set() — the autosave subscription runs
     // synchronously and must observe a non-transient state to schedule a save.
-    endTransient()
+    gesture.end()
     if (changed) {
-      const path = normalizeActivePath(pruned, get().activeSequencePath)
       set({
         doc: pruned,
-        activeSequencePath: path,
         past: [...past, base].slice(-HISTORY_LIMIT),
         future: [],
-        ...normalizeSelections(pruned, get().selections, path),
-        // A transient gesture may have deleted the selected marker; drop a
-        // selection whose target no longer exists in the committed doc.
-        selectedMarker: normalizeMarkerSelection(pruned, get().selectedMarker),
+        ...normalizeCommittedState(pruned, get(), 'commit'),
       })
     }
   },
 
   cancelTransient: () => {
-    if (!transientBase) return
-    const base = transientBase
-    endTransient()
+    if (!gesture.isActive) return
+    const base = gesture.base as Doc
+    gesture.end()
     set({
       doc: base,
       // The restored BASE doc decides what still exists: the LIVE selection
@@ -563,36 +619,27 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // Same hazard as `apply`: resolve a live gesture first so the undo starts
     // from the base doc and no drag frames leak into `future`.
     rollbackToBase(set, get)
-    const { past, future, doc, selections, selectedMarker } = get()
+    const { past, future, doc } = get()
     if (past.length === 0) return
     const previous = past[past.length - 1]
-    const path = normalizeActivePath(previous, get().activeSequencePath)
     set({
       doc: previous,
-      activeSequencePath: path,
       past: past.slice(0, -1),
       future: [doc, ...future].slice(0, HISTORY_LIMIT),
-      // Drop selection members that no longer exist in the restored doc.
-      ...normalizeSelections(previous, selections, path),
-      selectedMarker: normalizeMarkerSelection(previous, selectedMarker),
-      eyedropper: null,
+      ...normalizeCommittedState(previous, get(), 'undo'),
     })
   },
   redo: () => {
     // Same hazard as `apply`.
     rollbackToBase(set, get)
-    const { past, future, doc, selections, selectedMarker } = get()
+    const { past, future, doc } = get()
     if (future.length === 0) return
     const next = future[0]
-    const path = normalizeActivePath(next, get().activeSequencePath)
     set({
       doc: next,
-      activeSequencePath: path,
       past: [...past, doc].slice(-HISTORY_LIMIT),
       future: future.slice(1),
-      ...normalizeSelections(next, selections, path),
-      selectedMarker: normalizeMarkerSelection(next, selectedMarker),
-      eyedropper: null,
+      ...normalizeCommittedState(next, get(), 'redo'),
     })
   },
 
@@ -602,7 +649,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // be revertible by a gesture cleanup still holding a pre-install base.
     // No rollback: the incoming doc replaces everything anyway; the token
     // bump alone retires any live drag.
-    endTransient()
+    gesture.end()
     // A clipboard entry belongs to the project it was copied from: its clips
     // (and any compound sequence they reference) may not exist here.
     clearClipboard()
@@ -807,7 +854,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setAutosaveStatus: (status) => set({ autosaveStatus: status }),
   markAutosaved: () => set({ autosavedAt: Date.now() }),
-  setPendingRestore: (json) => set({ pendingRestore: json }),
+  setPendingRestore: (restore) => set({ pendingRestore: restore }),
+  clearPendingRestore: () => set({ pendingRestore: null }),
 }))
 
 /** Raw (non-hook) access for engine code and tests. */
@@ -825,7 +873,7 @@ export const editorStore = {
  * preview, and inspector keep the live `s.doc`.
  */
 export function stableDocForRender(doc: Doc): Doc {
-  return transientBase ? (transientDisplayDoc ?? doc) : doc
+  return gesture.isActive ? (gesture.displayDoc ?? doc) : doc
 }
 
 export function useStableDoc(): Doc {
@@ -833,15 +881,15 @@ export function useStableDoc(): Doc {
 }
 
 export function isTransientActive(): boolean {
-  return transientBase !== null
+  return gesture.isActive
 }
 
 /** Monotonic token of the gesture slot; drags compare to detect a foreign end. */
 export function currentTransientToken(): number {
-  return transientToken
+  return gesture.token
 }
 
 /** Initiating pointerId of the live gesture, or null when none is recorded. */
 export function activeTransientPointerId(): number | null {
-  return transientPointerId
+  return gesture.pointerId
 }

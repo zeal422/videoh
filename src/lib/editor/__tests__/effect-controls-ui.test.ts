@@ -79,18 +79,22 @@ describe('effect controls surface', () => {
   })
 
   it('the light graph drags dots with the transient protocol (one undo step)', () => {
+    const hook = read('src/hooks/editor/useKeyframeGraphDrag.ts')
     expect(ec).toMatch(/data-testid=\{`kf-graph-\$\{property\}`\}/)
     expect(ec).toMatch(/data-testid=\{`kf-dot-\$\{property\}-\$\{i\}`\}/)
-    expect(ec).toMatch(/applyTransient\(\{ type: 'setClipKeyframes'/)
-    // One undo step: the dot snapshots the base on pointerdown and the release
-    // commits, so the drag cannot leave a no-op history entry behind. The lock
-    // gate (0.14.0) runs first, so a locked lane never begins the transient.
+    expect(hook).toMatch(/applyTransient\(\{\s*type: 'setClipKeyframes'/)
+    // One undo step: the hook snapshots the base on pointerdown, the release
+    // commits, and the pure gesture module owns the math. The lock gate
+    // (0.14.0) runs first, so a locked lane never calls beginDrag.
     expect(ec).toMatch(
-      /onPointerDown=\{\(e\) => \{\s*e\.stopPropagation\(\)\s*if \(refuseLockedClip\(clip\.id\)\) return\s*tokenRef\.current = useEditorStore\.getState\(\)\.beginTransient\(e\.pointerId\)/,
+      /onPointerDown=\{\(e\) => \{\s*e\.stopPropagation\(\)\s*if \(refuseLockedClip\(clip\.id\)\) return\s*beginDrag\(i, k, e\)/,
     )
+    expect(hook).toMatch(/beginTransient\(pointer\.pointerId\)/)
     // The drag keeps the token so a foreign commit mid-drag refuses frames.
-    expect(ec).toMatch(/if \(currentTransientToken\(\) !== tokenRef\.current\) return/)
-    expect(ec).toMatch(/commitTransient\(\)/)
+    expect(hook).toMatch(/if \(currentTransientToken\(\) !== drag\.token\) return/)
+    expect(hook).toMatch(/commitTransient\(\)/)
+    // Cleanup runs even if the commit and its fallback cancel both throw.
+    expect(hook).toMatch(/finally \{\s*setDrag\(null\)\s*\}/)
   })
 
   it('offers the easing picker in both modes and marks eased dots', () => {
@@ -275,14 +279,17 @@ describe('export dialog (MP4 pipeline)', () => {
   it('clamps EQ band gains to the shared limits in BOTH render paths', () => {
     // A malformed (hand-edited) doc can carry out-of-range bands; the preview
     // clamped them while the export assigned them raw, so one timeline could
-    // render two different mixes. Both paths now read one named bound.
+    // render two different mixes. Both paths now read one named bound through
+    // the shared audio-chain builder.
     expect([EQ_DB_MIN, EQ_DB_MAX]).toEqual([-24, 24])
     const core = read('src/lib/editor/playback/core.ts')
+    const builder = read('src/lib/editor/playback/audio-chain.ts')
     for (const band of ['low', 'mid', 'high']) {
-      const clamped = new RegExp(`clamp\\(clip\\.eq\\.${band}, EQ_DB_MIN, EQ_DB_MAX\\)`)
-      expect(core).toMatch(clamped)
-      expect(mp4).toMatch(clamped)
+      const clamped = new RegExp(`clampAudioValue\\(clip\\.eq\\.${band}, EQ_DB_MIN, EQ_DB_MAX\\)`)
+      expect(builder).toMatch(clamped)
     }
+    expect(core).toMatch(/from '\.\/audio-chain'/)
+    expect(mp4).toMatch(/from '\.\.\/playback\/audio-chain'/)
     // The preview no longer carries its own copy of the bound.
     expect(core).not.toMatch(/clamp\(clip\.eq\.\w+, -24, 24\)/)
   })

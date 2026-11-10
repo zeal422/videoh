@@ -143,6 +143,21 @@ export function isCurrentProjectLoad(loadId: number): boolean {
 }
 
 /**
+ * THE project install path (0.20.0): invalidate in-flight loads, revoke the
+ * old project's proxy URLs, replace the doc, and clear any restore banner.
+ * Every installer routes through this, so no path can leave a stale autosave
+ * prompt over a project that is already live. Callers keep their warnings and
+ * toasts.
+ */
+export function installProject(doc: Doc): void {
+  bumpProjectGeneration()
+  revokeAllProxies()
+  const store = useEditorStore.getState()
+  store.replaceDoc(doc)
+  store.clearPendingRestore()
+}
+
+/**
  * The one project-open implementation, shared by the menu and the toolbar:
  * parse the chosen file, install, report.
  *
@@ -154,12 +169,18 @@ export function isCurrentProjectLoad(loadId: number): boolean {
  */
 export async function openProjectFile(file: File): Promise<void> {
   const loadId = bumpProjectGeneration()
+  // `installProject` bumps the generation itself, so after it starts a load can
+  // no longer look "current". Track that transition explicitly: a stale id
+  // means superseded only while installation has not started; a failure after
+  // that point must still be reported.
+  let installStarted = false
   try {
     const { doc, warnings } = await loadProjectFile(file)
     if (!isCurrentProjectLoad(loadId)) return // a newer request superseded this one
-    // The old project's proxy object URLs belong to it; revoke them.
-    revokeAllProxies()
-    useEditorStore.getState().replaceDoc(doc)
+    // The old project's proxy object URLs belong to it; installProject
+    // revokes them, installs the doc, and clears any restore banner.
+    installStarted = true
+    installProject(doc)
     const remaining = doc.media.filter((asset) => asset.missing).length
     const description = [
       remaining > 0 ? `${remaining} media file(s) need relinking.` : undefined,
@@ -172,7 +193,7 @@ export async function openProjectFile(file: File): Promise<void> {
       description: description || undefined,
     })
   } catch (error) {
-    if (!isCurrentProjectLoad(loadId)) return
+    if (!installStarted && !isCurrentProjectLoad(loadId)) return
     toast({
       title: 'Load failed',
       description: error instanceof Error ? error.message : String(error),

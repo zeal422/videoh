@@ -89,14 +89,16 @@ describe('denoiseFilters', () => {
     const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8')
     const core = read('src/lib/editor/playback/core.ts')
     const mp4 = read('src/lib/editor/export/mp4.ts')
+    const builder = read('src/lib/editor/playback/audio-chain.ts')
 
-    expect(core).toMatch(/denoiseFilters\(this\.audio\)/)
-    expect(mp4).toMatch(/denoiseFilters\(ctx\)/)
-    // Both gate it on the clip's own flag: a clip without denoise keeps the
-    // chain it had before 0.6.0.
-    expect(core).toMatch(/if \(clip\.denoise\)/)
-    expect(mp4).toMatch(/if \(clip\.denoise\)/)
-    // Neither path hand-rolls the filters again (the pre-0.6.0 shape this
+    // One shared builder owns the denoise wiring for both engines.
+    expect(builder).toMatch(/denoiseFilters\(ctx\)/)
+    expect(core).toMatch(/from '\.\/audio-chain'/)
+    expect(mp4).toMatch(/from '\.\.\/playback\/audio-chain'/)
+    // The builder gates it on the clip's own flag: a clip without denoise keeps
+    // the chain it had before 0.6.0.
+    expect(builder).toMatch(/if \(clip\.denoise\)/)
+    // Neither engine hand-rolls the filters again (the pre-0.6.0 shape this
     // replaced was two copies of the same three-node chain).
     expect(core).not.toMatch(/type = 'highpass'/)
     expect(mp4).not.toMatch(/type = 'highpass'/)

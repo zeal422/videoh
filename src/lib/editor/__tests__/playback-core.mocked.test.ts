@@ -200,39 +200,42 @@ describe('PlaybackCore (mocked browser)', () => {
     await h.pump.pump(1)
 
     const ctx = h.lastAudioContext()
-    // Flat shaping: only the per-clip gain node exists.
-    expect(ctx.shapingNodes).toHaveLength(0)
+    // Flat shaping: the always-on panner is the only shaping node.
+    expect(ctx.shapingNodes).toHaveLength(1)
+    expect(ctx.shapingNodes[0].constructor.name).toBe('FakeStereoPannerNode')
 
     // EQ arrives after the graph is live: the chain is rebuilt with it.
     doc.project.tracks[0].clips[0].eq = { low: 6, mid: 0, high: 0 }
     await h.pump.pump(1)
-    expect(ctx.shapingNodes).toHaveLength(3)
-    const low = ctx.shapingNodes[0] as FakeBiquadFilterNode
+    expect(ctx.shapingNodes).toHaveLength(5)
+    const low = ctx.shapingNodes[1] as FakeBiquadFilterNode
     expect(low.type).toBe('lowshelf')
     expect(low.gain.value).toBe(6)
 
     // Moving a band rebuilds again: the old biquads baked the old value in.
     doc.project.tracks[0].clips[0].eq = { low: -4, mid: 0, high: 0 }
     await h.pump.pump(1)
-    expect(ctx.shapingNodes).toHaveLength(6)
-    expect((ctx.shapingNodes[3] as FakeBiquadFilterNode).gain.value).toBe(-4)
+    expect(ctx.shapingNodes).toHaveLength(9)
+    expect((ctx.shapingNodes[5] as FakeBiquadFilterNode).gain.value).toBe(-4)
 
     // Pan and the compressor join the chain on the next shaping change.
     doc.project.tracks[0].clips[0].compressor = true
     doc.project.tracks[0].clips[0].pan = 0.5
     await h.pump.pump(1)
-    expect(ctx.shapingNodes).toHaveLength(11)
-    expect(ctx.shapingNodes[9].constructor.name).toBe('FakeDynamicsCompressorNode')
-    expect((ctx.shapingNodes[10] as FakeStereoPannerNode).pan.value).toBe(0.5)
+    expect(ctx.shapingNodes).toHaveLength(14)
+    // Panner before compressor: Chrome's compressor up-mixes mono, so the
+    // panner must see the source's own channel layout first.
+    expect((ctx.shapingNodes[12] as FakeStereoPannerNode).pan.value).toBe(0.5)
+    expect(ctx.shapingNodes[13].constructor.name).toBe('FakeDynamicsCompressorNode')
 
     // Noise reduction is a shaping setting too: toggling it rebuilds the chain
     // with the three biquads denoiseFilters builds (denoise.test.ts locks their
     // parameters; this proves the mixer actually wires them in).
     doc.project.tracks[0].clips[0].denoise = true
     await h.pump.pump(1)
-    // EQ (3) + denoise (3) + compressor + panner.
-    expect(ctx.shapingNodes).toHaveLength(19)
-    const denoiseNodes = ctx.shapingNodes.slice(14, 17) as FakeBiquadFilterNode[]
+    // EQ (3) + denoise (3) + panner + compressor.
+    expect(ctx.shapingNodes).toHaveLength(22)
+    const denoiseNodes = ctx.shapingNodes.slice(17, 20) as FakeBiquadFilterNode[]
     expect(denoiseNodes.map((n) => n.type)).toEqual(['highpass', 'lowpass', 'peaking'])
     expect(denoiseNodes[0].frequency.value).toBe(DENOISE_HIGHPASS_HZ)
     expect(denoiseNodes[2].gain.value).toBe(DENOISE_HISS_DB)
@@ -613,7 +616,8 @@ describe('PlaybackCore (mocked browser)', () => {
     const ctx = h.lastAudioContext()
     doc.project.tracks[0].clips[0].gain = 0.5
     await h.pump.pump(2)
-    expect(ctx.shapingNodes).toHaveLength(0)
+    // The always-on panner is still the only shaping node.
+    expect(ctx.shapingNodes).toHaveLength(1)
     const clipGain = masterGainOf(ctx).inputs[0] as FakeGainNode
     expect(clipGain.gain.last?.value).toBeCloseTo(0.5, 5)
   })
@@ -1449,11 +1453,12 @@ describe('PlaybackCore (mocked browser)', () => {
     const master = masterGainOf(h.lastAudioContext())
     expect(master.inputs.length).toBe(1) // ONE chain (old torn down, new built)
     // And that chain consumes the NEW element: walk the chain back from
-    // masterGain through the gain node to the element source node.
+    // masterGain through the gain node and the always-on panner to the
+    // element source node.
     const feeder = master.inputs[0] as unknown as {
-      inputs: { mediaElement?: HTMLMediaElement }[]
+      inputs: { inputs: { mediaElement?: HTMLMediaElement }[] }[]
     }
-    expect(feeder.inputs.some((n) => n.mediaElement === after)).toBe(true)
+    expect(feeder.inputs[0].inputs.some((n) => n.mediaElement === after)).toBe(true)
     expect(oldSrc.connections).toHaveLength(0) // the old source is detached
     core.dispose()
   })

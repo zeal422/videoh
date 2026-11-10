@@ -179,6 +179,85 @@ describe('menubar checkbox semantics', () => {
   })
 })
 
+describe('menubar Add Edit (0.20.0)', () => {
+  let h: MockHarness
+
+  beforeEach(() => {
+    h = installBrowserMocks()
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }))
+    useEditorStore.setState(useEditorStore.getInitialState())
+  })
+
+  afterEach(() => {
+    cleanup()
+    h.uninstall()
+  })
+
+  function splitDoc() {
+    const media = createMediaAsset({ kind: 'video', name: 'a.mp4', duration: 10 })
+    const track = createTrack('video', 1, {
+      clips: [
+        createClip({ id: 'a', mediaId: media.id, start: 0, duration: 2 }),
+        createClip({ id: 'b', mediaId: media.id, start: 3, duration: 2 }),
+      ],
+    })
+    const doc = createDoc()
+    doc.project.tracks = [track]
+    doc.media = [media]
+    return { doc, track }
+  }
+
+  function renderBar() {
+    render(
+      <MenuBar onOpenExport={() => {}} onResetLayout={() => {}} onOpenReleaseNotes={() => {}} />,
+    )
+  }
+
+  it('is enabled with no selection when the playhead crosses a clip, and splits', async () => {
+    const { doc } = splitDoc()
+    useEditorStore.setState({ doc, playhead: 1, selections: [], selection: null })
+    renderBar()
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Clip'))
+    const item = screen.getByRole('menuitem', { name: /Add Edit/ })
+    expect(item).not.toHaveAttribute('data-disabled')
+
+    await user.click(item)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips).toHaveLength(3)
+    expect(useEditorStore.getState().past).toHaveLength(1)
+  })
+
+  it('stays disabled while a selection exists that the playhead does not cross', async () => {
+    const { doc } = splitDoc()
+    useEditorStore.setState({ doc, playhead: 1, selections: ['b'], selection: 'b' })
+    renderBar()
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Clip'))
+    const item = screen.getByRole('menuitem', { name: /Add Edit/ })
+    expect(item).toHaveAttribute('data-disabled')
+  })
+
+  it('stays disabled when every crossing clip is on a locked track', async () => {
+    const { doc, track } = splitDoc()
+    track.locked = true
+    useEditorStore.setState({ doc, playhead: 1, selections: [], selection: null })
+    renderBar()
+    const user = userEvent.setup()
+    await user.click(screen.getByText('Clip'))
+    const item = screen.getByRole('menuitem', { name: /Add Edit/ })
+    expect(item).toHaveAttribute('data-disabled')
+  })
+})
+
 /** Sequence > Sequence Settings opens a modal over the project settings. */
 describe('sequence settings dialog', () => {
   let h: MockHarness

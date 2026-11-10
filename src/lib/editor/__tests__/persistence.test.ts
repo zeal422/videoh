@@ -54,9 +54,9 @@ describe('autosave', () => {
       expect(storage.size).toBe(1)
 
       const saved = readValidAutosave()
-      expect(saved).toBeTruthy()
-      expect(saved).not.toContain('blob:x')
-      expect(JSON.parse(saved!).media[0].name).toBe('x.mp3')
+      expect(saved).not.toBeNull()
+      expect(JSON.stringify(saved!.doc)).not.toContain('blob:x')
+      expect(saved!.doc.media[0].name).toBe('x.mp3')
 
       clearAutosave()
       expect(readValidAutosave()).toBeNull()
@@ -158,9 +158,10 @@ describe('autosave', () => {
     expect(readValidAutosave()).toBeTruthy()
   })
 
-  it('parseAutosave returns the timeline migration warnings', async () => {
-    const { parseAutosave } = await import('../persistence')
-    const { doc, warnings } = parseAutosave(
+  it('readValidAutosave returns the typed doc and timeline migration warnings', async () => {
+    const { readValidAutosave } = await import('../persistence')
+    localStorageMock.setItem(
+      'web-video-editor:autosave:v1',
       JSON.stringify({
         version: 1,
         project: {
@@ -168,7 +169,9 @@ describe('autosave', () => {
         },
       }),
     )
-    expect(doc.project.tracks[0].clips[0].duration).toBe(86_400)
-    expect(warnings).toEqual([expect.stringContaining('24-hour')])
+    const restore = readValidAutosave()
+    expect(restore).not.toBeNull()
+    expect(restore!.doc.project.tracks[0].clips[0].duration).toBe(86_400)
+    expect(restore!.warnings).toEqual([expect.stringContaining('24-hour')])
   })
 })

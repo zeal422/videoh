@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.20.0] - 2026-11-09
+
+### Added
+
+- Shared media placement planner: lane drops and Source-monitor placements now build their batch through one pure `planMediaPlacement` path, with the add-media routes unchanged. The Clip menu and toolbar expose Add Edit (Ctrl+K) with no selection, splitting the tracks the playhead crosses; a selection keeps the existing selection-scoped split, and the clip context menu keeps its Split at Playhead entry.
+
+### Changed
+
+- Preview and export now build one shared audio shaping chain (EQ, denoise, panner, compressor), with the panner always created and placed before the compressor and the per-clip gain. Mono clips at pan 0 now reach the panner as mono and follow the equal-power center split (about -3 dB before compression) instead of the old duplicated-mono path. Compressed panned clips change level in both engines: mono panned drops about -4.83 dB at +/-0.5 and -6.02 dB at +/-1, stereo panned about -1.43/-1.87 dB at +/-0.5 and -2.63 dB at +/-1 in the measured matrix. Compression off at nonzero pan is unchanged; mono pan 0 is a preview-only correction when compression is off. The panner precedes the compressor because Chrome's compressor up-mixes mono to stereo when it precedes the panner.
+- The autosave restore prompt now holds a typed `PendingRestore { doc, warnings }` parsed once at discovery. `readValidAutosave` returns that object, `parseAutosave` is gone, and `installProject` is the one project install path: it bumps the project generation, revokes proxies, calls `replaceDoc`, and clears the restore banner. File > Open, File > New, and the autosave restore all route through it, so no install can leave a stale banner behind.
+- The menu, toolbar, and keyboard now dispatch their shared edit actions through one policy-free `executeAction` with an injected snapshot and callbacks. The executor returns command batches for the caller to apply; UI-owned dialogs, panel toggles, and help rows stay in the menu bar.
+- Transient gesture bookkeeping now lives in one module-local `GestureSlot` instead of four scattered top-level variables, and the repeated post-commit normalization moved into `normalizeCommittedState` with an explicit mode. The per-path differences are preserved: `apply` still disarms a stale eyedropper and source selection, `undo`/`redo` clear the eyedropper, and `commitTransient` leaves both alone.
+- The keyframe graph's dot drag math moved into the pure `keyframe-graph-gesture.ts` (`dragKeyframeDot`, `nudgeKeyframeTime`), and `useKeyframeGraphDrag` now owns the pointer id, transient token, and window listeners. Rendering, keyboard nudging, the bottom-edge resize, and the ease-handle drag stay in the panel; a dot drag is still one undo step.
+- `placement.test.ts` covers lane resolution, sequence scoping, A/V pair assembly, source windows, finite-range clamping, and atomic refusals that leave the lane unchanged. `canSplitAllAt` is covered beside the link helpers, and the menu/toolbar behavior is locked through their render suites.
+- `audio-chain.test.ts` covers the builder's graph edges, node order, finite clamps (NaN neutral, infinities at the bounds), and the mono center oracle. Chrome 151 routing counts and the full per-channel compatibility matrix (offline and live preview) are recorded in `docs/testing.md`.
+- Persistence tests assert the typed return; the store covers the explicit clear; a runtime install test proves the epoch bump, restore clear, and previous-load invalidation; the media-pool source lock proves `installProject` owns the bump/revoke/replace/clear order and that the menu and shell delegate to it.
+- `store.test.ts` covers the GestureSlot-only source lock and the normalization matrix: effective path prefixes, mixed and duplicate selections with dangling ids dropped, markers, source assets, and the apply/commit/undo/redo scopes, plus a regression that `commitTransient` preserves eyedropper/source state while `apply` clears it.
+- `keyframe-graph-gesture.test.ts` covers the pure time/value mapping, mirroring, in-clip clamps of out-of-range stored times, zero-duration safety, and dB round-trip; the existing Effect Controls render suite still proves one undo step per dot drag.
+- `action-context.test.ts` covers the browser-bound File > Open and File > Import failure toasts, including picker rejections and failures from the full import chain.
+- `bun run check` stays green at 100 files and 2,302 tests. The 70-step dev and standalone artifact batteries pass 70/70 with `BATTERY_EXIT=0`.
+
+### Fixed
+
+- The no-selection split skips locked lanes and any link group with a locked member, so one locked crossing clip cannot refuse the otherwise eligible batch; the menu and toolbar stay disabled when every crossing group is locked.
+- Placement routes now refuse a non-finite time with a clear "Placement time is invalid" toast instead of planning a batch whose clip would silently land at 0. This covers lane drops, new-track drops, Source-monitor placement, and add-media.
+- The Link menu row now only links or merges, while Ctrl+L keeps the smart link/unlink toggle. A stale marker selection plus Shift+Delete still ripple-deletes the clip selection, and a project-load failure after installation starts is reported instead of being mistaken for a superseded load.
+- The shared audio chain now treats a NaN pan or EQ gain as the neutral value (center, 0 dB) and clamps infinities to the band edge, instead of handing a non-finite value to a Web Audio parameter.
+
 ## [0.19.6] - 2026-11-09
 
 ### Removed

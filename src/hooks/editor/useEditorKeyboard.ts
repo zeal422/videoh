@@ -1,23 +1,9 @@
 'use client'
 
 import { useEffect } from 'react'
-import {
-  commandsToAddMarker,
-  commandsToAddText,
-  commandsToDeleteClips,
-  commandsToDeleteMarker,
-  commandsToDuplicateClips,
-  commandsToLinkClips,
-  commandsToPlaceSource,
-  commandsToRippleDeleteClips,
-  commandsToSplitAllAt,
-  commandsToSplitClipsAt,
-  commandsToUnlinkClips,
-} from '@/lib/editor/actions'
-import { commandsToCutClips, commandsToPasteClips, copyClips } from '@/lib/editor/clipboard'
-import { audibleClipId, anySelectionLinked, canLinkClips } from '@/lib/editor/links'
-import { markerSelectionExists, neighborMarker } from '@/lib/editor/markers'
-import { activeSequenceDuration, activeTracks, findClip } from '@/lib/editor/factories'
+import { commandsToPlaceSource } from '@/lib/editor/actions'
+import { activeSequenceDuration, activeTracks } from '@/lib/editor/factories'
+import { markerSelectionExists } from '@/lib/editor/markers'
 import {
   placementRefusalMessage,
   sourceRangeFor,
@@ -25,9 +11,10 @@ import {
   SOURCE_RANGE_MESSAGE,
 } from '@/lib/editor/sequence-ops'
 import { toast } from '@/hooks/use-toast'
-import { FRAME_STEPS, PPS_MAX, PPS_MIN, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
-import { nextZoomPxPerSec } from '@/lib/editor/timeline-scroll'
+import { FRAME_STEPS } from '@/lib/editor/constants'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
+import { executeAction, type ExecutorActionId } from '@/lib/editor/action-executor'
+import { createActionContext } from './action-context'
 import { useEditorStore } from '@/lib/editor/store'
 import { isAutomationGestureLive } from './gesture-state'
 
@@ -94,125 +81,102 @@ export function useEditorKeyboard(onSave: () => void): void {
       }
 
       const store = useEditorStore.getState()
-      const { doc, playhead, pxPerSec, selections, selection, selectedMarker } = store
+      const { doc, playhead, selections, selection, selectedMarker } = store
       // Multi-selection source of truth; falls back to the primary id.
       const selectedIds = selections.length > 0 ? selections : selection ? [selection] : []
       const primaryId = selectedIds[0] ?? null
       const mod = e.ctrlKey || e.metaKey
       const key = e.key.toLowerCase()
 
+      /** One executor call; returns the outcome so callers can decide preventDefault. */
+      const run = (action: ExecutorActionId) => {
+        try {
+          const outcome = executeAction(action, createActionContext({ saveProject: onSave }))
+          if (outcome.commands) {
+            const applied = store.apply(outcome.commands)
+            if (applied && outcome.successToast) toast({ title: outcome.successToast })
+          }
+          return outcome
+        } catch (error) {
+          toast({
+            title: 'Action failed',
+            description: error instanceof Error ? error.message : String(error),
+            variant: 'destructive',
+          })
+          return { handled: true, commands: null }
+        }
+      }
+
       // ————— modifier combos —————
       if (mod && key === 'z') {
         e.preventDefault()
-        if (e.shiftKey) store.redo()
-        else store.undo()
+        run(e.shiftKey ? 'edit.redo' : 'edit.undo')
         return
       }
       if (mod && key === 'y') {
         e.preventDefault()
-        store.redo()
+        run('edit.redo')
         return
       }
       if (mod && key === 's') {
         e.preventDefault()
-        onSave()
+        run('file.saveProject')
         return
       }
       if (mod && key === 'a') {
         e.preventDefault()
-        if (e.shiftKey) store.deselectAll()
-        else store.selectAll()
+        run(e.shiftKey ? 'edit.deselectAll' : 'edit.selectAll')
         return
       }
       if (mod && key === 'x') {
-        // Cut = copy into the clipboard + delete the selection, one undo step.
         if (selectedIds.length > 0) {
           e.preventDefault()
-          const commands = commandsToCutClips(doc, selectedIds)
-          if (commands) {
-            if (store.apply(commands)) store.deselectAll()
-          }
+          run('clip.cut')
         }
         return
       }
       if (mod && key === 'c') {
         if (selectedIds.length > 0) {
           e.preventDefault()
-          copyClips(doc, selectedIds)
+          run('clip.copy')
         }
         return
       }
       if (mod && key === 'v') {
         e.preventDefault()
-        const commands = commandsToPasteClips(
-          doc,
-          playhead,
-          store.untargetedTracks,
-          store.activeSequencePath[store.activeSequencePath.length - 1],
-        )
-        if (commands) {
-          try {
-            store.apply(commands)
-          } catch (error) {
-            // A stale clipboard entry (its compound sequence pruned, or media
-            // from another project) cannot be placed. Surface it the same way
-            // the context-menu paste does (runMenuAction), never silently.
-            toast({
-              title: 'Action failed',
-              description: error instanceof Error ? error.message : String(error),
-              variant: 'destructive',
-            })
-          }
-        }
+        run('clip.paste')
         return
       }
       if (mod && key === 'k') {
         // Premiere "Add Edit": split the selection at the playhead — or, with
         // nothing selected, every clip on every track the playhead crosses.
         e.preventDefault()
-        const commands = selectedIds.length
-          ? commandsToSplitClipsAt(doc, selectedIds, playhead)
-          : commandsToSplitAllAt(doc, playhead, store.activeSequencePath)
-        if (commands) {
-          try {
-            store.apply(commands)
-          } catch {
-            // playhead micro-outside a splittable range — ignore
-          }
-        }
+        run('clip.split')
         return
       }
       if (mod && key === 'l') {
         // Premiere toggle: linked selection unlinks; ≥2 separate clips link.
         e.preventDefault()
-        if (anySelectionLinked(doc, selectedIds)) {
-          const commands = commandsToUnlinkClips(doc, selectedIds)
-          if (commands) store.apply(commands)
-        } else if (canLinkClips(doc, selectedIds)) {
-          store.apply(commandsToLinkClips(doc, selectedIds)!)
-        }
+        run('keyboard.linkToggle')
         return
       }
       if (mod && e.shiftKey && key === 'm') {
         // Premiere Ctrl+Shift+M: go to the previous marker.
         e.preventDefault()
-        const point = neighborMarker(doc, playhead, 'prev', store.activeSequencePath)
-        if (point) playbackRef.current?.seek(point.timelineTime)
+        run('marker.previous')
         return
       }
       if (!mod && e.shiftKey && key === 'm') {
         // Premiere Shift+M: go to the next marker.
         e.preventDefault()
-        const point = neighborMarker(doc, playhead, 'next', store.activeSequencePath)
-        if (point) playbackRef.current?.seek(point.timelineTime)
+        run('marker.next')
         return
       }
       if (mod && e.shiftKey && (e.key === '/' || e.key === '?')) {
         // Premiere "Duplicate" (Ctrl+Shift+/) — same as the D alias below.
         if (selectedIds.length > 0) {
           e.preventDefault()
-          const commands = commandsToDuplicateClips(doc, selectedIds)
-          if (commands) store.apply(commands)
+          run('clip.duplicate')
         }
         return
       }
@@ -306,48 +270,35 @@ export function useEditorKeyboard(onSave: () => void): void {
         case 'Delete':
         case 'Backspace': {
           // A LIVE selected marker owns the Delete key; clips otherwise. A
-          // stale selection (marker already gone) is dropped and the clip
-          // path runs, so a dangling selection can never eat the keypress.
+          // stale marker selection is dropped, then the ordinary Shift-aware
+          // clip branch runs, so a dangling selection never eats the key or
+          // turns Shift+Delete into a plain delete.
           if (selectedMarker) {
-            if (!markerSelectionExists(doc, selectedMarker)) {
-              store.selectMarker(null)
-            } else {
+            if (markerSelectionExists(doc, selectedMarker)) {
               e.preventDefault()
-              const markerCommands = commandsToDeleteMarker(doc, selectedMarker)
-              if (markerCommands) store.apply(markerCommands)
-              store.selectMarker(null)
+              run('keyboard.delete')
               return
             }
+            store.selectMarker(null)
           }
           if (selectedIds.length > 0) {
             e.preventDefault()
-            if (e.shiftKey) {
-              // Premiere Ripple Delete: remove AND close the gap.
-              const commands = commandsToRippleDeleteClips(
-                doc,
-                selectedIds,
-                store.activeSequencePath,
-              )
-              if (commands && store.apply(commands)) store.deselectAll()
-            } else {
-              // Linked A/V pairs die together — until explicitly unlinked.
-              if (store.apply(commandsToDeleteClips(doc, selectedIds))) store.deselectAll()
-            }
+            // Premiere Ripple Delete (Shift) removes AND closes the gap.
+            run(e.shiftKey ? 'clip.rippleDelete' : 'clip.delete')
           }
           break
         }
         case 's':
         case 'S': {
           // Premiere: S toggles snapping (split lives on Ctrl+K now).
-          store.toggleSnap()
+          run('view.toggleSnap')
           break
         }
         case 'd':
         case 'D': {
           if (selectedIds.length > 0) {
             e.preventDefault()
-            const commands = commandsToDuplicateClips(doc, selectedIds)
-            if (commands) store.apply(commands)
+            run('clip.duplicate')
           }
           break
         }
@@ -357,13 +308,7 @@ export function useEditorKeyboard(onSave: () => void): void {
           // clip when there is one (clamped into its visible span), otherwise
           // a sequence marker at the playhead. Shift+M navigates (above).
           e.preventDefault()
-          const markerCommands = commandsToAddMarker(
-            doc,
-            playhead,
-            selectedIds,
-            store.activeSequencePath,
-          )
-          if (markerCommands) store.apply(markerCommands)
+          run('marker.add')
           break
         }
         case 'e':
@@ -373,16 +318,7 @@ export function useEditorKeyboard(onSave: () => void): void {
           if (!e.shiftKey) break
           if (primaryId) {
             e.preventDefault()
-            // Mute is an AUDIO property: for a linked pair it always targets
-            // the audio twin, whichever half is selected (muting the video
-            // half would unmask its embedded audio and double-play).
-            const audibleId = audibleClipId(doc, primaryId)
-            const audible = findClip(doc, audibleId)?.clip
-            store.apply({
-              type: 'setClipMuted',
-              clipId: audibleId,
-              muted: !(audible?.muted ?? false),
-            })
+            run('clip.toggleMute')
           }
           break
         }
@@ -396,14 +332,7 @@ export function useEditorKeyboard(onSave: () => void): void {
         case 't':
         case 'T': {
           e.preventDefault()
-          store.apply(
-            commandsToAddText(
-              doc,
-              playhead,
-              store.untargetedTracks,
-              store.activeSequencePath[store.activeSequencePath.length - 1],
-            ),
-          )
+          run('graphics.newText')
           break
         }
         case 'i':
@@ -494,22 +423,17 @@ export function useEditorKeyboard(onSave: () => void): void {
         }
         case '+':
         case '=': {
-          store.setPxPerSec(nextZoomPxPerSec(pxPerSec, 1.4))
+          run('view.zoomIn')
           break
         }
         case '-':
         case '_': {
-          store.setPxPerSec(nextZoomPxPerSec(pxPerSec, 1 / 1.4))
+          run('view.zoomOut')
           break
         }
         case '\\': {
           // Premiere backslash: zoom the timeline so the whole sequence fits.
-          const el = document.querySelector('[data-timeline-scroll]')
-          const viewport = el ? el.clientWidth - TRACK_HEADER_WIDTH - 12 : 0
-          const duration = activeSequenceDuration(doc, store.activeSequencePath)
-          if (viewport > 40 && duration > 0.25) {
-            store.setPxPerSec(Math.min(PPS_MAX, Math.max(PPS_MIN, Math.round(viewport / duration))))
-          }
+          run('view.zoomFit')
           break
         }
       }

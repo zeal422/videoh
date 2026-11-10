@@ -152,7 +152,8 @@ artifact run reused the standalone server and also passed 70/70 with `BATTERY_EX
 run on 2026-11-07 started its own dev server and passed 70/70 with `BATTERY_EXIT=0`; the artifact run
 reused the standalone server and also passed 70/70 with `BATTERY_EXIT=0`. The 0.19.5 dev run on
 2026-11-09 started its own dev server and passed 70/70 with `BATTERY_EXIT=0`; the artifact run reused
-the standalone server and also passed 70/70 with `BATTERY_EXIT=0`.
+the standalone server and also passed 70/70 with `BATTERY_EXIT=0`. The 0.20.0 artifact run on
+2026-11-09 reused the standalone server and passed 70/70 with `BATTERY_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 

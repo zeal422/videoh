@@ -7,6 +7,7 @@ import {
   commandsToDuplicateClips,
   commandsToLinkClips,
   commandsToRippleDeleteClips,
+  commandsToSplitAllAt,
   commandsToSplitClipsAt,
   commandsToUnlinkClips,
 } from '../actions'
@@ -16,6 +17,7 @@ import {
   assetHasAudio,
   audibleClipId,
   canLinkClips,
+  canSplitAllAt,
   canSplitGroupAt,
   clipIsSelected,
   clipRendersAudio,
@@ -948,5 +950,113 @@ describe('commandsToAddMedia — targeting', () => {
     expect(next.project.tracks[0].clips[0].audioOnly).toBeUndefined()
     expect(next.project.tracks[1].clips).toHaveLength(0)
     expect(next.project.tracks[2].clips[0].audioOnly).toBe(true)
+  })
+})
+
+describe('canSplitAllAt — Add Edit with no selection', () => {
+  function docWith(clips: { id: string; start: number; duration: number }[]): Doc {
+    const asset = avAsset()
+    const track = createTrack('video', 1)
+    track.clips = clips.map((c) =>
+      createClip({ id: c.id, mediaId: asset.id, start: c.start, duration: c.duration }),
+    )
+    const doc = createDoc()
+    doc.project.tracks = [track]
+    doc.media = [asset]
+    return doc
+  }
+
+  it('is false with no clips and when the playhead misses every clip', () => {
+    expect(canSplitAllAt(docWith([]), 1)).toBe(false)
+    const doc = docWith([{ id: 'c1', start: 2, duration: 2 }])
+    expect(canSplitAllAt(doc, 1)).toBe(false)
+    expect(canSplitAllAt(doc, 4)).toBe(false)
+  })
+
+  it('requires the split headroom on both sides', () => {
+    const doc = docWith([{ id: 'c1', start: 0, duration: 2 }])
+    expect(canSplitAllAt(doc, 0.1)).toBe(false)
+    expect(canSplitAllAt(doc, 1)).toBe(true)
+    expect(canSplitAllAt(doc, 1.9)).toBe(false)
+  })
+
+  it('sees splittable clips on any active track', () => {
+    const doc = docWith([{ id: 'c1', start: 0, duration: 2 }])
+    doc.project.tracks.push(createTrack('audio', 1))
+    const audioClip = createClip({ id: 'a1', start: 5, duration: 2 })
+    doc.project.tracks[1].clips = [audioClip]
+    expect(canSplitAllAt(doc, 6)).toBe(true)
+  })
+
+  it('scopes to the open sequence, not the root', () => {
+    const doc = docWith([{ id: 'root', start: 0, duration: 2 }])
+    const seqTrack = createTrack('video', 1)
+    seqTrack.clips = [createClip({ id: 'seq', start: 10, duration: 2 })]
+    doc.project.sequences = [{ id: 'seq1', name: 'S', tracks: [seqTrack] }]
+
+    expect(canSplitAllAt(doc, 1, ['seq1'])).toBe(false)
+    expect(canSplitAllAt(doc, 11, ['seq1'])).toBe(true)
+    expect(canSplitAllAt(doc, 11, ['missing'])).toBe(false)
+  })
+
+  it('rejects hostile times without throwing', () => {
+    const doc = docWith([{ id: 'c1', start: 0, duration: 2 }])
+    for (const at of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(canSplitAllAt(doc, at)).toBe(false)
+    }
+  })
+
+  it('is false when every crossing clip is on a locked track', () => {
+    const asset = avAsset()
+    const locked = createTrack('video', 1, { id: 'v_locked', locked: true })
+    locked.clips = [createClip({ id: 'locked', mediaId: asset.id, start: 0, duration: 2 })]
+    const doc = createDoc()
+    doc.project.tracks = [locked]
+    doc.media = [asset]
+
+    expect(canSplitAllAt(doc, 1)).toBe(false)
+    expect(commandsToSplitAllAt(doc, 1)).toBeNull()
+  })
+
+  it('splits unlocked crossing tracks and leaves locked ones untouched', () => {
+    const asset = avAsset()
+    const unlocked = createTrack('video', 1, { id: 'v1' })
+    unlocked.clips = [createClip({ id: 'u', mediaId: asset.id, start: 0, duration: 2 })]
+    const locked = createTrack('audio', 1, { id: 'a1', locked: true })
+    locked.clips = [createClip({ id: 'l', mediaId: asset.id, start: 0, duration: 2 })]
+    const doc = createDoc()
+    doc.project.tracks = [unlocked, locked]
+    doc.media = [asset]
+
+    expect(canSplitAllAt(doc, 1)).toBe(true)
+    const commands = commandsToSplitAllAt(doc, 1)
+    expect(commands).toHaveLength(1)
+    expect(commands![0]).toMatchObject({ type: 'splitClip', clipId: 'u' })
+    const next = applyCommands(doc, commands!)
+    expect(next.project.tracks[0].clips).toHaveLength(2)
+    expect(next.project.tracks[1].clips).toHaveLength(1)
+  })
+
+  it('skips a linked group when any member lane is locked', () => {
+    const asset = avAsset()
+    const video = createTrack('video', 1, { id: 'v1' })
+    video.clips = [createClip({ id: 'v', mediaId: asset.id, start: 0, duration: 2, linkId: 'L' })]
+    const audio = createTrack('audio', 1, { id: 'a1', locked: true })
+    audio.clips = [
+      createClip({
+        id: 'a',
+        mediaId: asset.id,
+        start: 0,
+        duration: 2,
+        linkId: 'L',
+        audioOnly: true,
+      }),
+    ]
+    const doc = createDoc()
+    doc.project.tracks = [video, audio]
+    doc.media = [asset]
+
+    expect(canSplitAllAt(doc, 1)).toBe(false)
+    expect(commandsToSplitAllAt(doc, 1)).toBeNull()
   })
 })

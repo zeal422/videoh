@@ -1,9 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { loadProjectFile, openProjectFile } from '../project-io'
+import {
+  bumpProjectGeneration,
+  installProject,
+  isCurrentProjectLoad,
+  loadProjectFile,
+  openProjectFile,
+} from '../project-io'
 import { createDoc } from '../factories'
 import { parseSerializedDoc, serializeDoc } from '../serialization'
+import { useEditorStore } from '../store'
 
 const toastMock = vi.hoisted(() => vi.fn())
 
@@ -67,6 +74,26 @@ describe('openProjectFile warning surface', () => {
     )
   })
 
+  it('reports a failure after installation started even though the generation moved', async () => {
+    const original = useEditorStore.getState().replaceDoc
+    const json = JSON.stringify(serializeDoc(createDoc()), null, 2)
+    const file = new File([json], 'install-fail.veproj.json', { type: 'application/json' })
+    useEditorStore.setState({
+      replaceDoc: () => {
+        throw new Error('install exploded')
+      },
+    })
+    try {
+      toastMock.mockClear()
+      await openProjectFile(file)
+      expect(toastMock).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Load failed', description: 'install exploded' }),
+      )
+    } finally {
+      useEditorStore.setState({ replaceDoc: original })
+    }
+  })
+
   it('separates the relink notice from the migration warning', async () => {
     toastMock.mockClear()
     const json = JSON.stringify({
@@ -118,5 +145,31 @@ describe('parity fixture (e2e/fixtures/editor-parity.veproj.json)', () => {
     // the user relinks it from the media bin.
     expect(missingMediaIds).toHaveLength(3)
     expect(doc.media.every((asset) => asset.missing === true)).toBe(true)
+  })
+})
+
+describe('installProject (runtime)', () => {
+  it('bumps the epoch, clears the restore banner, and invalidates the previous load', () => {
+    const before = useEditorStore.getState()
+    const restoreDoc = createDoc()
+    const nextDoc = createDoc()
+    nextDoc.project.name = 'installed-project'
+    const epochBefore = before.projectEpoch
+    const previousLoadId = bumpProjectGeneration()
+    useEditorStore.setState({ pendingRestore: { doc: restoreDoc, warnings: [] } })
+    try {
+      installProject(nextDoc)
+      const after = useEditorStore.getState()
+      expect(after.pendingRestore).toBeNull()
+      expect(after.projectEpoch).toBeGreaterThan(epochBefore)
+      expect(after.doc).toBe(nextDoc)
+      expect(isCurrentProjectLoad(previousLoadId)).toBe(false)
+    } finally {
+      useEditorStore.setState({
+        doc: before.doc,
+        projectEpoch: before.projectEpoch,
+        pendingRestore: before.pendingRestore,
+      })
+    }
   })
 })

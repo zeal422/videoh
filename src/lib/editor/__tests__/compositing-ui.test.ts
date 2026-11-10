@@ -155,14 +155,14 @@ describe('text-box mirrors the compositor', () => {
 describe('A/V linked clips (Premiere-style split + unlink)', () => {
   const clipView = read('src/components/editor/timeline/ClipView.tsx')
   const keyboard = read('src/hooks/editor/useEditorKeyboard.ts')
-  const actions = read('src/lib/editor/actions.ts')
+  const placement = read('src/lib/editor/placement.ts')
   const core = read('src/lib/editor/playback/core.ts')
   const commands = read('src/lib/editor/commands.ts')
 
   it('drop path splits video-with-audio into a linked pair (audioOnly twin)', () => {
-    expect(actions).toMatch(/assetHasAudio\(asset\)/)
-    expect(actions).toMatch(/audioOnly: true/)
-    expect(actions).toMatch(/uid\('link'\)/)
+    expect(placement).toMatch(/assetHasAudio\(asset\)/)
+    expect(placement).toMatch(/audioOnly: true/)
+    expect(placement).toMatch(/uid\('link'\)/)
   })
 
   it('the audio twin may live on audio tracks (clipFitsTrack rule)', () => {
@@ -239,11 +239,26 @@ describe('A/V linked clips (Premiere-style split + unlink)', () => {
   })
 
   it('keyboard wires the full Premiere shortcut map globally', () => {
-    // Clipboard (multi-selection aware).
-    expect(keyboard).toMatch(/commandsToCutClips\(doc, selectedIds\)/)
-    expect(keyboard).toMatch(/copyClips\(doc, selectedIds\)/)
-    expect(keyboard).toMatch(
-      /commandsToPasteClips\(\s*doc,\s*playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
+    const executor = read('src/lib/editor/action-executor.ts')
+    // Clipboard (multi-selection aware): the keyboard delegates to the shared
+    // executor, which carries the targeting fields.
+    expect(keyboard).toMatch(/executeAction/)
+    for (const action of [
+      'clip.cut',
+      'clip.copy',
+      'clip.paste',
+      'clip.split',
+      'view.toggleSnap',
+      'keyboard.delete',
+      'clip.rippleDelete',
+      'keyboard.linkToggle',
+      'edit.selectAll',
+      'edit.deselectAll',
+    ]) {
+      expect(keyboard).toContain(`'${action}'`)
+    }
+    expect(executor).toMatch(
+      /commandsToPasteClips\(\s*state\.doc,\s*state\.playhead,\s*state\.untargetedTracks,\s*state\.activeSequencePath/,
     )
     // Tools: V selection / C razor / B ripple / Y slip / Escape back.
     expect(keyboard).toMatch(/switchTool\('razor'\)/)
@@ -251,22 +266,17 @@ describe('A/V linked clips (Premiere-style split + unlink)', () => {
     expect(keyboard).toMatch(/switchTool\('slip'\)/)
     expect(keyboard).toMatch(/store\.setActiveTool\('select'\)/)
     // Add Edit (Ctrl+K): split selection, or ALL tracks with no selection.
-    expect(keyboard).toMatch(/commandsToSplitClipsAt\(doc, selectedIds, playhead\)/)
-    expect(keyboard).toMatch(
-      /commandsToSplitAllAt\(\s*doc,\s*playhead,\s*store\.activeSequencePath/,
+    expect(executor).toMatch(/commandsToSplitClipsAt\(state\.doc, ids, state\.playhead\)/)
+    expect(executor).toMatch(
+      /commandsToSplitAllAt\(\s*state\.doc,\s*state\.playhead,\s*state\.activeSequencePath/,
     )
-    // S toggles snapping (Premiere), split moved to Ctrl+K.
-    expect(keyboard).toMatch(/store\.toggleSnap\(\)/)
     // Delete / Shift+Delete ripple / Ctrl+L smart link-unlink toggle.
-    expect(keyboard).toMatch(/commandsToDeleteClips\(doc, selectedIds\)/)
-    expect(keyboard).toMatch(
-      /commandsToRippleDeleteClips\(\s*doc,\s*selectedIds,\s*store\.activeSequencePath/,
+    expect(executor).toMatch(/commandsToDeleteClips\(state\.doc, ids\)/)
+    expect(executor).toMatch(
+      /commandsToRippleDeleteClips\(\s*state\.doc,\s*ids,\s*state\.activeSequencePath/,
     )
-    expect(keyboard).toMatch(/commandsToUnlinkClips\(doc, selectedIds\)/)
-    expect(keyboard).toMatch(/commandsToLinkClips\(doc, selectedIds\)/)
-    // Select all / deselect all.
-    expect(keyboard).toMatch(/store\.selectAll\(\)/)
-    expect(keyboard).toMatch(/store\.deselectAll\(\)/)
+    expect(executor).toMatch(/commandsToUnlinkClips\(state\.doc, ids\)/)
+    expect(executor).toMatch(/commandsToLinkClips\(state\.doc, ids\)/)
     // Shuttle + edit points + frame steps + zoom-to-fit.
     expect(keyboard).toMatch(/playbackRef\.current\?\.play\(\)/)
     expect(keyboard).toMatch(/playbackRef\.current\?\.pause\(\)/)
@@ -279,7 +289,7 @@ describe('A/V linked clips (Premiere-style split + unlink)', () => {
     expect(keyboard).toMatch(/FRAME_STEPS/)
     expect(keyboard).toMatch(/'\\\\'/)
     // Mute still routes to the audio twin; G opens the gain dialog by event.
-    expect(keyboard).toMatch(/audibleClipId\(doc, primaryId\)/)
+    expect(executor).toMatch(/audibleClipId\(state\.doc, primary\)/)
     expect(keyboard).toMatch(/editor:audio-gain/)
   })
 
@@ -426,26 +436,25 @@ describe('targeting is threaded through every lane-less placement entry point', 
   const bin = read('src/components/editor/MediaBin.tsx')
   const panel = read('src/components/editor/timeline/TimelinePanel.tsx')
   const toolbar = read('src/components/editor/Toolbar.tsx')
+  const executor = read('src/lib/editor/action-executor.ts')
 
   it('paste carries the list from the keyboard, the Edit menu and the clip menu', () => {
-    expect(keyboard).toMatch(
-      /commandsToPasteClips\(\s*doc,\s*playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
+    expect(keyboard).toContain("'clip.paste'")
+    expect(menuBar).toMatch(/executeAction/)
+    expect(executor).toMatch(
+      /commandsToPasteClips\(\s*state\.doc,\s*state\.playhead,\s*state\.untargetedTracks,\s*state\.activeSequencePath/,
     )
-    // MenuBar wraps the call across lines at printWidth 100.
-    expect(menuBar).toMatch(
-      /commandsToPasteClips\(\s*store\.doc,\s*store\.playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
-    )
+    // The clip context menu still calls the batch directly and must carry it too.
     expect(clipView).toMatch(
       /commandsToPasteClips\(\s*store\.doc,\s*store\.playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
     )
   })
 
   it('add text carries the list from the keyboard, the Graphics menu and the toolbar', () => {
-    expect(keyboard).toMatch(
-      /commandsToAddText\(\s*doc,\s*playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
-    )
-    expect(menuBar).toMatch(
-      /commandsToAddText\(\s*store\.doc,\s*store\.playhead,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
+    expect(keyboard).toContain("'graphics.newText'")
+    expect(menuBar).toMatch(/executeAction/)
+    expect(executor).toMatch(
+      /commandsToAddText\(\s*state\.doc,\s*state\.playhead,\s*state\.untargetedTracks,\s*state\.activeSequencePath/,
     )
     expect(toolbar).toMatch(
       /commandsToAddText\(\s*doc,\s*playhead,\s*untargetedTracks,\s*activeSequencePath/,
@@ -499,6 +508,10 @@ describe('placement mode control and drop routing (0.7.2)', () => {
     expect(panel).toMatch(
       /commandsToAddMediaInNewTrack\(\s*store\.doc,\s*asset,\s*t,\s*target\.index,\s*store\.untargetedTracks,\s*store\.activeSequencePath/,
     )
+    // Place mode reaches commandsToAddMedia directly, so the lane drop checks
+    // the time itself and uses the shared time refusal message.
+    expect(panel).toMatch(/if \(!Number\.isFinite\(t\)\)/)
+    expect(panel).toMatch(/placementRefusalMessage\('time'\)/)
   })
 })
 
@@ -526,9 +539,10 @@ describe('compound clips (0.8.1) static locks', () => {
   })
 
   it('add-track dispatches carry the active sequence field', () => {
-    expect(read('src/components/editor/Toolbar.tsx')).toMatch(
-      /type: 'addTrack',[\s\S]{0,120}sequenceId/,
-    )
+    const executor = read('src/lib/editor/action-executor.ts')
+    expect(executor).toMatch(/sequenceField\(state\)/)
+    expect(executor).toMatch(/sequenceId\?: string/)
+    expect(read('src/components/editor/Toolbar.tsx')).toContain("'sequence.addVideoTrack'")
     expect(read('src/components/editor/timeline/TimelinePanel.tsx')).toMatch(
       /type: 'addTrack',[\s\S]{0,120}sequenceId/,
     )
@@ -536,10 +550,9 @@ describe('compound clips (0.8.1) static locks', () => {
 
   it('the keyboard paste reports a rejected paste instead of swallowing it', () => {
     const keyboard = read('src/hooks/editor/useEditorKeyboard.ts')
-    const at = keyboard.lastIndexOf('commandsToPasteClips')
-    const block = keyboard.slice(at, at + 700)
-    expect(block).toMatch(/catch \(error\)/)
-    expect(block).toMatch(/title: 'Action failed'/)
+    expect(keyboard).toContain("run('clip.paste')")
+    expect(keyboard).toMatch(/catch \(error\)/)
+    expect(keyboard).toMatch(/title: 'Action failed'/)
   })
 
   it('the clip context menu passes the active path to ripple delete', () => {

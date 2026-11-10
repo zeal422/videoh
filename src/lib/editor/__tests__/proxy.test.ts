@@ -117,17 +117,23 @@ describe('proxy drop ordering (static locks)', () => {
 })
 
 describe('proxy URL lifetime (static locks)', () => {
-  it('revokes proxies before every project install path clears the doc', () => {
-    for (const file of [
-      '../../../components/editor/MenuBar.tsx',
-      '../../../components/editor/EditorShell.tsx',
-      '../project-io.ts',
-    ]) {
-      const src = read(file)
-      const revokeAt = src.indexOf('revokeAllProxies()')
-      const replaceAt = src.indexOf('.replaceDoc(')
-      expect(revokeAt, `${file} revokes proxies`).toBeGreaterThan(-1)
-      expect(replaceAt, `${file} installs the doc after revoking`).toBeGreaterThan(revokeAt)
-    }
+  it('revokes proxies before the one project install path clears the doc', () => {
+    const io = read('../project-io.ts')
+    const revokeAt = io.indexOf('revokeAllProxies()')
+    const replaceAt = io.indexOf('.replaceDoc(doc)')
+    expect(revokeAt, 'project-io revokes proxies').toBeGreaterThan(-1)
+    expect(replaceAt, 'project-io installs the doc after revoking').toBeGreaterThan(revokeAt)
+    // Menu and shell delegate to the executor/installProject rather than
+    // inlining a second revoke/replace order that could drift from the shared
+    // one.
+    const menu = read('../../../components/editor/MenuBar.tsx')
+    expect(menu, 'menu delegates file actions').toMatch(/executeAction/)
+    expect(menu, 'menu has no inline replaceDoc').not.toMatch(/\.replaceDoc\(/)
+    const context = read('../../../hooks/editor/action-context.ts')
+    expect(context, 'action context installs through installProject').toMatch(/installProject\(/)
+    expect(context, 'action context has no inline replaceDoc').not.toMatch(/\.replaceDoc\(/)
+    const shell = read('../../../components/editor/EditorShell.tsx')
+    expect(shell, 'shell installs through installProject').toMatch(/installProject\(/)
+    expect(shell, 'shell has no inline replaceDoc').not.toMatch(/\.replaceDoc\(/)
   })
 })

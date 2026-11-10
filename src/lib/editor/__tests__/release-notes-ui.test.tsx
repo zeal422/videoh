@@ -156,7 +156,7 @@ describe('once-per-version auto-open in EditorShell', () => {
   })
 
   it('holds the greeting while a restore is pending, then opens after it clears', async () => {
-    useEditorStore.setState({ pendingRestore: '{}' })
+    useEditorStore.setState({ pendingRestore: { doc: createDoc(), warnings: [] } })
     const { rerender } = render(<EditorShell />)
     await new Promise((r) => setTimeout(r, 50))
     expect(screen.queryByTestId('release-notes-modal')).toBeNull()

@@ -1,4 +1,4 @@
-# AGENTS.md — Instructions for AI Coding Agents
+# AGENTS.md: Instructions for AI Coding Agents
 
 Browser-based multi-track video editor. Everything the editor does runs client-side (object URLs,
 canvas, Web Audio, WebCodecs); there is no data backend or database. The only environment
@@ -19,7 +19,7 @@ changes must be documented there ([Keep a Changelog](https://keepachangelog.com/
 bun install          # install dependencies
 bun run dev          # dev server :3000 (output mirrored to dev.log)
 bun run check        # FULL gate: format:check → lint → typecheck → test → build
-bun run test         # Vitest only (NOT bare `bun test` — Bun's runner ignores vitest.config.ts)
+bun run test         # Vitest only (NOT bare `bun test`; Bun's runner ignores vitest.config.ts)
 bun run test:coverage # Vitest with enforced coverage thresholds
 bun run typecheck    # tsc --noEmit
 bun run lint         # ESLint
@@ -38,16 +38,17 @@ Running the suite (these are the steps agents get wrong):
   `bun run vitest run ...`. Bare `bun test` ignores `vitest.config.ts`, and so
   do its coverage include-list and thresholds.
 - Coverage scope is the explicit include-list in `vitest.config.ts`. A new pure
-  module is unmeasured until you add it there, plus an inventory row in
-  `docs/testing.md`; the counts in README/testing/structure are drift-locked by
-  `docs-drift.test.ts` and all three move together.
-- `docs-drift.test.ts` failures after adding/removing tests or renaming battery
-  steps are the intended signal: update the docs, never the drift test.
+  module is unmeasured until you add it there and to the coverage-scope sentence in
+  `docs/testing.md`; a new test file also needs an inventory row there. The counts in
+  README/testing/structure are drift-locked by `docs-drift.test.ts`, and all three
+  move together; the same test checks this file's battery step count.
+- `docs-drift.test.ts` failures after adding/removing tests or changing the battery
+  step count are the intended signal: update the docs, never the drift test.
 - After `bun run format`, re-run `bun run check`: Prettier can glue markdown
   table rows together, which docs-drift then counts as broken cells.
 - Battery: `bun run battery` (`bash e2e/run-battery.sh`, see
   [docs/testing.md](docs/testing.md)). The runner starts a dev server only when
-  the port is free, closes its browser session, and stops only a server it
+  the default port is free, closes its browser session, and stops only a server it
   started, so nothing is left behind.
   It runs minutes (1080p export included) and needs `agent-browser` on PATH. For the SHIPPED
   artifact, build and serve it yourself (`bun run build && bun run start`) and run the battery: it
@@ -63,52 +64,61 @@ Running the suite (these are the steps agents get wrong):
   started the dev server, leave it running.
   Full battery runs are the release verdict only, never the iteration loop:
   iterate with unit tests, manual `agent-browser` sessions, or prefix runs
-  (comment out trailing `step` lines; the verdict adapts to what ran). Reserve
-  full dev plus artifact batteries for the final gate.
+  (use `BATTERY_SH` with a copy that comments out trailing `step` lines, or
+  restore the lines before `bun run check`; the canonical step count is
+  drift-locked). Reserve full dev plus artifact batteries for the final gate.
 
 ## Map
 
-- `src/lib/editor/` — the state core. Types, constants, factories, commands, snap, transition, links,
-  clipboard, actions, tracks, timeline-scroll, store, serialization, persistence, workspace, menus. Pure
-  TypeScript (no React, except the zustand stores); this is what unit tests target. See
-  [docs/architecture.md](docs/architecture.md).
-- `src/lib/editor/media|playback|export/` — browser APIs live here (media elements, Web Audio, canvas,
-  WebCodecs), plus the explicitly browser-bound `persistence.ts`, `project-io.ts`, and
-  `src/lib/analytics.ts` helpers.
-- `src/components/editor/` — the UI. `src/components/editor/timeline/` holds the timeline.
-- `src/components/ui/` — preinstalled shadcn/ui: use them, never modify by hand.
-- `src/hooks/editor/useEditorKeyboard.ts` — the verified Premiere keyboard map.
-- `src/app/` — root `layout.tsx` (dark `<html>`, fonts, Toaster, GoatCounter), the public `(site)`
-  route group, `editor/page.tsx`, `globals.css` (tokens and public-site motion), `icon.svg`,
-  `sitemap.ts`, and `opengraph-image.tsx`.
-- `src/components/site/` — public header, footer, hero, timeline strip, legal shell, tracked anchor,
-  and GoatCounter script. It never imports the editor store or browser engines.
-- `src/lib/seo.ts` — site constants, canonical URLs, page metadata, sitemap routes, and JSON-LD.
+- `src/lib/editor/`: the state core. Types, constants, factories, commands, snap, transition, links,
+  clipboard, actions, placement, action-executor, keyframe-graph-gesture, tracks, timeline-scroll,
+  store, serialization, persistence, workspace, menus. Pure TypeScript (no React, except the zustand
+  stores); this is what unit tests target. See [docs/architecture.md](docs/architecture.md).
+- `src/lib/editor/media|playback|export/`: browser APIs live here (media elements, Web Audio, canvas,
+  WebCodecs), plus the explicitly browser-bound `persistence.ts`, `project-io.ts`, `workspace-store.ts`,
+  and `src/lib/analytics.ts` helpers.
+- `src/components/editor/`: the UI. `src/components/editor/timeline/` holds the timeline.
+- `src/components/ui/`: preinstalled shadcn/ui: use them, never modify by hand.
+- `src/hooks/editor/`: the verified Premiere keyboard map (`useEditorKeyboard.ts`), the browser-bound
+  executor adapter (`action-context.ts`), and the keyframe dot drag hook (`useKeyframeGraphDrag.ts`).
+- `src/app/`: root `layout.tsx` (dark `<html>`, fonts, Toaster), the public `(site)` route group
+  (which mounts `PageViewBeacon`), `editor/page.tsx`, `globals.css` (tokens and public-site motion),
+  `icon.svg`, `sitemap.ts`, and `opengraph-image.tsx`.
+- `src/components/site/`: public header, footer, hero, timeline strip, legal shell, tracked anchor,
+  `PageViewBeacon`, and `AnalyticsToggle`. It never imports the editor store or browser engines.
+- `src/lib/seo.ts`: site constants, canonical URLs, page metadata, sitemap routes, and JSON-LD.
 - `src/lib/editor/__tests__/`: all tests (`*.test.ts(x)`), plus the mocked browser harness in `mocks/`.
 - `e2e/battery.sh`: 70-step UI battery, first step loads the public hero and its editor link (needs the
   dev server + `agent-browser`). Drive it through `e2e/run-battery.sh` (`bun run battery`), which owns
   the server, the session, and the strict verdict.
-- `e2e/fixtures/` — committed battery media, the parity project, and `PROVENANCE.md`.
-- `public/google80671fa4533bcad3.html` — Search Console verification. Keep it public.
-- `src/assets/editor-screenshot.png` — hero screenshot; replacement and recapture steps are in
+- `e2e/fixtures/`: committed battery media, the parity project, and `PROVENANCE.md`.
+- `public/google80671fa4533bcad3.html`: Search Console verification. Keep it public.
+- `src/assets/editor-screenshot.png`: hero screenshot; replacement and recapture steps are in
   [docs/design-system.md](docs/design-system.md).
 
 ## Critical rules
 
-1. **Commands are the only mutation path.** UI dispatches an `EditorCommand` to the store; commands
-   clone, validate, and return a new `Doc`. Never edit `doc` fields in place. If new state must be
-   undoable, it lives inside `Doc`.
+1. **Edit actions mutate only through commands.** Menu, toolbar, and keyboard edit actions dispatch
+   through the shared `executeAction` executor; command batches it returns are applied through the
+   store, and other edits call `store.apply` directly with commands. UI-owned dialogs, panel toggles,
+   and help rows stay in `MenuBar.tsx` and do not route through `executeAction`. Commands clone,
+   validate, and return a new `Doc`. Never edit `doc` fields in place. If new state must be undoable,
+   it lives inside `Doc`.
 2. **Keep the pure state core browser-free** so it runs in Vitest's Node environment. Browser APIs
-   belong in `media/`, `playback/`, and `export/`, or in the explicitly browser-bound
-   `persistence.ts`, `project-io.ts`, and `analytics.ts` helpers.
+   belong in `media/`, `playback/`, and `export/`; in the explicitly browser-bound `persistence.ts`,
+   `project-io.ts`, `workspace-store.ts`, and `analytics.ts` helpers; or in the browser-bound hooks
+   under `src/hooks/editor/` (`action-context.ts`, `useKeyframeGraphDrag.ts`).
 3. **Style through design tokens** (`bg-background`, `text-muted-foreground`, `border-border`, …) with
-   [docs/design-system.md](docs/design-system.md). The kind colours (emerald/amber/violet clips, rose
-   playhead, amber snap guide) are the deliberate exception; never hardcode surface hex values.
-4. **All times are seconds (floats).** Frame conversion lives only in `time.ts`. `tracks[0]` is the
-   topmost layer; the compositor draws last-to-first.
-5. **Layout: panels must be flex chains.** A panel root is `flex min-h-0 min-w-0 flex-1 flex-col`, and
-   `PanelShell`'s content wrapper is `flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden` — without
-   it, content is clipped instead of scrolling (react-resizable-panels renders plain block boxes).
+   [docs/design-system.md](docs/design-system.md). The fixed chrome it documents (clip kind colours,
+   rose playhead/selection, amber snap guide, marker swatches, monitor/scopes zinc, the boot splash,
+   and the other fixed accents) is the deliberate exception; never hardcode surface hex values.
+4. **All times are seconds (floats).** Canonical frame conversion helpers live in `time.ts`;
+   playback/export frame-domain math stays local. `tracks[0]` is the topmost layer; the compositor
+   draws last-to-first.
+5. **Layout: panels must be flex chains.** A panel root is a flex column with `min-h-0` and `flex-1`,
+   and `PanelShell`'s content wrapper is `flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden`. Without
+   the wrapper, content is clipped instead of scrolling (react-resizable-panels renders plain block
+   boxes).
 6. **Tests.** Add tests under `src/lib/editor/__tests__/`. A regression test must fail on the unfixed
    code before it counts as proof. Behavior that is about code shape (z-order, CSS, mounted markup) is
    locked with static-source assertions; runtime engine behavior uses the mocked harness.
@@ -116,19 +126,19 @@ Running the suite (these are the steps agents get wrong):
    names, reserved ids) must be re-validated when it arrives from a file, a command payload, or
    hydration, not just when the UI produces it. Regression tests must include hostile input
    (out-of-range numbers, colliding ids, untrimmed names), not only the values your own controls emit.
-7. **Grep is an indicator, not truth.** Open the cited code and verify before writing any factual claim
-   — in code, docs, or commit messages. Report problems regardless of when they were introduced.
+7. **Grep is an indicator, not truth.** Open the cited code and verify before writing any factual claim,
+   in code, docs, or commit messages. Report problems regardless of when they were introduced.
 8. **Dev server:** check first (`curl -s --max-time 3 http://localhost:3000`), never start a duplicate,
    and read the `dev.log` tail for state. If you started it, stop your own process group when done;
    never `pkill -f 'next dev'`. If the user started it, leave it running.
 9. **Clean up browser sessions.** Headless browsers (`agent-browser`, puppeteer-style debug runs)
-   leak processes that hold inotify instances and file descriptors — enough of them exhaust the
+   leak processes that hold inotify instances and file descriptors; enough of them exhaust the
    system's 128-instance watch limit and crash Turbopack with `Too many open files`. Close every
    session you open; the owning tool's exit/stop command, never a bare `pkill chrome` (the user's real
    browser is Chrome too).
 10. **Do not edit without explicit go-ahead.** Vague approval is not edit permission, and one task's
     approval doesn't extend to the next. Once approved, execute end-to-end without re-asking.
-11. **Surgical changes only** — no drive-by refactors, no new dependencies when the existing stack
+11. **Surgical changes only.** No drive-by refactors, no new dependencies when the existing stack
     suffices, no config flags to make errors disappear. Simplicity first.
 12. **Fix-request lists (e.g. `TO_FIX.md`):** verify every finding against the current code before
     fixing; skip invalid ones with a reason; ask before product decisions; add regression tests; keep

@@ -157,7 +157,8 @@ describe('menu structure (Premiere Pro–style)', () => {
   })
 
   it('Clip menu exposes split/duplicate/delete/ripple/cut/copy/paste/link/unlink/mute/gain', () => {
-    expect(itemOf('Clip', 'clip.split').shortcut).toBe('Ctrl+K') // Premiere Add Edit
+    expect(itemOf('Clip', 'clip.split').label).toBe('Add Edit')
+    expect(itemOf('Clip', 'clip.split').shortcut).toBe('Ctrl+K')
     expect(itemOf('Clip', 'clip.duplicate').shortcut).toBe('D')
     expect(itemOf('Clip', 'clip.delete').shortcut).toBe('Del')
     expect(itemOf('Clip', 'clip.rippleDelete').action).toBe('clip.rippleDelete')

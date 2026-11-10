@@ -490,5 +490,15 @@ export interface Doc {
   media: MediaAsset[]
 }
 
+/**
+ * A validated autosave awaiting the restore banner's decision (0.20.0). The
+ * document is parsed ONCE when discovered; the store holds this object, and
+ * `installProject` clears it whenever any project is installed.
+ */
+export interface PendingRestore {
+  doc: Doc
+  warnings: string[]
+}
+
 /** Per-property keyframe arrays, time-sorted, clip-local times. */
 export type KeyframeMap = Partial<Record<KeyframeProperty, Keyframe[]>>

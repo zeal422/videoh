@@ -203,6 +203,97 @@ describe('toolbar tools', () => {
     expect(useEditorStore.getState().pxPerSec).toBe(2)
   })
 
+  it('Add Edit splits every track with no selection, as one undo step', () => {
+    const media = asset()
+    const video = createTrack('video', 1, {
+      clips: [createClip({ id: 'v', mediaId: media.id, start: 0, duration: 4 })],
+    })
+    const audio = createTrack('audio', 1, {
+      clips: [createClip({ id: 'a', mediaId: media.id, start: 0, duration: 4, audioOnly: true })],
+    })
+    const doc = createDoc()
+    doc.project.tracks = [video, audio]
+    doc.media = [media]
+    useEditorStore.setState({ doc, playhead: 2, selections: [], selection: null })
+
+    render(<Toolbar onOpenExport={() => {}} />)
+    const button = screen.getByRole('button', { name: 'Add Edit (Ctrl+K)' })
+    expect(button).not.toBeDisabled()
+    fireEvent.click(button)
+
+    const state = useEditorStore.getState()
+    expect(state.doc.project.tracks[0].clips).toHaveLength(2)
+    expect(state.doc.project.tracks[1].clips).toHaveLength(2)
+    expect(state.past).toHaveLength(1)
+  })
+
+  it('Add Edit skips a locked crossing track and still splits the unlocked one', () => {
+    const media = asset()
+    const video = createTrack('video', 1, {
+      id: 'v1',
+      clips: [createClip({ id: 'v', mediaId: media.id, start: 0, duration: 4 })],
+    })
+    const audio = createTrack('audio', 1, {
+      id: 'a1',
+      locked: true,
+      clips: [createClip({ id: 'a', mediaId: media.id, start: 0, duration: 4, audioOnly: true })],
+    })
+    const doc = createDoc()
+    doc.project.tracks = [video, audio]
+    doc.media = [media]
+    useEditorStore.setState({ doc, playhead: 2, selections: [], selection: null })
+
+    render(<Toolbar onOpenExport={() => {}} />)
+    const button = screen.getByRole('button', { name: 'Add Edit (Ctrl+K)' })
+    expect(button).not.toBeDisabled()
+    fireEvent.click(button)
+
+    const state = useEditorStore.getState()
+    expect(state.doc.project.tracks[0].clips).toHaveLength(2)
+    expect(state.doc.project.tracks[1].clips).toHaveLength(1)
+    expect(state.past).toHaveLength(1)
+    expect(toast).not.toHaveBeenCalled()
+  })
+
+  it('Add Edit is disabled when every crossing clip is on a locked track', () => {
+    const media = asset()
+    const locked = createTrack('video', 1, {
+      id: 'v_locked',
+      locked: true,
+      clips: [createClip({ id: 'v', mediaId: media.id, start: 0, duration: 4 })],
+    })
+    const doc = createDoc()
+    doc.project.tracks = [locked]
+    doc.media = [media]
+    useEditorStore.setState({ doc, playhead: 2, selections: [], selection: null })
+
+    render(<Toolbar onOpenExport={() => {}} />)
+    expect(screen.getByRole('button', { name: 'Add Edit (Ctrl+K)' })).toBeDisabled()
+  })
+
+  it('Add Edit stays selection-scoped when a selection exists', () => {
+    const media = asset()
+    const video = createTrack('video', 1, {
+      clips: [createClip({ id: 'v', mediaId: media.id, start: 0, duration: 4 })],
+    })
+    const audio = createTrack('audio', 1, {
+      clips: [createClip({ id: 'a', mediaId: media.id, start: 0, duration: 4, audioOnly: true })],
+    })
+    const doc = createDoc()
+    doc.project.tracks = [video, audio]
+    doc.media = [media]
+    useEditorStore.setState({ doc, playhead: 2, selections: [], selection: null })
+    useEditorStore.getState().setSelections(['v'])
+
+    render(<Toolbar onOpenExport={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Add Edit (Ctrl+K)' }))
+
+    const state = useEditorStore.getState()
+    expect(state.doc.project.tracks[0].clips).toHaveLength(2)
+    expect(state.doc.project.tracks[1].clips).toHaveLength(1)
+    expect(state.past).toHaveLength(1)
+  })
+
   it('pressing a tool sets the active tool and its pressed state', () => {
     render(<Toolbar onOpenExport={() => {}} />)
     const ripple = screen.getByRole('button', { name: /Ripple trim tool/ })

@@ -1,6 +1,6 @@
 import { MIN_SPLIT_HEADROOM } from './constants'
 import { constantTimeScaleRate, hasTimeScaleRamp } from './keyframes'
-import { findClip, findMedia, mediaPlayable, sequenceTracks } from './factories'
+import { activeTracks, findClip, findMedia, mediaPlayable, sequenceTracks } from './factories'
 import type { Clip, Doc, MediaAsset } from './types'
 
 /**
@@ -225,6 +225,11 @@ export function anySelectionLinked(doc: Doc, clipIds: string[]): boolean {
   })
 }
 
+/** True when a split of this clip's link group would touch no locked lane. */
+export function splitGroupIsUnlocked(doc: Doc, clipId: string): boolean {
+  return linkedClips(doc, clipId).every((c) => findClip(doc, c.id)?.track.locked !== true)
+}
+
 /** True when the playhead sits strictly inside at least one group member. */
 export function canSplitGroupAt(doc: Doc, clipId: string, at: number): boolean {
   return linkedClips(doc, clipId).some(
@@ -235,6 +240,28 @@ export function canSplitGroupAt(doc: Doc, clipId: string, at: number): boolean {
 /** True when the playhead crosses at least one member of ANY selected group. */
 export function canSplitAnySelectedAt(doc: Doc, clipIds: string[], at: number): boolean {
   return clipIds.some((id) => canSplitGroupAt(doc, id, at))
+}
+
+/**
+ * True when "Add Edit" with NO selection would split something: the playhead
+ * sits strictly inside at least one clip on an active track whose link group is
+ * unlocked. Locked lanes and their linked groups are skipped, mirroring the
+ * filter `commandsToSplitAllAt` applies, so the menu and toolbar never enable
+ * an item that would run a no-op batch.
+ */
+export function canSplitAllAt(
+  doc: Doc,
+  at: number,
+  activeSequencePath: readonly string[] = [],
+): boolean {
+  return activeTracks(doc, activeSequencePath).some((track) =>
+    track.clips.some(
+      (c) =>
+        at > c.start + MIN_SPLIT_HEADROOM &&
+        at < c.start + c.duration - MIN_SPLIT_HEADROOM &&
+        splitGroupIsUnlocked(doc, c.id),
+    ),
+  )
 }
 
 /**

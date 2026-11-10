@@ -29,57 +29,26 @@ import {
 } from '@/components/ui/menubar'
 
 import {
-  commandsToAddMarker,
-  commandsToAddText,
-  commandsToCreateCompoundClip,
-  commandsToDeleteClips,
-  commandsToDeleteMarker,
-  commandsToDuplicateClips,
-  commandsToLinkClips,
-  commandsToRippleDeleteClips,
-  commandsToSplitAllAt,
-  commandsToSplitClipsAt,
-  commandsToUnlinkClips,
-} from '@/lib/editor/actions'
-import {
-  commandsToCutClips,
-  commandsToPasteClips,
-  copyClips,
-  hasClipboardContent,
-} from '@/lib/editor/clipboard'
-import {
   audibleClipId,
   anySelectionLinked,
   canLinkClips,
+  canSplitAllAt,
   canSplitAnySelectedAt,
   linkedAudioTwin,
 } from '@/lib/editor/links'
 import { EditorCommandError } from '@/lib/editor/commands'
-import {
-  activeSequenceDuration,
-  activeTracks,
-  createDoc,
-  findClip,
-  uid,
-} from '@/lib/editor/factories'
+import { activeSequenceDuration, activeTracks, findClip } from '@/lib/editor/factories'
 import { cn } from '@/lib/utils'
-import { GAIN_MAX, GAIN_MIN, PPS_MAX, PPS_MIN, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
-import { nextZoomPxPerSec } from '@/lib/editor/timeline-scroll'
+import { GAIN_MAX, GAIN_MIN } from '@/lib/editor/constants'
 import { buildMenus, type MenuActionId, type MenuContext } from '@/lib/editor/menus'
 import { CURRENT_VERSION } from '@/lib/releases'
-import { hasNavigableMarkers, markerSelectionExists, neighborMarker } from '@/lib/editor/markers'
-import { playbackRef } from '@/lib/editor/playback/engine-ref'
-import { revokeAllProxies } from '@/lib/editor/media/proxies'
-import {
-  downloadProjectJSON,
-  importMediaFiles,
-  openProjectFromPicker,
-  pickFiles,
-  bumpProjectGeneration,
-} from '@/lib/editor/project-io'
+import { hasNavigableMarkers, markerSelectionExists } from '@/lib/editor/markers'
 import { PANEL_BOUNDS, PANEL_IDS } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
 import { useEditorStore, useStableDoc } from '@/lib/editor/store'
+import { executeAction } from '@/lib/editor/action-executor'
+import { createActionContext } from '@/hooks/editor/action-context'
+import { hasClipboardContent } from '@/lib/editor/clipboard'
 
 /**
  * Application menu bar (Premiere Pro–style): File · Edit · Clip · Sequence ·
@@ -180,7 +149,10 @@ export function MenuBar({
     hasSelection: selections.length > 0,
     selectionCount: selections.length,
     hasClips: allClipIds.length > 0,
-    canSplit: selections.length > 0 && canSplitAnySelectedAt(doc, selections, playhead),
+    canSplit:
+      selections.length > 0
+        ? canSplitAnySelectedAt(doc, selections, playhead)
+        : canSplitAllAt(doc, playhead, activeSequencePath),
     // Text clips have no audio track; every media clip does.
     selectionHasAudio: !!selectedClip && selectedClip.mediaId !== undefined,
     // Mute state lives on the audio side of a linked pair.
@@ -294,257 +266,24 @@ export function MenuBar({
   const execute = useCallback(
     (action: MenuActionId) => {
       const store = useEditorStore.getState()
-      const selectedIds =
-        store.selections.length > 0 ? store.selections : store.selection ? [store.selection] : []
-      const selectedClip = selectedIds[0] ? findClip(store.doc, selectedIds[0])?.clip : undefined
-
       try {
+        // Policy-free actions run through one executor; only dialogs, panel
+        // toggles, and help rows stay in this component.
+        const outcome = executeAction(
+          action,
+          createActionContext({ openExport: onOpenExport, openGain: openGainDialog }),
+        )
+        if (outcome.handled) {
+          if (outcome.commands) {
+            const applied = store.apply(outcome.commands)
+            if (applied && outcome.successToast) toast({ title: outcome.successToast })
+          }
+          return
+        }
+
         switch (action) {
-          case 'file.newProject': {
-            // Installing a project by ANY means invalidates loads still in
-            // flight: without the bump, a pending open could overwrite this
-            // brand-new project when its hydration lands.
-            bumpProjectGeneration()
-            revokeAllProxies()
-            store.replaceDoc(createDoc())
-            toast({ title: 'New project created' })
-            break
-          }
-          case 'file.openProject': {
-            // The shared coordinator owns the whole flow (pick, parse, sample
-            // hydration, install) and its generation guard: menu opens and
-            // toolbar opens invalidate each other the same way.
-            void openProjectFromPicker()
-            break
-          }
-          case 'file.importMedia': {
-            void pickFiles('video/*,audio/*,image/*', true).then(async (files) => {
-              if (files.length === 0) return
-              const count = await importMediaFiles(files)
-              if (count > 0) toast({ title: `Imported ${count} file(s)` })
-            })
-            break
-          }
-          case 'file.saveProject': {
-            const filename = downloadProjectJSON()
-            toast({ title: 'Project saved', description: `${filename} downloaded` })
-            break
-          }
-          case 'file.exportMedia':
-            onOpenExport()
-            break
-
-          case 'edit.undo':
-            store.undo()
-            break
-          case 'edit.redo':
-            store.redo()
-            break
-          case 'edit.selectAll':
-            store.selectAll()
-            break
-          case 'edit.deselectAll':
-            store.deselectAll()
-            break
-
-          case 'clip.split': {
-            // Premiere "Add Edit": with no selection, split ALL tracks the
-            // playhead crosses; otherwise split the whole selection.
-            const splitCommands = selectedIds.length
-              ? commandsToSplitClipsAt(store.doc, selectedIds, store.playhead)
-              : commandsToSplitAllAt(store.doc, store.playhead, store.activeSequencePath)
-            if (!splitCommands) return
-            store.apply(splitCommands)
-            break
-          }
-          case 'clip.duplicate': {
-            if (selectedIds.length === 0) return
-            const dupCommands = commandsToDuplicateClips(store.doc, selectedIds)
-            if (!dupCommands) return
-            store.apply(dupCommands)
-            break
-          }
-          case 'clip.delete': {
-            if (selectedIds.length === 0) return
-            // Linked A/V pairs die together — until explicitly unlinked.
-            if (store.apply(commandsToDeleteClips(store.doc, selectedIds))) store.deselectAll()
-            break
-          }
-          case 'clip.rippleDelete': {
-            if (selectedIds.length === 0) return
-            const rippleCommands = commandsToRippleDeleteClips(
-              store.doc,
-              selectedIds,
-              store.activeSequencePath,
-            )
-            if (!rippleCommands) return
-            if (store.apply(rippleCommands)) store.deselectAll()
-            break
-          }
-          case 'clip.cut': {
-            if (selectedIds.length === 0) return
-            const cutCommands = commandsToCutClips(store.doc, selectedIds)
-            if (!cutCommands) return
-            if (store.apply(cutCommands)) store.deselectAll()
-            break
-          }
-          case 'clip.copy': {
-            if (selectedIds.length === 0) return
-            const copied = copyClips(store.doc, selectedIds)
-            if (copied > 0) toast({ title: `Copied ${copied} clip${copied > 1 ? 's' : ''}` })
-            break
-          }
-          case 'clip.paste': {
-            const pasteCommands = commandsToPasteClips(
-              store.doc,
-              store.playhead,
-              store.untargetedTracks,
-              store.activeSequencePath[store.activeSequencePath.length - 1],
-            )
-            if (!pasteCommands) return
-            store.apply(pasteCommands)
-            break
-          }
-          case 'clip.link': {
-            if (selectedIds.length < 2) return
-            const linkCommands = commandsToLinkClips(store.doc, selectedIds)
-            if (!linkCommands) return
-            if (!store.apply(linkCommands)) break
-            toast({ title: 'Clips linked' })
-            break
-          }
-          case 'clip.unlink': {
-            if (selectedIds.length === 0) return
-            const unlinkCommands = commandsToUnlinkClips(store.doc, selectedIds)
-            if (!unlinkCommands) return
-            if (!store.apply(unlinkCommands)) break
-            toast({ title: 'Audio and video unlinked' })
-            break
-          }
-          case 'clip.toggleMute': {
-            if (!selectedClip) return
-            // Mute is an AUDIO property: always target the linked pair's
-            // audio twin, whichever half is selected.
-            const audibleId = audibleClipId(store.doc, selectedClip.id)
-            const audible = findClip(store.doc, audibleId)?.clip
-            store.apply({
-              type: 'setClipMuted',
-              clipId: audibleId,
-              muted: !(audible?.muted ?? false),
-            })
-            break
-          }
-          case 'clip.audioGain':
-            openGainDialog()
-            break
-
-          case 'sequence.addVideoTrack':
-            store.apply({
-              type: 'addTrack',
-              kind: 'video',
-              trackId: uid('track'),
-              ...activeSequenceField(store.activeSequencePath),
-            })
-            break
-          case 'sequence.addAudioTrack':
-            store.apply({
-              type: 'addTrack',
-              kind: 'audio',
-              trackId: uid('track'),
-              ...activeSequenceField(store.activeSequencePath),
-            })
-            break
-          case 'sequence.addTextTrack':
-            store.apply({
-              type: 'addTrack',
-              kind: 'text',
-              trackId: uid('track'),
-              ...activeSequenceField(store.activeSequencePath),
-            })
-            break
-          case 'sequence.createCompound': {
-            const commands = commandsToCreateCompoundClip(store.doc, selectedIds)
-            if (!commands) {
-              toast({
-                title: 'Cannot create a compound clip',
-                description: 'Select at least one clip on a video lane.',
-                variant: 'destructive',
-              })
-              break
-            }
-            store.apply(commands)
-            break
-          }
           case 'sequence.settings':
             openSettingsDialog()
-            break
-
-          case 'marker.add': {
-            const markerCommands = commandsToAddMarker(
-              store.doc,
-              store.playhead,
-              selectedIds,
-              store.activeSequencePath,
-            )
-            if (markerCommands) store.apply(markerCommands)
-            break
-          }
-          case 'marker.edit':
-            window.dispatchEvent(new CustomEvent('editor:marker-edit'))
-            break
-          case 'marker.delete': {
-            if (!store.selectedMarker) return
-            const deleteMarkerCommands = commandsToDeleteMarker(store.doc, store.selectedMarker)
-            if (!deleteMarkerCommands) return
-            if (store.apply(deleteMarkerCommands)) store.selectMarker(null)
-            break
-          }
-          case 'marker.next': {
-            const point = neighborMarker(
-              store.doc,
-              store.playhead,
-              'next',
-              store.activeSequencePath,
-            )
-            if (point) playbackRef.current?.seek(point.timelineTime)
-            break
-          }
-          case 'marker.previous': {
-            const point = neighborMarker(
-              store.doc,
-              store.playhead,
-              'prev',
-              store.activeSequencePath,
-            )
-            if (point) playbackRef.current?.seek(point.timelineTime)
-            break
-          }
-
-          case 'graphics.newText':
-            store.apply(
-              commandsToAddText(
-                store.doc,
-                store.playhead,
-                store.untargetedTracks,
-                store.activeSequencePath[store.activeSequencePath.length - 1],
-              ),
-            )
-            break
-
-          case 'view.zoomIn':
-            store.setPxPerSec(nextZoomPxPerSec(store.pxPerSec, 1.4))
-            break
-          case 'view.zoomOut':
-            store.setPxPerSec(nextZoomPxPerSec(store.pxPerSec, 1 / 1.4))
-            break
-          case 'view.zoomFit':
-            zoomToFitSequence(store)
-            break
-          case 'view.toggleSnap':
-            store.toggleSnap()
-            break
-          case 'view.useProxies':
-            store.setProxiesEnabled(!store.proxiesEnabled)
             break
           case 'view.appearance':
             setAppearanceOpen(true)
@@ -585,12 +324,11 @@ export function MenuBar({
           case 'help.about':
             setAboutOpen(true)
             break
-          default: {
-            // Exhaustiveness guard: a new MenuActionId without a case is a
-            // typecheck failure here instead of a silent no-op.
-            const exhaustive: never = action
-            throw new Error(`Unhandled menu action: ${String(exhaustive)}`)
-          }
+          default:
+            // The executor owns every other MenuActionId. A new id that is
+            // neither delegated nor handled here fails loudly instead of
+            // becoming a silent no-op.
+            throw new Error(`Unhandled menu action: ${String(action)}`)
         }
       } catch (error) {
         if (error instanceof EditorCommandError) {
@@ -893,16 +631,6 @@ function SequenceSettingsDialog({
       </DialogContent>
     </Dialog>
   )
-}
-
-/** View > Zoom to Fit Sequence (Premiere \\): whole doc visible in the timeline. */
-function zoomToFitSequence(store: ReturnType<typeof useEditorStore.getState>): void {
-  const el = document.querySelector('[data-timeline-scroll]')
-  const viewport = el ? el.clientWidth - TRACK_HEADER_WIDTH - 12 : 0
-  const duration = activeSequenceDuration(store.doc, store.activeSequencePath)
-  if (viewport > 40 && duration > 0.25) {
-    store.setPxPerSec(Math.min(PPS_MAX, Math.max(PPS_MIN, Math.round(viewport / duration))))
-  }
 }
 
 /** Help > Keyboard Shortcuts… — mirrors useEditorKeyboard.ts (single source). */

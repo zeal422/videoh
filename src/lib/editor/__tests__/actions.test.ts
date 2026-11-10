@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 import {
   commandsToAddCaptionCue,
@@ -431,6 +433,23 @@ describe('commandsToPlaceMedia / commandsToPlaceSource', () => {
     expect(next.project.tracks[1].clips).toHaveLength(1) // relocated onto the audio lane
   })
 
+  it('rejects non-finite placement times before building a batch', () => {
+    const { doc, asset, track } = laneDoc([], 10)
+    expect(commandsToAddMedia(doc, asset, Number.NaN)).toBeNull()
+    expect(commandsToAddMediaInNewTrack(doc, asset, Number.NaN, 0)).toEqual([])
+    expect(commandsToAddText(doc, Number.NaN)).toEqual([])
+    for (const mode of ['place', 'insert', 'overwrite'] as const) {
+      expect(commandsToPlaceMedia(doc, asset, Number.NaN, mode, track.id)).toEqual({
+        commands: null,
+        refusal: 'time',
+      })
+    }
+    expect(commandsToPlaceSource(doc, asset, Number.NaN, 'insert', null)).toEqual({
+      commands: null,
+      refusal: 'time',
+    })
+  })
+
   it('an unrepresentable overwrite refuses the whole placement (nothing written)', () => {
     // The cut lands 0.05s into the clip: both sides are retained, but the left
     // side sits under the split headroom, so no representable edit exists.
@@ -466,5 +485,27 @@ describe('commandsToAddCaptionCue (0.8.5)', () => {
     expect(track?.clips).toHaveLength(1)
     expect(track?.clips[0].start).toBe(2)
     expect(track?.clips[0].isCaption).toBe(true)
+  })
+})
+
+describe('placement routes delegate to the shared planner (0.20.0)', () => {
+  const source = readFileSync(resolve(__dirname, '..', 'actions.ts'), 'utf8')
+  const routeBody = (name: string) => {
+    const start = source.indexOf(`export function ${name}(`)
+    const next = source.indexOf('\nexport ', start + 1)
+    return source.slice(start, next === -1 ? source.length : next)
+  }
+
+  it('commandsToPlaceMedia delegates its insert/overwrite modes', () => {
+    const body = routeBody('commandsToPlaceMedia')
+    expect(body).toMatch(/planMediaPlacement\(doc, asset, start, mode, \{/)
+    expect(body).not.toMatch(/avPairCommands|planInsert|planOverwrite|resolveMediaTarget/)
+  })
+
+  it('commandsToPlaceSource delegates its source window', () => {
+    const body = routeBody('commandsToPlaceSource')
+    expect(body).toMatch(/planMediaPlacement\(doc, asset, start, .*'insert'/)
+    expect(body).toMatch(/range,/)
+    expect(body).not.toMatch(/avPairCommands|planInsert|planOverwrite|resolveAudioTwinTrack/)
   })
 })

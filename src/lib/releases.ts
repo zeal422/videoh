@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.20.0',
+    date: '2026-11-09',
+    highlights: [
+      'Add Edit (Ctrl+K) works with no selection, splitting the unlocked tracks the playhead crosses and skipping locked lanes and linked groups with a locked member; a selection stays selection-scoped',
+      'Preview mono audio at pan 0 now uses the same equal-power center split as export',
+      'Preview and export share one audio chain, so compressed panned clips change level: mono about -4.8 to -6.0 dB, stereo about -1.4 to -2.6 dB at the measured settings',
+      'Autosave restore is parsed once, and every project install clears the restore prompt',
+      'Gesture state and keyframe drag math are smaller, testable modules with no change to those gestures; the Link menu now links or merges only, and Shift+Delete ripple-deletes clips even after a marker is deleted',
+    ],
+  },
+  {
     version: '0.19.6',
     date: '2026-11-09',
     highlights: [

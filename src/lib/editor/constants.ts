@@ -120,6 +120,11 @@ export const TINT_MAX = 100
 export const EQ_DB_MIN = -24
 export const EQ_DB_MAX = 24
 
+/** EQ band centres (Hz) for the three-band biquad stack (low shelf, mid peak, high shelf). */
+export const EQ_LOW_HZ = 200
+export const EQ_MID_HZ = 1000
+export const EQ_HIGH_HZ = 4000
+
 /**
  * Noise-reduction chain (0.6.0), shared by the preview mixer and the export
  * mix so the two stay identical: a rumble high-pass, a hiss low-pass and a

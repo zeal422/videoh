@@ -148,6 +148,32 @@ describe('marker keyboard map (0.5.5)', () => {
     expect(useEditorStore.getState().doc.project.tracks[0].clips).toHaveLength(0)
   })
 
+  it('a stale marker plus Shift+Delete still ripple-deletes the clip selection', () => {
+    const doc = docWithClip()
+    doc.project.tracks[0].clips.push(
+      createClip({
+        id: 'c2',
+        mediaId: doc.media[0].id,
+        start: 10,
+        duration: 2,
+      }),
+    )
+    useEditorStore.setState({
+      doc,
+      selections: ['c1'],
+      selection: 'c1',
+      selectedMarker: { scope: 'sequence', markerId: 'gone' },
+    })
+    render(<Harness />)
+
+    fireEvent.keyDown(window, { key: 'Delete', shiftKey: true })
+    expect(useEditorStore.getState().selectedMarker).toBeNull()
+    // Ripple: the removed 2..6 span shifts c2 from 10 to 6. A plain delete
+    // would leave it at 10.
+    const c2 = useEditorStore.getState().doc.project.tracks[0].clips.find((c) => c.id === 'c2')!
+    expect(c2.start).toBe(6)
+  })
+
   it('arrow keys in the marker dialog color swatches do not drive the playhead', () => {
     const doc = docWithClip()
     doc.project.markers = [{ id: 'm1', time: 3 }]

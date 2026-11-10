@@ -57,7 +57,7 @@ import type { Clip, Doc, MediaAsset } from './types'
 export type PlacementMode = 'place' | 'insert' | 'overwrite'
 
 /** Why a placement cannot be represented; the UI maps each to one toast. */
-export type PlacementRefusal = 'span' | 'geometry' | 'source'
+export type PlacementRefusal = 'span' | 'geometry' | 'source' | 'time'
 
 /** The single source of the refusal toasts (routes share the wording). */
 export function placementRefusalMessage(refusal: PlacementRefusal): string {
@@ -68,6 +68,8 @@ export function placementRefusalMessage(refusal: PlacementRefusal): string {
       return 'Overwrite would cut a clip shorter than the minimum'
     case 'source':
       return 'Overwrite would trim a clip past the end of its source'
+    case 'time':
+      return 'Placement time is invalid'
   }
 }
 

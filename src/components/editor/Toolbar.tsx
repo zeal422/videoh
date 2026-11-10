@@ -40,19 +40,13 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
-import {
-  commandsToAddText,
-  commandsToDeleteClips,
-  commandsToDuplicateClips,
-  commandsToSplitClipsAt,
-} from '@/lib/editor/actions'
-import { canSplitAnySelectedAt } from '@/lib/editor/links'
-import { activeSequenceDuration, createBuiltinTextPresets, uid } from '@/lib/editor/factories'
+import { commandsToAddText } from '@/lib/editor/actions'
+import { canSplitAllAt, canSplitAnySelectedAt } from '@/lib/editor/links'
+import { createBuiltinTextPresets } from '@/lib/editor/factories'
 import { PPS_MAX, PPS_MIN } from '@/lib/editor/constants'
-import { nextZoomPxPerSec } from '@/lib/editor/timeline-scroll'
-import { projectFileName, serializeDoc } from '@/lib/editor/serialization'
 import { openProjectFile } from '@/lib/editor/project-io'
-import { playbackRef } from '@/lib/editor/playback/engine-ref'
+import { executeAction, type ExecutorActionId } from '@/lib/editor/action-executor'
+import { createActionContext } from '@/hooks/editor/action-context'
 import { useEditorStore, useStableDoc } from '@/lib/editor/store'
 import type { TextStyle } from '@/lib/editor/types'
 import { isAutomationGestureLive } from '@/hooks/editor/gesture-state'
@@ -70,8 +64,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
   const dropMode = useEditorStore((s) => s.dropMode)
   const untargetedTracks = useEditorStore((s) => s.untargetedTracks)
   const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
-  const { apply, undo, redo, toggleSnap, setPxPerSec, setActiveTool, setDropMode } =
-    useEditorStore.getState()
+  const { apply, setActiveTool, setDropMode } = useEditorStore.getState()
 
   // A live gesture owns the tool: switching mid-drag would show one tool while
   // the in-flight closures still run the old one. Same rule as the keyboard.
@@ -83,7 +76,6 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
   const loadInputRef = useRef<HTMLInputElement>(null)
   const [isLoading, setIsLoading] = useState(false)
 
-  const duration = activeSequenceDuration(doc, activeSequencePath)
   const selectedIds = selections
   const hasSelection = selectedIds.length > 0
 
@@ -95,34 +87,19 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
     })
   }
 
-  const splitAtPlayhead = () => {
-    if (!hasSelection) return
+  /** One executor call, with the toolbar's export/dialog callbacks injected. */
+  const run = (action: ExecutorActionId) => {
+    const store = useEditorStore.getState()
     try {
-      const commands = commandsToSplitClipsAt(doc, selectedIds, playhead)
-      if (commands) apply(commands)
+      const outcome = executeAction(action, createActionContext({ openExport: onOpenExport }))
+      if (outcome.commands) {
+        const applied = store.apply(outcome.commands)
+        if (applied && outcome.successToast) toast({ title: outcome.successToast })
+      }
     } catch (error) {
       showError(error)
     }
   }
-
-  const deleteSelected = () => {
-    if (!hasSelection) return
-    // Linked A/V pairs die together — until explicitly unlinked.
-    if (!apply(commandsToDeleteClips(doc, selectedIds))) return
-    useEditorStore.getState().deselectAll()
-  }
-
-  const duplicateSelected = () => {
-    if (!hasSelection) return
-    try {
-      const commands = commandsToDuplicateClips(doc, selectedIds)
-      if (commands) apply(commands)
-    } catch (error) {
-      showError(error)
-    }
-  }
-
-  const addTextAtPlayhead = () => addTextWithStyle()
 
   const addTextWithStyle = (style?: TextStyle) => {
     try {
@@ -138,23 +115,6 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
     } catch (error) {
       showError(error)
     }
-  }
-
-  const addTrack = (kind: 'video' | 'audio' | 'text') => {
-    const sequenceId = activeSequencePath[activeSequencePath.length - 1]
-    apply({ type: 'addTrack', kind, trackId: uid('track'), ...(sequenceId ? { sequenceId } : {}) })
-  }
-
-  const saveProject = () => {
-    const json = JSON.stringify(serializeDoc(doc), null, 2)
-    const blob = new Blob([json], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = projectFileName(doc.project.name)
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(url), 2000)
-    toast({ title: 'Project saved', description: `${a.download} downloaded` })
   }
 
   const handleLoadFile = async (file: File) => {
@@ -180,13 +140,13 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
         {/* History */}
         <ToolButton
           label="Undo (Ctrl+Z)"
-          onClick={undo}
+          onClick={() => run('edit.undo')}
           disabled={past.length === 0}
           icon={<Undo2 className="size-4" />}
         />
         <ToolButton
           label="Redo (Ctrl+Shift+Z)"
-          onClick={redo}
+          onClick={() => run('edit.redo')}
           disabled={future.length === 0}
           icon={<Redo2 className="size-4" />}
         />
@@ -265,20 +225,24 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
 
         {/* Edit tools */}
         <ToolButton
-          label="Split at playhead (Ctrl+K)"
-          onClick={splitAtPlayhead}
-          disabled={!hasSelection || !canSplitAnySelectedAt(doc, selectedIds, playhead)}
+          label="Add Edit (Ctrl+K)"
+          onClick={() => run('clip.split')}
+          disabled={
+            hasSelection
+              ? !canSplitAnySelectedAt(doc, selectedIds, playhead)
+              : !canSplitAllAt(doc, playhead, activeSequencePath)
+          }
           icon={<Scissors className="size-4" />}
         />
         <ToolButton
           label="Duplicate selection (D)"
-          onClick={duplicateSelected}
+          onClick={() => run('clip.duplicate')}
           disabled={!hasSelection}
           icon={<Copy className="size-4" />}
         />
         <ToolButton
           label="Delete selection (Del)"
-          onClick={deleteSelected}
+          onClick={() => run('clip.delete')}
           disabled={!hasSelection}
           icon={<Trash2 className="size-4" />}
         />
@@ -289,7 +253,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
         <div className="flex items-center">
           <ToolButton
             label="Add text clip (T)"
-            onClick={addTextAtPlayhead}
+            onClick={() => run('graphics.newText')}
             icon={<TypeIcon className="size-4" />}
           />
           <DropdownMenu>
@@ -346,13 +310,13 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
             <TooltipContent side="bottom">Add track</TooltipContent>
           </Tooltip>
           <DropdownMenuContent>
-            <DropdownMenuItem onClick={() => addTrack('video')}>
+            <DropdownMenuItem onClick={() => run('sequence.addVideoTrack')}>
               <FileVideo className="mr-2 size-4" /> Video track
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => addTrack('audio')}>
+            <DropdownMenuItem onClick={() => run('sequence.addAudioTrack')}>
               <FileAudio className="mr-2 size-4" /> Audio track
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => addTrack('text')}>
+            <DropdownMenuItem onClick={() => run('sequence.addTextTrack')}>
               <TypeIcon className="mr-2 size-4" /> Text track
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -363,19 +327,19 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
         {/* Snap + zoom */}
         <ToolButton
           label={snapEnabled ? 'Snapping on' : 'Snapping off'}
-          onClick={toggleSnap}
+          onClick={() => run('view.toggleSnap')}
           active={snapEnabled}
           icon={<Magnet className="size-4" />}
         />
         <ToolButton
           label="Zoom out (−)"
-          onClick={() => setPxPerSec(nextZoomPxPerSec(pxPerSec, 1 / 1.4))}
+          onClick={() => run('view.zoomOut')}
           disabled={pxPerSec <= PPS_MIN}
           icon={<ZoomOut className="size-4" />}
         />
         <ToolButton
           label="Zoom in (+)"
-          onClick={() => setPxPerSec(nextZoomPxPerSec(pxPerSec, 1.4))}
+          onClick={() => run('view.zoomIn')}
           disabled={pxPerSec >= PPS_MAX}
           icon={<ZoomIn className="size-4" />}
         />
@@ -398,7 +362,7 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
         {/* Project IO + export */}
         <ToolButton
           label="Save project (Ctrl+S)"
-          onClick={saveProject}
+          onClick={() => run('file.saveProject')}
           icon={<Save className="size-4" />}
         />
         <ToolButton

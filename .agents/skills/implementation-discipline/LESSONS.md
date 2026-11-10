@@ -563,3 +563,28 @@ hard to bisect, though each change was individually correct and the fixes were
 forced by the tooling gate.
 Would-have-caught: one ticket, one commit, one gate (scope discipline).
 Action: kept as a note.
+
+## 2026-11-09 - moving shared logic leaves static-source locks behind
+
+What happened: Wave 2a moved the shaping chain into `audio-chain.ts`, but three
+separate static-source locks still asserted the old inline calls in
+`core.ts`/`mp4.ts` (`denoise.test.ts`, `effect-controls-ui.test.ts`), and Wave 2b
+left `proxy.test.ts` asserting the old per-component revoke/replace order. Each
+was caught only by a full `bun run check`, one red rung at a time.
+Would-have-caught: trigger 4's caller sweep must include tests that assert on the
+moved source text, not only runtime importers. Grep the old call shape across
+`src/**/__tests__` before declaring the refactor done.
+Action: kept as a note; the gates now assert the shared builder/install path, and
+Wave 2b's proxy lock reads the one install implementation instead of each caller.
+
+## 2026-11-10 - sanitizing a clamp changed the shape a static lock asserted
+
+What happened: wrapping the audio EQ clamp in `clampAudioValue` to neutralize NaN
+made `effect-controls-ui.test.ts` fail its literal `clamp(clip.eq.<band>, ...)`
+source assertion during `bun run check`.
+Would-have-caught: the 2026-11-09 lesson applies to any source-shape change, not
+only moved modules. Grep the old call shape across `src/**/__tests__` before
+running the gate.
+Action: kept as a note; the lock now asserts
+`clampAudioValue(clip.eq.<band>, EQ_DB_MIN, EQ_DB_MAX)` for all three bands, and
+the runtime NaN/infinity cases live in `audio-chain.test.ts`.

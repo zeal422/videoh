@@ -58,6 +58,8 @@ import { findClip, findMedia } from '@/lib/editor/factories'
 import { AppliedEffectsSection } from '@/components/editor/effect-controls/AppliedEffectsSection'
 import { linkedAudioTwin } from '@/lib/editor/links'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
+import { nudgeKeyframeTime } from '@/lib/editor/keyframe-graph-gesture'
+import { useKeyframeGraphDrag } from '@/hooks/editor/useKeyframeGraphDrag'
 import { lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
 import { frameToTime } from '@/lib/editor/time'
 import { KEYFRAME_GRAPH_MAX_HEIGHT, KEYFRAME_GRAPH_MIN_HEIGHT } from '@/lib/editor/workspace'
@@ -596,28 +598,27 @@ function KeyframeGraph({
     const delta = (key === 'ArrowRight' ? 1 : -1) * frame
     const next = keyframes.map((k, i) => {
       if (i !== index) return k
-      // Nudge in AXIS space (screen), clamp there, then convert back: `axis`
-      // is its own inverse, and a mirrored row's time runs opposite to the
-      // screen position the user sees and the clamps promise.
-      const screen = Math.max(0, Math.min(clip.duration, axis(k.time) + delta))
-      return { ...k, time: axis(screen) }
+      // Nudge in AXIS space (screen), clamp there, then convert back: a
+      // mirrored row's time runs opposite to the screen position the user
+      // sees and the clamps promise.
+      return {
+        ...k,
+        time: nudgeKeyframeTime({ time: k.time, duration: clip.duration, delta, mirrored }),
+      }
     })
     apply({ type: 'setClipKeyframes', clipId: clip.id, property, keyframes: next })
   }
   const wrapRef = useRef<HTMLDivElement>(null)
-  const [dragIndex, setDragIndex] = useState<number | null>(null)
-  // Initiating pointer of the active keyframe drag (multi-touch: ignore others).
-  const [pointerId, setPointerId] = useState<number | null>(null)
-  // Gesture token from beginTransient: a foreign commit bumps it and the drag
-  // then refuses further frames (they would carry no undo entry).
-  const tokenRef = useRef(-1)
-  // The grabbed keyframe's current time. The store re-sorts the array the
-  // moment a crossing frame lands, so the index captured below stops naming
-  // the grabbed keyframe: the drag looks it up by the time it last wrote.
-  const dragTimeRef = useRef(0)
-  // The pointerdown origin for the two-axis dot drag (0.18.0): time and value
-  // are applied as deltas from here, so an off-center press cannot jump.
-  const dragStartRef = useRef({ x: 0, y: 0, time: 0, value: 0 })
+  // Dot drag: the hook owns pointer ownership, the transient token, and the
+  // window listeners; keyframe-graph-gesture.ts owns the math.
+  const { beginDrag } = useKeyframeGraphDrag({
+    clipId: clip.id,
+    property,
+    duration: clip.duration,
+    mirrored,
+    scale,
+    wrapRef,
+  })
   // Live graph height while the bottom handle is dragged. The committed value
   // lives in the workspace store, never in the Doc.
   const storedHeight = useWorkspaceStore((s) => s.keyframeGraphHeights[property])
@@ -629,90 +630,6 @@ function KeyframeGraph({
     startY: number
     startHeight: number
   } | null>(null)
-
-  useEffect(() => {
-    if (dragIndex === null) return
-    const store = useEditorStore.getState()
-    const onMove = (e: PointerEvent) => {
-      // Only the initiating pointer drives the drag (multi-touch).
-      if (e.pointerId !== pointerId) return
-      if (currentTransientToken() !== tokenRef.current) return
-      const rect = wrapRef.current?.getBoundingClientRect()
-      if (!rect || rect.width <= 0 || rect.height <= 0) return
-      const start = dragStartRef.current
-      const live = useEditorStore.getState().doc
-      const clipNow = findClip(live, clip.id)?.clip
-      const kfs = clipNow?.keyframes?.[property]
-      if (!kfs || kfs.length === 0) return
-      // Find the grabbed keyframe again: after it passes a neighbour the stored
-      // array is sorted, so `dragIndex` names the keyframe it crossed and every
-      // later frame would drive that one to the pointer while the grabbed dot
-      // freezes. The captured index wins while it still matches (two keyframes
-      // may legally share a time, e.g. both clamped to a clip end).
-      const target =
-        kfs[dragIndex]?.time === dragTimeRef.current
-          ? dragIndex
-          : kfs.findIndex((k) => k.time === dragTimeRef.current)
-      if (target < 0) return
-      // Horizontal movement changes time; vertical movement changes value
-      // (0.18.0). Time keeps the established absolute pointer mapping; value
-      // is a delta from the pointerdown origin so an off-center press cannot
-      // jump it.
-      const t = ((e.clientX - rect.left) / rect.width) * clip.duration
-      const time = Math.max(0, Math.min(clip.duration, axis(t)))
-      const bounds = KEYFRAME_PROPERTY_BOUNDS[property]
-      const nextValue =
-        scale === 'db'
-          ? unitToGain(
-              Math.max(
-                0,
-                Math.min(1, gainToUnit(start.value) + (start.y - e.clientY) / rect.height),
-              ),
-            )
-          : start.value +
-            ((start.y - e.clientY) / rect.height) * Math.max(1e-6, bounds.max - bounds.min)
-      const value = clampPropertyValue(property, nextValue)
-      const next = kfs.map((k, i) => (i === target ? { ...k, time, value } : k))
-      dragTimeRef.current = time
-      store.applyTransient({ type: 'setClipKeyframes', clipId: clip.id, property, keyframes: next })
-    }
-    const onUp = (e: PointerEvent) => {
-      // Only the initiating pointer ends this drag (multi-touch): a second
-      // pointer lifting anywhere would otherwise commit a drag it does not own.
-      // Capture phase, so this keeps the first word over the shell's
-      // dangling-commit net (the marker and clip gestures work the same way).
-      if (e.pointerId !== pointerId) return
-      // The transparent base was snapshotted by the dot's pointerdown; committing
-      // here turns the whole drag into exactly one undo step.
-      try {
-        useEditorStore.getState().commitTransient()
-      } catch {
-        useEditorStore.getState().cancelTransient()
-      }
-      setDragIndex(null)
-      setPointerId(null)
-    }
-    const onCancel = (e: PointerEvent) => {
-      if (e.pointerId !== pointerId) return
-      // The browser took the pointer (touch pan, native drag): discard the drag
-      // rather than leaving its transient live, which would block autosave.
-      useEditorStore.getState().cancelTransient()
-      setDragIndex(null)
-      setPointerId(null)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp, true)
-    window.addEventListener('pointercancel', onCancel, true)
-    return () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp, true)
-      window.removeEventListener('pointercancel', onCancel, true)
-    }
-    // `pointerId` is a dependency because the handlers read it: a re-grab of the
-    // same dot by a second pointer must hand ownership over instead of leaving
-    // the listeners filtering for the first one. `dragTimeRef` is read live and
-    // mutates per frame, so it stays out of the dependency list on purpose.
-  }, [dragIndex, clip.id, clip.duration, property, pointerId, scale])
 
   // Bottom-edge resize (0.18.0): UI state only, so it never enters the Doc or
   // the undo history. The live height follows the pointer; the workspace store
@@ -1106,11 +1023,7 @@ function KeyframeGraph({
             onPointerDown={(e) => {
               e.stopPropagation()
               if (refuseLockedClip(clip.id)) return
-              tokenRef.current = useEditorStore.getState().beginTransient(e.pointerId)
-              dragTimeRef.current = k.time
-              dragStartRef.current = { x: e.clientX, y: e.clientY, time: k.time, value: k.value }
-              setPointerId(e.pointerId)
-              setDragIndex(i)
+              beginDrag(i, k, e)
             }}
             onKeyDown={(e) => {
               if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return

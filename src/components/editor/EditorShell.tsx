@@ -41,15 +41,9 @@ import {
   type ResetTracker,
 } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
-import {
-  clearAutosave,
-  initAutosave,
-  parseAutosave,
-  readValidAutosave,
-} from '@/lib/editor/persistence'
+import { clearAutosave, initAutosave, readValidAutosave } from '@/lib/editor/persistence'
 import { projectFileName, serializeDoc } from '@/lib/editor/serialization'
-import { bumpProjectGeneration } from '@/lib/editor/project-io'
-import { revokeAllProxies } from '@/lib/editor/media/proxies'
+import { installProject } from '@/lib/editor/project-io'
 import { disposeAll, syncFilmstrips } from '@/lib/editor/media/filmstrip-cache'
 import { toast } from '@/hooks/use-toast'
 
@@ -393,15 +387,14 @@ export function EditorShell() {
 
   const restoreAutosave = async () => {
     try {
-      const json = pendingRestore
-      if (!json) return
-      const { doc, warnings } = parseAutosave(json)
-      // Installing a project invalidates any in-flight project load; the bump
-      // and the install are one step, so no load can land in between them.
-      bumpProjectGeneration()
-      revokeAllProxies()
-      useEditorStore.getState().replaceDoc(doc)
-      useEditorStore.getState().setPendingRestore(null)
+      // Read the current restore at click time: the banner's render closure
+      // can be stale if the store cleared or replaced it.
+      const restore = useEditorStore.getState().pendingRestore
+      if (!restore) return
+      const { doc, warnings } = restore
+      // The one install path invalidates any in-flight project load, revokes
+      // the old proxies, installs the doc, and clears the banner.
+      installProject(doc)
       const remaining = doc.media.filter((asset) => asset.missing).length
       const description = [
         remaining > 0
@@ -420,13 +413,13 @@ export function EditorShell() {
     } catch {
       toast({ title: 'Restore failed', variant: 'destructive' })
       clearAutosave()
-      useEditorStore.getState().setPendingRestore(null)
+      useEditorStore.getState().clearPendingRestore()
     }
   }
 
   const discardAutosave = () => {
     clearAutosave()
-    useEditorStore.getState().setPendingRestore(null)
+    useEditorStore.getState().clearPendingRestore()
   }
 
   return (
