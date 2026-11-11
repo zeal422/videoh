@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.20.1] - 2026-11-11
+
+### Changed
+
+- The battery gains a concurrent dev + artifact runner (`bun run battery:pair`) with a strict pair verdict, a canonical `TIMING=1` per-step timing toggle, and removal of the stale `e2e/battery.timing.sh` copy. The pair starts only the standalone artifact server, requires both server-type log lines, refuses any collision across result, timing, runner, server, and pair log paths or an occupied port, validates the battery script before starting the artifact server, rejects a `DEV_BASE_URL` the dev leg cannot start and an `ART_PORT` outside 1-65535, logs one concise reason for every failed verdict condition, requires `setsid` before detaching, and keeps the detached launcher from printing a verdict. The single runner and the 70-step order and count are unchanged. The f05 blend step now drives its 12-frame sweep through the in-page `step_frames` helper, the panel close/hide/reset steps read one consolidated panel state and poll their geometry, and the e04/e05/e06 pickers poll the menu DOM. The measured median pair is 569s across three runs (568s, 572s, 569s), 51.2 percent below the 1166s median sequential baseline (1171s, 1166s, 1156s); all six runs were 70/70 on both legs, and the optimized runs ended with `PAIR_EXIT=0`.
+
+### Fixed
+
+- The battery validates `TIMING`, escapes menu names before the in-page query, falls back to sub-second timing when `EPOCHREALTIME` is unavailable, and polls the Inspector on close. The pair runner resolves symlinked output paths without `realpath`, normalizes `ART_PORT` before the dev-port comparison, rejects output-path collisions before truncating `PAIR_LOG`, rejects hardlinked output paths with `-ef`, and rejects configured paths that alias the fixed `dev.log` or `server.log`. It holds `PAIR_LOG` writes until path validation passes, bounds each artifact readiness request with a 3-second curl timeout, and signals each leg's process group so a terminated pair also stops the battery child before stopping the artifact server. It keeps no-setsid server cleanup in its own process group.
+
 ## [0.20.0] - 2026-11-09
 
 ### Added
@@ -1321,10 +1331,11 @@ strict-origin-when-cross-origin`, `X-Frame-Options: DENY`, and an enforced `Cont
   coverage, and collapses the panel again so the later pixel-reading steps see the full monitor.
 - The battery gains a 48th step, `f05 blend: monitor matches the export plan frame by frame`: a 0.25x
   clip is stepped through 12 output frames while an in-page decoder builds each frame's plan pair from
-  the same file, and the monitor canvas must equal it pixel for pixel (the step also proves the
-  30 fps sample ladder it derives frames from, and requires at least three genuinely blended frames so
-  a held frame could not pass). It runs while the quick-added clips still sit in their import layout
-  and undoes its speed edit on every exit path (see Fixed).
+  the same file, and the monitor canvas's frame sum must equal the plan's frame sum (the check has allowed
+  a 1 percent tolerance since 0.18.0; the step also proves the 30 fps sample ladder it derives frames
+  from, and requires at least three genuinely blended frames so a held frame could not pass). It runs
+  while the quick-added clips still sit in their import layout and undoes its speed edit on every exit
+  path (see Fixed).
 - **`e2e/run-battery.sh` takes the UI battery from a cold start to a strict verdict.** Driving
   `e2e/battery.sh` by hand means remembering the dev server, the gate password in `.env.local`, the
   session cleanup and the server stop, and it had one silent failure mode: a run killed halfway (an

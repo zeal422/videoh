@@ -154,8 +154,14 @@ elif [ "$BASE_URL" = "http://localhost:3000" ] || [ "$BASE_URL" = "http://127.0.
     DEV_PID=$!
     DEV_GROUP="-$DEV_PID"
   else
+    # Job control puts the background job in its own process group, so the
+    # cleanup can signal the server and its children without setsid. The
+    # monitor window covers only the launch and the pid/group assignments.
+    set -m
     bun run dev >dev.log 2>&1 &
     DEV_PID=$!
+    DEV_GROUP="-$DEV_PID"
+    set +m
   fi
   for _ in $(seq 1 60); do
     # A dead child cannot be "ready": without this, a server that crashed on

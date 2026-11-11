@@ -115,6 +115,7 @@ The scripted UI battery runs against a live server (see [testing.md](testing.md#
 ```bash
 bun run battery                               # starts/reuses a dev server, then stops what it started
 DETACH=1 bun run battery                       # detached, for harnesses that clean up their children
+bun run battery:pair                          # dev + artifact concurrently, with a strict pair verdict
 ```
 
 It requires `agent-browser` on `PATH` and writes `PASS`/`FAIL` lines to `$OUT` (`results.txt` by
@@ -122,6 +123,11 @@ default). It exits nonzero on a `FAIL` and on a run that produced fewer results 
 `step` lines, so a partial run is never a pass. The first step loads the public hero and asserts the
 Open editor link; the second opens `/editor`; the third clears storage and opens a fresh editor.
 `results*.txt` and `tool-results/` are gitignored.
+
+`bun run battery:pair` runs both legs concurrently. Build first. It starts the standalone artifact on
+`:3100`, requires `:3000` free for the dev leg, and requires both server-type lines plus both strict
+verdicts. It writes `PAIR_LOG` and a terminal `PAIR_EXIT`, and stops only the artifact server it
+started. It is a clean-gate command, not a local check while a dev server is running.
 
 The runner reuses any HTTP server already on port 3000, so each run needs a server-type preflight.
 Before the dev run, confirm `curl -s -o /dev/null -w '%{http_code}' http://localhost:3000` prints
@@ -153,7 +159,10 @@ run on 2026-11-07 started its own dev server and passed 70/70 with `BATTERY_EXIT
 reused the standalone server and also passed 70/70 with `BATTERY_EXIT=0`. The 0.19.5 dev run on
 2026-11-09 started its own dev server and passed 70/70 with `BATTERY_EXIT=0`; the artifact run reused
 the standalone server and also passed 70/70 with `BATTERY_EXIT=0`. The 0.20.0 artifact run on
-2026-11-09 reused the standalone server and passed 70/70 with `BATTERY_EXIT=0`.
+2026-11-09 reused the standalone server and passed 70/70 with `BATTERY_EXIT=0`. The 0.20.1 median pair, measured on 2026-11-10, was 569s across three runs (568s, 572s, 569s),
+against a 1166s median baseline (1171s, 1166s, 1156s), a 51.2 percent reduction. All six runs started the
+dev server or reused the standalone artifact as required, passed 70/70 with `BATTERY_EXIT=0`, and the
+optimized runs reported `PAIR_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 

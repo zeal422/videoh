@@ -1,6 +1,6 @@
 {
   "name": "videoh",
-  "version": "0.20.0",
+  "version": "0.20.1",
   "private": true,
   "license": "MIT",
   "scripts": {
@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "battery": "bash e2e/run-battery.sh",
+    "battery:pair": "bash e2e/run-battery-pair.sh",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "format": "prettier --write \"src/**/*.{ts,tsx}\" \"*.{ts,md,json}\" \"docs/**/*.md\"",

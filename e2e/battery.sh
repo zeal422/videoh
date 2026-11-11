@@ -105,6 +105,17 @@ SESSION="${SESSION:-battery}"
 OUT="${OUT:-results.txt}"
 : > "$OUT"
 
+# Optional per-step timing. TIMING=1 writes one row per step to TIMING_OUT;
+# TIMING=0 is the default and writes no timing file. The identity guard uses
+# -ef, so a path alias, symlink, or hardlink to OUT cannot corrupt the verdict.
+TIMING="${TIMING:-0}"
+case "$TIMING" in 0 | 1) ;; *) echo "TIMING must be 0 or 1" >&2; exit 9 ;; esac
+TIMING_OUT="${TIMING_OUT:-${OUT%.txt}.timing.txt}"
+if [ "$TIMING" = "1" ]; then
+  [ "$OUT" -ef "$TIMING_OUT" ] && { echo "TIMING_OUT must differ from OUT" >&2; exit 9; }
+  : >"$TIMING_OUT" || { echo "cannot write the timing file $TIMING_OUT" >&2; exit 9; }
+fi
+
 # The project-file capture (f08_capture_project) lives at a unique mktemp path
 # and is normally consumed by f07_open_project. Any step's early return between
 # the two must not leak the file, so an EXIT/INT/TERM trap removes it, by the
@@ -206,6 +217,17 @@ spinrefs() { snap | grep -- '- spinbutton' | grep -oE 'ref=e[0-9]+' | cut -d= -f
 insp_spinrefs() { ab snapshot -i -c -s 'aside[aria-label=Inspector]' 2>/dev/null | grep -- '- spinbutton' | grep -oE 'ref=e[0-9]+' | cut -d= -f2 | awk '!seen[$0]++'; }
 firstref() { refs "$1" | head -1; }
 evaln() { ab eval "$1" 2>/dev/null | tr -d '"'; }
+# A menu name reaches the in-page query as a JavaScript literal, so quotes,
+# backslashes, and control characters must be escaped before interpolation.
+js_string() { # js_string <value> -> double-quoted JavaScript string literal
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
+  printf '"%s"' "$s"
+}
 # Timeline clips only. Counting by aria-label (the old form, `[aria-label^="Clip "]`)
 # also counted the Inspector's own slider labels (`Clip opacity percent`, `Clip
 # gain percent`, `Clip pan`, `Clip speed`, and the grade rows' `Clip temperature`
@@ -275,9 +297,28 @@ step_frames() { # step_frames <n>
       ;;
   esac
 }
+now() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    printf '%s\n' "$EPOCHREALTIME"
+  else
+    local t
+    t=$(date +%s.%N 2>/dev/null)
+    case "$t" in '' | *[!0-9.]*) t=$(date +%s) ;; esac
+    printf '%s\n' "$t"
+  fi
+}
 step() {
   local name="$1"; shift
-  if "$@" >>"$OUT" 2>&1; then echo "PASS $name" >>"$OUT"; else echo "FAIL $name" >>"$OUT"; fi
+  if [ "$TIMING" = "1" ]; then
+    local start end rc=0
+    start="$(now)"
+    "$@" >>"$OUT" 2>&1 || rc=$?
+    end="$(now)"
+    if [ "$rc" -eq 0 ]; then echo "PASS $name" >>"$OUT"; else echo "FAIL $name" >>"$OUT"; fi
+    printf '%s|%s|%s|%s\n' "$name" "$start" "$end" "$rc" >>"$TIMING_OUT"
+  else
+    if "$@" >>"$OUT" 2>&1; then echo "PASS $name" >>"$OUT"; else echo "FAIL $name" >>"$OUT"; fi
+  fi
 }
 
 # Scroll an Inspector control into view before touching it — see the header note.
@@ -1371,6 +1412,29 @@ c02_captions_export() {
 # step sees the timeline it left behind. The Effect Controls tab hosts the
 # picker; the Clip tab hosts the blend dropdown.
 
+# The picker helpers answer "is this menu item present" with one DOM query
+# instead of a full accessibility snapshot. The retry loops keep their counts;
+# only the readiness check and the fixed settle change.
+menu_item_present() { # menu_item_present <accessible name>
+  local want
+  want=$(js_string "$1")
+  evaln "(() => {
+    const want = $want;
+    return [...document.querySelectorAll('[role=menuitem],[role=menuitemcheckbox]')].some((el) =>
+      ((el.getAttribute('aria-label') || el.textContent || '').trim()).includes(want)
+    ) ? 'yes' : 'no';
+  })()"
+}
+wait_menu_item() { # wait_menu_item <name> [tries]
+  local name="$1" tries="${2:-12}" i=0
+  while [ "$i" -lt "$tries" ]; do
+    [ "$(menu_item_present "$name")" = "yes" ] && return 0
+    sleeps 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
 e00_effects_tab() {
   ab press Escape >/dev/null 2>&1; sleeps 0.2
   click_clip 'sample-video' || { echo "e00: video clip not found" >&2; return 1; }
@@ -1550,7 +1614,7 @@ e04_matte_masks_and_survives_hide() {
   ab press Escape >/dev/null 2>&1; sleeps 0.2
   local opened=0
   for i in $(seq 1 8); do
-    if snap | grep -q 'menuitem "Track matte"'; then
+    if [ "$(menu_item_present 'Track matte')" = "yes" ]; then
       if ab find role menuitem click --name 'Track matte' >/dev/null 2>&1; then
         opened=1
         break
@@ -1565,7 +1629,7 @@ e04_matte_masks_and_survives_hide() {
   local attempt selected=0
   for attempt in 1 2 3; do
     # Ensure the main menu is open first (a retried attempt starts closed).
-    if ! snap | grep -q 'menuitem "Track matte"'; then
+    if [ "$(menu_item_present 'Track matte')" != "yes" ]; then
       ab find role button click --name 'Add effect' >/dev/null 2>&1
       sleeps 0.5
     fi
@@ -1573,10 +1637,10 @@ e04_matte_masks_and_survives_hide() {
     # leave the submenu closed).
     local found=0
     for i in $(seq 1 10); do
-      if snap | grep -q 'menuitem "Captions"'; then found=1; break; fi
+      [ "$(menu_item_present 'Captions')" = "yes" ] && { found=1; break; }
       mt=$(firstref 'menuitem "Track matte"')
       [ -n "$mt" ] && ab hover "@$mt" >/dev/null 2>&1
-      sleep 0.3
+      wait_menu_item 'Captions' 2 >/dev/null 2>&1 && { found=1; break; }
     done
     if [ "$found" = "1" ]; then
       # Focus + Enter instead of a click: clicking travels the mouse, which
@@ -1645,7 +1709,7 @@ e05_blur_accumulates() {
   # The picker menu can miss opening on a single click; poll and reopen.
   local opened=0
   for i in $(seq 1 6); do
-    if snap | grep -q 'menuitem "Motion blur"'; then
+    if [ "$(menu_item_present 'Motion blur')" = "yes" ]; then
       opened=1
       break
     fi
@@ -1702,7 +1766,7 @@ e06_effects_export() {
   # The picker menu can miss opening on a single click; poll and reopen.
   local opened=0
   for i in $(seq 1 6); do
-    if snap | grep -q 'menuitem "Motion blur"'; then
+    if [ "$(menu_item_present 'Motion blur')" = "yes" ]; then
       opened=1
       break
     fi
@@ -2009,12 +2073,10 @@ REFJS
   while read -r k src blend; do
     [ -n "$k" ] || continue
     ab find role button click --name 'Go to start (Home)' >/dev/null 2>&1 && sleeps 0.35
-    local j=0
-    while [ "$j" -lt "$k" ]; do
-      ab press ArrowRight >/dev/null 2>&1
-      sleeps 0.12
-      j=$((j + 1))
-    done
+    step_frames "$k" || {
+      f05_blend_parity_restore "f05_blend_parity: step_frames failed for output frame $k"
+      return 1
+    }
     sleeps 0.9
     preview=$(frame_sum "[data-testid=preview-canvas]")
     info=$(evaln "window.__bpar.parity($src, $blend)")
@@ -2637,26 +2699,72 @@ menu_snapping() { # snapping starts ON → one toggle must show "Snapping off"
   snap | grep -q 'Snapping off'
 }
 
-# ————— Panels —————
+# Panels
 panel_w() { evaln "document.getElementById('$1')?.getBoundingClientRect().width ?? 0"; }
 panel_h() { evaln "document.getElementById('$1')?.getBoundingClientRect().height ?? 0"; }
 panel_present() { [ "$(evaln "document.getElementById('$1') ? 'present' : 'absent'")" = "present" ]; }
 panel_absent() { [ "$(evaln "document.getElementById('$1') ? 'present' : 'absent'")" = "absent" ]; }
-panel_close() { # $1 = panel menu accessible name
+# One read for all panel geometry and presence. Widths keep one decimal so a
+# converted step can compare a measured width with persisted_size.
+panel_state() {
+  evaln '(() => {
+    const ids = ["workspace","upper","bottom","media","source","preview","inspector","timeline","captions"];
+    return ids.map((id) => {
+      const el = document.getElementById("panel-" + id);
+      if (!el) return id + ".p=0 " + id + ".w=0.0 " + id + ".h=0.0";
+      const r = el.getBoundingClientRect();
+      return id + ".p=1 " + id + ".w=" + r.width.toFixed(1) + " " + id + ".h=" + r.height.toFixed(1);
+    }).join(" ");
+  })()'
+}
+panel_get() {
+  local state="$1" key="$2" field
+  for field in $state; do
+    case "$field" in
+      "$key="*) printf '%s\n' "${field#*=}"; return 0 ;;
+    esac
+  done
+  printf 'missing\n'
+  return 1
+}
+# Bounded poll for a panel presence bit. Six tries keep the miss path under two
+# seconds; a first-try hit is the case that saves time.
+wait_panel() { # wait_panel <state-key> <expected> [tries]
+  local key="$1" expected="$2" tries="${3:-6}" i=0
+  while [ "$i" -lt "$tries" ]; do
+    [ "$(panel_get "$(panel_state)" "$key")" = "$expected" ] && return 0
+    sleeps 0.15
+    i=$((i + 1))
+  done
+  return 1
+}
+# Wait for a sibling panel to reclaim space. Presence alone can settle before
+# the imperative resize does, so the reclaim assertions poll the new geometry.
+wait_grew() { # wait_grew <state-key> <before> <delta> [tries]
+  local key="$1" before="$2" delta="$3" tries="${4:-6}" i=0 after
+  while [ "$i" -lt "$tries" ]; do
+    after=$(panel_get "$(panel_state)" "$key")
+    [ "$(evaln "($after > $before + $delta) ? 'grew' : 'same'")" = "grew" ] && return 0
+    sleeps 0.15
+    i=$((i + 1))
+  done
+  return 1
+}
+panel_close() { # $1 = panel menu accessible name, $2 = panel id (optional)
   ab find role button click --name "$1" >/dev/null 2>&1 || {
     echo "panels: could not open $1" >&2; return 1; }
-  sleep 0.3
+  wait_menu_item 'Close Panel' 4 || sleeps 0.3
   ab find role menuitem click --name 'Close Panel' >/dev/null 2>&1 || {
     echo "panels: Close Panel missing in $1" >&2; return 1; }
-  sleep 0.6
+  if [ -n "${2:-}" ]; then wait_panel "$2.p" 0 || sleep 0.6; else sleep 0.6; fi
 }
-panel_toggle() { # $1 = Window menu checkbox label
+panel_toggle() { # $1 = Window menu checkbox label, $2 = panel id (optional), $3 = expected (default 1)
   ab find role menuitem click --name 'Window' >/dev/null 2>&1 || {
     echo "panels: could not open Window" >&2; return 1; }
-  sleep 0.3
+  wait_menu_item "$1" 4 || sleeps 0.3
   ab find role menuitemcheckbox click --name "$1" >/dev/null 2>&1 || {
     echo "panels: Window checkbox missing for $1" >&2; return 1; }
-  sleep 0.6
+  if [ -n "${2:-}" ]; then wait_panel "$2.p" "${3:-1}" || sleep 0.6; else sleep 0.6; fi
 }
 panel_defaults_ok() {
   [ "$(evaln '(() => {
@@ -2677,79 +2785,102 @@ panel_defaults_ok() {
 persisted_size() { # $1 = a key in workspace.sizes
   evaln "(() => { try { const raw = localStorage.getItem('web-video-editor:workspace:v1'); if (!raw) return 'missing'; const sizes = JSON.parse(raw).sizes; return sizes && typeof sizes.$1 === 'number' ? sizes.$1.toFixed(1) : 'missing'; } catch { return 'bad'; } })()"
 }
+wait_defaults() { # wait_defaults [tries]
+  local tries="${1:-12}" i=0
+  while [ "$i" -lt "$tries" ]; do
+    panel_defaults_ok && return 0
+    sleeps 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
 panels_close_media() {
-  local before after
-  before=$(panel_w panel-preview)
-  panel_close 'Media panel menu' || return 1
-  panel_absent panel-media || { echo "panels: Media did not close" >&2; return 1; }
-  panel_present panel-preview || { echo "panels: Program Monitor disappeared with Media" >&2; return 1; }
-  after=$(panel_w panel-preview)
-  [ "$(evaln "($after > $before + 2) ? 'grew' : 'same'")" = "grew" ] || {
-    echo "panels: Program Monitor did not expand after Media closed ($before -> $after)" >&2; return 1; }
-  panel_toggle 'Media' || return 1
-  panel_present panel-media || { echo "panels: Media did not return from Window" >&2; return 1; }
+  local before after before_w after_w
+  before=$(panel_state)
+  panel_close 'Media panel menu' media || return 1
+  [ "$(panel_get "$(panel_state)" media.p)" = "0" ] || { echo "panels: Media did not close" >&2; return 1; }
+  [ "$(panel_get "$(panel_state)" preview.p)" = "1" ] || { echo "panels: Program Monitor disappeared with Media" >&2; return 1; }
+  wait_grew preview.w "$(panel_get "$before" preview.w)" 2 || true
+  after=$(panel_state)
+  before_w=$(panel_get "$before" preview.w)
+  after_w=$(panel_get "$after" preview.w)
+  [ "$(evaln "($after_w > $before_w + 2) ? 'grew' : 'same'")" = "grew" ] || {
+    echo "panels: Program Monitor did not expand after Media closed ($before_w -> $after_w)" >&2; return 1; }
+  panel_toggle 'Media' media 1 || return 1
+  [ "$(panel_get "$(panel_state)" media.p)" = "1" ] || { echo "panels: Media did not return from Window" >&2; return 1; }
 }
 panels_close_preview() {
-  local before after media_before media_after source_before source_after
-  before=$(panel_w panel-workspace)
-  media_before=$(panel_w panel-media)
-  source_before=$(panel_w panel-source)
-  panel_close 'Program Monitor panel menu' || return 1
-  panel_absent panel-preview || { echo "panels: Program Monitor did not close" >&2; return 1; }
-  panel_present panel-workspace || { echo "panels: workspace column disappeared with the preview" >&2; return 1; }
-  after=$(panel_w panel-workspace)
-  [ "$(evaln "($after >= $before - 2) ? 'kept' : 'shrunk'")" = "kept" ] || {
+  local before after before_w after_w media_before media_after source_before source_after
+  before=$(panel_state)
+  panel_close 'Program Monitor panel menu' preview || return 1
+  [ "$(panel_get "$(panel_state)" preview.p)" = "0" ] || { echo "panels: Program Monitor did not close" >&2; return 1; }
+  [ "$(panel_get "$(panel_state)" workspace.p)" = "1" ] || { echo "panels: workspace column disappeared with the preview" >&2; return 1; }
+  wait_grew media.w "$(panel_get "$before" media.w)" 2 || true
+  wait_grew source.w "$(panel_get "$before" source.w)" 2 || true
+  after=$(panel_state)
+  before_w=$(panel_get "$before" workspace.w)
+  after_w=$(panel_get "$after" workspace.w)
+  [ "$(evaln "($after_w >= $before_w - 2) ? 'kept' : 'shrunk'")" = "kept" ] || {
     echo "panels: workspace column shrank after the preview closed" >&2; return 1; }
-  media_after=$(panel_w panel-media)
-  source_after=$(panel_w panel-source)
+  media_before=$(panel_get "$before" media.w)
+  media_after=$(panel_get "$after" media.w)
   [ "$(evaln "($media_after > $media_before + 2) ? 'grew' : 'same'")" = "grew" ] || {
     echo "panels: Media did not expand after the preview closed ($media_before -> $media_after)" >&2; return 1; }
+  source_before=$(panel_get "$before" source.w)
+  source_after=$(panel_get "$after" source.w)
   [ "$(evaln "($source_after > $source_before + 2) ? 'grew' : 'same'")" = "grew" ] || {
     echo "panels: Source did not expand after the preview closed ($source_before -> $source_after)" >&2; return 1; }
   [ "$(evaln '(() => { const m = document.getElementById("panel-media"); const s = document.getElementById("panel-source"); return (m || s) ? "ok" : "none"; })()')" = "ok" ] || {
     echo "panels: no Media or Source left after closing the preview" >&2; return 1; }
-  panel_toggle 'Program Monitor' || return 1
-  panel_present panel-preview || { echo "panels: Program Monitor did not return" >&2; return 1; }
+  panel_toggle 'Program Monitor' preview 1 || return 1
+  [ "$(panel_get "$(panel_state)" preview.p)" = "1" ] || { echo "panels: Program Monitor did not return" >&2; return 1; }
 }
 panels_hide_upper() {
-  local before after
-  panel_toggle 'Media' || return 1
-  panel_toggle 'Source' || return 1
-  panel_toggle 'Program Monitor' || return 1
-  before=$(panel_h panel-bottom)
-  panel_close 'Inspector panel menu' || return 1
-  panel_absent panel-upper || { echo "panels: upper row stayed mounted" >&2; return 1; }
-  panel_present panel-bottom || { echo "panels: bottom row disappeared with the upper row" >&2; return 1; }
-  after=$(panel_h panel-bottom)
-  [ "$(evaln "($after > $before + 2) ? 'grew' : 'same'")" = "grew" ] || {
-    echo "panels: bottom row did not reclaim the upper row height ($before -> $after)" >&2; return 1; }
+  local before after before_h after_h
+  panel_toggle 'Media' media 0 || return 1
+  panel_toggle 'Source' source 0 || return 1
+  panel_toggle 'Program Monitor' preview 0 || return 1
+  before=$(panel_state)
+  before_h=$(panel_get "$before" bottom.h)
+  panel_close 'Inspector panel menu' upper || return 1
+  [ "$(panel_get "$(panel_state)" upper.p)" = "0" ] || { echo "panels: upper row stayed mounted" >&2; return 1; }
+  [ "$(panel_get "$(panel_state)" bottom.p)" = "1" ] || { echo "panels: bottom row disappeared with the upper row" >&2; return 1; }
+  wait_grew bottom.h "$(panel_get "$before" bottom.h)" 2 || true
+  after=$(panel_state)
+  after_h=$(panel_get "$after" bottom.h)
+  [ "$(evaln "($after_h > $before_h + 2) ? 'grew' : 'same'")" = "grew" ] || {
+    echo "panels: bottom row did not reclaim the upper row height ($before_h -> $after_h)" >&2; return 1; }
   ab find role menuitem click --name 'Window' >/dev/null 2>&1 && sleep 0.3
   ab find role menuitem click --name 'Reset Workspace Layout' >/dev/null 2>&1 || {
     echo "panels: reset after hiding the upper row failed" >&2; return 1; }
   ab wait --text 'Workspace layout reset'
-  panel_present panel-upper || { echo "panels: reset did not restore the upper row" >&2; return 1; }
+  wait_panel upper.p 1 || { echo "panels: reset did not restore the upper row" >&2; return 1; }
 }
 panels_close_bottom() {
-  local before after
-  before=$(panel_h panel-upper)
-  panel_close 'Timeline panel menu' || return 1
-  panel_close 'Captions panel menu' || return 1
-  panel_absent panel-bottom || { echo "panels: bottom group stayed mounted" >&2; return 1; }
-  panel_present panel-upper || { echo "panels: upper group disappeared with the bottom row" >&2; return 1; }
-  after=$(panel_h panel-upper)
-  [ "$(evaln "($after > $before + 2) ? 'grew' : 'same'")" = "grew" ] || {
-    echo "panels: upper group did not reclaim the bottom row height ($before -> $after)" >&2; return 1; }
-  panel_toggle 'Timeline' || return 1
-  panel_toggle 'Captions' || return 1
-  panel_present panel-bottom || { echo "panels: bottom row did not return" >&2; return 1; }
+  local before after before_h after_h
+  before=$(panel_state)
+  before_h=$(panel_get "$before" upper.h)
+  panel_close 'Timeline panel menu' timeline || return 1
+  panel_close 'Captions panel menu' captions || return 1
+  [ "$(panel_get "$(panel_state)" bottom.p)" = "0" ] || { echo "panels: bottom group stayed mounted" >&2; return 1; }
+  [ "$(panel_get "$(panel_state)" upper.p)" = "1" ] || { echo "panels: upper group disappeared with the bottom row" >&2; return 1; }
+  wait_grew upper.h "$(panel_get "$before" upper.h)" 2 || true
+  after=$(panel_state)
+  after_h=$(panel_get "$after" upper.h)
+  [ "$(evaln "($after_h > $before_h + 2) ? 'grew' : 'same'")" = "grew" ] || {
+    echo "panels: upper group did not reclaim the bottom row height ($before_h -> $after_h)" >&2; return 1; }
+  panel_toggle 'Timeline' timeline 1 || return 1
+  panel_toggle 'Captions' captions 1 || return 1
+  [ "$(panel_get "$(panel_state)" bottom.p)" = "1" ] || { echo "panels: bottom row did not return" >&2; return 1; }
 }
 panels_hide_all() {
-  panel_close 'Timeline panel menu' || return 1
-  panel_close 'Captions panel menu' || return 1
-  panel_close 'Inspector panel menu' || return 1
-  panel_close 'Source Monitor panel menu' || return 1
-  panel_close 'Program Monitor panel menu' || return 1
-  panel_close 'Media panel menu' || return 1
+  panel_close 'Timeline panel menu' timeline || return 1
+  panel_close 'Captions panel menu' captions || return 1
+  panel_close 'Inspector panel menu' inspector || return 1
+  panel_close 'Source Monitor panel menu' source || return 1
+  panel_close 'Program Monitor panel menu' preview || return 1
+  panel_close 'Media panel menu' media || return 1
+  wait_panel upper.p 0 || true
 }
 panels_close_all() {
   panels_hide_all || return 1
@@ -2758,8 +2889,8 @@ panels_close_all() {
   [ "$(evaln 'document.querySelectorAll("[id^=panel-]").length')" = "0" ] || {
     echo "panels: a panel node survived the all-hidden state" >&2; return 1; }
   snap | grep -q 'Window' || { echo "panels: menubar disappeared with all panels" >&2; return 1; }
-  panel_toggle 'Media' || return 1
-  panel_present panel-media || { echo "panels: Window did not restore Media" >&2; return 1; }
+  panel_toggle 'Media' media 1 || return 1
+  [ "$(panel_get "$(panel_state)" media.p)" = "1" ] || { echo "panels: Window did not restore Media" >&2; return 1; }
 }
 panels_restore_full() {
   ab find role menuitem click --name 'Window' >/dev/null 2>&1 && sleep 0.3
@@ -2767,8 +2898,8 @@ panels_restore_full() {
     echo "panels: setup reset failed" >&2; return 1; }
   # The reset item is disabled on a default layout, so its toast may never
   # appear. The store write is synchronous and the imperative resizes run on
-  # the next frame; a fixed settle is enough for this setup helper.
-  sleep 1
+  # the next frame, so poll the shares instead of paying a fixed second.
+  wait_defaults 12 || sleep 1
 }
 panels_reset_all() {
   panels_restore_full || return 1
@@ -2779,31 +2910,32 @@ panels_reset_all() {
   ab find role menuitem click --name 'Reset Workspace Layout' >/dev/null 2>&1 || {
     echo "panels: Reset Workspace Layout unavailable" >&2; return 1; }
   ab wait --text 'Workspace layout reset'
-  sleep 1
+  wait_defaults 12 || sleep 1
   for id in media source preview inspector timeline captions; do
-    panel_present "panel-$id" || { echo "panels: reset did not restore $id" >&2; return 1; }
+    [ "$(panel_get "$(panel_state)" "$id.p")" = "1" ] || { echo "panels: reset did not restore $id" >&2; return 1; }
   done
   panel_defaults_ok || { echo "panels: reset did not restore the default shares" >&2; return 1; }
 }
 panels_reset_reduced() {
-  panel_close 'Timeline panel menu' || return 1
-  panel_close 'Captions panel menu' || return 1
-  panel_toggle 'Media' || return 1
-  panel_toggle 'Source' || return 1
-  panel_toggle 'Program Monitor' || return 1
-  panel_close 'Inspector panel menu' || return 1
+  panel_close 'Timeline panel menu' timeline || return 1
+  panel_close 'Captions panel menu' captions || return 1
+  panel_toggle 'Media' media 0 || return 1
+  panel_toggle 'Source' source 0 || return 1
+  panel_toggle 'Program Monitor' preview 0 || return 1
+  panel_close 'Inspector panel menu' upper || return 1
   [ "$(evaln 'document.querySelector("[data-testid=workspace-empty]") ? "empty" : "not-empty"')" = "empty" ] || {
     echo "panels: reduced layout did not reach the empty state" >&2; return 1; }
   ab find role menuitem click --name 'Window' >/dev/null 2>&1 && sleep 0.3
   ab find role menuitem click --name 'Reset Workspace Layout' >/dev/null 2>&1 || {
     echo "panels: reset from the reduced layout failed" >&2; return 1; }
   ab wait --text 'Workspace layout reset'
-  sleep 1
+  wait_defaults 12 || sleep 1
   for id in media source preview inspector timeline captions; do
-    panel_present "panel-$id" || { echo "panels: reduced reset did not restore $id" >&2; return 1; }
+    [ "$(panel_get "$(panel_state)" "$id.p")" = "1" ] || { echo "panels: reduced reset did not restore $id" >&2; return 1; }
   done
   panel_defaults_ok || { echo "panels: reduced reset did not restore the default shares" >&2; return 1; }
 }
+
 panels_resize_bounds() {
   local share persisted started dragged
   panels_restore_full || return 1

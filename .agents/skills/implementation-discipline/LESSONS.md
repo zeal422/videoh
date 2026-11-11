@@ -588,3 +588,24 @@ running the gate.
 Action: kept as a note; the lock now asserts
 `clampAudioValue(clip.eq.<band>, EQ_DB_MIN, EQ_DB_MAX)` for all three bands, and
 the runtime NaN/infinity cases live in `audio-chain.test.ts`.
+
+## 2026-11-11 - grep -c on a directory still prints 0
+
+What happened: the new `BATTERY_SH` guard test used a directory to exercise the
+non-numeric `EXPECTED` case, but GNU `grep -c` on a directory prints `0` and
+exits 2, so the script reached the empty-battery branch and the test failed.
+Would-have-caught: check the tool's actual output on a hostile input before
+asserting which guard catches it; a grep error can still carry a numeric count.
+Action: kept as a note; the guard now also requires a regular file (`-f`), and
+the numeric `case` stays as the last-resort check for empty output.
+
+## 2026-11-11 - a restricted PATH test still needs the interpreter
+
+What happened: the setsid-absence test set `PATH` to a temp bin with `dirname`
+and `basename`, but `spawnSync('bash', ...)` resolved `bash` through that
+restricted PATH too, so the child never started and the test saw `status: null`
+instead of the script's exit 9.
+Would-have-caught: when a test removes a command via PATH, include every
+executable the test and the pre-check path need, starting with the shell.
+Action: kept as a note; the fake bin carries `bash`, `dirname`, and `basename`,
+and `setsid` stays absent.

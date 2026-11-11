@@ -47,9 +47,12 @@ Running the suite (these are the steps agents get wrong):
 - After `bun run format`, re-run `bun run check`: Prettier can glue markdown
   table rows together, which docs-drift then counts as broken cells.
 - Battery: `bun run battery` (`bash e2e/run-battery.sh`, see
-  [docs/testing.md](docs/testing.md)). The runner starts a dev server only when
+  [docs/testing.md](docs/testing.md)) and `bun run battery:pair`
+  (`bash e2e/run-battery-pair.sh`). The single runner starts a dev server only when
   the default port is free, closes its browser session, and stops only a server it
-  started, so nothing is left behind.
+  started, so nothing is left behind. The pair runner starts only the standalone
+  artifact on `:3100`, requires `:3000` free for the dev leg, and stops only the
+  artifact server it started.
   It runs minutes (1080p export included) and needs `agent-browser` on PATH. For the SHIPPED
   artifact, build and serve it yourself (`bun run build && bun run start`) and run the battery: it
   reuses the server already on the port. Dev-green does not imply prod-green (minified chunks, copied
@@ -60,8 +63,8 @@ Running the suite (these are the steps agents get wrong):
   killed run cannot pass: fewer result lines than `step` lines in
   `e2e/battery.sh` exits nonzero with INCOMPLETE. Never report a battery result
   that did not come from a full run. Syntax-check edits with
-  `bash -n e2e/battery.sh e2e/battery.timing.sh e2e/run-battery.sh`. If the user
-  started the dev server, leave it running.
+  `bash -n e2e/battery.sh && bash -n e2e/run-battery.sh && bash -n e2e/run-battery-pair.sh`.
+  If the user started the dev server, leave it running.
   Full battery runs are the release verdict only, never the iteration loop:
   iterate with unit tests, manual `agent-browser` sessions, or prefix runs
   (use `BATTERY_SH` with a copy that comments out trailing `step` lines, or
@@ -90,7 +93,9 @@ Running the suite (these are the steps agents get wrong):
 - `src/lib/editor/__tests__/`: all tests (`*.test.ts(x)`), plus the mocked browser harness in `mocks/`.
 - `e2e/battery.sh`: 70-step UI battery, first step loads the public hero and its editor link (needs the
   dev server + `agent-browser`). Drive it through `e2e/run-battery.sh` (`bun run battery`), which owns
-  the server, the session, and the strict verdict.
+  the server, the session, and the strict verdict. `e2e/run-battery-pair.sh` (`bun run battery:pair`)
+  runs the dev and artifact legs concurrently; it is a clean-gate command and exits 9 when `:3000` is
+  occupied.
 - `e2e/fixtures/`: committed battery media, the parity project, and `PROVENANCE.md`.
 - `public/google80671fa4533bcad3.html`: Search Console verification. Keep it public.
 - `src/assets/editor-screenshot.png`: hero screenshot; replacement and recapture steps are in

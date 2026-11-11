@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.20.1',
+    date: '2026-11-11',
+    highlights: [
+      'The dev and artifact UI batteries run concurrently, cutting the release check from about 19 minutes to about 9.5 minutes',
+      'The battery has one canonical per-step timing mode and a strict pair verdict with separate logs, sessions, and results',
+      'The blend-parity and panel steps do less browser round-trip work, and effect pickers poll the menu instead of repeated accessibility snapshots',
+      'The measured median was 569s, 51.2 percent below the 1166s sequential baseline, with all six runs 70/70',
+      'No editor behavior, project format, or analytics contract changed',
+    ],
+  },
+  {
     version: '0.20.0',
     date: '2026-11-09',
     highlights: [
