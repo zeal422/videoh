@@ -32,6 +32,7 @@
 #   PAIR_LOG       pair log                      (default /tmp/battery-pair-<run id>.log)
 #   TIMING         1 = per-step timing files     (default 0)
 #   BATTERY_SH     battery script                (default e2e/battery.sh)
+#   PAIR_SHARDS    1 = sequential legs, 4 = four shards per leg (default 4)
 #   DETACH         1 = re-exec detached under setsid
 #   KEEP_ART       1 = leave the artifact server running (test/debug only)
 #   PAIR_TEST      1 = test mode: no preflight, no artifact server, stub legs
@@ -66,41 +67,60 @@ log_pair() {
 
 cleanup() {
   local rc=$?
+  # A second INT/TERM while cleanup runs must not re-enter the trap and exit
+  # through the CLEANED guard before the legs are signalled and reaped.
+  trap '' INT TERM
   [ -n "$CLEANED" ] && exit "$rc"
   CLEANED=1
   if [ "${LAUNCHER:-0}" = "1" ]; then exit "$rc"; fi
   # Signal each leg's process group, which includes the runner and the battery
   # child it launched. Their traps close their sessions and, for the dev
-  # runner, stop its server. Never kill the dev server directly, and do not
-  # KILL a group that is still finishing its own cleanup.
+  # runner, stop its server. Give the trap a short grace, then kill whatever is
+  # left and reap it: a child that ignores TERM must not outlive PAIR_EXIT.
   for group in "$DEV_RUN_GROUP" "$ART_RUN_GROUP"; do
     [ -n "$group" ] || continue
     if kill -0 "$group" 2>/dev/null; then kill -TERM "$group" 2>/dev/null; fi
   done
-  # Fall back to the runner pids if a leg had no group.
-  for pid in "$DEV_RUN_PID" "$ART_RUN_PID"; do
-    [ -n "$pid" ] || continue
-    if kill -0 "$pid" 2>/dev/null; then kill -TERM "$pid" 2>/dev/null; fi
+  # Fall back to a runner pid only when its leg had no group. Signalling the
+  # group and then the leader sends a second TERM while the runner is already
+  # cleaning up, which could abort its shard cleanup.
+  if [ -n "$DEV_RUN_PID" ] && [ -z "$DEV_RUN_GROUP" ]; then
+    kill -TERM "$DEV_RUN_PID" 2>/dev/null
+  fi
+  if [ -n "$ART_RUN_PID" ] && [ -z "$ART_RUN_GROUP" ]; then
+    kill -TERM "$ART_RUN_PID" 2>/dev/null
+  fi
+  # One shared grace deadline for both legs, then kill whatever is left: a
+  # per-group wait would multiply the grace and let the last leg outlive
+  # PAIR_EXIT. Keep this longer than run-battery.sh's 15-tick shard grace: the
+  # leg must finish killing its own shard groups before the pair kills the leg.
+  for _ in $(seq 1 30); do
+    alive=''
+    for group in "$DEV_RUN_GROUP" "$ART_RUN_GROUP"; do
+      [ -n "$group" ] || continue
+      if kill -0 "$group" 2>/dev/null; then alive=1; fi
+    done
+    for pid in "$DEV_RUN_PID" "$ART_RUN_PID"; do
+      [ -n "$pid" ] || continue
+      if kill -0 "$pid" 2>/dev/null; then alive=1; fi
+    done
+    [ -n "$alive" ] || break
+    sleep 0.2
   done
   for group in "$DEV_RUN_GROUP" "$ART_RUN_GROUP"; do
     [ -n "$group" ] || continue
-    for _ in $(seq 1 15); do
-      kill -0 "$group" 2>/dev/null || break
-      sleep 0.2
-    done
     if kill -0 "$group" 2>/dev/null; then
-      echo "pair: process group $group did not exit; leaving its cleanup to its trap" >&2
+      echo "pair: process group $group did not exit; killing it" >&2
+      kill -KILL "$group" 2>/dev/null
     fi
   done
   for pid in "$DEV_RUN_PID" "$ART_RUN_PID"; do
     [ -n "$pid" ] || continue
-    for _ in $(seq 1 15); do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 0.2
-    done
     if kill -0 "$pid" 2>/dev/null; then
-      echo "pair: child $pid did not exit; leaving its cleanup to its trap" >&2
+      echo "pair: child $pid did not exit; killing it" >&2
+      kill -KILL "$pid" 2>/dev/null
     fi
+    wait "$pid" 2>/dev/null || true
   done
   if [ -n "$ART_PID" ] && [ "${KEEP_ART:-0}" != "1" ]; then
     if [ -n "$ART_GROUP" ]; then
@@ -137,6 +157,7 @@ LOG_ART="${LOG_ART:-/tmp/battery-artifact-$RUN_ID.log}"
 LOG_ART_SERVER="${LOG_ART_SERVER:-/tmp/battery-artifact-server-$RUN_ID.log}"
 TIMING="${TIMING:-0}"
 BATTERY_SH="${BATTERY_SH:-e2e/battery.sh}"
+PAIR_SHARDS="${PAIR_SHARDS:-4}"
 PAIR_TEST="${PAIR_TEST:-0}"
 PAIR_TEST_LEG_CMD="${PAIR_TEST_LEG_CMD:-}"
 PAIR_FIXTURE="${PAIR_FIXTURE:-}"
@@ -144,14 +165,36 @@ PAIR_FIXTURE="${PAIR_FIXTURE:-}"
 DEV_SERVER_LOG='dev.log'
 ARTIFACT_SERVER_LOG='server.log'
 
+# Kept identical to run-battery.sh's path_id and check_same condition;
+# battery-runner.test.ts compares the bodies so the copies cannot drift.
 path_id() {
-  local p=$1 dir base r
+  local p=$1 dir base r target hops
   if command -v realpath >/dev/null 2>&1; then
     if r=$(realpath -m -- "$p" 2>/dev/null); then printf '%s\n' "$r"; return 0; fi
   fi
   if command -v readlink >/dev/null 2>&1; then
     if r=$(readlink -f -- "$p" 2>/dev/null); then printf '%s\n' "$r"; return 0; fi
   fi
+  # Portable fallback: resolve a final-component symlink chain with plain
+  # readlink, then canonicalize the parent. A loop or an unreadable link is an
+  # identity that cannot be established, so fail instead of returning the
+  # link's own name as if it were the target.
+  hops=0
+  while [ -L "$p" ]; do
+    hops=$((hops + 1))
+    if [ "$hops" -gt 40 ]; then
+      echo "path_id: symlink loop at $1" >&2
+      return 1
+    fi
+    target=$(readlink -- "$p" 2>/dev/null) || {
+      echo "path_id: cannot read symlink $p" >&2
+      return 1
+    }
+    case "$target" in
+      /*) p=$target ;;
+      *) p=$(dirname -- "$p")/$target ;;
+    esac
+  done
   dir=$(dirname -- "$p")
   base=$(basename -- "$p")
   if [ -d "$dir" ]; then printf '%s/%s\n' "$(cd "$dir" && pwd -P)" "$base"; else printf '%s\n' "$p"; fi
@@ -160,8 +203,30 @@ path_id() {
 # -ef catches hardlinks, which path_id cannot distinguish; path_id catches
 # aliases and paths that do not exist yet.
 check_same() { # check_same <name1> <path1> <name2> <path2>
-  if [ "$2" -ef "$4" ] || [ "$(path_id "$2")" = "$(path_id "$4")" ]; then
+  local id1 id2
+  if [ "$2" -ef "$4" ]; then
     echo "pair: $1 and $3 refer to the same file ($2, $4)" >&2
+    exit 9
+  fi
+  id1=$(path_id "$2") || {
+    echo "pair: cannot establish path identity for $2" >&2
+    exit 9
+  }
+  id2=$(path_id "$4") || {
+    echo "pair: cannot establish path identity for $4" >&2
+    exit 9
+  }
+  if [ "$id1" = "$id2" ]; then
+    echo "pair: $1 and $3 refer to the same file ($2, $4)" >&2
+    exit 9
+  fi
+}
+
+# check_same with the canonical ids precomputed, for the O(n^2) derived-path
+# sweep: one realpath per path instead of one per comparison.
+check_same_cached() { # check_same_cached <name1> <path1> <id1> <name2> <path2> <id2>
+  if [ "$2" -ef "$5" ] || [ "$3" = "$6" ]; then
+    echo "pair: $1 and $4 refer to the same file ($2, $5)" >&2
     exit 9
   fi
 }
@@ -171,6 +236,33 @@ if [ -n "${TIMING_OUT:-}" ]; then
   exit 9
 fi
 [ "$TIMING" = "0" ] || [ "$TIMING" = "1" ] || { echo "pair: TIMING must be 0 or 1" >&2; exit 9; }
+case "$PAIR_SHARDS" in
+  1 | 4) ;;
+  *)
+    echo "pair: PAIR_SHARDS must be 1 or 4" >&2
+    exit 9
+    ;;
+esac
+
+# Same naming rule as run-battery.sh: `.s<n>` before the extension. The pair
+# derives the per-shard logs here so they participate in the collision checks
+# before any leg starts (a shard log that aliases a result file would corrupt
+# both the counts and the terminal verdict).
+shard_path() { # shard_path <path> <n>
+  local p=$1 n=$2 dir name base ext
+  dir=${p%/*}
+  [ "$dir" = "$p" ] && dir=''
+  name=${p##*/}
+  case "$name" in
+    ?*.*) base=${name%.*}; ext=.${name##*.} ;;
+    *) base=$name; ext='' ;;
+  esac
+  if [ -n "$dir" ]; then
+    printf '%s/%s.s%s%s\n' "$dir" "$base" "$n" "$ext"
+  else
+    printf '%s.s%s%s\n' "$base" "$n" "$ext"
+  fi
+}
 case "$ART_PORT" in '' | *[!0-9]*) echo "pair: ART_PORT must be numeric" >&2; exit 9 ;; esac
 if [ "${#ART_PORT}" -gt 6 ] || [ "$ART_PORT" -lt 1 ] || [ "$ART_PORT" -gt 65535 ]; then
   echo "pair: ART_PORT must be between 1 and 65535" >&2
@@ -219,6 +311,74 @@ for out_name in OUT_DEV OUT_ART TIMING_OUT_DEV TIMING_OUT_ART LOG_DEV LOG_ART LO
   check_same "$out_name" "${!out_name}" DEV_SERVER_LOG "$DEV_SERVER_LOG"
   check_same "$out_name" "${!out_name}" ARTIFACT_SERVER_LOG "$ARTIFACT_SERVER_LOG"
 done
+# The battery script is an input, not an output. A configured path that aliases
+# it is truncated before a leg reads it, so reject it with the other collisions.
+for out_name in OUT_DEV OUT_ART TIMING_OUT_DEV TIMING_OUT_ART LOG_DEV LOG_ART LOG_ART_SERVER PAIR_LOG; do
+  check_same BATTERY_SH "$BATTERY_SH" "$out_name" "${!out_name}"
+done
+check_same BATTERY_SH "$BATTERY_SH" DEV_SERVER_LOG "$DEV_SERVER_LOG"
+check_same BATTERY_SH "$BATTERY_SH" ARTIFACT_SERVER_LOG "$ARTIFACT_SERVER_LOG"
+# Every per-shard file each leg derives from its configured paths: the result
+# and timing next to OUT and TIMING_OUT, and the log next to SHARD_LOG_BASE.
+# A derived name that aliases any configured or derived file is truncated by
+# whichever writer runs second, so all of them are checked before either leg
+# launches.
+if [ "$PAIR_SHARDS" = "4" ]; then
+  SHARD_PATHS=()
+  SHARD_LABELS=()
+  SHARD_IDS=()
+  for leg in dev artifact; do
+    case "$leg" in
+      dev)
+        leg_out=$OUT_DEV
+        leg_timing=$TIMING_OUT_DEV
+        leg_log=$LOG_DEV
+        ;;
+      *)
+        leg_out=$OUT_ART
+        leg_timing=$TIMING_OUT_ART
+        leg_log=$LOG_ART
+        ;;
+    esac
+    for n in 1 2 3 4; do
+      for kind in result timing log; do
+        case "$kind" in
+          result) p=$(shard_path "$leg_out" "$n") ;;
+          timing) p=$(shard_path "$leg_timing" "$n") ;;
+          *) p=$(shard_path "$leg_log" "$n") ;;
+        esac
+        SHARD_PATHS+=("$p")
+        SHARD_LABELS+=("$leg shard $n $kind")
+        p_id=$(path_id "$p") || {
+          echo "pair: cannot establish path identity for $p" >&2
+          exit 9
+        }
+        SHARD_IDS+=("$p_id")
+      done
+    done
+  done
+  CFG_NAMES=(OUT_DEV OUT_ART TIMING_OUT_DEV TIMING_OUT_ART LOG_DEV LOG_ART LOG_ART_SERVER PAIR_LOG DEV_SERVER_LOG ARTIFACT_SERVER_LOG BATTERY_SH)
+  CFG_PATHS=("$OUT_DEV" "$OUT_ART" "$TIMING_OUT_DEV" "$TIMING_OUT_ART" "$LOG_DEV" "$LOG_ART" "$LOG_ART_SERVER" "$PAIR_LOG" "$DEV_SERVER_LOG" "$ARTIFACT_SERVER_LOG" "$BATTERY_SH")
+  CFG_IDS=()
+  for p in "${CFG_PATHS[@]}"; do
+    p_id=$(path_id "$p") || {
+      echo "pair: cannot establish path identity for $p" >&2
+      exit 9
+    }
+    CFG_IDS+=("$p_id")
+  done
+  for i in "${!SHARD_PATHS[@]}"; do
+    for k in "${!CFG_PATHS[@]}"; do
+      check_same_cached "${SHARD_LABELS[$i]}" "${SHARD_PATHS[$i]}" "${SHARD_IDS[$i]}" \
+        "${CFG_NAMES[$k]}" "${CFG_PATHS[$k]}" "${CFG_IDS[$k]}"
+    done
+    for j in "${!SHARD_PATHS[@]}"; do
+      [ "$j" -lt "$i" ] || continue
+      check_same_cached "${SHARD_LABELS[$i]}" "${SHARD_PATHS[$i]}" "${SHARD_IDS[$i]}" \
+        "${SHARD_LABELS[$j]}" "${SHARD_PATHS[$j]}" "${SHARD_IDS[$j]}"
+    done
+  done
+fi
 # Validation is complete, so the pair log may now be created and appended.
 PAIR_LOG_OK=1
 
@@ -231,6 +391,7 @@ if [ "${DETACH:-0}" = "1" ] && [ "${DETACHED:-0}" != "1" ]; then
     SESSION_DEV="$SESSION_DEV" SESSION_ART="$SESSION_ART" LOG_DEV="$LOG_DEV" LOG_ART="$LOG_ART" \
     LOG_ART_SERVER="$LOG_ART_SERVER" PAIR_LOG="$PAIR_LOG" TIMING="$TIMING" BATTERY_SH="$BATTERY_SH" \
     PAIR_TEST="$PAIR_TEST" PAIR_TEST_LEG_CMD="$PAIR_TEST_LEG_CMD" PAIR_FIXTURE="$PAIR_FIXTURE" \
+    PAIR_SHARDS="$PAIR_SHARDS" \
     setsid nohup bash "$SELF" >"$PAIR_LOG" 2>&1 </dev/null &
   echo "detached: pid $!, log $PAIR_LOG, results $OUT_DEV $OUT_ART"
   echo "poll: tail -f $PAIR_LOG (terminal verdict: PAIR_EXIT=<code>, 0 = green)"
@@ -330,7 +491,8 @@ start_leg() { # start_leg <role> <out> <log> <session> <base> <timing_out>
       bash "$PAIR_TEST_LEG_CMD"
   else
     start_grouped "$log" env DETACH=0 TIMING="$TIMING" BASE_URL="$base" SESSION="$session" OUT="$out" \
-      BATTERY_SH="$BATTERY_SH" TIMING_OUT="$timing_out" bash e2e/run-battery.sh
+      BATTERY_SH="$BATTERY_SH" TIMING_OUT="$timing_out" SHARDS="$PAIR_SHARDS" SHARD_LOG_BASE="$log" \
+      bash e2e/run-battery.sh
   fi
 }
 

@@ -2,7 +2,7 @@
 
 Purpose: make the public editor discoverable and measure whether people reach a successful export. This page covers the public routes, metadata, search setup, analytics, and the release checklist.
 
-Last reviewed: 2026-10-31.
+Last reviewed: 2026-11-11.
 
 ## Scope
 
@@ -136,7 +136,7 @@ GitHub is a credibility and contribution channel, not the primary acquisition go
 ## Release checklist
 
 - [x] `bun run check` is green.
-- [x] The last recorded dev and artifact batteries are 70/70 with a terminal `BATTERY_EXIT=0` (0.19.5, 2026-11-09).
+- [x] The last recorded dev and artifact batteries are 70/70 with a terminal `BATTERY_EXIT=0` and `PAIR_EXIT=0` (0.20.2, 2026-11-11; the four-shard pair measured 163s).
 - [x] `robots.txt`, `sitemap.xml`, and the verification file return 200 in production.
 - [x] The production metadata check passes for `/` and `/editor`.
 - [x] Production returns no `X-Robots-Tag`; `site-seo.test.ts` locks the preview header.

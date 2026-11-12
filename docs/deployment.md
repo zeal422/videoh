@@ -127,7 +127,12 @@ Open editor link; the second opens `/editor`; the third clears storage and opens
 `bun run battery:pair` runs both legs concurrently. Build first. It starts the standalone artifact on
 `:3100`, requires `:3000` free for the dev leg, and requires both server-type lines plus both strict
 verdicts. It writes `PAIR_LOG` and a terminal `PAIR_EXIT`, and stops only the artifact server it
-started. It is a clean-gate command, not a local check while a dev server is running.
+started. It is a clean-gate command, not a local check while a dev server is running. Each leg runs
+four shards by default (`PAIR_SHARDS=4`), one browser session per shard, and still requires the same
+70/70. `PAIR_SHARDS=1` runs the registered sequential order as the rollback. The sharded pair targets
+under 300s wall clock; the first four-shard map measured 198s and 200s, and the rebalanced map
+measured 163s, 164s, and 165s across three runs; every run was 70/70 on both legs. The partition, seeds, and
+per-shard times are in [testing.md](testing.md#sharded-release-run).
 
 The runner reuses any HTTP server already on port 3000, so each run needs a server-type preflight.
 Before the dev run, confirm `curl -s -o /dev/null -w '%{http_code}' http://localhost:3000` prints
@@ -162,7 +167,8 @@ the standalone server and also passed 70/70 with `BATTERY_EXIT=0`. The 0.20.0 ar
 2026-11-09 reused the standalone server and passed 70/70 with `BATTERY_EXIT=0`. The 0.20.1 median pair, measured on 2026-11-10, was 569s across three runs (568s, 572s, 569s),
 against a 1166s median baseline (1171s, 1166s, 1156s), a 51.2 percent reduction. All six runs started the
 dev server or reused the standalone artifact as required, passed 70/70 with `BATTERY_EXIT=0`, and the
-optimized runs reported `PAIR_EXIT=0`.
+optimized runs reported `PAIR_EXIT=0`. At 0.20.2 on 2026-11-11, the four-shard pair measured 163s; the same map's earlier runs were
+164s and 165s, all with 70/70 on both legs and `PAIR_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 

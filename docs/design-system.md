@@ -115,8 +115,9 @@ product proof, privacy story, FAQ, CTA, and legal pages.
   wide right column with `next/image`, explicit dimensions, `sizes`, `loading="lazy"`, and descriptive
   alt text. The 0.18.0 capture uses the Climbing-Vlog project: one video track with filmstrips, two
   audio tracks with waveforms, a text track, the climb in the program monitor, and the Effect
-  Controls inspector. There is no third-party credit. Recapture it when the editor chrome or demo
-  project changes.
+  Controls inspector. There is no third-party credit. The checked-in capture still shows the
+  v0.18.0 badge and predates the 0.19.0 panel model; it is due for a recapture before the next
+  public release. Recapture it when the editor chrome or demo project changes.
 - **Replacing the capture.** Replace `src/assets/editor-screenshot.png` at 1921x1079 and update
   `SCREENSHOT_ALT` and the `width`/`height` in `ProductShowcase.tsx`. The static import emits a
   content-hashed URL, so a new file gets a new URL automatically and cannot reuse the old optimized

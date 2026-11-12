@@ -609,3 +609,42 @@ Would-have-caught: when a test removes a command via PATH, include every
 executable the test and the pre-check path need, starting with the shell.
 Action: kept as a note; the fake bin carries `bash`, `dirname`, and `basename`,
 and `setsid` stays absent.
+
+## 2026-11-11 - battery sharding plan, seed preconditions
+
+What happened: the sharding plan's seeds were incomplete in two shards. Shard B
+stopped at the basic document, but `f05_reverse_frame` (e2e/battery.sh:2250)
+needs the `0.00 to 1.50` part that `f02_trim` (e2e/battery.sh:1281, step 22 in
+shard A) creates. Shard C then lacked the split and trim that `f07_prep`
+(e2e/battery.sh:3257) needs before the crossfade shifts the `from 1` label. The
+plan's own check passed 24/24 because it verified the claims the plan stated,
+not the preconditions the plan omitted.
+Would-have-caught: a plan audit must verify the inventory behind each design
+decision (every owned step's selectors and preconditions), not only the claims
+the plan states. Absence is not visible to claim-checking.
+Action: kept as a note; the plan now traces preconditions per shard, B's seed is
+the trimmed recipe, C's is the document recipe, and Appendix C records the
+corrected costs.
+
+## 2026-11-11 - battery sharding implementation, seed zoom state
+
+What happened: the shard seeds stopped after `zoom_out`, but the sequential path
+reloads at `f11_whatsnew_once`, which resets the timeline to the 80 px/s
+default. Shard B therefore ran at 41 px/s, and `f05_reverse_frame`'s fixed 40px
+tail drag cut 1.50 to 0.52 instead of 1.00; both f05 steps failed on the first
+four-shard run.
+Would-have-caught: enumerate view state as well as document state when
+rebuilding a mid-sequence entry point. Selectors cover the document; a
+fixed-pixel gesture also depends on the zoom, which a reload resets.
+Action: kept as a note; `seed_basic` now clicks Zoom in twice and asserts the
+6s video is 480px wide (80 px/s) before any shard steps run.
+
+## 2026-11-11 - battery sharding implementation, session close listing lag
+
+What happened: the first four-shard dev run showed the last shard's
+`agent-browser` session in `session list` immediately after the runner exited.
+A retry-on-nonzero cleanup did not change it: the first `close` had returned 0.
+A probe showed the stale entry clears by itself within a second.
+Would-have-caught: confirm the browser process is alive before treating a
+`session list` entry as a leak; the CLI's listing lags its close.
+Action: no code change; the browser is closed and the listing catches up.

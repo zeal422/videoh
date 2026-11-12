@@ -49,8 +49,14 @@ Running the suite (these are the steps agents get wrong):
 - Battery: `bun run battery` (`bash e2e/run-battery.sh`, see
   [docs/testing.md](docs/testing.md)) and `bun run battery:pair`
   (`bash e2e/run-battery-pair.sh`). The single runner starts a dev server only when
-  the default port is free, closes its browser session, and stops only a server it
-  started, so nothing is left behind. The pair runner starts only the standalone
+  the default port is free, closes its browser sessions, and stops only a server it
+  started, so nothing is left behind. The pair runner runs each leg as four
+  shards by default (`PAIR_SHARDS=4`), each in its own browser session with the
+  registry order, seeds, and one collapsed console row preserved; `PAIR_SHARDS=1`
+  is the sequential rollback. `SHARDS=4 bun run battery` is the dev-only
+  four-shard run; per-shard results, timing, and logs carry `.s<n>` before the
+  extension, and a single shard failure still fails the leg: every shard must
+  exit 0 and the aggregate must have 70 rows with no FAIL. The pair runner starts only the standalone
   artifact on `:3100`, requires `:3000` free for the dev leg, and stops only the
   artifact server it started.
   It runs minutes (1080p export included) and needs `agent-browser` on PATH. For the SHIPPED
@@ -93,7 +99,8 @@ Running the suite (these are the steps agents get wrong):
 - `src/lib/editor/__tests__/`: all tests (`*.test.ts(x)`), plus the mocked browser harness in `mocks/`.
 - `e2e/battery.sh`: 70-step UI battery, first step loads the public hero and its editor link (needs the
   dev server + `agent-browser`). Drive it through `e2e/run-battery.sh` (`bun run battery`), which owns
-  the server, the session, and the strict verdict. `e2e/run-battery-pair.sh` (`bun run battery:pair`)
+  the server, the sessions, and the strict verdict; four shards per leg is the pair default, and
+  `SHARDS=1` keeps the registered sequential order. `e2e/run-battery-pair.sh` (`bun run battery:pair`)
   runs the dev and artifact legs concurrently; it is a clean-gate command and exits 9 when `:3000` is
   occupied.
 - `e2e/fixtures/`: committed battery media, the parity project, and `PROVENANCE.md`.

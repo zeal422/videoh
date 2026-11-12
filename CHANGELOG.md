@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.20.2] - 2026-11-11
+
+### Changed
+
+- The pair runs each leg as four independent shards by default (`PAIR_SHARDS=4`). Each shard is a separate battery process with its own browser session, results file, timing file, and log; mid-sequence shards rebuild their document with seeds that call the real step functions, and the strict verdict collapses the four console checks into the one registered row so both legs still require 70/70. `PAIR_SHARDS=1` keeps the registered sequential order as the rollback, and step 45 stays at position 45. The first four-shard map measured 198s and 200s; after moving `f05_blend_parity`, `f05_mute`, `f05_gain`, and `panels_double_click` to shard 4, the pair measured 163s, 164s, and 165s across three runs, with 70/70 on both legs and `PAIR_EXIT=0`.
+
+### Fixed
+
+- The shard 3 seed runs `f06_canvas` to reproduce the +100 temperature grade before splitting, so `f07_export` still proves the grade survives the project roundtrip instead of comparing a neutral first render against the cool one.
+- `f07_prep` drops the opaque image that covered the graded video at the 0.6s sample, and `f07_export` asserts the reopened video is still at +100 and selects it by DOM Enter, so the export grade and LUT proofs exercise the video instead of the image.
+- The pair's path collision check covers each shard's derived result, timing, and log paths, and the coordinator keeps result and timing paths containing spaces intact.
+- Both runners reject an output path that aliases `BATTERY_SH` before any truncation. The standalone detached launcher also checks `LOG` against `dev.log` and, with `SHARDS=4`, every derived shard result, timing, and log before truncating it; the sharded runner rejects derived paths that alias one another, the aggregate outputs, `dev.log`, or `LOG`. The path-identity fallback resolves a final-component symlink chain and rejects a loop or unreadable link instead of treating the link name as the target.
+- Cleanup closes only sessions this run recorded before launching, from an array, so a session name containing spaces survives and a validation failure cannot close an earlier run's session. The single runner now refuses `DETACH=1` when `setsid` is unavailable, matching the pair runner, instead of printing a pid for a child that never starts.
+- The portable path fallback passes `--` to `readlink`, `select_clip_dom` quotes the clip id in its DOM selector, and shard child PIDs are tracked as an array alongside the session, output, and timing arrays.
+- Shards and pair legs now run in their own process groups. Cleanup gives all shards one shared 3-second grace and both pair legs one shared 6-second grace, then kills and reaps any survivor, so a process that ignores `TERM` cannot keep running after `BATTERY_EXIT` or `PAIR_EXIT`; the longer pair grace lets each leg finish killing its own shard groups first. Both cleanup traps ignore further signals once started, and the pair signals a leg once through its group (the pid fallback applies only without a group), so a second `TERM` cannot abort a runner before it stops its shards. `battery.sh`'s `INT`/`TERM` trap also removes temp files and exits 130 instead of continuing the run, and an oversized `BATTERY_SHARD` is rejected before bash arithmetic can wrap it into a valid shard.
+
 ## [0.20.1] - 2026-11-11
 
 ### Changed

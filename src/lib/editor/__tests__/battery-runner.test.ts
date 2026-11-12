@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import {
+  chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -59,15 +60,29 @@ describe('the battery runner', () => {
   })
 
   it('truncates the results file before the battery runs and can detach under setsid', () => {
-    const truncateAt = runner.indexOf(': >"$OUT"')
-    const batteryAt = runner.indexOf('bash "$BATTERY_SH"')
+    const aggregateTruncateAt = runner.indexOf(': >"$OUT"')
+    // Each shard truncates its own result file inside run_shard before its child
+    // starts, and the aggregate OUT is truncated before any shard launches.
+    const runShardStart = runner.indexOf('run_shard() {')
+    const runShardEnd = runner.indexOf('\n}', runShardStart)
+    expect(runShardStart).toBeGreaterThan(-1)
+    expect(runShardEnd).toBeGreaterThan(runShardStart)
+    const runShard = runner.slice(runShardStart, runShardEnd)
+    const shardTruncateAt = runShard.indexOf(': >"$out"')
+    const shardBatteryAt = runShard.indexOf('bash "$BATTERY_SH"')
+    expect(shardTruncateAt).toBeGreaterThan(-1)
+    expect(shardBatteryAt).toBeGreaterThan(shardTruncateAt)
+    const shardLaunchAt = runner.indexOf('run_shard "$n"')
     // Truncate first: if the battery fails to parse it never touches OUT, and a
     // stale green file from an earlier run would be counted as this verdict.
-    expect(truncateAt).toBeGreaterThan(-1)
-    expect(batteryAt).toBeGreaterThan(truncateAt)
+    expect(aggregateTruncateAt).toBeGreaterThan(-1)
+    expect(shardLaunchAt).toBeGreaterThan(-1)
+    expect(shardLaunchAt).toBeGreaterThan(aggregateTruncateAt)
     // Detached mode puts the run in its own session so session cleanup cannot
     // kill a half-finished validation.
-    expect(runner).toMatch(/DETACHED=1 SESSION="\$SESSION" OUT="\$OUT" setsid nohup bash "\$SELF"/)
+    expect(runner).toMatch(
+      /DETACHED=1 RUN_ID="\$RUN_ID" SESSION="\$SESSION" OUT="\$OUT" LOG="\$LOG"[\s\\]+setsid nohup bash "\$SELF"/,
+    )
   })
 
   it('gives each detached run its own results file and browser session', () => {
@@ -77,7 +92,9 @@ describe('the battery runner', () => {
     // given. An explicit SESSION or OUT is preserved as given.
     expect(runner).toMatch(/OUT="\$\{OUT:-results-[^"]*\.txt\}"/)
     expect(runner).toMatch(/SESSION="\$\{SESSION:-battery-[^"]*\}/)
-    expect(runner).toMatch(/DETACHED=1 SESSION="\$SESSION" OUT="\$OUT" setsid nohup bash "\$SELF"/)
+    expect(runner).toMatch(
+      /DETACHED=1 RUN_ID="\$RUN_ID" SESSION="\$SESSION" OUT="\$OUT" LOG="\$LOG"[\s\\]+setsid nohup bash "\$SELF"/,
+    )
   })
 
   it('refuses to launch a detached run when the log cannot be written', () => {
@@ -112,6 +129,9 @@ describe('the battery runner', () => {
     // not own.
     expect(cleanup).toMatch(/LAUNCHER:-0/)
     expect(runner).toMatch(/LAUNCHER=1[\s\S]*?exit 0/)
+    // The first signal starts cleanup; a second must be ignored instead of
+    // re-entering the trap and exiting through the CLEANED guard.
+    expect(cleanup).toContain("trap '' INT TERM")
     // The trap is armed before the cd that can fail, so even a bad working
     // directory produces a verdict.
     const trapAt = runner.indexOf('trap cleanup EXIT')
@@ -171,6 +191,9 @@ describe('the battery runner', () => {
     )
     expect(hideAll).toMatch(/panel_close 'Inspector panel menu' inspector/)
     expect(pair).toContain('readlink -f --')
+    // A TERM trap that only removes temp files lets a signalled battery keep
+    // running after the coordinator that owns its session has exited.
+    expect(battery).toMatch(/trap 'cleanup_temps; exit 130' INT TERM/)
     expect(runner).toMatch(/set -m[\s\S]{0,200}DEV_GROUP="-\$DEV_PID"/)
     expect(pair).toMatch(/set -m[\s\S]{0,200}ART_GROUP="-\$ART_PID"/)
   })
@@ -201,8 +224,32 @@ describe('the battery runner', () => {
     const cleanup = pair.slice(cleanupStart, cleanupEnd)
     expect(cleanup).toMatch(/LAUNCHER:-0/)
     expect(cleanup).toMatch(/PAIR_EXIT=\$rc/)
+    // The first signal starts cleanup; a second must be ignored instead of
+    // re-entering the trap and exiting through the CLEANED guard.
+    expect(cleanup).toContain("trap '' INT TERM")
+    // A leg is signalled once through its group. The pid fallback applies only
+    // when that leg had no group, so it cannot send a second TERM during the
+    // runner's cleanup.
+    expect(cleanup).toMatch(/\[ -n "\$DEV_RUN_PID" \] && \[ -z "\$DEV_RUN_GROUP" \]/)
+    expect(cleanup).not.toMatch(
+      /for pid in "\$DEV_RUN_PID" "\$ART_RUN_PID"; do\s*\[ -n "\$pid" \] \|\| continue\s*if kill -0 "\$pid" 2>\/dev\/null; then kill -TERM/,
+    )
     expect(cleanup).toMatch(/ART_GROUP/)
     expect(cleanup).toMatch(/kill -TERM "\$group"/)
+    // A leg that ignores TERM is killed after the grace period, not left to
+    // finish after PAIR_EXIT.
+    expect(cleanup).toMatch(/kill -KILL "\$group"/)
+    expect(cleanup).not.toContain('leaving its cleanup to its trap')
+    // Shards are in their own process groups, so the leg needs more time than
+    // the runner's shard grace to kill them before the pair kills the leg.
+    const runnerCleanupStart = runner.indexOf('cleanup() {')
+    const runnerCleanupEnd = runner.indexOf('\n}', runnerCleanupStart)
+    const runnerCleanup = runner.slice(runnerCleanupStart, runnerCleanupEnd)
+    const runnerGrace = /for _ in \$\(seq 1 (\d+)\)/.exec(runnerCleanup)
+    const pairGrace = /for _ in \$\(seq 1 (\d+)\)/.exec(cleanup)
+    expect(runnerGrace).not.toBeNull()
+    expect(pairGrace).not.toBeNull()
+    expect(Number(pairGrace?.[1])).toBeGreaterThan(Number(runnerGrace?.[1]))
     expect(cleanup).not.toMatch(/pkill/)
     expect(cleanup).not.toMatch(/agent-browser close/)
     expect(pair).toContain('start_grouped')
@@ -220,7 +267,7 @@ describe('the battery runner', () => {
     try {
       const bin = join(dir, 'bin')
       mkdirSync(bin)
-      for (const name of ['basename', 'bash', 'dirname']) {
+      for (const name of ['basename', 'bash', 'date', 'dirname']) {
         const found = spawnSync('bash', ['-c', `command -v ${name}`], { encoding: 'utf8' })
         expect(found.status, `${name}: ${found.stderr}`).toBe(0)
         symlinkSync(found.stdout.trim(), join(bin, name))
@@ -243,6 +290,28 @@ describe('the battery runner', () => {
       expect(result.stderr).toContain('setsid')
       expect(result.stdout).not.toContain('detached:')
       expect(existsSync(join(dir, 'pair.log'))).toBe(false)
+
+      // The single runner must refuse the same way: without setsid the
+      // launcher's background child never starts, so it must not print a pid.
+      const runnerResult = spawnSync('bash', [RUNNER_PATH], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          PATH: bin,
+          DETACH: '1',
+          DETACHED: '0',
+          RUN_ID: 'runner-setsid-test',
+          LOG: join(dir, 'runner.log'),
+          OUT: join(dir, 'runner.txt'),
+          SESSION: 'runner-setsid',
+          BATTERY_SH: join(ROOT, 'e2e', 'battery.sh'),
+        },
+        encoding: 'utf8',
+      })
+      expect(runnerResult.status, runnerResult.stderr).toBe(9)
+      expect(runnerResult.stderr).toContain('setsid')
+      expect(runnerResult.stdout).not.toContain('detached:')
+      expect(existsSync(join(dir, 'runner.log'))).toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -406,6 +475,26 @@ describe('the battery runner', () => {
           env: () => ({ OUT_ART: 'server.log' }),
           message: 'OUT_ART and ARTIFACT_SERVER_LOG refer to the same file',
         },
+        {
+          name: 'dev-shard-result-is-artifact-results',
+          env: (run) => ({
+            OUT_DEV: join(run, 'dev.txt'),
+            OUT_ART: join(run, 'dev.s1.txt'),
+          }),
+          message: 'pair: dev shard 1 result and OUT_ART refer to the same file',
+        },
+        {
+          name: 'dev-shard-timing-is-artifact-results',
+          env: (run) => ({
+            OUT_ART: join(run, 'dev.timing.s1.txt'),
+          }),
+          message: 'pair: dev shard 1 timing and OUT_ART refer to the same file',
+        },
+        {
+          name: 'dev-shard-result-is-battery-script',
+          env: (run) => ({ BATTERY_SH: join(run, 'dev.s1.txt') }),
+          message: 'pair: dev shard 1 result and BATTERY_SH refer to the same file',
+        },
       ]
       for (const { name, env, message } of cases) {
         const run = join(dir, name)
@@ -504,6 +593,22 @@ describe('the battery runner', () => {
         expect(result.stdout).not.toContain('detached:')
         expect(readFileSync(shared, 'utf8')).toBe(sentinel)
         expect(readFileSync(hard, 'utf8')).toBe(sentinel)
+      }
+      // The battery script is a source, not an output: a pair log that aliases
+      // it would truncate the script before the legs read it.
+      const script = join(dir, 'battery-source.sh')
+      const scriptText = '#!/usr/bin/env bash\nstep "stub" stub\n'
+      writeFileSync(script, scriptText)
+      for (const detach of ['0', '1']) {
+        const result = spawnSync('bash', [PAIR_PATH], {
+          cwd: ROOT,
+          env: { ...base, BATTERY_SH: script, PAIR_LOG: script, DETACH: detach },
+          encoding: 'utf8',
+        })
+        expect(result.status, `script detach=${detach}: ${result.stderr}`).toBe(9)
+        expect(result.stderr).toContain('BATTERY_SH and PAIR_LOG refer to the same file')
+        expect(result.stdout).not.toContain('detached:')
+        expect(readFileSync(script, 'utf8')).toBe(scriptText)
       }
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -627,6 +732,691 @@ exit "$rc"
           expect(log).not.toContain('PAIR_EXIT=0')
         }
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('assigns every registered step to exactly one shard', () => {
+    // The four shards must partition the 70 `step` lines: a missing function
+    // silently drops a step from a sharded run, and a duplicate puts one step in
+    // two browser sessions. The summary counts pin the intended cut points.
+    const registered = (battery.match(/^step\s+"[^"]+"\s+([a-z0-9_]+)\s*$/gm) ?? []).map(
+      (line) => /([a-z0-9_]+)\s*$/.exec(line)?.[1] ?? '',
+    )
+    expect(registered).toHaveLength(70)
+    const start = battery.indexOf('shard_of() {')
+    const end = battery.indexOf('\n}', start)
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const body = battery.slice(start, end)
+    const pairs: Array<[string, number]> = []
+    let pending: string[] = []
+    for (const line of body.split('\n')) {
+      const arm = /^\s{4}([a-z0-9_ |]+)\)\s*$/.exec(line)
+      if (arm) {
+        pending = arm[1]
+          .split('|')
+          .map((name) => name.trim())
+          .filter(Boolean)
+        continue
+      }
+      const echo = /^\s+echo ([1-4])\s*$/.exec(line)
+      if (echo && pending.length > 0) {
+        for (const name of pending) pairs.push([name, Number(echo[1])])
+        pending = []
+      }
+    }
+    expect(pending).toEqual([])
+    const names = pairs.map(([name]) => name)
+    expect(names.slice().sort()).toEqual(registered.slice().sort())
+    expect(new Set(names).size).toBe(names.length)
+    const counts = [1, 2, 3, 4].map((shard) => pairs.filter(([, s]) => s === shard).length)
+    expect(counts).toEqual([30, 12, 14, 14])
+    expect(pairs.find(([name]) => name === 'console_clean')?.[1]).toBe(4)
+    // The coordinator collapses the four console rows under the registered
+    // name; a drift there would write a row no step registered.
+    const consoleName = /^step "(console:[^"]*)"/m.exec(battery)?.[1]
+    expect(consoleName).toBe('console: zero page errors across battery')
+    expect(runner).toContain(`local console_name='${consoleName}'`)
+  })
+
+  it('validates shard inputs before touching a browser', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'battery-shard-env-'))
+    try {
+      const bin = join(dir, 'bin')
+      mkdirSync(bin)
+      const fake = join(bin, 'agent-browser')
+      const agentLog = join(dir, 'agent-closes.log')
+      writeFileSync(
+        fake,
+        `#!/bin/sh
+if [ -n "\${AGENT_LOG:-}" ] && [ "$3" = "close" ]; then
+  printf '%s\\n' "$2" >> "\${AGENT_LOG:?}"
+fi
+exit 1
+`,
+      )
+      chmodSync(fake, 0o755)
+      // A detached-case failure must not spawn a real child during the test.
+      const fakeSetsid = join(bin, 'setsid')
+      writeFileSync(fakeSetsid, '#!/bin/sh\nexit 1\n')
+      chmodSync(fakeSetsid, 0o755)
+      // Force the portable path-identity fallback: realpath fails and the
+      // readlink shim rejects -f while still resolving a single link.
+      const realReadlink = spawnSync('bash', ['-c', 'command -v readlink'], {
+        encoding: 'utf8',
+      })
+      expect(realReadlink.status, realReadlink.stderr).toBe(0)
+      const fakeRealpath = join(bin, 'realpath')
+      writeFileSync(fakeRealpath, '#!/bin/sh\nexit 1\n')
+      chmodSync(fakeRealpath, 0o755)
+      const fakeReadlink = join(bin, 'readlink')
+      writeFileSync(
+        fakeReadlink,
+        `#!/bin/sh
+if [ "$1" = "-f" ]; then exit 1; fi
+exec "${realReadlink.stdout.trim()}" "$@"
+`,
+      )
+      chmodSync(fakeReadlink, 0o755)
+      const base = {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        OUT: join(dir, 'out.txt'),
+        TIMING: '0',
+      }
+      const batteryCases: Array<[string, Record<string, string>, string]> = [
+        ['zero-count', { BATTERY_SHARDS: '0' }, 'BATTERY_SHARDS must be 1 or 4'],
+        ['two-count', { BATTERY_SHARDS: '2' }, 'BATTERY_SHARDS must be 1 or 4'],
+        ['eight-count', { BATTERY_SHARDS: '8' }, 'BATTERY_SHARDS must be 1 or 4'],
+        ['non-numeric-count', { BATTERY_SHARDS: 'x' }, 'BATTERY_SHARDS must be 1 or 4'],
+        [
+          'zero-shard',
+          { BATTERY_SHARDS: '4', BATTERY_SHARD: '0' },
+          'BATTERY_SHARD must be between 1 and 4',
+        ],
+        [
+          'five-shard',
+          { BATTERY_SHARDS: '4', BATTERY_SHARD: '5' },
+          'BATTERY_SHARD must be between 1 and 4',
+        ],
+        [
+          'non-numeric-shard',
+          { BATTERY_SHARDS: '4', BATTERY_SHARD: 'x' },
+          'BATTERY_SHARD must be an integer from 1 to 4',
+        ],
+        [
+          'overflow-shard',
+          { BATTERY_SHARDS: '4', BATTERY_SHARD: '18446744073709551617' },
+          'BATTERY_SHARD must be between 1 and 4',
+        ],
+      ]
+      for (const [name, env, message] of batteryCases) {
+        const result = spawnSync('bash', [BATTERY_PATH], {
+          cwd: ROOT,
+          env: { ...base, ...env },
+          encoding: 'utf8',
+        })
+        expect(result.status, `${name}: ${result.stderr}`).toBe(9)
+        expect(result.stderr).toContain(message)
+      }
+      // The middle values must stay accepted: shard 2 is not one of the two
+      // configured counts, but it is a valid shard of four.
+      const accepted = spawnSync('bash', [BATTERY_PATH], {
+        cwd: ROOT,
+        env: { ...base, BATTERY_SHARDS: '4', BATTERY_SHARD: '2' },
+        encoding: 'utf8',
+      })
+      expect(accepted.status, accepted.stderr).toBe(1)
+      expect(accepted.stderr).toContain('shard 2 seed failed')
+
+      writeFileSync(agentLog, '')
+      const runnerResult = spawnSync('bash', [RUNNER_PATH], {
+        cwd: ROOT,
+        env: {
+          ...base,
+          BASE_URL: 'http://127.0.0.1:9',
+          SHARDS: '2',
+          OUT: join(dir, 'runner.txt'),
+          AGENT_LOG: agentLog,
+        },
+        encoding: 'utf8',
+      })
+      expect(runnerResult.status, runnerResult.stderr).toBe(9)
+      expect(runnerResult.stderr).toContain('SHARDS must be 1 or 4')
+      expect(runnerResult.stdout).toContain('BATTERY_EXIT=9')
+      // Validation failed before any session was recorded. Cleanup must not
+      // close the configured SESSION speculatively.
+      expect(readFileSync(agentLog, 'utf8').trim()).toBe('')
+
+      // The standalone sharded runner derives one result, timing, and log per
+      // shard, and the aggregate writes OUT/TIMING_OUT after they run. A
+      // derived file that aliases another writer is truncated, so reject it
+      // before the first truncation rather than corrupting the verdict.
+      const collide = spawnSync('bash', [RUNNER_PATH], {
+        cwd: ROOT,
+        env: {
+          ...base,
+          BASE_URL: 'http://127.0.0.1:9',
+          SHARDS: '4',
+          OUT: join(dir, 'collide.txt'),
+          SHARD_LOG_BASE: join(dir, 'collide.txt'),
+          TIMING: '0',
+          TIMING_OUT: '',
+        },
+        encoding: 'utf8',
+      })
+      expect(collide.status, collide.stderr).toBe(9)
+      expect(collide.stderr).toContain('shard 1 log and shard 1 result refer to the same file')
+      expect(existsSync(join(dir, 'collide.txt'))).toBe(false)
+      expect(existsSync(join(dir, 'collide.s1.txt'))).toBe(false)
+
+      // The battery script is a source, not an output. A results path that
+      // aliases it must fail before the runner truncates OUT.
+      const script = join(dir, 'battery-source.sh')
+      const scriptText = '#!/usr/bin/env bash\nstep "stub" stub\n'
+      writeFileSync(script, scriptText)
+      const scriptCollision = spawnSync('bash', [RUNNER_PATH], {
+        cwd: ROOT,
+        env: {
+          ...base,
+          BASE_URL: 'http://127.0.0.1:9',
+          SHARDS: '4',
+          OUT: script,
+          BATTERY_SH: script,
+        },
+        encoding: 'utf8',
+      })
+      expect(scriptCollision.status, scriptCollision.stderr).toBe(9)
+      expect(scriptCollision.stderr).toContain('BATTERY_SH and OUT refer to the same file')
+      expect(readFileSync(script, 'utf8')).toBe(scriptText)
+
+      // The detached launcher truncates LOG before the child's checks run. A
+      // log that aliases the battery script would destroy it before the child
+      // reads a single step.
+      const detachScript = join(dir, 'detach-source.sh')
+      const detachText = '#!/usr/bin/env bash\nstep "stub" stub\n'
+      writeFileSync(detachScript, detachText)
+      const detachCollision = spawnSync('bash', [RUNNER_PATH], {
+        cwd: ROOT,
+        env: {
+          ...base,
+          DETACH: '1',
+          DETACHED: '0',
+          LOG: detachScript,
+          BATTERY_SH: detachScript,
+          OUT: join(dir, 'detach-out.txt'),
+        },
+        encoding: 'utf8',
+      })
+      expect(detachCollision.status, detachCollision.stderr).toBe(9)
+      expect(detachCollision.stderr).toContain('LOG and BATTERY_SH refer to the same file')
+      expect(detachCollision.stdout).not.toContain('detached:')
+      expect(readFileSync(detachScript, 'utf8')).toBe(detachText)
+
+      // The launcher also protects the fixed dev-server log.
+      const devLogCollision = spawnSync('bash', [RUNNER_PATH], {
+        cwd: ROOT,
+        env: {
+          ...base,
+          DETACH: '1',
+          DETACHED: '0',
+          LOG: 'dev.log',
+          OUT: join(dir, 'dev-log-out.txt'),
+        },
+        encoding: 'utf8',
+      })
+      expect(devLogCollision.status, devLogCollision.stderr).toBe(9)
+      expect(devLogCollision.stderr).toContain('LOG and dev.log refer to the same file')
+      expect(devLogCollision.stdout).not.toContain('detached:')
+
+      // The detached child includes LOG in its derived-path sweep.
+      const childOut = join(dir, 'child-out.txt')
+      const childLog = join(dir, 'child-out.s1.txt')
+      const childCollision = spawnSync('bash', [RUNNER_PATH], {
+        cwd: ROOT,
+        env: {
+          ...base,
+          BASE_URL: 'http://127.0.0.1:9',
+          SHARDS: '4',
+          DETACH: '0',
+          DETACHED: '1',
+          LOG: childLog,
+          OUT: childOut,
+          SHARD_LOG_BASE: join(dir, 'child-shard.logs'),
+          TIMING: '0',
+          TIMING_OUT: '',
+        },
+        encoding: 'utf8',
+      })
+      expect(childCollision.status, childCollision.stderr).toBe(9)
+      expect(childCollision.stderr).toContain('shard 1 result and LOG refer to the same file')
+      expect(existsSync(childLog)).toBe(false)
+
+      // The launcher truncates LOG before the child's derived-path check, so it
+      // must reject a LOG that aliases a shard result itself.
+      const launcherOut = join(dir, 'launcher-out.txt')
+      const launcherLog = join(dir, 'launcher-out.s1.txt')
+      const launcherCollision = spawnSync('bash', [RUNNER_PATH], {
+        cwd: ROOT,
+        env: {
+          ...base,
+          DETACH: '1',
+          DETACHED: '0',
+          SHARDS: '4',
+          OUT: launcherOut,
+          TIMING_OUT: '',
+          LOG: launcherLog,
+          SHARD_LOG_BASE: join(dir, 'launcher-shard.logs'),
+        },
+        encoding: 'utf8',
+      })
+      expect(launcherCollision.status, launcherCollision.stderr).toBe(9)
+      expect(launcherCollision.stderr).toContain('LOG and shard 1 result refer to the same file')
+      expect(launcherCollision.stdout).not.toContain('detached:')
+      expect(existsSync(launcherLog)).toBe(false)
+
+      // The portable path-identity fallback must follow a dangling final
+      // symlink. -ef cannot catch it because the target does not exist.
+      const symlinkTarget = join(dir, 'symlink-target.txt')
+      const symlinkOut = join(dir, 'symlink-out.txt')
+      symlinkSync(symlinkTarget, symlinkOut)
+      const symlinkCollision = spawnSync('bash', [RUNNER_PATH], {
+        cwd: ROOT,
+        env: {
+          ...base,
+          BASE_URL: 'http://127.0.0.1:9',
+          SHARDS: '1',
+          OUT: symlinkOut,
+          TIMING_OUT: symlinkTarget,
+        },
+        encoding: 'utf8',
+      })
+      expect(symlinkCollision.status, symlinkCollision.stderr).toBe(9)
+      expect(symlinkCollision.stderr).toContain('OUT and TIMING_OUT refer to the same file')
+      expect(existsSync(symlinkTarget)).toBe(false)
+
+      // The runners keep standalone copies of the path helpers. Lock the
+      // bodies so one copy cannot drift from the other.
+      const functionBody = (source: string, name: string) => {
+        const start = source.indexOf(`${name}() {`)
+        const end = source.indexOf('\n}', start)
+        expect(start, name).toBeGreaterThan(-1)
+        expect(end, name).toBeGreaterThan(start)
+        return source.slice(start, end)
+      }
+      expect(functionBody(runner, 'path_id')).toBe(functionBody(pair, 'path_id'))
+      for (const name of ['check_same', 'check_same_cached']) {
+        expect(functionBody(runner, name).replaceAll('battery:', 'pair:')).toBe(
+          functionBody(pair, name),
+        )
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('aggregates shard results into one strict 70-row verdict', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'battery-shard-aggregate-'))
+    // The stub server must live in another process: spawnSync blocks this
+    // process's event loop, so an in-process server could never answer the
+    // runner's readiness probe.
+    const server = spawn(
+      process.execPath,
+      [
+        '-e',
+        "const http=require('node:http');const s=http.createServer((q,r)=>{r.writeHead(200);r.end('ok')});s.listen(0,'127.0.0.1',()=>console.log(s.address().port))",
+      ],
+      { stdio: ['ignore', 'pipe', 'inherit'] },
+    )
+    const port = await new Promise<number>((resolve, reject) => {
+      let buffer = ''
+      server.stdout?.on('data', (chunk) => {
+        buffer += String(chunk)
+        const match = /^(\d+)\n/.exec(buffer)
+        if (match) resolve(Number(match[1]))
+      })
+      server.once('error', reject)
+      server.once('exit', (code) => reject(new Error(`stub server exited ${code}`)))
+    })
+    try {
+      const bin = join(dir, 'bin')
+      mkdirSync(bin)
+      const fake = join(bin, 'agent-browser')
+      const agentLog = join(dir, 'closed-sessions.log')
+      writeFileSync(
+        fake,
+        `#!/bin/sh
+if [ "$3" = "close" ]; then
+  printf '%s\\n' "$2" >> "\${AGENT_LOG:?}"
+fi
+exit 0
+`,
+      )
+      chmodSync(fake, 0o755)
+      const registrations = Array.from({ length: 70 }, (_, i) => `step "stub ${i + 1}" noop`).join(
+        '\n',
+      )
+      const stub = join(dir, 'stub-battery.sh')
+      writeFileSync(
+        stub,
+        `#!/usr/bin/env bash
+set -u
+out="\${OUT:?}"
+shard="\${BATTERY_SHARD:-1}"
+shards="\${BATTERY_SHARDS:-1}"
+if [ "$shards" = "1" ]; then
+  n=69
+else
+  case "$shard" in
+    1 | 2 | 3) n=18 ;;
+    4) n=15 ;;
+    *) n=0 ;;
+  esac
+fi
+i=0
+while [ "$i" -lt "$n" ]; do
+  i=$((i + 1))
+  if [ "\${STUB_FAIL_SHARD:-}" = "$shard" ] && [ "$i" = "1" ]; then
+    echo "FAIL stub step $shard-$i" >>"$out"
+  else
+    echo "PASS stub step $shard-$i" >>"$out"
+  fi
+done
+echo "PASS console: zero page errors across battery" >>"$out"
+if [ "\${TIMING:-0}" = "1" ]; then
+  printf 'shard %s\\n' "$shard" >>"\${TIMING_OUT:?}"
+fi
+exit 0
+${registrations}
+`,
+      )
+      const run = (
+        name: string,
+        shards: string,
+        failShard = '',
+        timing = '0',
+        timingOut = '',
+        session = `shard-${name}`,
+      ) => {
+        const runDir = join(dir, name)
+        mkdirSync(runDir)
+        return spawnSync('bash', [RUNNER_PATH], {
+          cwd: ROOT,
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
+            BASE_URL: `http://127.0.0.1:${port}`,
+            SESSION: session,
+            OUT: join(runDir, 'results.txt'),
+            SHARD_LOG_BASE: join(runDir, 'battery.log'),
+            BATTERY_SH: stub,
+            SHARDS: shards,
+            TIMING: timing,
+            TIMING_OUT: timingOut,
+            STUB_FAIL_SHARD: failShard,
+            AGENT_LOG: agentLog,
+          },
+          encoding: 'utf8',
+        })
+      }
+      const rows = (file: string) =>
+        readFileSync(file, 'utf8')
+          .split('\n')
+          .filter((line) => /^(PASS|FAIL) /.test(line))
+
+      const sequential = run('sequential', '1')
+      expect(sequential.status, sequential.stderr).toBe(0)
+      expect(rows(join(dir, 'sequential', 'results.txt'))).toHaveLength(70)
+
+      const green = run('green', '4')
+      expect(green.status, green.stderr).toBe(0)
+      const greenRows = rows(join(dir, 'green', 'results.txt'))
+      expect(greenRows).toHaveLength(70)
+      expect(greenRows.filter((line) => line.includes('console:'))).toHaveLength(1)
+      expect(greenRows.every((line) => line.startsWith('PASS'))).toBe(true)
+
+      const red = run('red', '4', '2')
+      expect(red.status, red.stderr).toBe(1)
+      const redRows = rows(join(dir, 'red', 'results.txt'))
+      expect(redRows).toHaveLength(70)
+      expect(redRows.filter((line) => line.startsWith('FAIL'))).toEqual(['FAIL stub step 2-1'])
+
+      // Paths with spaces are legal inputs. Each shard result and timing must
+      // stay one array element; word-splitting drops every PASS row and empties
+      // the aggregated timing file.
+      const spaced = run('spaced results', '4')
+      expect(spaced.status, spaced.stderr).toBe(0)
+      expect(rows(join(dir, 'spaced results', 'results.txt'))).toHaveLength(70)
+
+      const timingDir = join(dir, 'spaced timing')
+      mkdirSync(timingDir)
+      const spacedTiming = run('plain', '4', '', '1', join(timingDir, 'timing out.txt'))
+      expect(spacedTiming.status, spacedTiming.stderr).toBe(0)
+      expect(
+        readFileSync(join(timingDir, 'timing out.txt'), 'utf8').split('\n').filter(Boolean),
+      ).toHaveLength(4)
+
+      // A session name may contain spaces. Every shard session must reach
+      // agent-browser close as one argument, not as words split by the cleanup.
+      writeFileSync(agentLog, '')
+      const spacedSession = run('spaced-session', '4', '', '0', '', 'session with spaces')
+      expect(spacedSession.status, spacedSession.stderr).toBe(0)
+      expect(rows(join(dir, 'spaced-session', 'results.txt'))).toHaveLength(70)
+      expect(readFileSync(agentLog, 'utf8').trim().split('\n')).toEqual([
+        'session with spaces-s1',
+        'session with spaces-s2',
+        'session with spaces-s3',
+        'session with spaces-s4',
+      ])
+    } finally {
+      server.kill()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('kills and reaps a shard that ignores TERM before reporting the verdict', async () => {
+    // The coordinator's verdict is final: a shard still writing results or
+    // driving a browser after BATTERY_EXIT is the failure this locks out.
+    // A TERM-only cleanup reached the shard's trap and then let it continue.
+    const dir = mkdtempSync(join(tmpdir(), 'battery-shard-stubborn-'))
+    const server = spawn(
+      process.execPath,
+      [
+        '-e',
+        "const http=require('node:http');const s=http.createServer((q,r)=>{r.writeHead(200);r.end('ok')});s.listen(0,'127.0.0.1',()=>console.log(s.address().port))",
+      ],
+      { stdio: ['ignore', 'pipe', 'inherit'] },
+    )
+    const port = await new Promise<number>((resolve, reject) => {
+      let buffer = ''
+      server.stdout?.on('data', (chunk) => {
+        buffer += String(chunk)
+        const match = /^(\d+)\n/.exec(buffer)
+        if (match) resolve(Number(match[1]))
+      })
+      server.once('error', reject)
+      server.once('exit', (code) => reject(new Error(`stub server exited ${code}`)))
+    })
+    try {
+      const bin = join(dir, 'bin')
+      mkdirSync(bin)
+      const fake = join(bin, 'agent-browser')
+      writeFileSync(fake, '#!/bin/sh\nexit 0\n')
+      chmodSync(fake, 0o755)
+      const marker = join(dir, 'shard-marker.log')
+      const stub = join(dir, 'stubborn-battery.sh')
+      // Ignore TERM in the shell and stay alive without a child process, so
+      // only the coordinator's escalation can stop it. `done` appears after 5s,
+      // well past the cleanup grace period.
+      writeFileSync(
+        stub,
+        `#!/usr/bin/env bash
+set -u
+trap '' TERM
+echo started >> "\${MARKER:?}"
+end=$((SECONDS + 5))
+while [ "$SECONDS" -lt "$end" ]; do :; done
+echo done >> "\${MARKER:?}"
+step "stub" noop
+`,
+      )
+      chmodSync(stub, 0o755)
+      const child = spawn('bash', [RUNNER_PATH], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          BASE_URL: `http://127.0.0.1:${port}`,
+          SESSION: 'stubborn-shard',
+          OUT: join(dir, 'results.txt'),
+          SHARD_LOG_BASE: join(dir, 'battery.log'),
+          BATTERY_SH: stub,
+          SHARDS: '4',
+          MARKER: marker,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      let stderr = ''
+      child.stderr?.on('data', (chunk) => {
+        stderr += String(chunk)
+      })
+      const startedAt = Date.now()
+      while (!existsSync(marker) || !readFileSync(marker, 'utf8').includes('started')) {
+        if (Date.now() - startedAt > 5000) {
+          throw new Error(`the stub shard never started: ${stderr}`)
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      child.kill('SIGTERM')
+      // A pair leg receives the group TERM and, in the old code, a second TERM
+      // aimed at the runner pid. The second signal must not abort the running
+      // cleanup before it kills the shard groups.
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      child.kill('SIGTERM')
+      const code = await new Promise<number | null>((resolve) => child.once('exit', resolve))
+      expect(code, stderr).toBe(130)
+      // Past the stub's sleep: a TERM-only cleanup leaves it alive to write
+      // this line after the terminal verdict.
+      await new Promise((resolve) => setTimeout(resolve, 5200))
+      expect(readFileSync(marker, 'utf8')).not.toContain('done')
+    } finally {
+      server.kill()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  it('kills a pair leg that ignores TERM before writing PAIR_EXIT', async () => {
+    // The pair owns both legs' process groups. A leg that survives the TERM
+    // grace must be killed and reaped, not left running after PAIR_EXIT.
+    const dir = mkdtempSync(join(tmpdir(), 'battery-pair-stubborn-'))
+    try {
+      const marker = join(dir, 'leg-marker.log')
+      const leg = join(dir, 'stubborn-leg.sh')
+      writeFileSync(
+        leg,
+        `#!/usr/bin/env bash
+set -u
+trap '' TERM
+echo started >> "\${MARKER:?}"
+end=$((SECONDS + 8))
+while [ "$SECONDS" -lt "$end" ]; do :; done
+echo done >> "\${MARKER:?}"
+`,
+      )
+      chmodSync(leg, 0o755)
+      const batteryStub = join(dir, 'battery-stub.sh')
+      writeFileSync(batteryStub, '#!/usr/bin/env bash\nstep "stub" noop\n')
+      const child = spawn('bash', [PAIR_PATH], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          PAIR_TEST: '1',
+          PAIR_TEST_LEG_CMD: leg,
+          BATTERY_SH: batteryStub,
+          PAIR_SHARDS: '1',
+          ART_PORT: '31999',
+          MARKER: marker,
+          OUT_DEV: join(dir, 'dev.txt'),
+          OUT_ART: join(dir, 'artifact.txt'),
+          LOG_DEV: join(dir, 'dev.log'),
+          LOG_ART: join(dir, 'artifact.log'),
+          LOG_ART_SERVER: join(dir, 'artifact-server.log'),
+          PAIR_LOG: join(dir, 'pair.log'),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      let stderr = ''
+      child.stderr?.on('data', (chunk) => {
+        stderr += String(chunk)
+      })
+      const startedAt = Date.now()
+      while (!existsSync(marker) || !readFileSync(marker, 'utf8').includes('started')) {
+        if (Date.now() - startedAt > 5000) {
+          throw new Error(`the stub leg never started: ${stderr}`)
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+      child.kill('SIGTERM')
+      const code = await new Promise<number | null>((resolve) => child.once('exit', resolve))
+      expect(code, stderr).toBe(130)
+      await new Promise((resolve) => setTimeout(resolve, 9500))
+      expect(readFileSync(marker, 'utf8')).not.toContain('done')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  it('skips steps owned by another shard and runs the console check everywhere', () => {
+    // Execute the real step() source against stub step functions: this is the
+    // behavioral lock on "an unowned step writes no row", not just a shape
+    // assertion. console_clean is mapped to shard 4 yet must still run in shard 2.
+    const start = battery.indexOf('step() {')
+    const end = battery.indexOf('\n}', start)
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const stepFunction = battery.slice(start, end + 2)
+    const dir = mkdtempSync(join(tmpdir(), 'battery-shard-step-'))
+    try {
+      const out = join(dir, 'out.txt')
+      const script = join(dir, 'step.sh')
+      writeFileSync(
+        script,
+        `#!/usr/bin/env bash
+set -uo pipefail
+OUT="$1"
+TIMING=0
+BATTERY_SHARDS=4
+BATTERY_SHARD=2
+shard_of() {
+  case "$1" in
+    owned_step) echo 2 ;;
+    other_step) echo 1 ;;
+    console_clean) echo 4 ;;
+    *) return 1 ;;
+  esac
+}
+owned_step() { return 0; }
+other_step() { return 0; }
+console_clean() { return 0; }
+${stepFunction}
+: >"$OUT"
+step "owned" owned_step
+step "other" other_step
+step "console" console_clean
+step "unmapped" mystery_step
+exit 0
+`,
+      )
+      const result = spawnSync('bash', [script, out], { encoding: 'utf8' })
+      expect(result.status, result.stderr).toBe(0)
+      const lines = readFileSync(out, 'utf8').trimEnd().split('\n')
+      expect(lines).toEqual([
+        'PASS owned',
+        'PASS console',
+        'FAIL unmapped (no shard owns mystery_step)',
+      ])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

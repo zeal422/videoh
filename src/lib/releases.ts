@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.20.2',
+    date: '2026-11-11',
+    highlights: [
+      'The dev and artifact batteries run four shards per leg, cutting the pair from 198-200s to 163-165s',
+      'Each shard gets its own browser session, results, timing, and log, with real-function seeds for mid-sequence starts',
+      'The strict 70/70 verdict is unchanged: the four console checks collapse into the one registered row',
+      'The shard map is rebalanced so the blend, audio, and panel steps use the idle fourth shard',
+      'No editor behavior, project format, or analytics contract changed',
+    ],
+  },
+  {
     version: '0.20.1',
     date: '2026-11-11',
     highlights: [

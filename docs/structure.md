@@ -15,8 +15,8 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 ├── e2e/
 │   ├── battery.sh           # scripted UI battery (70 steps) driven by agent-browser
 │   ├── fixtures/            # committed battery media, parity project, and provenance
-│   ├── run-battery.sh       # runner: dev server, session cleanup, strict verdict
-│   └── run-battery-pair.sh  # concurrent dev + artifact runner with a strict pair verdict
+│   ├── run-battery.sh       # runner: dev server, shard sessions, strict verdict
+│   └── run-battery-pair.sh  # concurrent dev + artifact runner, four shards per leg
 ├── docs/                    # this documentation set, including seo.md
 ├── next.config.ts           # output: "standalone", preview X-Robots-Tag
 ├── vitest.config.ts         # node env, @ alias, coverage include + thresholds
@@ -224,7 +224,7 @@ src/lib/editor/
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 100 test files (2311 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 100 test files (2317 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

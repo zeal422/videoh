@@ -116,6 +116,41 @@ if [ "$TIMING" = "1" ]; then
   : >"$TIMING_OUT" || { echo "cannot write the timing file $TIMING_OUT" >&2; exit 9; }
 fi
 
+# Optional sharding. BATTERY_SHARDS=1 is the registered 1-70 sequence with no
+# filter and no seed, exactly the pre-shard behavior. BATTERY_SHARDS=4 runs one
+# of four independent partitions; every step still registers once, and the
+# coordinator (run-battery.sh) launches one process per BATTERY_SHARD. Only the
+# two defined counts are accepted: a count without a manifest would leave steps
+# unowned, and the strict verdict would fail as INCOMPLETE after the whole run.
+BATTERY_SHARDS="${BATTERY_SHARDS:-1}"
+BATTERY_SHARD="${BATTERY_SHARD:-1}"
+case "$BATTERY_SHARDS" in
+  1 | 4) ;;
+  *)
+    echo "BATTERY_SHARDS must be 1 or 4" >&2
+    exit 9
+    ;;
+esac
+case "$BATTERY_SHARD" in
+  '' | *[!0-9]*)
+    echo "BATTERY_SHARD must be an integer from 1 to $BATTERY_SHARDS" >&2
+    exit 9
+    ;;
+esac
+# Strip leading zeros, then reject before arithmetic: bash wraps an oversized
+# integer modulo 2^64, so 18446744073709551617 would otherwise pass as shard 1.
+BATTERY_SHARD=${BATTERY_SHARD#"${BATTERY_SHARD%%[!0]*}"}
+[ -n "$BATTERY_SHARD" ] || BATTERY_SHARD=0
+if [ "${#BATTERY_SHARD}" -gt 9 ]; then
+  echo "BATTERY_SHARD must be between 1 and $BATTERY_SHARDS" >&2
+  exit 9
+fi
+BATTERY_SHARD=$((10#$BATTERY_SHARD))
+if [ "$BATTERY_SHARD" -lt 1 ] || [ "$BATTERY_SHARD" -gt "$BATTERY_SHARDS" ]; then
+  echo "BATTERY_SHARD must be between 1 and $BATTERY_SHARDS" >&2
+  exit 9
+fi
+
 # The project-file capture (f08_capture_project) lives at a unique mktemp path
 # and is normally consumed by f07_open_project. Any step's early return between
 # the two must not leak the file, so an EXIT/INT/TERM trap removes it, by the
@@ -135,7 +170,18 @@ CAPTIONS_TMPS=''
 # f08_ripple_delete: it depends on the clip layout the earlier steps leave, so
 # it is read back live instead of hardcoded.
 PASTED_START=''
-trap '[ -n "$PROJECT_CAPTURE" ] && rm -f "$PROJECT_CAPTURE"; [ -n "$LUT_FIXTURE" ] && rm -f "$LUT_FIXTURE"; [ -n "$CAPTIONS_TMPS" ] && rm -f $CAPTIONS_TMPS' INT TERM EXIT
+cleanup_temps() {
+  [ -n "$PROJECT_CAPTURE" ] && rm -f "$PROJECT_CAPTURE"
+  [ -n "$LUT_FIXTURE" ] && rm -f "$LUT_FIXTURE"
+  [ -n "$CAPTIONS_TMPS" ] && rm -f $CAPTIONS_TMPS
+  return 0
+}
+# A TERM/INT trap that only removes temp files leaves the battery running after
+# the signal: bash runs the handler and continues with the next step. The
+# coordinator that owns this shard's session and result file has already
+# exited by then, so the shard must stop here instead.
+trap cleanup_temps EXIT
+trap 'cleanup_temps; exit 130' INT TERM
 
 ab() { agent-browser --session "$SESSION" "$@"; }
 # Committed battery fixtures (0.18.0): uploaded through the media bin's real
@@ -309,6 +355,19 @@ now() {
 }
 step() {
   local name="$1"; shift
+  # In a 4-shard run every step runs in exactly one shard. console_clean is the
+  # exception: a page error in any shard must fail the leg, so it runs in all
+  # four and the coordinator collapses its rows back into one. A function that
+  # is not in the manifest is a broken map, not a skipped step: record a FAIL
+  # rather than silently dropping it from the strict count.
+  if [ "$BATTERY_SHARDS" != "1" ] && [ "${1:-}" != "console_clean" ]; then
+    local want
+    want=$(shard_of "${1:-}") || {
+      echo "FAIL $name (no shard owns ${1:-})" >>"$OUT"
+      return 1
+    }
+    [ "$want" = "$BATTERY_SHARD" ] || return 0
+  fi
   if [ "$TIMING" = "1" ]; then
     local start end rc=0
     start="$(now)"
@@ -2574,6 +2633,39 @@ select_named() { # select_named <name-regex>: click by name, retry once, report 
   click_clip "$1" || return 1
   [ "$(ring_count)" -ge 1 ]
 }
+# Select a timeline clip by dispatching Enter on the clip element itself.
+# A coordinate click cannot prove which stacked clip it hit (before f07_prep
+# dropped the image, the image sat exactly over the video), and snapshot refs
+# race the selection re-render. Verifies the wanted clip's own ring, because a
+# linked group rings every member.
+select_clip_dom() { # select_clip_dom <label-substring>
+  local id
+  id=$(evaln "(() => {
+    const needle = $(js_string "$1");
+    const clips = [...document.querySelectorAll('[data-testid^=clip-]')].filter((e) => {
+      const id = e.dataset.testid || '';
+      return id !== 'clip-context-menu' && id !== 'clip-marker' && !id.endsWith('badge');
+    });
+    const el = clips.find((e) => (e.getAttribute('aria-label') || '').includes(needle));
+    return el ? (el.dataset.testid || 'missing') : 'missing';
+  })()")
+  [ -n "$id" ] && [ "$id" != "missing" ] || {
+    echo "select_clip_dom: no clip matches '$1'" >&2
+    return 1
+  }
+  evaln "(() => {
+    const el = document.querySelector('[data-testid=\"$id\"]');
+    if (!el) return 'gone';
+    el.focus();
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    return 'ok';
+  })()" >/dev/null
+  sleeps 0.4
+  [ "$(evaln "document.querySelector('[data-testid=\"$id\"]')?.className.includes('ring-rose-400') ? 'selected' : 'not-selected'")" = "selected" ] || {
+    echo "select_clip_dom: '$1' did not select" >&2
+    return 1
+  }
+}
 f02_duplicate() {
   # A first D after earlier steps has been observed to drop silently (the
   # keydown arrives, the handler runs, no clone lands). Press D ONCE, check
@@ -3214,9 +3306,14 @@ delete_clip() { # delete_clip <name-regex>
   fi
   return 0
 }
-f07_prep() { # normalize every aux clip to 0-1s; drop the video tail (label shifted by the crossfade pull)
+f07_prep() { # normalize the aux clips; drop the image cover and the video tail
   click_clip 'sample-audio' && fill_timing 0 1
-  click_clip 'sample-image' && fill_timing 0 1
+  # The image is opaque and lands on V1 at 0..1, exactly over the 0..1.5 video
+  # part. f07 grades and LUTs that video, so at the 0.6s sample the image would
+  # hide every graded pixel and the export proof would silently test the image
+  # instead. The image already survived the save/open above, so drop it from the
+  # export timeline.
+  delete_clip 'sample-image'
   click_clip 'Your text here' && fill_timing 0 1
   delete_clip 'sample-video.mp4 from 1'
   return 0
@@ -3318,13 +3415,11 @@ mute_all_audio() {
   while IFS= read -r lab; do
     [ -n "$lab" ] || continue
     # Select by dispatching the clip's own Enter key from the DOM. Coordinate
-    # clicks cannot work here: the timeline stacks the image clip at the exact
-    # rect of the 0-1s video clip (both @421/442/80/55 in the probe below), so
-    # a real click at the video's centre selects the image every time, and
+    # clicks cannot prove which clip they hit when clips share a rect, and
     # snapshot refs race the selection re-render and resolve to neighbours.
     # Enter on the clip div selects it (ClipView onKeyDown; no global Enter
     # handler exists), needs no viewport hit-test, and the ring is read back
-    # after every attempt so a wrong selection can never pass.
+    # on the wanted clip after every attempt so a wrong selection cannot pass.
     clicked=''
     sel=''
     for attempt in 1 2 3; do
@@ -3477,9 +3572,10 @@ f07_export() {
   mute_all_audio || { echo "f07: could not mute every audio clip" >&2; return 1; }
 
   # The reopened project has no selection, and the Inspector may still be on its
-  # Effect Controls tab from the audio steps: select the video clip and open the
-  # Clip tab so the grade controls exist again.
-  select_named 'sample-video' || { echo "f07: video clip did not select" >&2; return 1; }
+  # Effect Controls tab from the audio steps: select the video clip by DOM Enter
+  # (a ref click can resolve to a neighbouring clip) and open the Clip tab so
+  # the grade controls exist again.
+  select_clip_dom 'Clip sample-video' || { echo "f07: video clip did not select" >&2; return 1; }
   ab eval 'document.querySelector("[data-testid=inspector-tab-clip]").click()' >/dev/null 2>&1
   sleeps 0.4
 
@@ -3487,6 +3583,21 @@ f07_export() {
   # f06 used with End.
   [ "$(evaln 'document.querySelectorAll("#grade-temperature [role=slider]").length')" = "1" ] || {
     echo "f07: temperature slider missing for the cool render" >&2
+    return 1
+  }
+  # The warm export above is only a +100-vs-(-100) comparison if the reopened
+  # project still holds the grade. Read the slider before pressing Home: a
+  # neutral first render would score 1.333, above the 1.25 ratio floor, so the
+  # ratio alone cannot catch a lost grade.
+  local warm_grade selected_label
+  selected_label=$(evaln '(() => {
+    const c = [...document.querySelectorAll("[data-testid^=clip-]:not([data-testid$=badge])")]
+      .find((e) => e.className.includes("ring-rose-400"));
+    return c ? (c.getAttribute("aria-label") || c.dataset.testid || "?") : "none";
+  })()')
+  warm_grade=$(evaln 'document.querySelector("#grade-temperature [role=slider]").getAttribute("aria-valuenow")')
+  [ "$warm_grade" = "100" ] || {
+    echo "f07: the reopened project lost the +100 grade (slider=${warm_grade:-none} selected=${selected_label:-none})" >&2
     return 1
   }
   ab eval 'document.querySelector("#grade-temperature [role=slider]").focus()' >/dev/null
@@ -4117,6 +4228,94 @@ console_clean() {
   local errs; errs=$(ab errors 2>/dev/null | grep -c "Error" || true)
   [ "${errs:-0}" = "0" ]
 }
+
+# ----- shard manifest and seeds -----
+# One owner per registered step function. The manifest is total: a function
+# missing here records a FAIL instead of being skipped, and battery-runner.test.ts
+# locks the bijection against the `step` lines below. The four shards are cut
+# between process-state couplings: 1 runs the public/import/edit story plus the
+# pasted-copy ripple delete, 2 runs captions, effects, and the reverse/curve
+# group, 3 runs the panel close/reset steps plus the save and export roundtrip,
+# and 4 runs the blend/audio groups, the panel double-click step, menus,
+# settings, scopes, LUT, and the f12 pointer steps. console_clean maps to 4 but
+# step() runs it in every shard.
+shard_of() {
+  case "$1" in
+    s01_public | s02_boot | s03_fresh | f01_import | f01b_import_real_file | f02_add | zoom_out | f02b_insert_place | f09_marquee | f09_marquee_clear | f11_whatsnew_opens | f11_whatsnew_once | f10_markers_sequence | f10_markers_clip | f06_play | f06_canvas | f06_scopes | f02_split | f08_undo | f08_redo | f02_trim | f02_duplicate | f02_copy_paste | f02_link_unlink | f03_crossfade | t01_wipe | t02_slide_push | f04_text_add | f04_text_edit | f08_ripple_delete)
+      echo 1
+      ;;
+    c01_captions_import | c02_captions_export | e00_effects_tab | e01_crop_add_remove | e02_blend_mode | e03_chroma_hex | e04_matte_masks_and_survives_hide | e05_blur_accumulates | e06_effects_export | f05_reverse | f05_reverse_frame | f05b_curve_handles)
+      echo 2
+      ;;
+    panels_close_media | panels_close_preview | panels_hide_upper | panels_close_bottom | panels_close_all | panels_reset_all | panels_reset_reduced | f08_autosave | f08_capture_project | f08_save | f07_open_project | f07_prep | f07_export | f07_close_dialog)
+      echo 3
+      ;;
+    f05_blend_parity | f05_mute | f05_gain | panels_double_click | menus_open | menu_snapping | settings_width | f06_scopes_fill | f02_ratestretch_relinked | f06_lut | f12_ripple | f12_slip | f12_pen | console_clean)
+      echo 4
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# A shard starts in a fresh browser session, so it must rebuild the document
+# state its first step expects. The seeds call the real step functions (not a
+# saved fixture), so they cannot drift from the app's own setup path. They write
+# no PASS row: a seed failure exits the shard nonzero before its step list.
+seed_basic() {
+  # A new session starts on a blank page, where localStorage is unavailable.
+  # Open the editor first so s03_fresh's clear has a real origin to clear.
+  ab open "$BASE_URL/editor" >/dev/null 2>&1 || return 1
+  s03_fresh || return 1
+  f01_import || return 1
+  f02_add || return 1
+  zoom_out || return 1
+  # The sequential path reloads at f11_whatsnew_once, which resets the timeline
+  # to the 80 px/s default. The seed stops before that reload, so undo the two
+  # zoom-outs. f05_reverse_frame's fixed 40px tail drag is 0.5s only at 80px/s;
+  # at the post-zoom-out 41px/s it would cut about 1s and both f05 steps fail.
+  ab find role button click --name 'Zoom in (+)' >/dev/null 2>&1 && sleep 0.3
+  ab find role button click --name 'Zoom in (+)' >/dev/null 2>&1 && sleep 0.4
+  local width
+  width=$(evaln '(() => {
+    const c = [...document.querySelectorAll("[data-testid^=clip-][role=button]")]
+      .find((e) => (e.getAttribute("aria-label") || "").includes("sample-video"));
+    return c ? Math.round(c.getBoundingClientRect().width) : 0;
+  })()')
+  [ "$width" = "480" ] || {
+    echo "seed: timeline is not at 80 px/s (6s video is ${width}px wide)" >&2
+    return 1
+  }
+}
+
+seed_trimmed() {
+  seed_basic || return 1
+  # f05_reverse_frame and f05b_curve_handles act on the 0.00..1.50 video part.
+  f02_trim
+}
+
+seed_document() {
+  seed_basic || return 1
+  # f06_canvas is shard 1's step, so this seed must reproduce its +100 grade
+  # before the split: f08_capture_project saves whatever grade is live, and
+  # f07_export's warm render is the proof that the grade survived the project
+  # roundtrip. Without it the first render is neutral and that proof is lost.
+  f06_canvas || return 1
+  # f07_prep deletes the tail the crossfade pulls to `from 1` and clicks the
+  # text clip, so this seed rebuilds split + trim + crossfade + text.
+  f02_split || return 1
+  f02_trim || return 1
+  f03_crossfade || return 1
+  f04_text_add
+}
+
+if [ "$BATTERY_SHARDS" = "4" ]; then
+  case "$BATTERY_SHARD" in
+    1) ;;
+    2) seed_trimmed || { echo "shard 2 seed failed" >&2; exit 1; } ;;
+    3) seed_document || { echo "shard 3 seed failed" >&2; exit 1; } ;;
+    4) seed_basic || { echo "shard 4 seed failed" >&2; exit 1; } ;;
+  esac
+fi
 
 # ————— run —————
 step "s01 public: hero loads and links to the editor" s01_public
