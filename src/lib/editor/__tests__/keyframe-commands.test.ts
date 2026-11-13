@@ -631,3 +631,35 @@ describe('overlappingAudioClips', () => {
     expect(overlappingAudioClips(doc, { start: 50, end: 60 })).toEqual([])
   })
 })
+
+describe('rotation curves (0.24.0)', () => {
+  it('split rebases a rotation curve and keeps the evaluated angle', () => {
+    const { doc, clipId } = baseDoc()
+    const withKfs = applyCommand(doc, {
+      type: 'setClipKeyframes',
+      clipId,
+      property: 'rotation',
+      keyframes: [
+        { time: 0, value: 0 },
+        { time: 4, value: 360 },
+      ],
+    })
+    const before = withKfs.project.tracks[0].clips[0]
+    const split = applyCommand(withKfs, { type: 'splitClip', clipId, atTime: 2 })
+    const [left, right] = split.project.tracks[0].clips
+    expect(left.keyframes!.rotation!.at(-1)).toMatchObject({ time: 2, value: 180 })
+    expect(right.keyframes!.rotation![0]).toMatchObject({ time: 0, value: 180 })
+    for (const t of [0.5, 1.5, 2]) {
+      expect(animatedValue(left, 'rotation', t)).toBeCloseTo(
+        animatedValue(before, 'rotation', t),
+        6,
+      )
+    }
+    for (const t of [0, 1, 2]) {
+      expect(animatedValue(right, 'rotation', t)).toBeCloseTo(
+        animatedValue(before, 'rotation', 2 + t),
+        6,
+      )
+    }
+  })
+})

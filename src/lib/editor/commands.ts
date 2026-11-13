@@ -22,6 +22,8 @@ import {
   PROJECT_MAX_W,
   PROJECT_MIN_H,
   PROJECT_MIN_W,
+  ROTATION_MAX,
+  ROTATION_MIN,
   SPEED_MAX,
   SPEED_MIN,
   EQ_DB_MIN,
@@ -220,6 +222,9 @@ export type EditorCommand =
   | { type: 'setClipGain'; clipId: string; gain: number }
   | { type: 'setClipMuted'; clipId: string; muted: boolean }
   | { type: 'setClipOpacity'; clipId: string; opacity: number }
+  // transform (0.24.0): static rotation and the explicit flip pair
+  | { type: 'setClipRotation'; clipId: string; rotation: number }
+  | { type: 'setClipFlip'; clipId: string; flipX: boolean; flipY: boolean }
   // keyframes + speed + transform/color statics (0.5.0)
   | {
       type: 'setClipKeyframes'
@@ -497,6 +502,8 @@ const LOCK_RULES: LockRuleMap = {
   setClipGain: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setClipMuted: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setClipOpacity: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipRotation: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipFlip: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setClipKeyframes: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setClipSpeed: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   // Slip writes the whole linked group that shares the source window, so every
@@ -1515,6 +1522,31 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
     case 'setClipOpacity': {
       const { clip } = requireClip(doc, command.clipId)
       clip.opacity = clamp(command.opacity, OPACITY_MIN, OPACITY_MAX)
+      return
+    }
+
+    case 'setClipRotation': {
+      const { clip } = requireClip(doc, command.clipId)
+      // Non-finite values refuse instead of clamping: a NaN would render
+      // nothing, and this boundary sees payloads from drags and files alike.
+      if (!Number.isFinite(command.rotation)) {
+        throw new EditorCommandError('Invalid rotation')
+      }
+      const rotation = clamp(command.rotation, ROTATION_MIN, ROTATION_MAX)
+      if (rotation === 0) delete clip.rotation
+      else clip.rotation = rotation
+      return
+    }
+
+    case 'setClipFlip': {
+      const { clip } = requireClip(doc, command.clipId)
+      if (typeof command.flipX !== 'boolean' || typeof command.flipY !== 'boolean') {
+        throw new EditorCommandError('Invalid flip')
+      }
+      if (command.flipX) clip.flipX = true
+      else delete clip.flipX
+      if (command.flipY) clip.flipY = true
+      else delete clip.flipY
       return
     }
 

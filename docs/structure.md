@@ -99,7 +99,8 @@ src/components/
 │   ├── Toolbar.tsx               #   tools, history, tracks, save/open, export
 │   ├── MediaBin.tsx              #   import, relink, drag source, bin row selection
 │   ├── SourcePanel.tsx           #   source monitor: preview, transport, mark In/Out
-│   ├── PreviewPanel.tsx          #   program monitor + transport + text drag + offline/decode overlays
+│   ├── PreviewPanel.tsx          #   program monitor + transport + text drag + gizmo + offline/decode overlays
+│   ├── TransformGizmo.tsx        #   monitor gizmo overlay: box, corner scale, rotation handle
 │   ├── ColorFilterDefs.tsx       #   hidden SVG grade/LUT filter host
 │   ├── ScopesPanel.tsx           #   histogram, RGB balance, waveform, vectorscope
 │   ├── InspectorPanel.tsx        #   clip properties / project settings
@@ -203,6 +204,7 @@ src/lib/editor/
 ├── timeline-scroll.ts    # drag edge auto-scroll geometry + the shared zoom step (pure)
 ├── proxy.ts              # pure proxy planning: dimensions, bitrate, eligibility
 ├── freeze-plan.ts        # pure Freeze Frame plan (visible/offline scan) and the still batch
+├── transform.ts          # the ONE clip Motion trigonometry: rotation/flip matrix, gizmo geometry
 ├── media-cleanup-plan.ts # pure cleanup reference set: doc, both history stacks, autosave slot, claim gate
 ├── media/
 │   ├── probe.ts          # importFile: probe duration/size, thumbnail, waveform peaks, hasAudio
@@ -232,7 +234,7 @@ src/lib/editor/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   ├── options.ts        # pure container matrix, output bounds/bitrate, contain fit (Node-testable)
 │   └── mp4.ts            # WebCodecs export pipeline: MP4/MOV/MKV/WAV/MP3/M4A + downloadBlob
-└── __tests__/            # 111 test files (2552 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 113 test files (2616 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

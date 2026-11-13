@@ -455,6 +455,19 @@ Stable hooks used across flows and tests:
 - Per-clip **opacity** (0–100 %) multiplies with crossfade alphas, so a clip on a higher track blends
   through to the track below. When opacity (or any animatable property) has keyframes, the curve
   replaces the static value during preview and export alike.
+- **Transform** (0.24.0): a visual clip rotates from -3600 to 3600 degrees (the authored value keeps
+  its turns, so 720 is two full turns), and flips horizontally or vertically through an explicit
+  boolean pair. Rotation is keyframe-able as the `rotation` property, and both preview and export read
+  one shared matrix (`T(center) R F T(-center)` left of the position-and-scale factor). Text rotates
+  and flips around its measured text box center, not the canvas center, so left- and right-aligned
+  lines do not orbit; its scale keeps the existing frame-center origin. `style.x`/`style.y` remain the
+  text placement fields. A selected visual clip shows a monitor gizmo: drag inside the box to move,
+  a corner handle to scale uniformly, and the top handle to rotate. Each drag is one transient
+  gesture and one undo entry, an existing rotation curve gets a keyframe at the captured drag-start
+  time (a playhead move mid-drag cannot scatter the drag across keyframes), and a locked
+  lane hides the handles and refuses the drag. The Clip tab Transform section covers compound
+  clips too, and its rotation field edits the keyframe at the playhead while a rotation curve
+  exists, since the static value has no visible effect then.
 - **Keyframes and Effect Controls**: selecting a clip shows the Clip / Effect Controls tabs. Each
   animatable property row has a keyframe diamond (add/remove at the playhead), an easing picker that
   is always visible (on a property with no curve it stores that property's default easing for new

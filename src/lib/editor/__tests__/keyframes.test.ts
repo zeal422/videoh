@@ -159,8 +159,9 @@ describe('animatedValue and statics', () => {
     expect(animatedValue(c, 'volume', 2)).toBe(1)
   })
 
-  it('exposes eleven animatable properties', () => {
-    expect(ANIMATABLE_PROPERTIES).toHaveLength(11)
+  it('exposes twelve animatable properties', () => {
+    expect(ANIMATABLE_PROPERTIES).toHaveLength(12)
+    expect(ANIMATABLE_PROPERTIES).toContain('rotation')
   })
 })
 

@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { Crosshair, Link2, Loader2 } from 'lucide-react'
 
 import { NamedSlider } from '@/components/editor/NamedSlider'
@@ -31,10 +31,13 @@ import {
 } from '@/lib/editor/factories'
 import { linkedAudioTwin } from '@/lib/editor/links'
 import { parseCubeLut } from '@/lib/editor/lut'
-import { animatedValue } from '@/lib/editor/keyframes'
+import { animatedValue, clampPropertyValue, keyframeDefaultEasing } from '@/lib/editor/keyframes'
+import { withEasing } from '@/lib/editor/ease-segment'
 import { formatTime } from '@/lib/editor/time'
 import { clipCarriesSound, formatDb } from '@/lib/editor/volume-automation'
 import {
+  ROTATION_MAX,
+  ROTATION_MIN,
   TEMPERATURE_MAX,
   TEMPERATURE_MIN,
   TINT_MAX,
@@ -166,6 +169,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
   const doc = useEditorStore((s) => s.doc)
   const apply = useEditorStore((s) => s.apply)
+  const playhead = useEditorStore((s) => s.playhead)
   const asset = findMedia(doc, clip.mediaId)
   const isText = clip.text !== undefined && trackKind === 'text'
   // Linked A/V pair: volume/mute live on the AUDIO twin, whichever half is
@@ -177,8 +181,19 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
   // twin for an A/V pair, otherwise the clip itself. `clipCarriesSound` is the
   // one carrier rule, so a silent video no longer gets a gain/mute section.
   const hasAudio = clipCarriesSound(doc, audioClip)
-  // Opacity applies to every visually rendered clip (video/image/text).
-  const isVisual = isText || (!!asset && asset.kind !== 'audio')
+  // Opacity applies to every visually rendered clip (video/image/text). A
+  // compound clip renders its nested sequence, so it counts as visual too,
+  // matching the monitor gizmo's own visual rule.
+  const isVisual = isText || clip.sequenceId !== undefined || (!!asset && asset.kind !== 'audio')
+  // Rotation follows the Effect Controls contract: a clip carrying a rotation
+  // curve edits the keyframe at the playhead, because the static field has no
+  // visible effect while the curve exists. Without a curve the static wins.
+  const rotationCurve = clip.keyframes?.rotation ?? []
+  const rotationAnimated = rotationCurve.length > 0
+  const rotationLocal = Math.min(Math.max(0, playhead - clip.start), clip.duration)
+  const rotationValue = rotationAnimated
+    ? animatedValue(clip, 'rotation', rotationLocal)
+    : (clip.rotation ?? 0)
 
   const track = findClip(doc, clip.id)?.track
   const nextClip = track ? nextClipOnTrack(track, clip) : undefined
@@ -357,6 +372,86 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                 </SelectContent>
               </Select>
             </div>
+          </Section>
+          <Separator />
+          <Section title="Transform">
+            <div className="grid grid-cols-2 gap-2">
+              <NumberField
+                label="Rotation (°)"
+                value={rotationValue}
+                min={ROTATION_MIN}
+                max={ROTATION_MAX}
+                step={1}
+                onCommit={(v) => {
+                  if (rotationAnimated) {
+                    const at = rotationLocal
+                    const next = rotationCurve.filter((k) => Math.abs(k.time - at) > 1e-6)
+                    next.push(
+                      withEasing(
+                        { time: at, value: clampPropertyValue('rotation', v) },
+                        keyframeDefaultEasing(doc.project.keyframeDefaults, 'rotation'),
+                      ),
+                    )
+                    tryApply(() =>
+                      apply({
+                        type: 'setClipKeyframes',
+                        clipId: clip.id,
+                        property: 'rotation',
+                        keyframes: next,
+                      }),
+                    )
+                  } else {
+                    tryApply(() => apply({ type: 'setClipRotation', clipId: clip.id, rotation: v }))
+                  }
+                }}
+              />
+              <div className="space-y-1.5 pt-5">
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    aria-label="Flip horizontally"
+                    checked={clip.flipX === true}
+                    onChange={(e) =>
+                      tryApply(() =>
+                        apply({
+                          type: 'setClipFlip',
+                          clipId: clip.id,
+                          flipX: e.target.checked,
+                          flipY: clip.flipY === true,
+                        }),
+                      )
+                    }
+                    className="accent-foreground"
+                  />
+                  Flip H
+                </label>
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    aria-label="Flip vertically"
+                    checked={clip.flipY === true}
+                    onChange={(e) =>
+                      tryApply(() =>
+                        apply({
+                          type: 'setClipFlip',
+                          clipId: clip.id,
+                          flipX: clip.flipX === true,
+                          flipY: e.target.checked,
+                        }),
+                      )
+                    }
+                    className="accent-foreground"
+                  />
+                  Flip V
+                </label>
+              </div>
+            </div>
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+              Drag inside the monitor to move the selected clip, use a corner handle to scale, and
+              the top handle to rotate. Rotation is in degrees and keeps its authored turns.
+              {rotationAnimated &&
+                ' Rotation is animated: this edits the keyframe at the playhead.'}
+            </p>
           </Section>
           <Separator />
         </>
@@ -1234,21 +1329,40 @@ function NumberField({
   step?: number
 }) {
   const ref = useRef<HTMLInputElement>(null)
+  const [focused, setFocused] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  const shown = Number(value.toFixed(2))
+  // Mirror external value changes while the user is not editing. There is
+  // deliberately no key remount: an animated value (rotation during playback)
+  // would otherwise remount the input every frame and destroy a focused draft.
+  useEffect(() => {
+    const el = ref.current
+    if (el && !focused) el.value = String(shown)
+  }, [shown, focused])
   return (
     <div>
       <Label className="text-xs">{label}</Label>
       <Input
         ref={ref}
         type="number"
-        defaultValue={Number(value.toFixed(2))}
-        key={`${value}`}
+        defaultValue={shown}
         min={min}
         max={max}
         step={step}
         className="mt-1 h-8 text-xs"
+        onFocus={() => {
+          setFocused(true)
+          setDirty(false)
+        }}
+        onChange={() => setDirty(true)}
         onBlur={(e) => {
+          setFocused(false)
           const v = Number(e.target.value)
-          if (Number.isFinite(v) && v !== value) onCommit(v)
+          // Commit only an actual user change against the displayed value:
+          // focusing and blurring the rounded display commits nothing, so a
+          // pass over an animated field cannot seed a keyframe by itself.
+          if (dirty && Number.isFinite(v) && v !== shown) onCommit(v)
+          setDirty(false)
         }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') (e.target as HTMLInputElement).blur()

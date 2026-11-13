@@ -7,7 +7,7 @@ import { PreviewPanel } from '@/components/editor/PreviewPanel'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { useEditorStore } from '../store'
 import { createTextClip, createTrack } from '../factories'
-import type { Doc } from '../types'
+import type { Clip, Doc } from '../types'
 
 /**
  * jsdom render test for the monitor's drag-to-position gesture: a text clip
@@ -30,8 +30,8 @@ afterEach(() => {
   h.uninstall()
 })
 
-function docWithSelectedTextClip(): { doc: Doc; clipId: string } {
-  const clip = createTextClip({ id: 'clip_text', start: 0, duration: 4 })
+function docWithSelectedTextClip(partial: Partial<Clip> = {}): { doc: Doc; clipId: string } {
+  const clip = createTextClip({ id: 'clip_text', start: 0, duration: 4, ...partial })
   const track = createTrack('text', 1, { clips: [clip] })
   const doc: Doc = {
     project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
@@ -108,5 +108,29 @@ describe('preview text drag', () => {
 
     expect(textStyleX()).toBeCloseTo(0.6, 5)
     expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+  })
+
+  it('moves scaled text at pointer speed, not scale speed', () => {
+    docWithSelectedTextClip({ animStatics: { scale: 2 } })
+    render(<PreviewPanel />)
+    const canvas = screen.getByTestId('preview-canvas')
+    canvas.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 400,
+        bottom: 225,
+        width: 400,
+        height: 225,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect
+
+    fireEvent.pointerDown(canvas, { button: 0, clientX: 100, clientY: 100 })
+    fireEvent.pointerMove(canvas, { clientX: 150, clientY: 100 })
+    // 50 client px on a 400 px canvas, halved by the captured scale 2.
+    expect(textStyleX()).toBeCloseTo(0.5 + 50 / 400 / 2, 5)
+    fireEvent.pointerUp(canvas)
   })
 })

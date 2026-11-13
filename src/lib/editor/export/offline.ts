@@ -22,6 +22,7 @@ import { clipRendersAudio, linkGroupChangesRate } from '../links'
 import { clamp } from '../time'
 import { audibleTrackIds } from '../tracks'
 import type { BlendMode, Clip, Doc, EffectEntry, MediaAsset, Track } from '../types'
+import type { ClipTransform } from '../transform'
 
 /**
  * Offline render plan, pure timeline math for the WebCodecs export pipeline.
@@ -58,7 +59,7 @@ export interface ClipDraw {
   blendTime?: number
   alpha: number
   filter: string
-  transform: { posX: number; posY: number; scale: number } | null
+  transform: ClipTransform | null
   /**
    * For a compound clip (0.8.1): the nested plan of its referenced sequence at
    * container-local time. The exporter renders this into a transparent scratch
@@ -109,15 +110,15 @@ export interface AudioFramePlan {
 // cross-path agreement test in color.test.ts).
 
 /** Clip Motion transform at a clip-local time (exported for the executor's blur sub-samples). */
-export function clipTransform(
-  clip: Clip,
-  local: number,
-): { posX: number; posY: number; scale: number } | null {
+export function clipTransform(clip: Clip, local: number): ClipTransform | null {
   const posX = animatedValue(clip, 'positionX', local)
   const posY = animatedValue(clip, 'positionY', local)
   const scale = animatedValue(clip, 'scale', local)
-  const transformed = posX !== 0 || posY !== 0 || scale !== 1
-  return transformed ? { posX, posY, scale } : null
+  const rotation = animatedValue(clip, 'rotation', local)
+  const flipX = clip.flipX === true
+  const flipY = clip.flipY === true
+  const transformed = posX !== 0 || posY !== 0 || scale !== 1 || rotation !== 0 || flipX || flipY
+  return transformed ? { posX, posY, scale, rotation, flipX, flipY } : null
 }
 
 /** True when the clip shows a frame at timeline time `t` (text tracks excluded). */

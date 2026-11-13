@@ -83,6 +83,7 @@ const VISUAL_PROPS: { key: KeyframeProperty; label: string }[] = [
   { key: 'positionX', label: 'Position X' },
   { key: 'positionY', label: 'Position Y' },
   { key: 'scale', label: 'Scale' },
+  { key: 'rotation', label: 'Rotation' },
 ]
 
 const COLOR_PROPS: { key: KeyframeProperty; label: string }[] = [
@@ -258,6 +259,7 @@ function formatValue(property: KeyframeProperty, value: number): string {
   // Volume storage stays linear; only the readout is dB (see volume-automation).
   if (property === 'volume') return formatDb(value)
   if (property === 'hue') return `${Math.round(value)}°`
+  if (property === 'rotation') return `${Math.round(value)}°`
   if (property === 'positionX' || property === 'positionY') return `${Math.round(value)} px`
   return value.toFixed(2)
 }
@@ -277,6 +279,10 @@ function sliderConfig(property: KeyframeProperty): { min: number; max: number; s
     case 'positionX':
     case 'positionY':
       return { min: -600, max: 600, step: 1 }
+    case 'rotation':
+      // The shared bounds allow ten turns, but the row's slider is a quick
+      // single-turn control; the Inspector's numeric field covers the rest.
+      return { min: -180, max: 180, step: 1 }
     case 'exposure':
       return { min: 0.25, max: 4, step: 0.01 }
     case 'hue':
@@ -493,6 +499,12 @@ function PropertyRow({
     if (property === 'volume') {
       if (commit) apply({ type: 'setClipGain', clipId: clip.id, gain: v })
       else store.applyTransient({ type: 'setClipGain', clipId: clip.id, gain: v })
+      return
+    }
+    // Rotation keeps its dedicated field, like opacity (0.24.0).
+    if (property === 'rotation') {
+      if (commit) apply({ type: 'setClipRotation', clipId: clip.id, rotation: v })
+      else store.applyTransient({ type: 'setClipRotation', clipId: clip.id, rotation: v })
       return
     }
     // timeScale's static source is the clip's speed field (the ramp is only

@@ -156,6 +156,9 @@ export const POSITION_MIN = -2000
 export const POSITION_MAX = 2000
 export const SCALE_MIN = 0.1
 export const SCALE_MAX = 4
+/** Rotation limits in degrees (0.24.0): ten turns each way, authored value kept. */
+export const ROTATION_MIN = -3600
+export const ROTATION_MAX = 3600
 
 /** Legal value bounds + neutral defaults per animatable property. */
 export const KEYFRAME_PROPERTY_BOUNDS: Record<
@@ -166,6 +169,7 @@ export const KEYFRAME_PROPERTY_BOUNDS: Record<
   positionX: { min: POSITION_MIN, max: POSITION_MAX, default: 0 },
   positionY: { min: POSITION_MIN, max: POSITION_MAX, default: 0 },
   scale: { min: SCALE_MIN, max: SCALE_MAX, default: 1 },
+  rotation: { min: ROTATION_MIN, max: ROTATION_MAX, default: 0 },
   volume: { min: GAIN_MIN, max: GAIN_MAX, default: 1 },
   exposure: { min: EXPOSURE_MIN, max: EXPOSURE_MAX, default: 1 },
   contrast: { min: CONTRAST_MIN, max: CONTRAST_MAX, default: 1 },

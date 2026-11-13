@@ -179,6 +179,22 @@ describe('areBlurSamplesIdentical', () => {
     expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 0, 1, 1, 30)).toBe(false)
   })
 
+  it('rejects a rotation-only ramp across the window', () => {
+    const clip = still({
+      keyframes: { rotation: [lin(0, 0), lin(4, 360)] },
+      effects: [blur({ shutter: 360 })],
+    })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 0, 1, 1, 30)).toBe(false)
+  })
+
+  it('accepts a flat rotation curve with interior keyframes', () => {
+    const clip = still({
+      keyframes: { rotation: [lin(0, 90), lin(2, 90)] },
+      effects: [blur({ shutter: 360 })],
+    })
+    expect(areBlurSamplesIdentical(clip, [], clip.effects ?? [], 0, 1, 1, 30)).toBe(true)
+  })
+
   it('rejects an animated crop', () => {
     const entry = crop({ keyframes: { left: [lin(0, 0), lin(4, 50)] } })
     const clip = still({ effects: [blur({ shutter: 360 })] })

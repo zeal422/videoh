@@ -5,6 +5,38 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.24.0] - 2026-11-13
+
+### Added
+
+- Visual clips rotate from -3600 to 3600 degrees. The authored value keeps its turns, so 720 stays two full turns in the numeric field and the curve; a non-finite value is refused and 0 collapses to an absent field.
+- Horizontal and vertical flip are explicit booleans on the clip, not a negative scale, so scale keyframes keep their meaning and the preferred size stays positive.
+- Rotation is animatable through the `rotation` property: it appears in the Effect Controls row list, the keyframe graph, per-property easing defaults, and the rotation curve is redistributed by split and trim like every other property.
+- The program monitor shows a transform gizmo for the selected visual clip: drag inside the box to move, a corner handle to scale uniformly, and the top handle to rotate. Each drag is one transient gesture and one undo entry.
+- A rotation drag on a clip with an existing rotation curve writes or updates the keyframe at the playhead instead of the static fallback. Move and scale use the same keyframe-when-animated rule as the Effect Controls sliders.
+- The Clip tab adds a Transform section with a rotation field and the two flip toggles. Text clips move through their existing style position; every other visual clip moves through position X/Y.
+- Rotation and flip render through one shared matrix in the preview compositor, the exporter, the effect pipeline, the matte renderer, and the text renderer, so a rotated or flipped clip matches in the file. Rotation sits after crop, chroma key, and track matte and before opacity and blend, and motion blur samples the rotated transform.
+
+### Changed
+
+- The project format moves to version 6. `Clip.rotation` is finite and clamped to ten turns each way; `Clip.flipX` and `Clip.flipY` accept only an explicit `true`. A v5 project loads with rotation 0 and no flips, and a v6 file is refused by an older build.
+- Text rotation and flip turn around the measured text box center, not the canvas center, so left- and right-aligned lines do not orbit. Shadow padding is excluded from that origin. Text scale keeps the existing frame-center origin, so scaled text projects do not shift.
+- The monitor gizmo accounts for the picture box (contain-fit source bounds, the measured text box, or the compound frame), position, scale, rotation, and the monitor's CSS scale. A locked lane renders no handles and refuses the drag.
+- A rotation or flip edit on a locked lane is refused by the command layer like every other clip property edit.
+
+### Fixed
+
+- Join Clips refuses a pair whose static rotation or flip flags differ, so the next clip's transform is no longer silently discarded (keyframed clips already refused).
+- Motion blur no longer collapses over a rotation-only ramp: the blur sample comparison covers the rotation channel, so a rotating clip with a nonzero shutter actually blurs in preview and export.
+- Text with effects rotates around its measured text-box center, matching the effect-free path; media and compound clips keep the positioned frame-center pivot in all four composite sites (preview, export, and both motion-blur accumulations).
+- The gizmo hides while the chroma-key eyedropper is armed, so monitor clicks reach the canvas sampler; its rotation handle falls back inside the frame when the outward position would leave the viewport.
+- A gizmo drag writes keyframes at the captured drag-start time, a stale release cannot commit or cancel a replacement gesture, and leaving the clip mid-drag clears the stuck highlight instead of leaking drag state.
+- Text drags (monitor and gizmo) divide the pointer delta by the captured scale, so scaled text tracks the pointer instead of drifting at scale speed.
+- The rotation handle drag accumulates unwrapped angular steps, so circling the center adds real turns and crossing the half-turn cannot snap; bounds still clamp.
+- Inspector number fields keep a stable identity during playback, preserve a focused draft, track the playhead while unfocused, and never commit on an unchanged focus-blur.
+- Both flip toggles route through the lock-notice path like the rotation field.
+- The effect-path rotation pivot measures text with the clip's own font on every context, so rotated text with effects or motion blur turns around its true box center instead of one measured in a stale ambient font.
+
 ## [0.23.0] - 2026-11-13
 
 ### Added

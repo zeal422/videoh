@@ -196,6 +196,7 @@ export type KeyframeProperty =
   | 'positionX'
   | 'positionY'
   | 'scale'
+  | 'rotation'
   | 'volume'
   | 'exposure'
   | 'contrast'
@@ -213,10 +214,13 @@ export type KeyframeDefaults = Partial<Record<KeyframeProperty, KeyframeInterpol
 
 /**
  * Animatable properties that keep a static value in `clip.animStatics`.
- * opacity and volume have dedicated fields and timeScale's static source is
- * `clip.speed`, so none of the three belongs here.
+ * opacity, rotation, and volume have dedicated fields and timeScale's static
+ * source is `clip.speed`, so none of the four belongs here.
  */
-export type AnimStaticProperty = Exclude<KeyframeProperty, 'opacity' | 'volume' | 'timeScale'>
+export type AnimStaticProperty = Exclude<
+  KeyframeProperty,
+  'opacity' | 'rotation' | 'volume' | 'timeScale'
+>
 
 /** Cube LUT kinds: a 1D shaper (three per-channel tables) or a 3D cube. */
 export type LutKind = '1d' | '3d'
@@ -306,6 +310,21 @@ export interface Clip {
    * see-through to lower ones (layering, Premiere/Photoshop style).
    */
   opacity?: number
+  /**
+   * Visual rotation in degrees, -3600..3600 (0.24.0). Absent means 0. The
+   * authored value is kept as-is (720 is two turns), never modulo 360, so the
+   * numeric control and the rotation curve read the same number. Keyframe-able
+   * through the `rotation` property; this field is the static source.
+   */
+  rotation?: number
+  /**
+   * Mirror the drawn picture horizontally (0.24.0). Absent means false. Flip is
+   * an explicit boolean pair rather than a negative scale, so scale keyframes
+   * keep their meaning and the preferred size stays positive.
+   */
+  flipX?: boolean
+  /** Mirror the drawn picture vertically (0.24.0). Absent means false. */
+  flipY?: boolean
   /** Text content — present for text clips only. */
   text?: string
   style?: TextStyle

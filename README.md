@@ -37,6 +37,9 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/u
   opacity, sixteen blend modes, crop, chroma key, track mattes, motion blur, per-segment bezier
   easing, color grading, monitor scopes, and a project-level 1D/3D `.cube` LUT library. Preview and
   export render every effect the same way.
+- **Transform.** Rotation up to ten turns each way, horizontal and vertical flip, and a monitor gizmo
+  that moves, scales, and rotates the selected clip with one undo step per drag. Rotation is
+  keyframe-able and renders through the same transform in preview and export.
 - **Speed, remapping, and audio.** 0.25x to 4x, Alt-drag rate stretch, reverse, and a `timeScale`
   curve that ramps speed without changing timeline length. Per-clip gain, mute, pan, 3-band EQ,
   compressor, broadband denoise, volume automation, auto-ducking, and track solo/mute.
@@ -156,7 +159,7 @@ when the browser has the matching encoder. Sequence Settings offers 16:9, 9:16, 
 21:9 canvas presets that do not move existing clips. Export needs WebCodecs; HEVC and ProRes are
 deliberately not offered, and `Download` buffers the file while `Export to file` streams it to disk.
 
-Project files use `.veproj.json` (version 5; versions 1 to 4 still load, and a v5 file needs this
+Project files use `.veproj.json` (version 6; versions 1 to 5 still load, and a v6 file needs this
 build). Object URLs are stripped. Imported bytes live in OPFS under `<project-id>/<content-hash>`, and
 each asset persists its own hash, so an open restores file handles and preview URLs before the project
 installs. An asset without a hash, or one whose bytes are gone, hydrates as `missing` and relinks by
@@ -184,7 +187,7 @@ bun run battery:pair   # dev + artifact concurrently (needs a current build and 
 PAIR_SHARDS=1 bun run battery:pair # sequential rollback, one session per leg
 ```
 
-Current state: **2552 tests across 111 files, all passing**. Coverage is enforced at 70/60/75/70 over
+Current state: **2616 tests across 113 files, all passing**. Coverage is enforced at 70/60/75/70 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -213,7 +216,7 @@ src/lib/editor/            # state core (commands, store, serialization) + brows
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, landing sections, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 111 test files (2552 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 113 test files (2616 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations

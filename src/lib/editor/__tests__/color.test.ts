@@ -280,9 +280,11 @@ describe('color flow: one builder for both render paths', () => {
     // compositor rather than re-implementing them, so a cube cannot grade one
     // render and not the other. The pass itself is applied inside those shared
     // draws (`drawContain` for a single frame, `drawBlendedContain` per layer of
-    // a blend pair), which is why the exporter must not call it directly.
+    // a blend pair), which is why the exporter must not call it directly. The
+    // effect-composite rotation pivot (`motionPivot`) rides the same import so
+    // text rotates around its measured box center in both renders.
     expect(mp4).toMatch(
-      /import \{\s*blitTransformed,\s*drawBlendedContain,\s*drawContain,\s*drawTextClip,\s*paintSoftRectMask,\s*paintSpatialMask,?\s*\} from '\.\.\/playback\/compositor'/,
+      /import \{\s*blitTransformed,\s*drawBlendedContain,\s*drawContain,\s*drawTextClip,\s*motionPivot,\s*paintSoftRectMask,\s*paintSpatialMask,?\s*\} from '\.\.\/playback\/compositor'/,
     )
     expect(mp4).not.toMatch(/applyLut3d\(/)
     expect(mp4).toMatch(/findLut\(doc\.project\.luts, draw\.clip\.lutId\)/)

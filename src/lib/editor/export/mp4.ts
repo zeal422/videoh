@@ -39,6 +39,7 @@ import {
   drawBlendedContain,
   drawContain,
   drawTextClip,
+  motionPivot,
   paintSoftRectMask,
   paintSpatialMask,
 } from '../playback/compositor'
@@ -69,6 +70,7 @@ import {
   type ClipDraw,
 } from './offline'
 import type { Clip, Doc, EffectEntry, ProjectLut, Track } from '../types'
+import type { ClipTransform } from '../transform'
 import {
   containRect,
   containerSpec,
@@ -439,8 +441,16 @@ function paintExportDraw(
     // Sub-sample transforms are already baked into the accumulation.
     ctx.drawImage(image, 0, 0)
   } else {
-    // draw.transform is the plan-time Motion transform at frame time.
-    blitTransformed(ctx, image, width, height, draw.transform)
+    // draw.transform is the plan-time Motion transform at frame time. Text
+    // pivots on its measured box center, like the preview composite.
+    blitTransformed(
+      ctx,
+      image,
+      width,
+      height,
+      draw.transform,
+      draw.transform ? motionPivot(ctx, draw.clip, draw.transform, width, height) : null,
+    )
   }
   ctx.restore()
 }
@@ -461,7 +471,7 @@ function paintExportCore(
   depth: number,
   alpha: number,
   filter: string,
-  transform: { posX: number; posY: number; scale: number } | null,
+  transform: ClipTransform | null,
 ): void {
   // Alpha is clamped here: the plan carries the clip's own opacity stack and
   // a malformed doc must not draw outside 0..1. Both paths then share the
@@ -838,7 +848,15 @@ function renderExportEffectImage(
       // black at full weight, diluting the mean honestly. Each sample blits
       // with its own Motion transform (stack before Motion).
       const img = renderLevel(level - 1, tau) ?? clear.canvas
-      blitTransformed(acc.sctx, img, width, height, clipTransform(draw.clip, tau - draw.clip.start))
+      const sampleTransform = clipTransform(draw.clip, tau - draw.clip.start)
+      blitTransformed(
+        acc.sctx,
+        img,
+        width,
+        height,
+        sampleTransform,
+        sampleTransform ? motionPivot(acc.sctx, draw.clip, sampleTransform, width, height) : null,
+      )
     }
     acc.sctx.restore()
     return acc.canvas

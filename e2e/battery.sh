@@ -433,14 +433,22 @@ dismiss_greeting() {
   fi
 }
 fill_timing() { # fill_timing <start> <duration> — Timing spinbuttons of a selected clip
-  local n; n=$(snap | grep -c -- '- spinbutton')
-  if [ "$n" != "2" ]; then
-    echo "fill_timing: no clip selected (spinbuttons=$n)" >&2
+  # Scope to the Inspector and force the Clip tab. The global snapshot also
+  # lists the hidden export dialog's inputs once mounted, the menubar's, and
+  # the Captions panel's cue fields, so the first two GLOBAL spinbuttons are
+  # not reliably the clip's Start and Duration. On the Clip tab the Timing
+  # section renders first (Effect Controls contributes no spinbuttons), so the
+  # first two Inspector spinbuttons are Start and Duration.
+  ab eval 'document.querySelector("[data-testid=inspector-tab-clip]")?.click()' >/dev/null 2>&1
+  sleeps 0.2
+  local n; n=$(insp_spinrefs | grep -c .)
+  if [ "$n" -lt 2 ]; then
+    echo "fill_timing: no clip selected, Clip tab shows $n Inspector spinbuttons" >&2
     return 1
   fi
   local s d
-  s=$(spinrefs | sed -n '1p')
-  d=$(spinrefs | sed -n '2p')
+  s=$(insp_spinrefs | sed -n '1p')
+  d=$(insp_spinrefs | sed -n '2p')
   ab scrollintoview "@$s" >/dev/null 2>&1 && sleeps 0.2
   ab fill "@$s" "$1" >/dev/null 2>&1 && ab press Enter >/dev/null 2>&1 && sleeps 0.3
   ab scrollintoview "@$d" >/dev/null 2>&1 && sleeps 0.2
@@ -4186,9 +4194,8 @@ f12_ripple() {
 
   # Trim the standalone audio to 4s so slip has 4s of source room. It is not
   # linked, so a slip here cannot be refused by a mixed-window group.
+  # fill_timing forces the Clip tab itself, so no tab click is needed here.
   click_clip 'sample-audio.mp3 from 12.00' || { echo "f12: standalone audio did not select" >&2; return 1; }
-  ab eval 'document.querySelector("[data-testid=inspector-tab-clip]")?.click()' >/dev/null 2>&1
-  sleeps 0.2
   fill_timing 12 4 || return 1
 
   click_clip 'sample-video.mp4 from 0.00 to' || { echo "f12: first video did not select" >&2; return 1; }

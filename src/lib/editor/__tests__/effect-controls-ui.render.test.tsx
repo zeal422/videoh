@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { InspectorPanel } from '@/components/editor/InspectorPanel'
 import { useEditorKeyboard } from '@/hooks/editor/useEditorKeyboard'
@@ -1895,5 +1897,227 @@ describe('InspectorPanel transition picker', () => {
     expect(screen.queryByRole('combobox', { name: 'Transition direction' })).not.toBeInTheDocument()
     expect(screen.queryByRole('combobox', { name: 'Wipe edge' })).not.toBeInTheDocument()
     expect(screen.queryByRole('slider', { name: 'Wipe feather width' })).not.toBeInTheDocument()
+  })
+})
+
+describe('clip transform controls (0.24.0)', () => {
+  it('the Clip tab writes rotation and the flip pair through commands', () => {
+    docWithSelectedVideoClip()
+    const { container } = render(<InspectorPanel />)
+
+    // Timing holds Start and Duration; the Transform field is the last number
+    // input on the Clip tab.
+    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
+    const rotation = numbers[numbers.length - 1]
+    fireEvent.change(rotation, { target: { value: '90' } })
+    fireEvent.blur(rotation)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].rotation).toBe(90)
+
+    fireEvent.click(screen.getByLabelText('Flip horizontally'))
+    const clip = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(clip.flipX).toBe(true)
+    expect(clip.flipY).toBeUndefined()
+  })
+
+  it('the Effect Controls rotation row seeds a keyframe from the static value', () => {
+    docWithSelectedVideoClip()
+    const doc = useEditorStore.getState().doc
+    doc.project.tracks[0].clips[0].rotation = 45
+    useEditorStore.setState({ doc: { ...doc } })
+    render(<InspectorPanel />)
+
+    fireEvent.click(screen.getByTestId('inspector-tab-effects'))
+    fireEvent.click(screen.getByTestId('kf-toggle-rotation'))
+
+    const clip = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(clip.keyframes?.rotation).toHaveLength(1)
+    expect(clip.keyframes?.rotation?.[0]).toMatchObject({ time: 2, value: 45 })
+  })
+
+  it('the Clip tab rotation field edits the keyframe at the playhead when animated', () => {
+    const { doc } = docWithSelectedVideoClip()
+    const withCurve = structuredClone(doc)
+    withCurve.project.tracks[0].clips[0].keyframes = {
+      rotation: [
+        { time: 0, value: 0, interpolation: 'linear' },
+        { time: 4, value: 180, interpolation: 'linear' },
+      ],
+    }
+    useEditorStore.setState({ doc: withCurve, playhead: 2 })
+    const { container } = render(<InspectorPanel />)
+
+    // The field shows the animated value at the playhead, not the static fallback.
+    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
+    const rotation = numbers[numbers.length - 1]
+    expect(rotation.value).toBe('90')
+    expect(screen.getByText(/edits the keyframe at the playhead/)).toBeInTheDocument()
+
+    fireEvent.change(rotation, { target: { value: '100' } })
+    fireEvent.blur(rotation)
+
+    const clip = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(clip.rotation).toBeUndefined()
+    expect(clip.keyframes?.rotation?.find((k) => Math.abs(k.time - 2) < 1e-6)?.value).toBe(100)
+    // The untouched keyframes survive the write.
+    expect(clip.keyframes?.rotation).toHaveLength(3)
+  })
+
+  it('the Clip tab rotation field ignores an unchanged focus-blur', () => {
+    const { doc } = docWithSelectedVideoClip()
+    const withCurve = structuredClone(doc)
+    // Animated value at the playhead is 200/3: the display rounds to 66.67.
+    withCurve.project.tracks[0].clips[0].keyframes = {
+      rotation: [
+        { time: 0, value: 0, interpolation: 'linear' },
+        { time: 3, value: 100, interpolation: 'linear' },
+      ],
+    }
+    useEditorStore.setState({ doc: withCurve, playhead: 2 })
+    const pastBefore = useEditorStore.getState().past.length
+    const { container } = render(<InspectorPanel />)
+
+    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
+    const rotation = numbers[numbers.length - 1]
+    expect(rotation.value).toBe('66.67')
+    fireEvent.focus(rotation)
+    // The playhead moves under the untouched focus: the draft text goes stale.
+    act(() => {
+      useEditorStore.setState({ playhead: 3 })
+    })
+    fireEvent.blur(rotation)
+
+    // No user change means no keyframe and no history entry, even though the
+    // stale text differs from the new animated value.
+    expect(useEditorStore.getState().past.length).toBe(pastBefore)
+    expect(
+      useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.rotation,
+    ).toHaveLength(2)
+  })
+
+  it('the rotation field tracks the playhead while unfocused', () => {
+    const { doc } = docWithSelectedVideoClip()
+    const withCurve = structuredClone(doc)
+    withCurve.project.tracks[0].clips[0].keyframes = {
+      rotation: [
+        { time: 0, value: 0, interpolation: 'linear' },
+        { time: 3, value: 100, interpolation: 'linear' },
+      ],
+    }
+    useEditorStore.setState({ doc: withCurve, playhead: 2 })
+    const { container } = render(<InspectorPanel />)
+
+    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
+    const rotation = numbers[numbers.length - 1]
+    expect(rotation.value).toBe('66.67')
+    act(() => {
+      useEditorStore.setState({ playhead: 3 })
+    })
+    expect(rotation.value).toBe('100')
+  })
+
+  it('the rotation field keeps a focused draft while the playhead moves', () => {
+    const { doc } = docWithSelectedVideoClip()
+    const withCurve = structuredClone(doc)
+    withCurve.project.tracks[0].clips[0].keyframes = {
+      rotation: [
+        { time: 0, value: 0, interpolation: 'linear' },
+        { time: 3, value: 100, interpolation: 'linear' },
+      ],
+    }
+    useEditorStore.setState({ doc: withCurve, playhead: 2 })
+    const { container } = render(<InspectorPanel />)
+
+    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
+    const rotation = numbers[numbers.length - 1]
+    fireEvent.focus(rotation)
+    fireEvent.change(rotation, { target: { value: '45' } })
+    // Playback moves the animated value underneath the draft.
+    act(() => {
+      useEditorStore.setState({ playhead: 3 })
+    })
+    expect(rotation.value).toBe('45')
+    fireEvent.blur(rotation)
+
+    // The draft commits once, at the playhead where it was released.
+    const clip = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(clip.keyframes?.rotation?.find((k) => Math.abs(k.time - 3) < 1e-6)?.value).toBe(45)
+  })
+
+  it('a focused draft does not carry over to a newly selected clip', () => {
+    const { doc } = docWithSelectedVideoClip()
+    const withOther = structuredClone(doc)
+    const other = createClip({
+      id: 'clip_other',
+      mediaId: doc.media[0].id,
+      start: 6,
+      duration: 6,
+    })
+    other.rotation = 30
+    withOther.project.tracks[0].clips.push(other)
+    useEditorStore.setState({
+      doc: withOther,
+      selection: 'clip_ec',
+      selections: ['clip_ec'],
+      playhead: 2,
+    })
+    const pastBefore = useEditorStore.getState().past.length
+    const { container } = render(<InspectorPanel />)
+
+    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
+    const rotation = numbers[numbers.length - 1]
+    expect(rotation.value).toBe('0')
+    fireEvent.focus(rotation)
+    fireEvent.change(rotation, { target: { value: '45' } })
+    // Selecting another clip remounts the panel by clip id, so the open
+    // draft is discarded instead of following the selection.
+    act(() => {
+      useEditorStore.setState({ selection: 'clip_other', selections: ['clip_other'] })
+    })
+    const after = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
+    expect(after[after.length - 1].value).toBe('30')
+    fireEvent.blur(after[after.length - 1])
+
+    const clips = useEditorStore.getState().doc.project.tracks[0].clips
+    expect(clips.find((c) => c.id === 'clip_ec')!.rotation).toBeUndefined()
+    expect(clips.find((c) => c.id === 'clip_other')!.rotation).toBe(30)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore)
+  })
+
+  it('the flip toggles route through the lock-notice path', () => {
+    const src = readFileSync(
+      join(process.cwd(), 'src/components/editor/InspectorPanel.tsx'),
+      'utf8',
+    )
+    for (const label of ['Flip horizontally', 'Flip vertically']) {
+      const at = src.indexOf(`aria-label="${label}"`)
+      expect(at).toBeGreaterThan(-1)
+      // A locked-lane refusal must toast like the rotation field, not throw
+      // out of a bare dispatch.
+      expect(src.slice(at, at + 600)).toMatch(/onChange=\{\(e\) =>\s*tryApply\(\(\) =>\s*apply\(\{/)
+    }
+  })
+
+  it('the Clip tab shows Transform for a compound clip', () => {
+    const clip = createClip({ id: 'clip_comp', sequenceId: 'S1', start: 0, duration: 4 })
+    const track = createTrack('video', 1, { clips: [clip] })
+    const doc: Doc = {
+      project: {
+        tracks: [track],
+        sequences: [{ id: 'S1', name: 'S1', tracks: [] }],
+        id: 'p_test',
+        name: 'test',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      },
+      media: [],
+    }
+    useEditorStore.setState({ doc, selection: clip.id, selections: [clip.id], playhead: 1 })
+    const { container } = render(<InspectorPanel />)
+
+    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
+    expect(numbers[numbers.length - 1].value).toBe('0')
+    expect(screen.getByLabelText('Flip horizontally')).toBeInTheDocument()
+    expect(screen.getByLabelText('Flip vertically')).toBeInTheDocument()
   })
 })

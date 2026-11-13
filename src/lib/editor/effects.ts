@@ -248,7 +248,7 @@ export function splitEffectKeyframes(
 /**
  * Whether every sub-render a blur level can produce over its nested
  * footprint is identical, so the level may collapse to the level below.
- * Compares the Motion transform (positionX/Y/scale) and every crop entry's
+ * Compares the Motion transform (positionX/Y/scale/rotation) and every crop entry's
  * params at each footprint point; finite-point comparison is exact because
  * the renderer evaluates inputs only at sample points. Fail-closed: an
  * unknown level reads as not identical.
@@ -303,12 +303,16 @@ function footprintTimes(
 /** Crop params evaluated per sample (the only stack curves with a time input). */
 const CROP_SAMPLE_PROPS: EffectKeyframeProperty[] = ['left', 'right', 'top', 'bottom', 'feather']
 
-/** The per-sample inputs at one clip-local time: Motion triple plus crop params. */
+/** The per-sample inputs at one clip-local time: Motion channels plus crop params. */
 function sampleInputs(clip: Clip, entries: EffectEntry[], local: number): number[] {
   const out = [
     animatedValue(clip, 'positionX', local),
     animatedValue(clip, 'positionY', local),
     animatedValue(clip, 'scale', local),
+    // Rotation is keyframeable Motion too (0.24.0): without it a
+    // rotation-only ramp reads as identical and the blur wrongly collapses.
+    // Flip is static, so it cannot differ across the window.
+    animatedValue(clip, 'rotation', local),
   ]
   for (const entry of entries) {
     if (entry.type !== 'crop') continue

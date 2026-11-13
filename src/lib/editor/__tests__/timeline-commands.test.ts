@@ -439,6 +439,30 @@ describe('planJoinSelection / planJoinGroup', () => {
     })
   })
 
+  it('refuses a transform mismatch and accepts matching or default transforms', () => {
+    const rotated = pair()
+    rotated.project.tracks[0].clips[1].rotation = 90
+    expect(planJoinSelection(rotated, ['p', 'n'])).toEqual({
+      ok: false,
+      reason: 'Rotation differs between the clips',
+    })
+
+    const flipped = pair()
+    flipped.project.tracks[0].clips[1].flipX = true
+    expect(planJoinSelection(flipped, ['p', 'n'])).toEqual({
+      ok: false,
+      reason: 'Flip differs between the clips',
+    })
+
+    // Absent rotation reads as 0 and absent flips as false, so explicit
+    // defaults still join; the join keeps the previous clip's transform.
+    const defaults = pair()
+    defaults.project.tracks[0].clips[0].rotation = 0
+    defaults.project.tracks[0].clips[1].flipX = false
+    defaults.project.tracks[0].clips[1].flipY = false
+    expect(planJoinSelection(defaults, ['p', 'n']).ok).toBe(true)
+  })
+
   it('refuses text and compound clips', () => {
     const text = docOf([lane('text', 't1', [clip('p', 0, 4), clip('n', 4, 4)])])
     text.project.tracks[0].clips[0].text = 'a'

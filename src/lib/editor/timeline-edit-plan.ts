@@ -337,6 +337,11 @@ const RETAINED_FIELDS: { label: string; read: (clip: Clip) => unknown }[] = [
   { label: 'Compressor', read: (clip) => clip.compressor === true },
   { label: 'Denoise', read: (clip) => clip.denoise === true },
   { label: 'Opacity', read: (clip) => clip.opacity ?? 1 },
+  // Transform (0.24.0) keeps its own fields, outside `Animation`: absent
+  // rotation reads as 0 and absent flips as false, so an explicit default on
+  // one side still joins. Keyframed clips refuse above, so only statics compare.
+  { label: 'Rotation', read: (clip) => clip.rotation ?? 0 },
+  { label: 'Flip', read: (clip) => [clip.flipX === true, clip.flipY === true] },
   { label: 'Blend mode', read: (clip) => clip.blendMode ?? 'normal' },
   { label: 'Temperature', read: (clip) => clip.temperature ?? 0 },
   { label: 'Tint', read: (clip) => clip.tint ?? 0 },

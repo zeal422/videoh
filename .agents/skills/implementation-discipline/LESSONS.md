@@ -683,3 +683,18 @@ Would-have-caught: after any scripted markdown insert, read the edited region
 back (or `git diff -U3` that file) instead of trusting `format:check`. Prettier
 cannot see a semantic table break.
 Action: kept as a note; the row was re-joined and the region re-read.
+
+## 2026-11-13 - 0.24.0 battery, a new inspector field broke a positional e2e helper
+
+What happened: adding the Transform rotation field gave a selected visual clip
+three spinbuttons in the Inspector, but `fill_timing` in `e2e/battery.sh`
+required exactly two and returned "no clip selected". Two battery shards failed
+during seeding, the run reported 44/70 and `INCOMPLETE`, and only the e2e log
+named the count.
+Would-have-caught: after adding any control to a panel, grep the battery and UI
+tests for count or index assumptions on that panel (`grep -n spinbutton
+e2e/battery.sh`), and rerun the battery before calling the release green.
+Unit tests and `bun run check` cannot see shell helpers.
+Action: promoted to the release gate note; `fill_timing` now needs at least two
+spinbuttons and reads the first two by DOM order, with a comment naming the
+Transform field that follows Timing.

@@ -204,7 +204,7 @@ describe('planVideoFrame', () => {
       [],
     )
     const t = planVideoFrame(d, 0).draws[0].transform
-    expect(t).toEqual({ posX: 120, posY: 0, scale: 1.5 })
+    expect(t).toEqual({ posX: 120, posY: 0, scale: 1.5, rotation: 0, flipX: false, flipY: false })
   })
 
   it('crossfade overlaps produce complementary alphas', () => {
@@ -1387,7 +1387,14 @@ describe('compound clip plans (0.8.1)', () => {
     const group = plan.draws[0]
     // The container's properties ride the GROUP draw, applied once.
     expect(group.alpha).toBeCloseTo(0.5, 5)
-    expect(group.transform).toEqual({ posX: 100, posY: 0, scale: 2 })
+    expect(group.transform).toEqual({
+      posX: 100,
+      posY: 0,
+      scale: 2,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+    })
     expect(group.filter).not.toBe('none')
     // The child keeps its OWN opacity inside the group.
     expect(group.nested?.draws[0].alpha).toBeCloseTo(0.25, 5)

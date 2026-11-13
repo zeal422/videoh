@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.24.0',
+    date: '2026-11-13',
+    highlights: [
+      'Rotate any visual clip up to ten turns each way, flip it horizontally or vertically, and keyframe the rotation',
+      'Move, scale, and rotate the selected clip directly in the monitor with one undo step per drag',
+      'Text rotates and flips around its measured box center, so left- and right-aligned lines stay in place',
+      'Preview and export share one transform, so a rotated or flipped clip matches in the file',
+      'Project files move to format version 6; older files still open',
+    ],
+  },
+  {
     version: '0.23.0',
     date: '2026-11-13',
     highlights: [

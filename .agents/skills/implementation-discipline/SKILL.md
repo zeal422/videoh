@@ -81,9 +81,12 @@ run starts smarter than the last.
     generalizes, promote it into this checklist and mark the promotion in the
     entry. The log is append-only; this file stays short.
 12. **Close, before reporting done.** The full gate is green, docs and counts
-    are in sync per `AGENTS.md`, nothing you started is still running, and the
-    tree is uncommitted unless asked otherwise. Report what changed, what was
-    proven and how, what was skipped and why, and what remains.
+    are in sync per `AGENTS.md`, the battery is green when the release gate
+    needs it, and any panel that gained or lost a control has been checked
+    against positional assumptions in `e2e/battery.sh`. Nothing you started is
+    still running, and the tree is uncommitted unless asked otherwise. Report
+    what changed, what was proven and how, what was skipped and why, and what
+    remains.
 
 ## Trigger audit
 

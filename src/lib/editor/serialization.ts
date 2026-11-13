@@ -25,6 +25,8 @@ import {
   PROJECT_MAX_W,
   PROJECT_MIN_H,
   PROJECT_MIN_W,
+  ROTATION_MAX,
+  ROTATION_MIN,
   SPEED_MAX,
   SPEED_MIN,
   TEMPERATURE_MAX,
@@ -98,11 +100,11 @@ import type {
 /**
  * v2 added markers (0.5.5); v3 added the LUT library (0.7.0); v4 added
  * compound-clip sequences (0.8.1); v5 added the per-asset media content hash
- * (0.23.0). The loader accepts every version from 1 up to the current one, so
- * older files load with the newer features absent; only files from a NEWER app
- * version are refused.
+ * (0.23.0); v6 added clip rotation and the flip pair (0.24.0). The loader
+ * accepts every version from 1 up to the current one, so older files load with
+ * the newer features absent; only files from a NEWER app version are refused.
  */
-export const SERIALIZATION_VERSION = 5
+export const SERIALIZATION_VERSION = 6
 export const PROJECT_FILE_EXTENSION = '.veproj.json'
 
 export interface SerializedMedia {
@@ -579,6 +581,14 @@ function hydrateClip(
     const opacity = Math.min(1, Math.max(0, raw.opacity))
     if (opacity !== 1) clip.opacity = opacity // 1 is the default, keep files clean
   }
+  // Transform (0.24.0). Rotation clamps to ten turns each way; a non-finite
+  // value is dropped. Flip is strict: a truthy string or number is not a flip.
+  if (typeof raw.rotation === 'number' && Number.isFinite(raw.rotation)) {
+    const rotation = clamp(raw.rotation, ROTATION_MIN, ROTATION_MAX)
+    if (rotation !== 0) clip.rotation = rotation // 0 is the default, keep files clean
+  }
+  if (raw.flipX === true) clip.flipX = true
+  if (raw.flipY === true) clip.flipY = true
   // 0.5.0 re-timing + audio shaping. Defaults are omitted so files stay clean.
   if (typeof raw.speed === 'number' && Number.isFinite(raw.speed)) {
     const speed = clamp(raw.speed, SPEED_MIN, SPEED_MAX)
@@ -950,11 +960,17 @@ function hydrateKeyframeDefaults(raw: unknown): KeyframeDefaults | undefined {
 }
 
 /**
- * Animatable properties that keep a static field (opacity/volume have their
- * own fields, timeScale reads the clip's speed).
+ * Animatable properties that keep a static field (opacity/rotation/volume have
+ * their own fields, timeScale reads the clip's speed).
  */
 function isAnimStaticProperty(p: string): p is AnimStaticProperty {
-  return isAnimatableProperty(p) && p !== 'opacity' && p !== 'volume' && p !== 'timeScale'
+  return (
+    isAnimatableProperty(p) &&
+    p !== 'opacity' &&
+    p !== 'rotation' &&
+    p !== 'volume' &&
+    p !== 'timeScale'
+  )
 }
 
 function hydrateStyle(raw: Record<string, unknown> | undefined): Clip['style'] {

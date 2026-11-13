@@ -184,6 +184,13 @@ them:
   badges, waveform, trim handles, and markers stay above it, and the strip is clipped by the clip's
   rounded border. While a strip is generating, a thin progress bar sits at the clip bottom after
   300 ms, and the timeline header carries the global `Thumbnails 12/24` readout.
+- **Transform gizmo (0.24.0).** A selected visual clip draws a rose box and handles over the monitor,
+  matching the selection signal: a 2px `stroke-rose-400` quad with non-scaling stroke, square corner
+  scale handles filled rose with a white rim, and a round rotation handle (white fill, rose rim) on a
+  stem above the top edge. Dragging inside the box dims it with `fill-rose-400/10`. The box follows
+  the clip's position, scale, rotation, and the measured text box for text clips; hit radii are
+  computed in project pixels from the canvas size, so the overlay stays usable at any monitor scale.
+  A locked lane renders no gizmo at all.
 - **Automation envelopes.** Audio-bearing clips paint volume as a 1.5px white line with
   `stroke-white/90` and 6px white dots inside 12px hit targets; picture clips use the same component
   for opacity, mapped 0..100% instead of the dB domain. The curve is deliberately not the selection

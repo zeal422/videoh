@@ -79,9 +79,9 @@ describe('serializeDoc', () => {
     expect(json.media[0].waveformPeaks).toEqual([0.1, 0.5, 0.9])
     expect(json.media[0].thumbnail).toBeTruthy()
     // Pin the WIRE value, not the constant serializeDoc itself stamps: the
-    // round-trip contract is "this text is version 5", and a literal here
+    // round-trip contract is "this text is version 6", and a literal here
     // notices a silent constant change instead of restating it.
-    expect(json.version).toBe(5)
+    expect(json.version).toBe(6)
     expect(json.project.tracks[0].clips[0].transitionOut).toEqual({
       type: 'crossfade',
       duration: 0.5,
@@ -630,6 +630,72 @@ describe('clip opacity serialization', () => {
   })
 })
 
+describe('clip transform serialization (0.24.0)', () => {
+  it('loads a v5 fixture with neutral rotation and flips', () => {
+    const data = JSON.parse(JSON.stringify(serializeDoc(makeDoc())))
+    data.version = 5
+    delete data.project.tracks[0].clips[0].rotation
+    delete data.project.tracks[0].clips[0].flipX
+    delete data.project.tracks[0].clips[0].flipY
+    const { doc } = deserializeDoc(data)
+    const clip = doc.project.tracks[0].clips[0]
+    expect(clip.rotation).toBeUndefined()
+    expect(clip.flipX).toBeUndefined()
+    expect(clip.flipY).toBeUndefined()
+  })
+
+  it('round-trips rotation, both flips, and a rotation curve', () => {
+    const doc = makeDoc()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.rotation = 725
+    clip.flipX = true
+    clip.flipY = true
+    clip.keyframes = {
+      rotation: [
+        { time: 0, value: 0, interpolation: 'linear' },
+        { time: 2, value: 180, interpolation: 'easeIn' },
+      ],
+    }
+    const { doc: restored } = deserializeDoc(JSON.parse(JSON.stringify(serializeDoc(doc))))
+    const loaded = restored.project.tracks[0].clips[0]
+    expect(loaded.rotation).toBe(725)
+    expect(loaded.flipX).toBe(true)
+    expect(loaded.flipY).toBe(true)
+    expect(loaded.keyframes?.rotation).toEqual([
+      { time: 0, value: 0, interpolation: 'linear' },
+      { time: 2, value: 180, interpolation: 'easeIn' },
+    ])
+  })
+
+  it('sanitizes hostile rotation and flip values', () => {
+    const data = JSON.parse(JSON.stringify(serializeDoc(makeDoc())))
+    const clip = data.project.tracks[0].clips[0]
+    clip.rotation = 10000
+    clip.flipX = 1
+    clip.flipY = 'yes'
+    const { doc } = deserializeDoc(data)
+    // Out of range clamps to ten turns; truthy non-booleans are not flips.
+    expect(doc.project.tracks[0].clips[0].rotation).toBe(3600)
+    expect(doc.project.tracks[0].clips[0].flipX).toBeUndefined()
+    expect(doc.project.tracks[0].clips[0].flipY).toBeUndefined()
+
+    clip.rotation = '45'
+    const { doc: doc2 } = deserializeDoc(data)
+    expect(doc2.project.tracks[0].clips[0].rotation).toBeUndefined()
+
+    clip.rotation = Number.POSITIVE_INFINITY
+    const { doc: doc3 } = deserializeDoc(data)
+    expect(doc3.project.tracks[0].clips[0].rotation).toBeUndefined()
+  })
+
+  it('drops a rotation value in animStatics, which is not its static source', () => {
+    const data = JSON.parse(JSON.stringify(serializeDoc(makeDoc())))
+    data.project.tracks[0].clips[0].animStatics = { rotation: 90 }
+    const { doc } = deserializeDoc(data)
+    expect(doc.project.tracks[0].clips[0].animStatics).toBeUndefined()
+  })
+})
+
 describe('marker serialization (0.5.5)', () => {
   function docWithMarkers() {
     const doc = makeDoc()
@@ -775,7 +841,7 @@ describe('marker serialization (0.5.5)', () => {
       },
     ]
     const json = serializeDoc(doc)
-    expect(json.version).toBe(5)
+    expect(json.version).toBe(6)
     expect(json.project.textPresets).toEqual(doc.project.textPresets)
     const back = deserializeDoc(json)
     expect(back.doc.project.textPresets).toEqual(doc.project.textPresets)
@@ -850,7 +916,7 @@ describe('marker serialization (0.5.5)', () => {
     doc.project.luts = [lut]
     doc.project.tracks[0].clips[0].lutId = 'lut_fixed'
     const json = serializeDoc(doc)
-    expect(json.version).toBe(5)
+    expect(json.version).toBe(6)
     expect(json.project.luts).toEqual([lut])
     const back = deserializeDoc(json)
     expect(back.doc.project.luts).toEqual([lut])
@@ -1230,7 +1296,7 @@ describe('effects serialization (0.8.6)', () => {
     return doc
   }
 
-  it('round-trips effects, blend mode and visibility at v5', () => {
+  it('round-trips effects, blend mode and visibility at v6', () => {
     const doc = fxWireDoc()
     doc.project.tracks[1].clips[0].effects = [
       { id: 'fx_crop', type: 'crop', left: 10, feather: 5 },
@@ -1239,7 +1305,7 @@ describe('effects serialization (0.8.6)', () => {
     doc.project.tracks[1].clips[0].blendMode = 'multiply'
     doc.project.tracks[1].visible = false
     const json = serializeDoc(doc)
-    expect(json.version).toBe(5)
+    expect(json.version).toBe(6)
     const { doc: loaded } = deserializeDoc(JSON.parse(JSON.stringify(json)))
     expect(loaded.project.tracks[1].clips[0].effects).toEqual([
       { id: 'fx_crop', type: 'crop', left: 10, right: 0, top: 0, bottom: 0, feather: 5 },
@@ -1341,9 +1407,9 @@ describe('track solo and lock serialization (0.14.0)', () => {
     return doc
   }
 
-  it('round-trips solo and locked at v5 without a schema bump', () => {
+  it('round-trips solo and locked at v6 without a schema bump', () => {
     const json = serializeDoc(flagsDoc())
-    expect(json.version).toBe(5)
+    expect(json.version).toBe(6)
     const { doc } = deserializeDoc(JSON.parse(JSON.stringify(json)))
     expect(doc.project.tracks[0].locked).toBe(true)
     expect(doc.project.tracks[0].solo).toBeUndefined()
@@ -1399,11 +1465,11 @@ describe('track solo and lock serialization (0.14.0)', () => {
 describe('media content hash serialization (0.23.0)', () => {
   const HASH = 'a'.repeat(64)
 
-  it('round-trips a valid content hash and writes schema version 5', () => {
+  it('round-trips a valid content hash and writes schema version 6', () => {
     const doc = makeDoc()
     doc.media[0].contentHash = HASH
     const wire = serializeDoc(doc)
-    expect(wire.version).toBe(5)
+    expect(wire.version).toBe(6)
     expect(wire.media[0].contentHash).toBe(HASH)
     const { doc: restored } = deserializeDoc(JSON.parse(JSON.stringify(wire)))
     expect(restored.media[0].contentHash).toBe(HASH)

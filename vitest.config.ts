@@ -68,6 +68,7 @@ export default defineConfig({
         'src/lib/editor/menus.ts',
         'src/lib/editor/timeline-edit-plan.ts',
         'src/lib/editor/freeze-plan.ts',
+        'src/lib/editor/transform.ts',
         'src/lib/editor/media-cleanup-plan.ts',
         'src/lib/releases.ts',
         'src/lib/seo.ts',

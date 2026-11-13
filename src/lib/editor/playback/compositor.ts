@@ -23,6 +23,14 @@ import {
   resolveMatteTrack,
 } from '../effects'
 import { applyChromaKeyToRgba, buildMatteMask, parseKeyColor } from '../chroma-key'
+import { textLayoutBox } from './text-box'
+import {
+  applyRotationFlip,
+  IDENTITY_TRANSFORM,
+  positionedCenter,
+  type ClipTransform,
+  type Point,
+} from '../transform'
 import type { Clip, Doc, EffectEntry, MediaAsset, ProjectLut, Track } from '../types'
 
 /**
@@ -398,16 +406,27 @@ export function blitTransformed(
   image: CanvasImageSource,
   width: number,
   height: number,
-  transform: { posX: number; posY: number; scale: number } | null,
+  transform: ClipTransform | null,
+  /**
+   * Rotation/flip pivot in project pixels. Defaults to the positioned frame
+   * center, which is the pivot for media and compound clips; text clips pass
+   * `motionPivot`, whose measured box-center pivot matches `drawTextClip`.
+   */
+  origin?: Point | null,
 ): void {
+  const t = transform ?? IDENTITY_TRANSFORM
+  const pivot = origin ?? { x: width / 2 + t.posX, y: height / 2 + t.posY }
+  ctx.save()
+  // Rotation and flip wrap the position-and-scale factor around the same
+  // transformed center, so a rotated picture keeps its center in place.
+  applyRotationFlip(ctx, t, pivot.x, pivot.y)
   if (!transform) {
     ctx.drawImage(image, 0, 0)
-    return
+  } else {
+    ctx.translate(width / 2 + transform.posX, height / 2 + transform.posY)
+    ctx.scale(transform.scale, transform.scale)
+    ctx.drawImage(image, -width / 2, -height / 2, width, height)
   }
-  ctx.save()
-  ctx.translate(width / 2 + transform.posX, height / 2 + transform.posY)
-  ctx.scale(transform.scale, transform.scale)
-  ctx.drawImage(image, -width / 2, -height / 2, width, height)
   ctx.restore()
 }
 
@@ -493,7 +512,17 @@ function drawClip(
     // Sub-sample transforms are already baked into the accumulation.
     ctx.drawImage(image, 0, 0)
   } else {
-    blitTransformed(ctx, image, width, height, clipTransform(clip, local))
+    // Text rotates around its measured box center (motionPivot), not the
+    // frame center, so the effect composite matches the fast path.
+    const frameTransform = clipTransform(clip, local)
+    blitTransformed(
+      ctx,
+      image,
+      width,
+      height,
+      frameTransform,
+      frameTransform ? motionPivot(ctx, clip, frameTransform, width, height) : null,
+    )
   }
   ctx.restore()
 }
@@ -514,7 +543,7 @@ function drawClipCore(
   resolve: MediaResolver,
   alpha: number,
   filter: string,
-  transform: { posX: number; posY: number; scale: number } | null,
+  transform: ClipTransform | null,
   width: number,
   height: number,
   doc: Doc,
@@ -926,7 +955,15 @@ function renderEffectImage(
       // with its own Motion transform (crop precedes Motion: the stack image
       // is untransformed, Motion lands here per sub-sample).
       const img = renderLevel(level - 1, tau) ?? clear.canvas
-      blitTransformed(acc.sctx, img, width, height, clipTransform(clip, tau - clip.start))
+      const sampleTransform = clipTransform(clip, tau - clip.start)
+      blitTransformed(
+        acc.sctx,
+        img,
+        width,
+        height,
+        sampleTransform,
+        sampleTransform ? motionPivot(acc.sctx, clip, sampleTransform, width, height) : null,
+      )
     }
     acc.sctx.restore()
     return acc.canvas
@@ -990,7 +1027,7 @@ export function drawContain(
   height: number,
   alpha: number,
   filter: string,
-  transform: { posX: number; posY: number; scale: number } | null,
+  transform: ClipTransform | null,
   lut?: ProjectLut,
 ): void {
   const { width: sw, height: sh } = sourceSize(source)
@@ -1001,7 +1038,11 @@ export function drawContain(
   // shaper). A 1D shaper and a 3D cube therefore apply in the same order in
   // both render paths.
   const source2 = lut?.kind === '3d' ? applyLut3d(source, sw, sh, lut) : source
+  const t = transform ?? IDENTITY_TRANSFORM
   ctx.save()
+  // Rotation and flip join the Motion step here (after the effect stack and
+  // before opacity/blend), around the picture's transformed center.
+  applyRotationFlip(ctx, t, width / 2 + t.posX, height / 2 + t.posY)
   ctx.globalAlpha = alpha
   if (filter !== 'none') ctx.filter = filter
   ctx.drawImage(source2, rect.dx, rect.dy, rect.dw, rect.dh)
@@ -1067,7 +1108,7 @@ export interface BlendedDrawInput {
   height: number
   alpha: number
   filter: string
-  transform: { posX: number; posY: number; scale: number } | null
+  transform: ClipTransform | null
   lut?: ProjectLut
 }
 
@@ -1152,7 +1193,9 @@ export function drawBlendedContain(ctx: CanvasRenderingContext2D, input: Blended
   addBlendLayer(sctx, grade(blend.first), 1 - blend.weight, rw, rh)
   addBlendLayer(sctx, grade(blend.second), blend.weight, rw, rh)
   sctx.restore()
+  const t = transform ?? IDENTITY_TRANSFORM
   ctx.save()
+  applyRotationFlip(ctx, t, width / 2 + t.posX, height / 2 + t.posY)
   ctx.globalAlpha = alpha
   if (filter !== 'none') ctx.filter = filter
   ctx.drawImage(canvas, rect.dx, rect.dy, rect.dw, rect.dh)
@@ -1163,6 +1206,40 @@ export function drawBlendedContain(ctx: CanvasRenderingContext2D, input: Blended
  * Draws one styled text clip onto a canvas. Exported so the offline exporter
  * renders titles through the same code path as the preview compositor.
  */
+/**
+ * The rotation/flip pivot for a Motion composite: the positioned text-box
+ * center for text clips (matching `drawTextClip`, so the effect path and the
+ * fast path rotate around the same point), the positioned frame center for
+ * media and compound clips. Neutral transforms (no rotation, no flip) return
+ * the frame center without measuring. Exported for the exporter, which
+ * composites through the same `blitTransformed`.
+ */
+export function motionPivot(
+  ctx: CanvasRenderingContext2D,
+  clip: Clip,
+  t: ClipTransform,
+  width: number,
+  height: number,
+): Point {
+  const frame = { x: width / 2 + t.posX, y: height / 2 + t.posY }
+  if (t.rotation === 0 && !t.flipX && !t.flipY) return frame
+  if (clip.text === undefined || !clip.style) return frame
+  const style = clip.style
+  // The scratch and export contexts never set the clip's font, and the main
+  // frame context carries whatever the last draw left behind (each text draw's
+  // font unwinds with its save/restore): measure with the clip's own font so
+  // the pivot matches the fast path on every context, then restore.
+  const previousFont = ctx.font
+  ctx.font = `${style.italic ? 'italic ' : ''}${style.bold ? '700' : '400'} ${style.fontSize}px ${style.fontFamily}`
+  const measured = textLayoutBox(clip, width, height, (line) => ctx.measureText(line).width)
+  ctx.font = previousFont
+  if (!measured) return frame
+  return positionedCenter({ x: measured.centerX, y: measured.centerY }, t, {
+    x: width / 2,
+    y: height / 2,
+  })
+}
+
 export function drawTextClip(
   ctx: CanvasRenderingContext2D,
   clip: Clip,
@@ -1170,19 +1247,28 @@ export function drawTextClip(
   height: number,
   alpha: number,
   filter: string,
-  transform: { posX: number; posY: number; scale: number } | null,
+  transform: ClipTransform | null,
 ): void {
   const style = clip.style!
   const text = clip.text ?? ''
+  const t = transform ?? IDENTITY_TRANSFORM
+  const frameCenter = { x: width / 2, y: height / 2 }
   ctx.save()
   ctx.globalAlpha = alpha
   if (filter !== 'none') ctx.filter = filter
-  if (transform) {
-    ctx.translate(width / 2 + transform.posX, height / 2 + transform.posY)
-    ctx.scale(transform.scale, transform.scale)
-    ctx.translate(-width / 2, -height / 2)
-  }
   ctx.font = `${style.italic ? 'italic ' : ''}${style.bold ? '700' : '400'} ${style.fontSize}px ${style.fontFamily}`
+  // Rotation and flip turn around the measured text box center, not the
+  // alignment anchor: a left-aligned line must not orbit the canvas center.
+  // The measurement excludes shadow padding, which would shift the origin.
+  // Canvas postmultiplies: issue the rotation/flip factor (left) first, then
+  // the existing position-and-scale factor (right). With rotation 0 and no
+  // flip the factor is the identity, so scaled text keeps its old placement.
+  // The pivot is shared with the effect path through motionPivot.
+  const turnedCenter = motionPivot(ctx, clip, t, width, height)
+  applyRotationFlip(ctx, t, turnedCenter.x, turnedCenter.y)
+  ctx.translate(frameCenter.x + t.posX, frameCenter.y + t.posY)
+  ctx.scale(t.scale, t.scale)
+  ctx.translate(-frameCenter.x, -frameCenter.y)
   ctx.textAlign = style.align
   ctx.textBaseline = 'middle'
   if (style.shadow) {

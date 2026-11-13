@@ -50,6 +50,7 @@ export const ANIMATABLE_PROPERTIES: readonly KeyframeProperty[] = [
   'positionX',
   'positionY',
   'scale',
+  'rotation',
   'volume',
   'exposure',
   'contrast',
@@ -80,6 +81,8 @@ export function staticPropertyValue(clip: Clip, property: KeyframeProperty): num
   switch (property) {
     case 'opacity':
       return clip.opacity ?? 1
+    case 'rotation':
+      return clip.rotation ?? 0
     case 'volume':
       return clip.gain ?? 1
     // The clip's constant rate is the ramp's fallback and its static control.

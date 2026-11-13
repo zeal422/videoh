@@ -3724,3 +3724,89 @@ describe('timeline cap commands', () => {
     ).toThrow(EditorCommandError)
   })
 })
+
+describe('clip transform commands (0.24.0)', () => {
+  function docWithClip() {
+    const { doc } = makeDoc()
+    const video = doc.project.tracks.find((track) => track.kind === 'video')!
+    video.clips = [createClip({ id: 'clip_t', mediaId: doc.media[0].id, start: 0, duration: 4 })]
+    return doc
+  }
+
+  it('clamps rotation into ten turns and removes the neutral value', () => {
+    const doc = docWithClip()
+    const turned = applyCommand(doc, { type: 'setClipRotation', clipId: 'clip_t', rotation: 10000 })
+    expect(turned.project.tracks[0].clips[0].rotation).toBe(3600)
+
+    const reset = applyCommand(turned, { type: 'setClipRotation', clipId: 'clip_t', rotation: 0 })
+    expect(reset.project.tracks[0].clips[0].rotation).toBeUndefined()
+
+    // The authored turn count survives: 720 is not folded to 0.
+    const turns = applyCommand(doc, { type: 'setClipRotation', clipId: 'clip_t', rotation: 720 })
+    expect(turns.project.tracks[0].clips[0].rotation).toBe(720)
+
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setClipRotation',
+        clipId: 'clip_t',
+        rotation: Number.NaN,
+      }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setClipRotation',
+        clipId: 'clip_t',
+        rotation: Number.POSITIVE_INFINITY,
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('sets and clears the explicit flip pair', () => {
+    const doc = docWithClip()
+    const flipped = applyCommand(doc, {
+      type: 'setClipFlip',
+      clipId: 'clip_t',
+      flipX: true,
+      flipY: true,
+    })
+    const clip = flipped.project.tracks[0].clips[0]
+    expect(clip.flipX).toBe(true)
+    expect(clip.flipY).toBe(true)
+
+    const cleared = applyCommand(flipped, {
+      type: 'setClipFlip',
+      clipId: 'clip_t',
+      flipX: false,
+      flipY: true,
+    })
+    expect(cleared.project.tracks[0].clips[0].flipX).toBeUndefined()
+    expect(cleared.project.tracks[0].clips[0].flipY).toBe(true)
+  })
+
+  it('refuses hostile flip payloads instead of coercing them', () => {
+    const doc = docWithClip()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setClipFlip',
+        clipId: 'clip_t',
+        flipX: 1 as unknown as boolean,
+        flipY: false,
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('stores rotation curves through setClipKeyframes with the shared bounds', () => {
+    const doc = docWithClip()
+    const next = applyCommand(doc, {
+      type: 'setClipKeyframes',
+      clipId: 'clip_t',
+      property: 'rotation',
+      keyframes: [
+        { time: 0, value: 0, interpolation: 'linear' },
+        { time: 2, value: 7200, interpolation: 'linear' },
+      ],
+    })
+    const curve = next.project.tracks[0].clips[0].keyframes?.rotation
+    expect(curve?.map((k) => k.value)).toEqual([0, 3600])
+  })
+})
