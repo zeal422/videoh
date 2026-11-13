@@ -6,6 +6,7 @@ import {
   FileImage,
   FileVideo,
   Gauge,
+  HardDrive,
   Import,
   Link2,
   Loader2,
@@ -14,15 +15,21 @@ import {
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { StorageDialog } from '@/components/editor/StorageDialog'
 import { toast } from '@/hooks/use-toast'
 
 import { importFile } from '@/lib/editor/media/probe'
-import { relinkPatchFrom } from '@/lib/editor/media/relink'
+import { storeMediaAsset } from '@/lib/editor/media/persist'
 import { buildProxy, dropProxy } from '@/lib/editor/media/proxies'
 import { shouldProxy } from '@/lib/editor/proxy'
 import { commandsToAddMedia } from '@/lib/editor/actions'
 import { activeSequenceDuration } from '@/lib/editor/factories'
-import { importMediaFiles } from '@/lib/editor/project-io'
+import {
+  currentProjectToken,
+  importMediaFiles,
+  isProjectTokenCurrent,
+  relinkPatchFor,
+} from '@/lib/editor/project-io'
 import { useEditorStore, useStableDoc } from '@/lib/editor/store'
 import type { MediaAsset } from '@/lib/editor/types'
 import { cn } from '@/lib/utils'
@@ -33,6 +40,7 @@ export function MediaBin({ className, heading = true }: { className?: string; he
   const sourceAssetId = useEditorStore((s) => s.sourceAssetId)
   const setSourceAsset = useEditorStore((s) => s.setSourceAsset)
   const [importing, setImporting] = useState(0)
+  const [storageOpen, setStorageOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const importFiles = useCallback(async (files: FileList | File[]) => {
@@ -73,23 +81,45 @@ export function MediaBin({ className, heading = true }: { className?: string; he
   }
 
   const relink = async (asset: MediaAsset, file: File) => {
+    const token = currentProjectToken()
+    let fresh: MediaAsset | null = null
+    /** True only once the doc takes the probed asset. */
+    let attached = false
     try {
-      const fresh = await importFile(file)
+      fresh = await importFile(file)
+      if (!isProjectTokenCurrent(token)) return
+      // Store the replacement before the doc names its hash. A session-only
+      // relink clears the hash, so a reload cannot name bytes we do not have.
+      const stored = await storeMediaAsset(token.projectId, fresh)
+      if (!isProjectTokenCurrent(token)) return
+      if (stored.warning) {
+        toast({
+          title: 'Media is session-only',
+          description: stored.warning,
+          variant: 'destructive',
+        })
+      }
       const applied = useEditorStore.getState().apply({
         type: 'relinkMedia',
         mediaId: asset.id,
-        patch: relinkPatchFrom(fresh, 'manual'),
+        patch: relinkPatchFor(stored.asset, stored.stored),
       })
       if (!applied) return
+      attached = true
       // The source bytes changed, so any proxy built for the old file is stale.
       dropProxy(asset.id)
       toast({ title: 'Media relinked', description: asset.name })
     } catch (error) {
+      if (!isProjectTokenCurrent(token)) return
       toast({
         title: 'Relink failed',
         description: error instanceof Error ? error.message : String(error),
         variant: 'destructive',
       })
+    } finally {
+      // A refused relink (a locked track, a replaced project) leaves the probed
+      // bytes owned by nobody; release their object URL with them.
+      if (fresh && !attached) URL.revokeObjectURL(fresh.url)
     }
   }
 
@@ -110,19 +140,32 @@ export function MediaBin({ className, heading = true }: { className?: string; he
         className={cn('flex items-center justify-between gap-2 px-3 py-2', heading && 'border-b')}
       >
         {heading && <h2 className="text-sm font-semibold">Media</h2>}
-        <Button
-          size="sm"
-          variant="secondary"
-          className="h-7 gap-1.5"
-          onClick={() => fileInputRef.current?.click()}
-        >
-          {importing > 0 ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <Import className="size-3.5" />
-          )}
-          Import
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1.5"
+            aria-label="Project storage"
+            title="Project storage"
+            data-testid="media-storage"
+            onClick={() => setStorageOpen(true)}
+          >
+            <HardDrive className="size-3.5" />
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-7 gap-1.5"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {importing > 0 ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Import className="size-3.5" />
+            )}
+            Import
+          </Button>
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -136,6 +179,8 @@ export function MediaBin({ className, heading = true }: { className?: string; he
           }}
         />
       </div>
+
+      <StorageDialog open={storageOpen} onOpenChange={setStorageOpen} />
 
       <div className="editor-scroll mt-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3 pb-3">
         {media.length === 0 && (

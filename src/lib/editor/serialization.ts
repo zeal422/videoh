@@ -54,6 +54,7 @@ import {
 } from './lut'
 import { applyMarkerPatch, isMarkerColor } from './markers'
 import {
+  isValidContentHash,
   isValidWaveformPeaks,
   sanitizeGain,
   sanitizeThumbnail,
@@ -96,11 +97,12 @@ import type {
 
 /**
  * v2 added markers (0.5.5); v3 added the LUT library (0.7.0); v4 added
- * compound-clip sequences (0.8.1). The loader accepts every version from 1 up
- * to the current one, so older files load with the newer features absent; only
- * files from a NEWER app version are refused.
+ * compound-clip sequences (0.8.1); v5 added the per-asset media content hash
+ * (0.23.0). The loader accepts every version from 1 up to the current one, so
+ * older files load with the newer features absent; only files from a NEWER app
+ * version are refused.
  */
-export const SERIALIZATION_VERSION = 4
+export const SERIALIZATION_VERSION = 5
 export const PROJECT_FILE_EXTENSION = '.veproj.json'
 
 export interface SerializedMedia {
@@ -114,6 +116,8 @@ export interface SerializedMedia {
   hasAudio?: boolean
   waveformPeaks?: number[]
   missing?: boolean
+  /** SHA-256 of the stored source bytes (0.23.0); absent for a session-only asset. */
+  contentHash?: string
 }
 
 export interface SerializedDoc {
@@ -146,6 +150,9 @@ export function serializeDoc(doc: Doc, savedAt = new Date().toISOString()): Seri
       ...(m.thumbnail ? { thumbnail: m.thumbnail } : {}),
       ...(m.hasAudio !== undefined ? { hasAudio: m.hasAudio } : {}),
       ...(m.waveformPeaks ? { waveformPeaks: m.waveformPeaks } : {}),
+      // Only a valid path-safe key is persisted; a malformed hash would name
+      // nothing the store can read, so it is dropped instead of round-tripped.
+      ...(isValidContentHash(m.contentHash) ? { contentHash: m.contentHash } : {}),
     })),
   }
 }
@@ -504,6 +511,9 @@ function hydrateMedia(raw: Record<string, unknown>): MediaAsset {
     ...(thumbnail ? { thumbnail } : {}),
     ...(typeof raw.hasAudio === 'boolean' ? { hasAudio: raw.hasAudio } : {}),
     ...(isValidWaveformPeaks(raw.waveformPeaks) ? { waveformPeaks: [...raw.waveformPeaks] } : {}),
+    // A malformed, uppercase, non-string, or path-like hash is dropped: the
+    // asset falls back to the missing/relink path instead of naming a path.
+    ...(isValidContentHash(raw.contentHash) ? { contentHash: raw.contentHash } : {}),
     missing: true,
   }
 }

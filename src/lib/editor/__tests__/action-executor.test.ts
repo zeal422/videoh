@@ -43,6 +43,7 @@ function makeContext(
     importMedia: vi.fn(),
     openExport: vi.fn(),
     openGain: vi.fn(),
+    freezeFrame: vi.fn(),
     editMarker: vi.fn(),
     seek: vi.fn(),
     zoomToFit: vi.fn(),

@@ -48,6 +48,10 @@ Stable hooks used across flows and tests:
 - The media bin accepts multi-file selection and OS drag-and-drop. Import probes duration/size,
   generates a JPEG thumbnail (≤160 px), decodes audio for waveform peaks
   (`WAVEFORM_BUCKETS = 1000`) and records `hasAudio`.
+- Import hashes the file (SHA-256) and writes the bytes to OPFS under
+  `<project-id>/<content-hash>` with a MIME sidecar before the asset reaches the doc, so a saved
+  project can restore it after a reload. A write failure (unsupported OPFS, quota, private mode)
+  still imports the asset for this session, leaves `contentHash` unset, and warns with the file name.
 - Re-importing a file whose name matches an offline asset relinks it in place instead of adding a
   twin. The relink patch is shared with the per-asset Relink button.
 - Removing an asset leaves clips with a dangling `mediaId`: the span renders black (the offline
@@ -697,20 +701,87 @@ Stable hooks used across flows and tests:
 
 ## Save, load, autosave, restore
 
-- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 4; versions 1, 2 and 3 still load) and
-  downloads it; object URLs are stripped and never persisted.
-- **Open** hydrates every asset with `missing: true`; object URLs cannot persist. Re-importing a file
-  with a matching name relinks it automatically, or the user can relink each asset from the media bin.
-  A relink writes only media details through a whitelist: the asset's identity is immutable, a
-  non-undefined source handle must pass the browser-side `isNativeFile` guard, and a relink that clears
-  `missing` must leave a usable URL. A whitespace-only URL is rejected.
+- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 5; versions 1 to 4 still load, and a v5
+  file needs this build), writes a claim shard for every hash the snapshot references, and downloads
+  the file. A refused claim downloads nothing: a copy is never written with unclaimed media. Object
+  URLs are stripped and never persisted.
+- **Open** parses synchronously, then rehydrates: each asset with a `contentHash` reads its verified
+  bytes, rebuilds the `File` from the serialized name plus the sidecar MIME type, and creates a fresh
+  object URL before `installProject` runs once. An asset without a hash, or with missing or damaged
+  bytes, stays `missing` and relinks. The open writes the claim shard before install; a failed claim
+  still opens the project, warns, and disables Clean Unused Media until a save claims the bytes. A
+  load superseded by a newer open or File > New revokes the URLs it created and installs nothing.
+- Every open tab holds the shared Web Lock `media-project:<project-id>`. The boot doc announces itself
+  on mount even though it never installs, an open or restore prepares the incoming project's hold while
+  the live project keeps its own until the install commits. Each load owns a distinct prepared hold, so
+  a discarded or superseded load releases only the hold it acquired, never another project's or a newer
+  load's. Clean Unused Media drops this tab's hold, requests the lock exclusively, and
+  deletes only when no other tab has the project open. A clean re-reads the doc, both history stacks,
+  the autosave slot, and every claim shard at delete time, refuses when the open project changed before
+  the deletes, and refuses outright without Web Locks or with missing claims.
+- Re-importing a file with a matching name relinks it automatically, or the user can relink each asset
+  from the media bin. A relink writes the new bytes first, then updates the asset's `contentHash`; a
+  failed write applies a session-only relink with the hash cleared. A relink writes only media details
+  through a whitelist: the asset's identity is immutable, a non-undefined source handle must pass the
+  browser-side `isNativeFile` guard, and a relink that clears `missing` must leave a usable URL. A
+  whitespace-only URL is rejected. Removing an asset never deletes stored bytes, because undo restores
+  the entry; deletion belongs to Clean Unused Media or Clear All Stored Media.
 - While the playhead sits on a clip whose media is offline, the monitor paints **Media offline** with
   the file names and a relink hint. The frame is genuinely black and silent; the overlay is what keeps
   that from reading as a broken preview.
 - **Autosave** writes to `localStorage` (`web-video-editor:autosave:v1`, 800 ms debounce) after each
   settled change; transient drag frames are skipped.
-- On startup a valid autosave raises a banner: **Restore** replaces the doc (undoable) or **Discard**
-  clears it.
+- On startup a valid autosave raises a banner: **Restore** rehydrates and installs the doc (undoable)
+  or **Discard** clears it. Discarding a restore that is still rehydrating prevents it from installing.
+  A restore writes no claim; the autosave slot is a live reference, so Clean Unused Media keeps its
+  hashes until the slot stops referencing them.
+
+## Durable media storage and cleanup
+
+- Stored keys are `<project-id>/<content-hash>`; the hash is the SHA-256 of the bytes, so an entry is
+  immutable and two copies can resolve different revisions of the same source. A sidecar
+  `<content-hash>.json` holds the MIME type, and every read verifies the hash, so a partial or damaged
+  entry reads as missing and is rewritten on the next import. A damaged entry is quarantined while the
+  replacement writes, and restored only when its bytes still verify if that write fails, so a damaged
+  entry is never resurrected and a valid copy another writer promoted survives.
+- An explicit save and open write an immutable `claims/<claim-id>.json` shard listing the hashes that
+  copy may use. Shards only grow and are never merged, so concurrent saves cannot lose a claim. A
+  missing or unreadable claims directory disables content-hash deletion; clean may only remove temp and
+  quarantine files. A project that already stores hashes but has lost its claims directory is not
+  repaired with an empty record: clean stays blocked and an explicit save refuses until Clear All
+  Stored Media resets the project. An unreadable shard also refuses a new claim, so a save fails
+  instead of publishing beside records it cannot read.
+- Clean Unused Media lists candidates with their sizes and requires confirmation. It keeps every hash
+  reachable from the live doc, both history stacks, the autosave slot for this project, and every claim
+  shard, and it reports the reclaimed size. Same-tab imports, relinks, Freeze Frame writes, and
+  rehydration wait for a running clean, so a candidate hash cannot be rewritten between the reference
+  snapshot and the delete. Clear All Stored Media is the only action that removes claims; it names that
+  saved copies lose their media, needs a second confirmation, and the confirmation is bound to the
+  project it named. It holds the same-tab clean flag, waits for an in-flight media write before it
+  snapshots the directory, and runs the deletes under the exclusive project lock, so another open tab
+  cannot write during or after the snapshot. Without a matching shared hold, or without Web Locks to
+  coordinate with, it refuses instead of reporting a partial clear as complete. A failed delete is reported as a
+  failure, never as "nothing to clear".
+- The storage dialog shows project usage, the origin estimate, and a persistent-storage request. A
+  quota or unsupported-OPFS failure never blocks an import; it degrades to a session-only asset with a
+  warning, and clearing site data removes stored media and falls back to relink.
+
+## Freeze frame
+
+- Freeze Frame captures the composited frame at the playhead. It refuses when nothing visible is under
+  the playhead, when a visible source is offline, or when the active sequence cannot accept a new
+  track, before any encoding starts. A clip whose evaluated opacity is zero draws nothing, so an
+  offline source on a fully transparent clip does not block a still of the footage beneath it, and a
+  playhead with only fully transparent clips refuses as empty instead of encoding black.
+- The frame renders at project size through the same compositor as the preview, on an opaque surface,
+  and encodes a PNG. The PNG imports through the normal media path (thumbnail, hash, OPFS), then one
+  batch adds the asset, a new video track at index 0 of the active sequence, and a 2 second still clip
+  at the playhead. The new clip is selected and the playhead does not move. Overlapping instances of
+  one compound sequence each load the source frame for their own local time, and a project or active
+  sequence that changes during the render cancels the still instead of landing it on the new one.
+- A new top track means a locked source lane and a clip at the playhead cannot block or cover the
+  still. Undo removes the clip and the asset entry but keeps the stored bytes, so redo restores a
+  working still; clean reclaims those bytes only once history no longer reaches them.
 
 ## Workspace and menus
 

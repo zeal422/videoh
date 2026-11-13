@@ -1,6 +1,7 @@
 import { WAVEFORM_BUCKETS } from '../constants'
 import { uid } from '../factories'
 import type { MediaAsset, MediaKind } from '../types'
+import { hashFile } from './media-store'
 
 /**
  * File import pipeline (browser-only).
@@ -65,9 +66,17 @@ export async function importFile(file: File): Promise<MediaAsset> {
 
   const url = URL.createObjectURL(file)
   try {
-    if (kind === 'image') return await importImage(file, url)
-    if (kind === 'video') return await importVideo(file, url)
-    return await importAudio(file, url)
+    const asset =
+      kind === 'image'
+        ? await importImage(file, url)
+        : kind === 'video'
+          ? await importVideo(file, url)
+          : await importAudio(file, url)
+    // The content hash keys the durable store (0.23.0). Hashing is best-effort:
+    // a runtime without `crypto.subtle` still gets a working session-only asset.
+    return tryHashFile(file).then((contentHash) =>
+      contentHash ? { ...asset, contentHash } : asset,
+    )
   } catch (error) {
     URL.revokeObjectURL(url)
     throw error instanceof MediaImportError
@@ -152,6 +161,15 @@ async function importAudio(file: File, url: string): Promise<MediaAsset> {
     file,
     ...(waveformPeaks ? { waveformPeaks } : {}),
     hasAudio: true,
+  }
+}
+
+/** SHA-256 of the source bytes, or undefined when the runtime cannot hash. */
+async function tryHashFile(file: File): Promise<string | undefined> {
+  try {
+    return await hashFile(file)
+  } catch {
+    return undefined
   }
 }
 

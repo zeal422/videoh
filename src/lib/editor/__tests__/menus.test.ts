@@ -67,6 +67,7 @@ function baseCtx(overrides: Partial<MenuContext> = {}): MenuContext {
     canLink: false,
     canCloseGaps: false,
     canJoinClips: false,
+    canFreezeFrame: false,
     canCreateCompound: false,
     hasMarkers: false,
     hasSelectedMarker: false,

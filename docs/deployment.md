@@ -16,6 +16,25 @@ Build, run, and verify. Sibling docs: [docs index](README.md) · [architecture.m
 - Optional GoatCounter analytics through `NEXT_PUBLIC_GOATCOUNTER_URL`. Leave it empty to disable
   analytics, including in Preview and Development.
 
+## Media storage
+
+- Imported media is stored on the visitor's device in OPFS (Origin Private File System), under
+  `<project-id>/<content-hash>` plus a MIME sidecar and immutable claim shards. Nothing is uploaded;
+  there is still no server-side media backend.
+- OPFS needs a secure context and a browser that implements `navigator.storage.getDirectory`. When it
+  is unavailable, a quota is exceeded, or private mode blocks the write, the import still works for
+  the session, warns, and needs relinking after a reload. The storage dialog shows the usage and offers
+  a persistent-storage request; clearing site data removes stored media along with autosave.
+- Clean Unused Media uses the Web Locks API to refuse while another tab has the project open. Without
+  Web Locks it refuses outright. If a project still has stored bytes but its claims directory is gone,
+  saved-copy records are treated as lost: clean stays blocked and saves refuse until Clear All Stored
+  Media resets that project. Clear All Stored Media runs behind a second confirmation and refuses while
+  another tab has the project open; without Web Locks there is no cross-tab coordination, so it refuses
+  rather than report a partial clear as complete.
+- A `.veproj.json` file references media by hash; it is not a media backup, and a timeline export
+  is a rendered file that preserves neither the original sources nor the media references. Keep
+  separate copies of the original media and of any generated file before clearing site data.
+
 ## Routes
 
 | Route                          | Behavior                                      |

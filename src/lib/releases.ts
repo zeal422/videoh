@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.23.0',
+    date: '2026-11-13',
+    highlights: [
+      'Imported media survives a reload where the browser can store it, with working preview and frame-accurate export',
+      'Each project copy resolves its own media revision, so relinking one leaves the others alone',
+      'Freeze Frame captures the frame at the playhead as a still on a new top track',
+      'Clean Unused Media reclaims space and never deletes bytes an undo, autosave, or saved copy can reach',
+      'Project files move to format version 5; older files still open',
+    ],
+  },
+  {
     version: '0.22.0',
     date: '2026-11-13',
     highlights: [

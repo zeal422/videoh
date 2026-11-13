@@ -42,8 +42,12 @@ import {
 } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
 import { clearAutosave, initAutosave, readValidAutosave } from '@/lib/editor/persistence'
-import { projectFileName, serializeDoc } from '@/lib/editor/serialization'
-import { installProject } from '@/lib/editor/project-io'
+import {
+  downloadProjectJSON,
+  ensureProjectLock,
+  releaseProjectLock,
+  restoreAutosaveProject,
+} from '@/lib/editor/project-io'
 import { disposeAll, syncFilmstrips } from '@/lib/editor/media/filmstrip-cache'
 import { toast } from '@/hooks/use-toast'
 
@@ -265,6 +269,26 @@ export function EditorShell() {
     [hidden.media, hidden.preview, hidden.source, setSize, upperRowPanelCount],
   )
 
+  // The initial doc never routes through installProject, so it must announce
+  // itself here: without the shared hold, another tab could clean this
+  // project's stored bytes while this tab is the one importing them.
+  useEffect(() => {
+    void ensureProjectLock(useEditorStore.getState().doc)
+    return () => releaseProjectLock()
+  }, [])
+
+  // Undo and redo restore docs without calling installProject, so a restore
+  // that crosses projects would leave the previous project's hold active.
+  // Re-sync the shared hold whenever the live project identity changes; the
+  // call is idempotent when the project did not change.
+  useEffect(() => {
+    return useEditorStore.subscribe((state, previous) => {
+      if (state.doc.project.id !== previous.doc.project.id) {
+        void ensureProjectLock(state.doc)
+      }
+    })
+  }, [])
+
   // Autosave lifecycle: subscribe once; check for a restorable session on mount.
   useEffect(() => {
     const unsubscribe = initAutosave()
@@ -372,15 +396,17 @@ export function EditorShell() {
   }, [pendingRestore, autosaveScanned])
 
   const handleSave = useCallback(() => {
-    const state = useEditorStore.getState()
-    const json = JSON.stringify(serializeDoc(state.doc), null, 2)
-    const blob = new Blob([json], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = projectFileName(state.doc.project.name)
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(url), 2000)
+    // The save path claims this copy's stored media before it writes a file;
+    // a refused claim downloads nothing and reports why.
+    void downloadProjectJSON()
+      .then((filename) => toast({ title: 'Project saved', description: `${filename} downloaded` }))
+      .catch((error: unknown) =>
+        toast({
+          title: 'Save failed',
+          description: error instanceof Error ? error.message : String(error),
+          variant: 'destructive',
+        }),
+      )
   }, [])
 
   useEditorKeyboard(handleSave)
@@ -391,10 +417,15 @@ export function EditorShell() {
       // can be stale if the store cleared or replaced it.
       const restore = useEditorStore.getState().pendingRestore
       if (!restore) return
-      const { doc, warnings } = restore
-      // The one install path invalidates any in-flight project load, revokes
-      // the old proxies, installs the doc, and clears the banner.
-      installProject(doc)
+      // Rehydrate stored media, then install once through the shared path. A
+      // superseded restore (a project open landed first, or the user pressed
+      // Discard while this ran) installs nothing.
+      const restored = await restoreAutosaveProject(
+        restore,
+        () => useEditorStore.getState().pendingRestore === restore,
+      )
+      if (!restored) return
+      const { doc, warnings } = restored
       const remaining = doc.media.filter((asset) => asset.missing).length
       const description = [
         remaining > 0
@@ -418,8 +449,10 @@ export function EditorShell() {
   }
 
   const discardAutosave = () => {
-    clearAutosave()
+    // Clear the request first: an in-flight Restore that is still rehydrating
+    // sees it disappear and installs nothing.
     useEditorStore.getState().clearPendingRestore()
+    clearAutosave()
   }
 
   return (

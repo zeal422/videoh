@@ -1,13 +1,19 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   bumpProjectGeneration,
+  currentProjectLock,
+  discardProjectLock,
+  ensureProjectLock,
+  releaseProjectLock,
   installProject,
   isCurrentProjectLoad,
   loadProjectFile,
   openProjectFile,
 } from '../project-io'
+import { projectLockName } from '../media/project-lock'
+import { createFakeOpfs, FakeLockManager } from './mocks/opfs'
 import { createDoc } from '../factories'
 import { parseSerializedDoc, serializeDoc } from '../serialization'
 import { useEditorStore } from '../store'
@@ -171,5 +177,207 @@ describe('installProject (runtime)', () => {
         pendingRestore: before.pendingRestore,
       })
     }
+  })
+})
+
+describe('ensureProjectLock ordering', () => {
+  afterEach(() => {
+    releaseProjectLock()
+    vi.unstubAllGlobals()
+  })
+
+  it('invalidates a waiting acquire for another project when the current one re-opens', async () => {
+    const locks = new FakeLockManager()
+    vi.stubGlobal('navigator', { locks })
+    const docA = createDoc()
+    docA.project.id = 'proj_a'
+    const docB = createDoc()
+    docB.project.id = 'proj_b'
+
+    const lockA = await ensureProjectLock(docA)
+    expect(lockA).not.toBeNull()
+
+    // Another tab holds B, so B's shared acquisition stays queued.
+    let releaseHolder!: () => void
+    const holder = locks.request(
+      projectLockName('proj_b'),
+      { mode: 'exclusive' },
+      () =>
+        new Promise<void>((resolve) => {
+          releaseHolder = resolve
+        }),
+    )
+    const pendingB = ensureProjectLock(docB)
+
+    // A newer open of the project that is already active re-uses A's lock.
+    const reused = await ensureProjectLock(docA)
+    expect(reused).toBe(lockA)
+
+    releaseHolder()
+    await holder
+    expect(await pendingB).toBeNull()
+    expect(currentProjectLock()).toBe(lockA)
+    await vi.waitFor(() => expect(locks.held(projectLockName('proj_b'))).toBe(0))
+  })
+
+  it('reuses a prepared hold for the live project instead of leaking it', async () => {
+    const locks = new FakeLockManager()
+    vi.stubGlobal('navigator', { locks })
+    const docA = createDoc()
+    docA.project.id = 'proj_a'
+    const docB = createDoc()
+    docB.project.id = 'proj_b'
+    const lockB = await ensureProjectLock(docB)
+    const preparedA = await ensureProjectLock(docA, { forInstall: true })
+
+    // The live doc is A while B is still active (an undo across projects, or
+    // an open racing the subscription): the prepared hold becomes active and
+    // the redundant acquisition is released, so no hold leaves the registry
+    // unreachable to releaseProjectLock.
+    const active = await ensureProjectLock(docA)
+    expect(active).toBe(preparedA)
+    expect(currentProjectLock()).toBe(preparedA)
+    expect(lockB?.isHeld).toBe(false)
+    await vi.waitFor(() => expect(locks.held(projectLockName('proj_a'))).toBe(1))
+    await vi.waitFor(() => expect(locks.held(projectLockName('proj_b'))).toBe(0))
+  })
+
+  it('retires a waiting acquire when the locks are released', async () => {
+    const locks = new FakeLockManager()
+    vi.stubGlobal('navigator', { locks })
+    const docA = createDoc()
+    docA.project.id = 'proj_a'
+    const docB = createDoc()
+    docB.project.id = 'proj_b'
+    await ensureProjectLock(docA)
+
+    // B's acquisition queues behind another tab's exclusive hold.
+    let releaseHolder!: () => void
+    const holder = locks.request(
+      projectLockName('proj_b'),
+      { mode: 'exclusive' },
+      () =>
+        new Promise<void>((resolve) => {
+          releaseHolder = resolve
+        }),
+    )
+    const pendingB = ensureProjectLock(docB)
+    // Teardown retires the request before it can activate.
+    releaseProjectLock()
+    releaseHolder()
+    await holder
+
+    expect(await pendingB).toBeNull()
+    expect(currentProjectLock()).toBeNull()
+    await vi.waitFor(() => expect(locks.held(projectLockName('proj_b'))).toBe(0))
+  })
+
+  it('re-syncs the shared hold when the doc project changes without an install', async () => {
+    const locks = new FakeLockManager()
+    vi.stubGlobal('navigator', { locks })
+    const docA = createDoc()
+    docA.project.id = 'proj_a'
+    const docB = createDoc()
+    docB.project.id = 'proj_b'
+    const lockA = await ensureProjectLock(docA)
+    installProject(docA)
+    expect(currentProjectLock()).toBe(lockA)
+
+    const preparedB = await ensureProjectLock(docB, { forInstall: true })
+    installProject(docB)
+    expect(currentProjectLock()).toBe(preparedB)
+
+    // An undo that restores A bypasses installProject; the same call the
+    // shell subscription makes re-syncs the hold to the live project.
+    useEditorStore.setState({ doc: docA })
+    await ensureProjectLock(useEditorStore.getState().doc)
+    expect(currentProjectLock()?.projectId).toBe('proj_a')
+    await vi.waitFor(() => expect(locks.held(projectLockName('proj_b'))).toBe(0))
+    expect(locks.held(projectLockName('proj_a'))).toBe(1)
+  })
+
+  it('keeps the installed lock until the replacement installs', async () => {
+    const locks = new FakeLockManager()
+    vi.stubGlobal('navigator', { locks })
+    const docA = createDoc()
+    docA.project.id = 'proj_a'
+    const docB = createDoc()
+    docB.project.id = 'proj_b'
+    const lockA = await ensureProjectLock(docA)
+    expect(currentProjectLock()).toBe(lockA)
+
+    const preparedB = await ensureProjectLock(docB, { forInstall: true })
+    expect(preparedB).not.toBeNull()
+    // B is held, but the live project is still A and keeps its own hold.
+    expect(currentProjectLock()).toBe(lockA)
+    expect(locks.held(projectLockName('proj_a'))).toBe(1)
+    expect(locks.held(projectLockName('proj_b'))).toBe(1)
+
+    installProject(docB)
+    expect(currentProjectLock()).toBe(preparedB)
+    await vi.waitFor(() => expect(locks.held(projectLockName('proj_a'))).toBe(0))
+    expect(locks.held(projectLockName('proj_b'))).toBe(1)
+  })
+
+  it("does not release another project's prepared hold when an older load is discarded", async () => {
+    const locks = new FakeLockManager()
+    vi.stubGlobal('navigator', { locks })
+    const docA = createDoc()
+    docA.project.id = 'proj_a'
+    const docB = createDoc()
+    docB.project.id = 'proj_b'
+    const docC = createDoc()
+    docC.project.id = 'proj_c'
+    const lockA = await ensureProjectLock(docA)
+    const lockB = await ensureProjectLock(docB, { forInstall: true })
+    await ensureProjectLock(docC, { forInstall: true })
+
+    // C's prepare superseded B. Discarding B's own hold must not touch C's.
+    discardProjectLock(lockB)
+
+    expect(currentProjectLock()).toBe(lockA)
+    await vi.waitFor(() => expect(locks.held(projectLockName('proj_b'))).toBe(0))
+    // C's hold is still live: a stale load's cancellation must not release it.
+    expect(locks.held(projectLockName('proj_c'))).toBe(1)
+  })
+
+  it('gives each load of one project its own prepared hold', async () => {
+    const locks = new FakeLockManager()
+    vi.stubGlobal('navigator', { locks })
+    const docA = createDoc()
+    docA.project.id = 'proj_a'
+    const docB = createDoc()
+    docB.project.id = 'proj_b'
+    await ensureProjectLock(docA)
+    const first = await ensureProjectLock(docB, { forInstall: true })
+    const second = await ensureProjectLock(docB, { forInstall: true })
+
+    expect(first).not.toBe(second)
+    // The stale load cannot release the newer load's hold.
+    discardProjectLock(first)
+    expect(second?.isHeld).toBe(true)
+
+    installProject(docB)
+    expect(currentProjectLock()).toBe(second)
+    // The stale load's hold settles away; the committed one remains.
+    await vi.waitFor(() => expect(locks.held(projectLockName('proj_b'))).toBe(1))
+  })
+
+  it('keeps the installed lock when a prepared install is discarded', async () => {
+    const locks = new FakeLockManager()
+    vi.stubGlobal('navigator', { locks })
+    const docA = createDoc()
+    docA.project.id = 'proj_a'
+    const docB = createDoc()
+    docB.project.id = 'proj_b'
+    const lockA = await ensureProjectLock(docA)
+    const preparedB = await ensureProjectLock(docB, { forInstall: true })
+
+    discardProjectLock(preparedB)
+
+    expect(currentProjectLock()).toBe(lockA)
+    expect(preparedB?.isHeld).toBe(false)
+    await vi.waitFor(() => expect(locks.held(projectLockName('proj_b'))).toBe(0))
+    expect(locks.held(projectLockName('proj_a'))).toBe(1)
   })
 })

@@ -464,6 +464,13 @@ export interface MediaAsset {
    * carries the object URL, which cannot be decoded frame-accurately).
    */
   file?: File
+  /**
+   * SHA-256 of the source bytes, lowercase hex (0.23.0). It keys the durable
+   * OPFS copy, so a saved project can rehydrate this asset after a reload, and
+   * a relink in one copy never changes the bytes another copy loads. Absent for
+   * a session-only import or a legacy (v4) project.
+   */
+  contentHash?: string
   /** Small JPEG dataURL used by the media bin. */
   thumbnail?: string
   /**

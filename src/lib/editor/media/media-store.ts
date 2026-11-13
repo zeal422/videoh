@@ -1,0 +1,781 @@
+/**
+ * media-store.ts: durable media storage in OPFS (0.23.0).
+ *
+ * Keys are `<project-id>/<content-hash>`: the hash is the SHA-256 of the bytes,
+ * so an entry is immutable and a saved copy that still points at an old hash
+ * keeps loading those bytes after another copy relinks. A sidecar
+ * `<content-hash>.json` stores the MIME type, which is a property of the bytes;
+ * the display name stays per asset in the project file.
+ *
+ * Readers verify a hash and treat a mismatch as missing, so a partial write can
+ * never be served as valid media. Writes go to a temporary entry, verify, then
+ * promote: an existing valid entry is reused, a damaged one is quarantined
+ * first. The claims directory is the record a closed copy relies on; a missing
+ * or unreadable claims directory disables content-hash deletion.
+ *
+ * Browser-bound. The suite drives it through a stubbed `navigator.storage`
+ * returning an in-memory directory (see `__tests__/mocks/opfs.ts`).
+ */
+
+import { isValidContentHash } from '../project-validation'
+
+/** Largest project id the store accepts as a directory name. */
+const PROJECT_ID_MAX = 128
+
+const CLAIMS_DIR = 'claims'
+const TEMPORARY_PREFIX = '.tmp-'
+const QUARANTINE_PREFIX = '.quarantine-'
+/** Metadata entries the hash iterator must never treat as media. */
+const SIDECAR_SUFFIX = '.json'
+
+export class MediaStoreError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MediaStoreError'
+  }
+}
+
+/** The subset of `FileSystemWritableFileStream` the store uses. */
+export interface MediaStoreWritable {
+  write(data: Blob | BufferSource | string): Promise<void>
+  close(): Promise<void>
+  abort?(): Promise<void>
+}
+
+/** The subset of `FileSystemFileHandle` the store uses. */
+export interface MediaStoreFileHandle {
+  getFile(): Promise<File>
+  createWritable(): Promise<MediaStoreWritable>
+  /** OPFS rename, when the browser implements it (Chromium). */
+  move?(destination: MediaStoreDirectory, name: string): Promise<void>
+}
+
+/** The subset of `FileSystemDirectoryHandle` the store uses. */
+export interface MediaStoreDirectory {
+  getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<MediaStoreDirectory>
+  getFileHandle(name: string, options?: { create?: boolean }): Promise<MediaStoreFileHandle>
+  removeEntry(name: string, options?: { recursive?: boolean }): Promise<void>
+  keys(): AsyncIterableIterator<string>
+}
+
+export interface StoredMediaFile {
+  file: File
+  /** Sidecar MIME type, or the empty string when the sidecar is missing or malformed. */
+  type: string
+  size: number
+  hasSidecar: boolean
+}
+
+export interface StoredHashEntry {
+  hash: string
+  size: number
+}
+
+export interface MediaCleanupResult {
+  /** Content hashes that were deleted. */
+  deleted: string[]
+  /** Bytes reclaimed by this run. */
+  reclaimed: number
+  /** True when claims were missing or unreadable, so no content hash was deleted. */
+  claimsUnreadable: boolean
+  /** Temporary and quarantine entries removed alongside the hashes. */
+  removedTemporary: number
+}
+
+export interface MediaClearResult {
+  deleted: number
+  reclaimed: number
+}
+
+// runtime detection
+
+function storageManager(): StorageManager | undefined {
+  if (typeof navigator === 'undefined') return undefined
+  const storage = (navigator as Navigator | undefined)?.storage
+  return storage && typeof storage.getDirectory === 'function' ? storage : undefined
+}
+
+/** True when this browser exposes OPFS through `navigator.storage`. */
+export function isMediaStoreSupported(): boolean {
+  return storageManager() !== undefined
+}
+
+async function rootDirectory(): Promise<MediaStoreDirectory> {
+  const storage = storageManager()
+  if (!storage) throw new MediaStoreError('Media storage is unavailable')
+  try {
+    return (await storage.getDirectory()) as unknown as MediaStoreDirectory
+  } catch {
+    throw new MediaStoreError('Media storage is unavailable')
+  }
+}
+
+// validation and key helpers
+
+/**
+ * A project id becomes a directory name. Only characters a generated id can
+ * contain survive, so a crafted project cannot traverse the store.
+ */
+export function isValidProjectId(value: unknown): value is string {
+  return (
+    typeof value === 'string' && value.length <= PROJECT_ID_MAX && /^[A-Za-z0-9_-]+$/.test(value)
+  )
+}
+
+function assertProjectId(projectId: string): void {
+  if (!isValidProjectId(projectId))
+    throw new MediaStoreError('Invalid project id for media storage')
+}
+
+function assertContentHash(contentHash: string): void {
+  if (!isValidContentHash(contentHash)) throw new MediaStoreError('Invalid media content hash')
+}
+
+function sidecarName(contentHash: string): string {
+  return `${contentHash}${SIDECAR_SUFFIX}`
+}
+
+function randomSuffix(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function temporaryName(kind: 'tmp' | 'quarantine'): string {
+  return `${kind === 'tmp' ? TEMPORARY_PREFIX : QUARANTINE_PREFIX}${randomSuffix()}`
+}
+
+function isEntryNameMetadata(name: string): boolean {
+  return (
+    name === CLAIMS_DIR ||
+    name.startsWith(TEMPORARY_PREFIX) ||
+    name.startsWith(QUARANTINE_PREFIX) ||
+    // A sidecar belongs to its hash; it is never a media entry itself.
+    (name.endsWith(SIDECAR_SUFFIX) && isValidContentHash(name.slice(0, -SIDECAR_SUFFIX.length)))
+  )
+}
+
+function isNotFound(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'NotFoundError'
+  )
+}
+
+// hashing
+
+/** Lowercase hex SHA-256 of the given bytes. */
+export async function sha256Hex(data: BufferSource): Promise<string> {
+  const subtle = globalThis.crypto?.subtle
+  if (!subtle) throw new MediaStoreError('Hashing is unavailable')
+  const digest = await subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+/** Lowercase hex SHA-256 of a file's bytes. */
+export async function hashFile(file: Blob): Promise<string> {
+  return sha256Hex(await file.arrayBuffer())
+}
+
+// directory primitives
+
+async function projectDirectory(
+  projectId: string,
+  create: boolean,
+): Promise<MediaStoreDirectory | null> {
+  assertProjectId(projectId)
+  const root = await rootDirectory()
+  try {
+    return await root.getDirectoryHandle(projectId, create ? { create: true } : undefined)
+  } catch (error) {
+    if (!create && isNotFound(error)) return null
+    throw new MediaStoreError('Media storage could not open the project')
+  }
+}
+
+/**
+ * `ready` means the project's claims directory is complete records. `claims-missing`
+ * means the project already held stored bytes but its claims directory is gone:
+ * recreating an empty one would turn "unknown claims" into "no claims", and a
+ * later clean would delete bytes a closed copy still references.
+ */
+export type ProjectMediaState = 'ready' | 'claims-missing'
+
+/**
+ * Creates the project directory and its claims directory for a new project.
+ * For an existing project whose claims directory is missing, an empty claims
+ * directory is created only when no stored hash could be protected by a lost
+ * claim; any stored hash keeps the state `claims-missing` until the user
+ * explicitly clears the project's media.
+ */
+export async function ensureProjectMedia(projectId: string): Promise<ProjectMediaState> {
+  assertProjectId(projectId)
+  const root = await rootDirectory()
+  let dir: MediaStoreDirectory
+  let existed = true
+  try {
+    dir = await root.getDirectoryHandle(projectId)
+  } catch (error) {
+    if (!isNotFound(error)) throw new MediaStoreError('Media storage could not open the project')
+    existed = false
+    try {
+      dir = await root.getDirectoryHandle(projectId, { create: true })
+    } catch {
+      throw new MediaStoreError('Media storage could not create the project')
+    }
+  }
+  if (!existed) {
+    await dir.getDirectoryHandle(CLAIMS_DIR, { create: true })
+    return 'ready'
+  }
+  try {
+    await dir.getDirectoryHandle(CLAIMS_DIR)
+    return 'ready'
+  } catch (error) {
+    if (!isNotFound(error)) throw new MediaStoreError('Media claims could not be read')
+  }
+  const hasStoredHashes = (await directoryNames(dir)).some(isValidContentHash)
+  if (hasStoredHashes) return 'claims-missing'
+  // The directory was emptied (for example by clear-all) or never had media.
+  // There is nothing a lost claim could still protect, so an empty record is
+  // complete and clean can stay available.
+  await dir.getDirectoryHandle(CLAIMS_DIR, { create: true })
+  return 'ready'
+}
+
+async function readFileHandle(dir: MediaStoreDirectory, name: string): Promise<File | null> {
+  try {
+    const handle = await dir.getFileHandle(name)
+    return await handle.getFile()
+  } catch (error) {
+    if (isNotFound(error)) return null
+    throw error
+  }
+}
+
+async function removeEntryQuiet(
+  dir: MediaStoreDirectory,
+  name: string,
+  options?: { recursive?: boolean },
+): Promise<boolean> {
+  try {
+    await dir.removeEntry(name, options)
+    return true
+  } catch (error) {
+    if (isNotFound(error)) return false
+    return false
+  }
+}
+
+/**
+ * Deletes an entry, rethrowing anything except a missing entry. Destructive
+ * actions that report a result use this, so a failed delete cannot be counted
+ * as "nothing to remove". Best-effort cleanup keeps the quiet variant.
+ */
+async function removeEntryStrict(
+  dir: MediaStoreDirectory,
+  name: string,
+  options?: { recursive?: boolean },
+): Promise<boolean> {
+  try {
+    await dir.removeEntry(name, options)
+    return true
+  } catch (error) {
+    if (isNotFound(error)) return false
+    throw error
+  }
+}
+
+async function directoryNames(dir: MediaStoreDirectory): Promise<string[]> {
+  // Snapshot first: callers delete while they walk, and an async iterator over
+  // a directory that is being mutated is not guaranteed to be stable.
+  const names: string[] = []
+  for await (const name of dir.keys()) names.push(name)
+  return names
+}
+
+/** A file entry's size, or 0 when the name is a directory or cannot be read. */
+async function entrySizeQuiet(dir: MediaStoreDirectory, name: string): Promise<number> {
+  try {
+    const handle = await dir.getFileHandle(name)
+    return (await handle.getFile()).size
+  } catch {
+    return 0
+  }
+}
+
+/** Writes a blob to `name` in one create-writable pass. */
+async function writeBlob(
+  dir: MediaStoreDirectory,
+  name: string,
+  bytes: BufferSource | Blob | string,
+): Promise<void> {
+  const handle = await dir.getFileHandle(name, { create: true })
+  const writable = await handle.createWritable()
+  try {
+    await writable.write(bytes)
+    await writable.close()
+  } catch (error) {
+    try {
+      await writable.abort?.()
+    } catch {
+      // The temp entry is removed by the caller.
+    }
+    throw error
+  }
+}
+
+async function writeJson(dir: MediaStoreDirectory, name: string, value: unknown): Promise<void> {
+  await writeBlob(dir, name, JSON.stringify(value))
+}
+
+/**
+ * Moves a temp entry onto `contentHash`. OPFS `move` is used when the browser
+ * implements it; otherwise the verified bytes are copied into the final name.
+ * Readers verify the hash, so the copy fallback cannot serve a partial entry as
+ * valid.
+ */
+async function promote(
+  dir: MediaStoreDirectory,
+  tempName: string,
+  contentHash: string,
+  bytes: ArrayBuffer,
+): Promise<void> {
+  const temp = await dir.getFileHandle(tempName)
+  if (typeof temp.move === 'function') {
+    try {
+      await temp.move(dir, contentHash)
+      return
+    } catch {
+      // Fall through to the copy path.
+    }
+  }
+  await writeBlob(dir, contentHash, bytes)
+}
+
+// reads
+
+/** True when `contentHash` names an entry whose bytes still match the hash. */
+async function hasVerifiedEntry(dir: MediaStoreDirectory, contentHash: string): Promise<boolean> {
+  const file = await readFileHandle(dir, contentHash)
+  if (!file) return false
+  try {
+    return (await hashFile(file)) === contentHash
+  } catch {
+    return false
+  }
+}
+
+async function readSidecar(
+  dir: MediaStoreDirectory,
+  contentHash: string,
+): Promise<{ type: string } | null> {
+  const file = await readFileHandle(dir, sidecarName(contentHash))
+  if (!file) return null
+  try {
+    const parsed: unknown = JSON.parse(await file.text())
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const type = (parsed as { type?: unknown }).type
+    if (typeof type !== 'string' || type.length > 255) return null
+    return { type }
+  } catch {
+    return null
+  }
+}
+
+/** Reads verified bytes for a hash, or null when the entry is absent or damaged. */
+export async function readMediaFile(
+  projectId: string,
+  contentHash: string,
+): Promise<StoredMediaFile | null> {
+  assertProjectId(projectId)
+  assertContentHash(contentHash)
+  const dir = await projectDirectory(projectId, false)
+  if (!dir) return null
+  const file = await readFileHandle(dir, contentHash)
+  if (!file) return null
+  try {
+    if ((await hashFile(file)) !== contentHash) return null
+  } catch {
+    return null
+  }
+  const sidecar = await readSidecar(dir, contentHash)
+  return { file, type: sidecar?.type ?? '', size: file.size, hasSidecar: sidecar !== null }
+}
+
+// writes
+
+/**
+ * Stores the bytes for `contentHash` under the project, writing the sidecar
+ * type. A valid entry is reused; a damaged one is quarantined and replaced.
+ * Throws when the bytes do not hash to `contentHash`.
+ */
+export async function writeMediaFile(
+  projectId: string,
+  contentHash: string,
+  file: Blob,
+): Promise<void> {
+  assertProjectId(projectId)
+  assertContentHash(contentHash)
+  const dir = await projectDirectory(projectId, true)
+  if (!dir) throw new MediaStoreError('Media storage could not create the project')
+  const bytes = await file.arrayBuffer()
+  if ((await sha256Hex(bytes)) !== contentHash) {
+    throw new MediaStoreError('Media hash does not match its contents')
+  }
+  if (await hasVerifiedEntry(dir, contentHash)) {
+    await writeSidecar(dir, contentHash, file.type, bytes.byteLength)
+    return
+  }
+  // A damaged entry is moved aside so the replacement can take the real name.
+  // If the browser has no rename, dropping it is equivalent: readers already
+  // reject it.
+  let quarantined: string | null = null
+  const damaged = await readFileHandle(dir, contentHash)
+  if (damaged) {
+    const handle = await dir.getFileHandle(contentHash)
+    const target = temporaryName('quarantine')
+    if (typeof handle.move === 'function') {
+      try {
+        await handle.move(dir, target)
+        quarantined = target
+      } catch {
+        await removeEntryQuiet(dir, contentHash)
+      }
+    } else {
+      await removeEntryQuiet(dir, contentHash)
+    }
+  }
+  const tempName = temporaryName('tmp')
+  let promoted = false
+  try {
+    await writeBlob(dir, tempName, bytes)
+    const written = await readFileHandle(dir, tempName)
+    if (!written || (await hashFile(written)) !== contentHash) {
+      throw new MediaStoreError('Stored media failed verification')
+    }
+    await promote(dir, tempName, contentHash, bytes)
+    promoted = true
+  } finally {
+    await removeEntryQuiet(dir, tempName)
+    if (quarantined) {
+      // A failed replacement must not destroy the entry that was already there:
+      // another writer may have just promoted a valid copy for this hash.
+      if (promoted) await removeEntryQuiet(dir, quarantined)
+      else await restoreQuarantined(dir, quarantined, contentHash)
+    }
+  }
+  await writeSidecar(dir, contentHash, file.type, bytes.byteLength)
+}
+
+/**
+ * Returns a quarantined entry to its real name after a failed replacement.
+ * Best effort: the original failure is what the caller needs to see. Only bytes
+ * that still hash to `contentHash` go back, so a damaged entry is never
+ * resurrected under a valid name. A valid entry a concurrent writer already
+ * promoted wins, and the quarantine is dropped.
+ */
+async function restoreQuarantined(
+  dir: MediaStoreDirectory,
+  quarantined: string,
+  contentHash: string,
+): Promise<void> {
+  try {
+    const file = await readFileHandle(dir, quarantined)
+    if (!file || (await hashFile(file)) !== contentHash) {
+      await removeEntryQuiet(dir, quarantined)
+      return
+    }
+    const current = await readFileHandle(dir, contentHash)
+    if (current) {
+      if ((await hashFile(current)) === contentHash) {
+        await removeEntryQuiet(dir, quarantined)
+        return
+      }
+      await removeEntryQuiet(dir, contentHash)
+    }
+    const handle = await dir.getFileHandle(quarantined)
+    if (typeof handle.move === 'function') {
+      await handle.move(dir, contentHash)
+      return
+    }
+    await writeBlob(dir, contentHash, await file.arrayBuffer())
+    await removeEntryQuiet(dir, quarantined)
+  } catch {
+    // The caller reports the failed write; a leftover quarantine can be cleaned.
+  }
+}
+
+/**
+ * Best-effort sidecar write. The sidecar is metadata: losing it costs a MIME
+ * fallback from the file extension, never the media bytes, so a quota failure
+ * here must not fail an otherwise successful import.
+ */
+async function writeSidecar(
+  dir: MediaStoreDirectory,
+  contentHash: string,
+  type: string,
+  size: number,
+): Promise<void> {
+  try {
+    await writeJson(dir, sidecarName(contentHash), { type, size })
+  } catch {
+    // Fall back to the file extension on read.
+  }
+}
+
+/** Lists stored media entries for a project. Damaged entries are included; reads reject them. */
+export async function listMediaFiles(projectId: string): Promise<StoredHashEntry[]> {
+  assertProjectId(projectId)
+  const dir = await projectDirectory(projectId, false)
+  if (!dir) return []
+  const entries: StoredHashEntry[] = []
+  for (const name of await directoryNames(dir)) {
+    if (isEntryNameMetadata(name)) continue
+    if (!isValidContentHash(name)) continue
+    const file = await readFileHandle(dir, name)
+    if (!file) continue
+    entries.push({ hash: name, size: file.size })
+  }
+  return entries.sort((a, b) => a.hash.localeCompare(b.hash))
+}
+
+/** Deletes one stored entry and its sidecar. A missing entry is not an error. */
+export async function deleteMediaFile(projectId: string, contentHash: string): Promise<void> {
+  assertProjectId(projectId)
+  assertContentHash(contentHash)
+  const dir = await projectDirectory(projectId, false)
+  if (!dir) return
+  await removeEntryQuiet(dir, contentHash)
+  await removeEntryQuiet(dir, sidecarName(contentHash))
+}
+
+// claims
+
+/**
+ * Writes an immutable claim shard listing the hashes this copy may reference.
+ * Shards are uniquely named and never merged, so two saves cannot lose a claim.
+ */
+export async function writeMediaClaim(
+  projectId: string,
+  hashes: readonly string[],
+): Promise<string> {
+  assertProjectId(projectId)
+  const dir = await projectDirectory(projectId, true)
+  if (!dir) throw new MediaStoreError('Media storage could not create the project')
+  // Fail closed on lost or unreadable records. Creating the directory here
+  // would turn unknown claims into "no claims", and publishing a shard beside
+  // an unreadable one would report a save as safe while some claims stay lost.
+  // Callers create a complete empty record through `ensureProjectMedia` first.
+  let claims: MediaStoreDirectory
+  try {
+    claims = await dir.getDirectoryHandle(CLAIMS_DIR)
+  } catch (error) {
+    if (!isNotFound(error)) throw new MediaStoreError('Media claims could not be read')
+    throw new MediaStoreError('Media claims are missing')
+  }
+  if ((await readMediaClaims(projectId)) === null) {
+    throw new MediaStoreError('Media claims could not be read')
+  }
+  const claimId = `claim-${randomSuffix()}`
+  const unique = [...new Set(hashes.filter(isValidContentHash))].sort()
+  // Temp then promote, so a reader never sees a half-written shard.
+  const tempName = temporaryName('tmp')
+  try {
+    await writeJson(claims, tempName, { version: 1, hashes: unique })
+    const temp = await claims.getFileHandle(tempName)
+    const name = `${claimId}${SIDECAR_SUFFIX}`
+    if (typeof temp.move === 'function') {
+      await temp.move(claims, name)
+    } else {
+      // No rename: publish straight to the final name. A failed write must
+      // remove its own partial shard (the name is unique, so no existing
+      // claim is at risk); otherwise a corrupt final entry would read as
+      // unreadable claims and block cleanup permanently.
+      try {
+        await writeJson(claims, name, { version: 1, hashes: unique })
+      } catch (error) {
+        await removeEntryQuiet(claims, name)
+        throw error
+      }
+      await removeEntryQuiet(claims, tempName)
+    }
+  } finally {
+    await removeEntryQuiet(claims, tempName)
+  }
+  return claimId
+}
+
+/**
+ * Unions every claim shard. Returns null when the claims directory is missing
+ * or any shard is unreadable, which callers must treat as "deletion disabled".
+ */
+export async function readMediaClaims(projectId: string): Promise<string[] | null> {
+  assertProjectId(projectId)
+  const dir = await projectDirectory(projectId, false)
+  if (!dir) return null
+  let claims: MediaStoreDirectory
+  try {
+    claims = await dir.getDirectoryHandle(CLAIMS_DIR)
+  } catch (error) {
+    if (isNotFound(error)) return null
+    throw new MediaStoreError('Media claims could not be read')
+  }
+  const hashes = new Set<string>()
+  for (const name of await directoryNames(claims)) {
+    if (!name.endsWith(SIDECAR_SUFFIX) || name.startsWith(TEMPORARY_PREFIX)) continue
+    const file = await readFileHandle(claims, name)
+    if (!file) return null
+    try {
+      const parsed: unknown = JSON.parse(await file.text())
+      if (typeof parsed !== 'object' || parsed === null) return null
+      const record = parsed as { version?: unknown; hashes?: unknown }
+      if (record.version !== 1 || !Array.isArray(record.hashes)) return null
+      for (const hash of record.hashes) {
+        if (!isValidContentHash(hash)) return null
+        hashes.add(hash)
+      }
+    } catch {
+      return null
+    }
+  }
+  return [...hashes].sort()
+}
+
+/** Deletes one claim shard. */
+export async function deleteMediaClaim(projectId: string, claimId: string): Promise<void> {
+  assertProjectId(projectId)
+  if (!/^claim-[A-Za-z0-9-]{1,80}$/.test(claimId)) {
+    throw new MediaStoreError('Invalid media claim id')
+  }
+  const dir = await projectDirectory(projectId, false)
+  if (!dir) return
+  try {
+    const claims = await dir.getDirectoryHandle(CLAIMS_DIR)
+    await removeEntryQuiet(claims, `${claimId}${SIDECAR_SUFFIX}`)
+  } catch (error) {
+    if (!isNotFound(error)) throw new MediaStoreError('Media claims could not be read')
+  }
+}
+
+// cleanup
+
+/**
+ * Deletes unclaimed, unreferenced media entries and their sidecars, plus temp
+ * and quarantine leftovers. `keepHashes` is the caller's live reference set
+ * (doc, both history stacks, and the autosave slot); claimed hashes are added
+ * here. A missing or unreadable claims directory deletes no content hash.
+ */
+export async function cleanProjectMedia(
+  projectId: string,
+  keepHashes: readonly string[],
+): Promise<MediaCleanupResult> {
+  assertProjectId(projectId)
+  const dir = await projectDirectory(projectId, false)
+  if (!dir) {
+    return { deleted: [], reclaimed: 0, claimsUnreadable: false, removedTemporary: 0 }
+  }
+  const names = await directoryNames(dir)
+  let removedTemporary = 0
+  for (const name of names) {
+    if (name.startsWith(TEMPORARY_PREFIX) || name.startsWith(QUARANTINE_PREFIX)) {
+      if (await removeEntryQuiet(dir, name, { recursive: true })) removedTemporary += 1
+    }
+  }
+  const claims = await readMediaClaims(projectId)
+  if (claims === null) {
+    return { deleted: [], reclaimed: 0, claimsUnreadable: true, removedTemporary }
+  }
+  const keep = new Set(keepHashes.filter(isValidContentHash))
+  for (const hash of claims) keep.add(hash)
+  const deleted: string[] = []
+  let reclaimed = 0
+  for (const name of names) {
+    if (!isValidContentHash(name) || keep.has(name)) continue
+    const file = await readFileHandle(dir, name)
+    const size = file?.size ?? 0
+    // Strict: a failed delete must surface instead of reading as "nothing to
+    // clean" downstream. Temp and quarantine sweeping above stays best-effort.
+    if (await removeEntryStrict(dir, name)) {
+      deleted.push(name)
+      reclaimed += size
+    }
+    await removeEntryStrict(dir, sidecarName(name))
+  }
+  return { deleted, reclaimed, claimsUnreadable: false, removedTemporary }
+}
+
+/**
+ * Removes every stored entry, sidecar, temp file, quarantine file, and the
+ * claims directory. The only action allowed to drop claims; the project file
+ * and its clips are untouched and every asset becomes missing on reload.
+ */
+export async function clearProjectMedia(projectId: string): Promise<MediaClearResult> {
+  assertProjectId(projectId)
+  const dir = await projectDirectory(projectId, false)
+  if (!dir) return { deleted: 0, reclaimed: 0 }
+  let deleted = 0
+  let reclaimed = 0
+  for (const name of await directoryNames(dir)) {
+    if (name === CLAIMS_DIR) {
+      await removeEntryStrict(dir, name, { recursive: true })
+      continue
+    }
+    if (isValidContentHash(name)) {
+      const file = await readFileHandle(dir, name)
+      const size = file?.size ?? 0
+      if (await removeEntryStrict(dir, name)) {
+        deleted += 1
+        reclaimed += size
+      }
+      await removeEntryStrict(dir, sidecarName(name))
+      continue
+    }
+    // A temp entry, a quarantine leftover, or an orphaned sidecar is not valid
+    // media, but it still occupies this project's storage. Clear-all removes it
+    // and reports the bytes it frees.
+    const size = await entrySizeQuiet(dir, name)
+    if (await removeEntryStrict(dir, name, { recursive: true })) reclaimed += size
+  }
+  return { deleted, reclaimed }
+}
+
+/** Bytes stored for one project. */
+export async function projectMediaUsage(projectId: string): Promise<number> {
+  const entries = await listMediaFiles(projectId)
+  return entries.reduce((total, entry) => total + entry.size, 0)
+}
+
+/** Origin storage estimate, or null when the browser cannot report one. */
+export async function estimateMediaStore(): Promise<{ usage: number; quota: number } | null> {
+  const storage = storageManager()
+  if (!storage || typeof storage.estimate !== 'function') return null
+  try {
+    const estimate = await storage.estimate()
+    return { usage: estimate.usage ?? 0, quota: estimate.quota ?? 0 }
+  } catch {
+    return null
+  }
+}
+
+/** Asks the browser to keep this origin's storage; false when refused or unsupported. */
+export async function requestPersistentStorage(): Promise<boolean> {
+  const storage = storageManager()
+  if (!storage || typeof storage.persist !== 'function') return false
+  try {
+    if (typeof storage.persisted === 'function' && (await storage.persisted())) return true
+    return await storage.persist()
+  } catch {
+    return false
+  }
+}
+
+/** True when the origin's storage is already persistent. */
+export async function isStoragePersistent(): Promise<boolean> {
+  const storage = storageManager()
+  if (!storage || typeof storage.persisted !== 'function') return false
+  try {
+    return await storage.persisted()
+  } catch {
+    return false
+  }
+}

@@ -191,17 +191,19 @@ src/lib/editor/
 ├── actions.ts            # multi-command UI actions (add media/text, group ops, ripple delete)
 ├── action-executor.ts    # policy-free dispatch for the menu, toolbar, and keyboard (pure)
 ├── store.ts              # zustand store: doc, history, transients, selection, playhead, zoom
-├── serialization.ts      # .veproj.json v4 (v1, v2 and v3 still load): serialize / parse / hydrate
+├── serialization.ts      # .veproj.json v5 (v1 to v4 still load): serialize / parse / hydrate, media content hash
 ├── persistence.ts        # debounced localStorage autosave; readValidAutosave returns a typed PendingRestore
 ├── workspace.ts          # panel + keyframe-graph layout state (pure)
 ├── workspace-store.ts    # zustand wrapper over workspace.ts (layout + graph heights)
 ├── theme.ts              # appearance palette ids/labels + preference read/write (pure)
 ├── menus.ts              # menu bar model (pure)
-├── project-io.ts         # save / open / import-media browser helpers; installProject is the one install path
+├── project-io.ts         # save claim, open/rehydrate, import-media, and the one install path; holds the project lock
 ├── timeline-drop.ts      # drop-target geometry for drop-between-tracks
 ├── tracks.ts             # solo audibility + lock checks, removes the tracks an edit leaves empty (prune)
 ├── timeline-scroll.ts    # drag edge auto-scroll geometry + the shared zoom step (pure)
 ├── proxy.ts              # pure proxy planning: dimensions, bitrate, eligibility
+├── freeze-plan.ts        # pure Freeze Frame plan (visible/offline scan) and the still batch
+├── media-cleanup-plan.ts # pure cleanup reference set: doc, both history stacks, autosave slot, claim gate
 ├── media/
 │   ├── probe.ts          # importFile: probe duration/size, thumbnail, waveform peaks, hasAudio
 │   ├── filmstrip-cache.ts # runtime-only strip cache: one job, LRU budget, hidden video per asset, progress events
@@ -209,7 +211,12 @@ src/lib/editor/
 │   ├── relink.ts         # isNativeFile guard + relinkPatchFrom: patch fields a relink carries (file handle included)
 │   ├── elements.ts       # ClipMediaPool: per-clip media elements, source nodes, the parked blend partner
 │   ├── keyframes.ts      # verified video keyframe lookup for decode recovery (mediabunny)
-│   └── proxies.ts        # session proxy build/revoke and effective media URL
+│   ├── proxies.ts        # session proxy build/revoke and effective media URL
+│   ├── media-store.ts    # OPFS store keyed by SHA-256: promote, quarantine, sidecar, claims, clean, clear
+│   ├── persist.ts        # asset-to-store bridge, claim writes, clean orchestration, in-flight counter
+│   ├── rehydrate.ts      # rebuild File + object URL from stored bytes before install
+│   ├── project-lock.ts   # shared Web Lock per open project; exclusive clean refuses a second tab
+│   └── freeze-frame.ts   # two-pass compositor render to an opaque PNG still
 ├── playback/
 │   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate, blend partner, decode recovery
 │   ├── compositor.ts     # drawFrame + the draws the exporter shares: contain-fit geometry, text, crossfade, blends, the 3D LUT pass
@@ -225,7 +232,7 @@ src/lib/editor/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   ├── options.ts        # pure container matrix, output bounds/bitrate, contain fit (Node-testable)
 │   └── mp4.ts            # WebCodecs export pipeline: MP4/MOV/MKV/WAV/MP3/M4A + downloadBlob
-└── __tests__/            # 104 test files (2410 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 111 test files (2552 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

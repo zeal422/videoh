@@ -57,6 +57,9 @@ export const KEYFRAME_TIMEOUT_MS = 3_000
 /** Default timeline duration assigned to image clips (seconds). */
 export const DEFAULT_IMAGE_DURATION = 4
 
+/** Duration of the still clip Freeze Frame creates (seconds). */
+export const FREEZE_FRAME_DURATION = 2
+
 /** Default timeline duration assigned to new text clips (seconds). */
 export const DEFAULT_TEXT_DURATION = 4
 

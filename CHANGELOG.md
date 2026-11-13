@@ -5,6 +5,53 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.23.0] - 2026-11-13
+
+### Added
+
+- Imported media now survives a reload. Bytes are stored in OPFS under `<project-id>/<content-hash>`, with a sidecar for the MIME type, and `MediaAsset.contentHash` records the revision. An open rebuilds the `File` and object URL before the project installs, so preview and frame-accurate export work without relinking. A sidecar that is missing falls back to the file extension with a warning.
+- Every asset keeps its own revision hash, so relinking one saved copy writes a new hash and leaves another copy's bytes untouched. A relink writes the new bytes first and updates `contentHash` only on success; a failed write applies a session-only relink and clears the hash, so no saved project names bytes the store does not have.
+- The project's claims directory is created with its first stored import, and an explicit save or open writes an immutable claim shard listing the hashes that copy may reference. Shards are never merged, so two saves cannot lose a claim, and Clean Unused Media keeps every claimed hash. A missing or unreadable claims directory disables content-hash deletion entirely.
+- Clean Unused Media lists unreferenced stored files with their sizes, requires confirmation, and deletes only hashes outside the live doc, both history stacks, the autosave slot, and every claim. It reports the reclaimed size and re-reads references immediately before deleting, so a reference that appeared while the dialog was open survives.
+- Every open tab holds the shared Web Lock `media-project:<project-id>`. Clean Unused Media drops that hold, takes the lock exclusively, and refuses to delete anything when another tab has the project open or the browser has no Web Locks.
+- Clear All Stored Media is a separate two-step action that removes every stored file and the claims directory for the project, names that saved copies lose their media, and leaves the project and its clips intact.
+- The media bin opens a Project Storage dialog with project usage, the origin storage estimate, a persistent-storage request, Clean Unused Media, and Clear All Stored Media. A quota, private-mode, or unsupported-OPFS failure degrades to a session-only asset with a warning instead of blocking an import.
+- Freeze Frame captures the composited frame at the playhead through the shared compositor at project size, flattens it onto an opaque surface, and encodes a PNG. It refuses before encoding when nothing visible is under the playhead, when a visible source is offline, or when the active sequence cannot accept a new track.
+- The frozen still imports through the normal media path, so it gets a thumbnail, a hash, and durable storage, then one batch adds the asset, a new video track at index 0 of the active sequence, and a 2 second clip at the playhead. The new track sits above the captured layers, so a locked source lane and a clip at the playhead cannot block or cover it.
+- Freeze Frame is on the Clip menu and the clip context menu, and its availability is the same plan the action runs.
+
+### Changed
+
+- The project format moves to version 5. `MediaAsset.contentHash` is the only new persisted field; it is validated as exactly 64 lowercase hex characters, and a malformed, uppercase, non-string, or path-like value is dropped so the asset falls back to the missing state. A v4 project still loads with no hash and relinks as before, and a v5 file is refused by an older build.
+- Autosave restores rehydrate before installing and write no claim, because the autosave slot is a live reference that Clean Unused Media reads directly. An explicit save still awaits its claim and fails rather than write a copy whose bytes are unclaimed.
+- A project open that loses to a newer open, an autosave restore, or File > New revokes the object URLs it created and installs nothing.
+- A project that already holds stored bytes but lost its claims directory stays in a claims-missing state: an empty replacement record is never written over lost claims, Clean Unused Media stays blocked, and an explicit save refuses until Clear All Stored Media resets the project.
+- Clean Unused Media holds a same-tab clean flag across its reference snapshot and every delete, so an import, relink, Freeze Frame write, or rehydration that starts during the clean waits instead of rewriting a candidate hash.
+- Media import, relink, Freeze Frame, and a project save capture the live project identity, and every await is followed by a check. A completion whose project was replaced is discarded instead of attaching bytes to the new project, and a save clears the degraded-clean flag only for the project it claimed.
+- Discarding an autosave restore while it is still rehydrating prevents that restore from installing. A clear-all confirmation is bound to the named project and is dropped if the project changes.
+- Clear All Stored Media also removes temporary, quarantine, and orphaned sidecar entries, and its reclaimed-byte report includes them.
+- Clear All Stored Media holds the same-tab clean flag, waits for an in-flight media write before it snapshots the project directory, and runs the deletes under the exclusive project lock when this tab holds one. It refuses while another tab has the project open, and a failed delete is reported instead of an empty "Nothing to clear" result.
+- Clear All Stored Media refuses without a matching shared hold for the project being cleared, and without Web Locks to coordinate with, instead of deleting without a cross-tab guard. Clean Unused Media likewise refuses a lock that names another project, so an undo that restored a different project without installing can never delete under the wrong coordination.
+- A relink patch always carries `contentHash`, so a replacement without stored bytes clears the old revision instead of preserving it through the command assignment.
+- Releasing the shared media lock retires any acquisition still waiting, so a torn-down hold cannot activate after teardown.
+- An explicit save holds an independent shared lock on the snapshot project through claim publication, so an install that switches the active hold mid-save cannot drop the announcement the claim depends on.
+- Undo and redo re-sync the shared media hold to the live project without installing, and the Storage dialog drops a refresh whose project changed or whose newer pass already started, so stale usage and candidates never publish under the wrong project.
+- A relink patch that replaces the source but omits the hash clears the old revision at the command boundary, so no producer can keep bytes the store does not have through assignment.
+- Reusing a prepared lock for the live project no longer leaks the registry hold, and releasing the media locks retires acquisitions still waiting.
+- A failed claim-shard fallback publish removes its own partial entry instead of leaving unreadable claims that would block cleanup permanently.
+- Concurrent same-tab cleans serialize instead of entering together, and a rejected shared-lock request no longer looks held, so exclusive work refuses instead of deleting uncoordinated.
+- Freeze Frame no longer refuses when the only offline clip at the playhead is fully transparent: the offline scan skips clips whose evaluated opacity is zero, matching the compositor. A playhead with only fully transparent clips refuses as empty instead of encoding black.
+- A failed content-hash delete during Clean Unused Media now surfaces as a cleanup failure instead of reading as "Nothing to clean".
+- The Freeze Frame batch test executes against a source track locked before the batch runs, proving the still lands on its own new lane while the source clip is untouched.
+- A relink that is refused or fails after its file was probed revokes the new object URL, in both the media bin and File > Import, so a locked-track refusal no longer leaves the blob URL allocated.
+- Freeze Frame keys each resolved frame by clip plus local time, so two overlapping instances of the same compound sequence load their own source frames, and a failed source load releases its decoder element.
+- A claim write fails closed when the claims directory is missing while stored bytes exist, and when an existing shard is unreadable, so an explicit save never publishes a shard beside lost or unreadable records. The claims directory is created only by the store's own preparation step.
+- A failed replacement write restores the entry it quarantined only when its bytes still hash to the content hash, so a damaged entry is never resurrected under a valid name and a valid copy another writer promoted is kept.
+- An open or restore prepares the incoming project's shared media lock while the live project keeps its own hold until the install commits. Each load owns a distinct prepared hold, so a stale load's cancellation or rejection releases only that load's hold and never another project's or a newer load's, and the boot document acquires its shared hold on mount even though it never installs.
+- Freeze Frame revokes the probed still's object URL when the batch is refused or a later step throws, and keeps it only once the doc takes the asset.
+- The Storage dialog reads references from the live store at delete time, refuses a clean when the open project changed before the deletes, returns to the ready phase when a destructive operation rejects, and resets an armed confirmation on every close or reopen.
+- Removing an asset still never deletes stored bytes, because undo restores the entry; only Clean Unused Media and Clear All Stored Media delete, and clear-all is the only action that removes claims.
+
 ## [0.22.0] - 2026-11-13
 
 ### Added

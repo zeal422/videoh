@@ -78,6 +78,8 @@ export interface ActionContext {
   importMedia: () => void
   openExport: () => void
   openGain: () => void
+  /** Freeze Frame: capture the composited frame and add the still (0.23.0). */
+  freezeFrame: () => void
   editMarker: () => void
   seek: (time: number) => void
   zoomToFit: () => void
@@ -198,6 +200,11 @@ export function executeAction(action: ExecutorActionId, ctx: ActionContext): Act
     }
     case 'clip.joinClips':
       return handled(commandsToJoinClips(state.doc, ids), 'Clips joined')
+    case 'clip.freezeFrame':
+      // The browser adapter renders, stores, and applies the batch; the pure
+      // planner it shares with the menu owns the refusals.
+      ctx.freezeFrame()
+      return handled()
     case 'clip.cut':
       return handled(ids.length > 0 ? commandsToCutClips(state.doc, ids) : null)
     case 'clip.copy': {

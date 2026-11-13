@@ -80,7 +80,7 @@ import {
 } from './keyframes'
 import { applyMarkerPatch, reIdMarkers } from './markers'
 import { parseKeyColor } from './chroma-key'
-import { isValidWaveformPeaks, sanitizeThumbnail } from './project-validation'
+import { isValidContentHash, isValidWaveformPeaks, sanitizeThumbnail } from './project-validation'
 import { MAX_SRT_TIME_SECONDS } from './srt'
 import { maxTransitionDuration, TRANSITION_FEATHER_DEFAULT } from './transition'
 import {
@@ -572,6 +572,7 @@ export function assertCommandAllowed(doc: Doc, command: EditorCommand): void {
  */
 const RELINK_PATCH_KEYS = [
   'url',
+  'contentHash',
   'duration',
   'width',
   'height',
@@ -673,6 +674,13 @@ export function sanitizeRelinkPatch(
         sanitized.waveformPeaks = [...value]
         break
       }
+      case 'contentHash': {
+        // A relink may attach a stored revision or clear it for a session-only
+        // file; anything else would persist a path the store cannot read.
+        if (!isValidContentHash(value)) throw new EditorCommandError('Invalid relink patch')
+        sanitized.contentHash = value
+        break
+      }
       case 'file': {
         if (value === null) throw invalidRelinkFile()
         const validate = options?.validateRelinkFile
@@ -690,6 +698,13 @@ export function sanitizeRelinkPatch(
         break
       }
     }
+  }
+  // A new source without a hash must not inherit the old revision through
+  // `Object.assign`: every producer names the replacement hash (or explicit
+  // undefined), and a patch that changes the source while omitting the key
+  // clears it here instead of keeping bytes the store does not have.
+  if (!('contentHash' in sanitized) && ('url' in source || 'file' in source)) {
+    sanitized.contentHash = undefined
   }
   // A relink always clears `missing`, so the RESULT must be playable. An
   // offline asset hydrates with an empty URL; omitting url cannot rescue it.

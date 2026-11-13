@@ -46,7 +46,15 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/u
   AAC, or Opus where AAC is unavailable,
   with progress, cancel, an in-dialog preview, and streamed export to disk.
 - **Workspace and persistence.** Six resizable panels, a Premiere-style menu bar, appearance
-  palettes, whole-document undo/redo, `.veproj.json` save/open, and autosave with restore.
+  palettes, whole-document undo/redo, `.veproj.json` save/open, durable media storage, and autosave
+  with restore.
+- **Durable media and freeze frame.** Imported bytes are stored on this device under a SHA-256 key, so
+  a reload keeps working preview and frame-accurate export where the browser can store them. A write
+  that fails (unsupported storage, quota, private mode) degrades to a session-only import that must be
+  relinked after reload. Relink writes a new revision without
+  touching another copy's bytes, Clean Unused Media keeps everything a doc, history stack, autosave
+  slot, or saved copy can still reach, and Freeze Frame captures the composited frame as a still on a
+  new top track.
 
 The interaction contract behind each item is in [docs/flows.md](docs/flows.md).
 
@@ -148,10 +156,20 @@ when the browser has the matching encoder. Sequence Settings offers 16:9, 9:16, 
 21:9 canvas presets that do not move existing clips. Export needs WebCodecs; HEVC and ProRes are
 deliberately not offered, and `Download` buffers the file while `Export to file` streams it to disk.
 
-Project files use `.veproj.json` (version 4; versions 1 to 3 still load). Object URLs are stripped;
-offline assets hydrate as `missing` and relink by matching name or by hand. Autosave writes to
-`localStorage` with an 800 ms debounce and offers restore on the next visit. The full contracts are
-in [docs/flows.md](docs/flows.md#export) and
+Project files use `.veproj.json` (version 5; versions 1 to 4 still load, and a v5 file needs this
+build). Object URLs are stripped. Imported bytes live in OPFS under `<project-id>/<content-hash>`, and
+each asset persists its own hash, so an open restores file handles and preview URLs before the project
+installs. An asset without a hash, or one whose bytes are gone, hydrates as `missing` and relinks by
+matching name or by hand. The project file stores those references, not the media bytes: clearing site
+data, browser eviction, or opening the file on another device leaves assets missing until the original
+files are relinked, so keep the originals or a separate backup. An explicit save and open write an
+immutable claim shard for the hashes that copy may use, and a save refuses rather than publish a shard
+beside lost or unreadable records. Clean Unused Media refuses while another tab has the project open,
+when Web Locks is unavailable, or when a claim is missing, and it never deletes a hash the doc, both
+history slots, or a claim still reaches. Clear All Stored Media needs a second confirmation, removes
+every stored file for the project, waits for an in-flight write, and refuses while another tab has the
+project open or Web Locks are unavailable. Autosave writes to `localStorage` with an 800 ms debounce and
+offers restore on the next visit. The full contracts are in [docs/flows.md](docs/flows.md#export) and
 [docs/flows.md](docs/flows.md#save-load-autosave-restore).
 
 ## Testing
@@ -166,7 +184,7 @@ bun run battery:pair   # dev + artifact concurrently (needs a current build and 
 PAIR_SHARDS=1 bun run battery:pair # sequential rollback, one session per leg
 ```
 
-Current state: **2410 tests across 104 files, all passing**. Coverage is enforced at 70/60/75/70 over
+Current state: **2552 tests across 111 files, all passing**. Coverage is enforced at 70/60/75/70 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -195,7 +213,7 @@ src/lib/editor/            # state core (commands, store, serialization) + brows
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, landing sections, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 104 test files (2410 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 111 test files (2552 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations

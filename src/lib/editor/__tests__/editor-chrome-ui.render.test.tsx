@@ -1,9 +1,14 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+
+const probeMock = vi.hoisted(() => ({ importFile: vi.fn() }))
+vi.mock('@/lib/editor/media/probe', () => probeMock)
+const storeMock = vi.hoisted(() => ({ storeMediaAsset: vi.fn() }))
+vi.mock('@/lib/editor/media/persist', () => storeMock)
 
 import { MediaBin } from '@/components/editor/MediaBin'
 import { PreviewPanel } from '@/components/editor/PreviewPanel'
@@ -106,6 +111,41 @@ describe('media bin cards', () => {
     expect(within(missing).getByText('offline')).toBeInTheDocument()
     expect(missing.className).toContain('border-amber-500/40')
     expect(within(missing).getByLabelText('Relink media file')).toBeInTheDocument()
+  })
+
+  it('revokes the probed URL when a relink is refused', async () => {
+    const asset = mediaAsset({
+      id: 'media_relink',
+      kind: 'video',
+      name: 'clip.mp4',
+      duration: 2,
+    })
+    useEditorStore.setState({ doc: docWithMedia([asset]) })
+    const fresh = {
+      ...asset,
+      id: 'media_fresh',
+      url: 'blob:fresh',
+      file: new File(['x'], 'clip.mp4', { type: 'video/mp4' }),
+    }
+    probeMock.importFile.mockResolvedValue(fresh)
+    storeMock.storeMediaAsset.mockResolvedValue({ asset: fresh, stored: true })
+    const revoke = vi.fn()
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke })
+    const apply = vi.spyOn(useEditorStore.getState(), 'apply').mockReturnValue(false)
+    render(<MediaBin heading={false} />)
+    const card = screen.getByTestId('media-item-media_relink')
+    const input = card.querySelector('input[type="file"]') as HTMLInputElement
+
+    fireEvent.change(input, {
+      target: { files: [new File(['x'], 'clip.mp4', { type: 'video/mp4' })] },
+    })
+    try {
+      await waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:fresh'))
+    } finally {
+      apply.mockRestore()
+    }
+    // The refused relink left the asset untouched.
+    expect(useEditorStore.getState().doc.media[0].url).toBe(asset.url)
   })
 
   it('locks the thumbnail size class in source', () => {

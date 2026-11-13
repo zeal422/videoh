@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import {
+  Camera,
   ChevronsLeft,
   Combine,
   Copy,
@@ -51,6 +52,9 @@ import {
   commandsToUnlinkClips,
 } from '@/lib/editor/actions'
 import { canCloseGaps, canJoinClips } from '@/lib/editor/timeline-edit-plan'
+import { canFreezeFrame } from '@/lib/editor/freeze-plan'
+import { executeAction } from '@/lib/editor/action-executor'
+import { createActionContext } from '@/hooks/editor/action-context'
 import {
   commandsToCutClips,
   commandsToPasteClips,
@@ -1092,6 +1096,11 @@ export function ClipView({
       toast({ title: 'Clips joined' })
     })
 
+  const onMenuFreezeFrame = () =>
+    runMenuAction(() => {
+      executeAction('clip.freezeFrame', createActionContext())
+    })
+
   const onMenuLink = () =>
     runMenuAction(() => {
       const store = useEditorStore.getState()
@@ -1407,6 +1416,15 @@ export function ClipView({
           onSelect={onMenuJoinClips}
         >
           <Combine className="mr-2 size-4" /> Join Clips
+        </ContextMenuItem>
+        <ContextMenuItem
+          data-testid="menu-freeze-frame"
+          disabled={
+            !canFreezeFrame(doc, useEditorStore.getState().activeSequencePath, menuPlayhead)
+          }
+          onSelect={onMenuFreezeFrame}
+        >
+          <Camera className="mr-2 size-4" /> Freeze Frame
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem data-testid="menu-link" disabled={!canLink} onSelect={onMenuLink}>

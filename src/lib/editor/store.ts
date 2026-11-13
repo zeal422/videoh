@@ -154,6 +154,13 @@ export interface EditorState {
   /** Parsed, validated autosave awaiting user confirmation (startup banner). */
   pendingRestore: PendingRestore | null
   /**
+   * True when a project opened without a claim shard (0.23.0): the media store
+   * was unavailable or rejected the write. The clean action stays unavailable
+   * until an explicit save claims the bytes, because without a claim it cannot
+   * prove that a closed copy does not reference them.
+   */
+  mediaCleanBlocked: boolean
+  /**
    * The latest command refused because a track was locked (0.14.0). Session
    * state, never in the Doc and never undoable: the shell watches it and shows
    * one toast with the command layer's own message, so every dispatch path
@@ -250,6 +257,8 @@ export interface EditorState {
   setAutosaveStatus: (status: AutosaveStatus) => void
   markAutosaved: () => void
   setPendingRestore: (restore: PendingRestore | null) => void
+  /** Session flag: clean is unavailable until a claim shard is written. */
+  setMediaCleanBlocked: (blocked: boolean) => void
   /** Dismiss the restore banner (install, discard, or failed restore). */
   clearPendingRestore: () => void
 }
@@ -495,6 +504,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   autosaveStatus: 'idle',
   autosavedAt: null,
   pendingRestore: null,
+  mediaCleanBlocked: false,
   lockNotice: null,
 
   apply: (command) => {
@@ -856,6 +866,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   markAutosaved: () => set({ autosavedAt: Date.now() }),
   setPendingRestore: (restore) => set({ pendingRestore: restore }),
   clearPendingRestore: () => set({ pendingRestore: null }),
+  setMediaCleanBlocked: (blocked) => set({ mediaCleanBlocked: blocked }),
 }))
 
 /** Raw (non-hook) access for engine code and tests. */

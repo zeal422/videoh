@@ -47,7 +47,8 @@ describe('relinkPatchFrom (a relink keeps everything the exporter needs)', () =>
       hasAudio: true,
       waveformPeaks: [0, 1],
     }
-    expect(relinkPatchFrom(fresh, 'manual')).toEqual({
+    const patch = relinkPatchFrom(fresh, 'manual')
+    expect(patch).toEqual({
       url: 'blob:fresh',
       duration: 4,
       width: 1920,
@@ -56,6 +57,30 @@ describe('relinkPatchFrom (a relink keeps everything the exporter needs)', () =>
       hasAudio: true,
       waveformPeaks: [0, 1],
     })
+    // A hash the probe produced travels with the patch.
+    expect(relinkPatchFrom({ ...fresh, contentHash: 'a'.repeat(64) }, 'manual')).toMatchObject({
+      contentHash: 'a'.repeat(64),
+    })
+  })
+
+  it('clears the prior hash when the replacement has none', () => {
+    const bare: MediaAsset = {
+      id: 'media_bare',
+      name: 'clip.mp4',
+      kind: 'video',
+      duration: 4,
+      width: 0,
+      height: 0,
+      url: 'blob:bare',
+      file,
+    }
+    for (const mode of ['manual', 'sample'] as const) {
+      const patch = relinkPatchFrom(bare, mode)
+      // Present with undefined so `Object.assign` in relinkMedia clears the
+      // old revision instead of preserving it.
+      expect('contentHash' in patch).toBe(true)
+      expect(patch.contentHash).toBeUndefined()
+    }
   })
 
   it('sample mode omits extras a probe could not produce instead of clearing them', () => {
@@ -226,9 +251,12 @@ describe('media pool layout + dedup wiring', () => {
     // hand-rolled list once dropped `file`, which silently removes the media
     // from a WebCodecs export (mp4.ts skips assets without it).
     expect(read('src/components/editor/MediaBin.tsx')).toMatch(
-      /patch: relinkPatchFrom\(fresh, 'manual'\)/,
+      /patch: relinkPatchFor\(stored\.asset, stored\.stored\)/,
     )
-    expect(read('src/lib/editor/project-io.ts')).toMatch(/relinkPatchFrom\(asset, 'manual'\)/)
+    const io = read('src/lib/editor/project-io.ts')
+    expect(io).toMatch(/patch: relinkPatchFor\(asset, stored\)/)
+    // One field list still feeds both call sites.
+    expect(io).toMatch(/relinkPatchFrom\(fresh, 'manual'\)/)
   })
 
   it('routes every project open through ONE shared coordinator', () => {
@@ -291,7 +319,15 @@ describe('media pool layout + dedup wiring', () => {
     expect(context).not.toMatch(/store\.replaceDoc\(createDoc\(\)\)/)
 
     const shell = read('src/components/editor/EditorShell.tsx')
-    expect(shell).toMatch(/installProject\(doc\)/)
+    // The restore path rehydrates first, then installs through the one helper.
+    expect(shell).toMatch(/restoreAutosaveProject\(/)
+    // The initial doc never installs, so the shell announces it directly.
+    expect(shell).toMatch(/ensureProjectLock\(useEditorStore\.getState\(\)\.doc\)/)
+    // Undo and redo restore docs without installing: the shell re-syncs the
+    // shared hold whenever the live project identity changes, so cleanup can
+    // never run under the previous project's lock.
+    expect(shell).toMatch(/state\.doc\.project\.id !== previous\.doc\.project\.id/)
+    expect(shell).not.toMatch(/installProject\(/)
     expect(shell).not.toMatch(/\.replaceDoc\(doc\)/)
 
     const io = read('src/lib/editor/project-io.ts')

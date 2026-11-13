@@ -37,6 +37,7 @@ export type MenuActionId =
   | 'clip.rippleDelete'
   | 'clip.closeGaps'
   | 'clip.joinClips'
+  | 'clip.freezeFrame'
   | 'clip.cut'
   | 'clip.copy'
   | 'clip.paste'
@@ -107,6 +108,11 @@ export interface MenuContext {
    * groups that pass every adjacency, source, and property check.
    */
   canJoinClips: boolean
+  /**
+   * "Freeze Frame" would capture a visible frame at the playhead: the active
+   * sequence has a visible clip with online media under the playhead.
+   */
+  canFreezeFrame: boolean
   /** At least one clip is selected — "Create Compound Clip" would do something. */
   canCreateCompound: boolean
   snapEnabled: boolean
@@ -181,6 +187,7 @@ const selectionLinked: (ctx: MenuContext) => boolean = (ctx) => ctx.selectionLin
 const canLink: (ctx: MenuContext) => boolean = (ctx) => ctx.canLink
 const canCloseGaps: (ctx: MenuContext) => boolean = (ctx) => ctx.canCloseGaps
 const canJoinClips: (ctx: MenuContext) => boolean = (ctx) => ctx.canJoinClips
+const canFreezeFrame: (ctx: MenuContext) => boolean = (ctx) => ctx.canFreezeFrame
 const hasMarkers: (ctx: MenuContext) => boolean = (ctx) => ctx.hasMarkers
 const hasSelectedMarker: (ctx: MenuContext) => boolean = (ctx) => ctx.hasSelectedMarker
 /** Reset makes sense as soon as the workspace deviates from its defaults. */
@@ -299,6 +306,13 @@ export const MENU_SPECS: MenuSpec[] = [
         label: 'Join Clips',
         action: 'clip.joinClips',
         enabled: canJoinClips,
+      },
+      {
+        id: 'clip.freezeFrame',
+        kind: 'item',
+        label: 'Freeze Frame',
+        action: 'clip.freezeFrame',
+        enabled: canFreezeFrame,
       },
       { id: 'clip.sep1', kind: 'separator' },
       {

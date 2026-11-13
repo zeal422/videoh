@@ -197,6 +197,38 @@ describe('relinkMedia patch boundary', () => {
     }
   })
 
+  it('clears a retained hash when a new source omits it', () => {
+    const { doc } = makeDoc()
+    const hash = 'd'.repeat(64)
+    const file = new File(['bytes'], 'clip.mp4', { type: 'video/mp4' })
+    const storedDoc = applyWithOptions(
+      doc,
+      {
+        type: 'relinkMedia',
+        mediaId: doc.media[0].id,
+        patch: {
+          url: 'blob:stored',
+          duration: 10,
+          width: 640,
+          height: 360,
+          contentHash: hash,
+          file,
+        },
+      },
+      { validateRelinkFile: (value) => value === file },
+    )
+    expect(storedDoc.media[0].contentHash).toBe(hash)
+    // A producer that replaces the source but omits the key must not keep the
+    // old revision through `Object.assign`: the boundary clears it.
+    const cleared = applyCommand(storedDoc, {
+      type: 'relinkMedia',
+      mediaId: doc.media[0].id,
+      patch: { url: 'blob:replacement', duration: 10, width: 640, height: 360 },
+    })
+    expect(cleared.media[0].url).toBe('blob:replacement')
+    expect(cleared.media[0].contentHash).toBeUndefined()
+  })
+
   it('accepts only a JPEG data thumbnail under the size cap', () => {
     const { doc, videoAsset } = makeDoc()
     const valid = 'data:image/jpeg;base64,AAAA'

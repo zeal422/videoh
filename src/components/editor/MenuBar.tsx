@@ -51,6 +51,7 @@ import { buildMenus, type MenuActionId, type MenuContext } from '@/lib/editor/me
 import { CURRENT_VERSION } from '@/lib/releases'
 import { hasNavigableMarkers, markerSelectionExists } from '@/lib/editor/markers'
 import { canCloseGaps, canJoinClips } from '@/lib/editor/timeline-edit-plan'
+import { canFreezeFrame } from '@/lib/editor/freeze-plan'
 import { PANEL_BOUNDS, PANEL_IDS } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
 import { useEditorStore, useStableDoc } from '@/lib/editor/store'
@@ -147,6 +148,12 @@ export function MenuBar({
     [doc, selectedTrackId],
   )
   const joinClipsAvailable = useMemo(() => canJoinClips(doc, selections), [doc, selections])
+  // Freezing scans the active sequence for a visible, online clip. It depends
+  // on the playhead, so it follows a scrub; the scan is a plain lane/clip walk.
+  const freezeFrameAvailable = useMemo(
+    () => canFreezeFrame(doc, activeSequencePath, playhead),
+    [doc, activeSequencePath, playhead],
+  )
 
   const allClipIds = useMemo(
     () => activeTracks(doc, activeSequencePath).flatMap((t) => t.clips.map((c) => c.id)),
@@ -184,6 +191,7 @@ export function MenuBar({
     canLink: canLinkClips(doc, selections),
     canCloseGaps: closeGapsAvailable,
     canJoinClips: joinClipsAvailable,
+    canFreezeFrame: freezeFrameAvailable,
     canCreateCompound: selections.length > 0,
     hasMarkers,
     hasSelectedMarker: !!selectedMarker && markerSelectionExists(doc, selectedMarker),

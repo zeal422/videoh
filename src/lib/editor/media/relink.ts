@@ -70,6 +70,11 @@ export function relinkPatchFrom(fresh: MediaAsset, mode: RelinkMode): Partial<Me
     duration: fresh.duration,
     width: fresh.width,
     height: fresh.height,
+    // Always present: omitting the key would preserve the old revision through
+    // `Object.assign` in relinkMedia. `undefined` is the command boundary's
+    // clear signal, so a hashless replacement clears instead of keeping bytes
+    // the store does not have.
+    contentHash: fresh.contentHash ?? undefined,
     ...(fresh.file ? { file: fresh.file } : {}),
     ...(fresh.thumbnail || clearStale ? { thumbnail: fresh.thumbnail } : {}),
     ...(fresh.hasAudio !== undefined || clearStale ? { hasAudio: fresh.hasAudio } : {}),

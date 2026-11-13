@@ -62,3 +62,14 @@ export function sanitizeTransitionDuration(value: unknown): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined
   return clamp(value, TRANSITION_MIN, TRANSITION_MAX)
 }
+
+/**
+ * A stored media revision key: exactly 64 lowercase hex characters, the shape
+ * of a SHA-256 digest. The value becomes an OPFS path segment, so uppercase,
+ * slashes, dots, non-hex characters, and the empty string are all rejected.
+ * Hydration and the store both call this, so a crafted project cannot reach the
+ * file system with a path-like value.
+ */
+export function isValidContentHash(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}

@@ -5,28 +5,104 @@ import { toast } from '@/hooks/use-toast'
 import { relinkPatchFrom } from './media/relink'
 import { importFile } from './media/probe'
 import { buildProxy, revokeAllProxies } from './media/proxies'
+import { collectMediaHashes } from './media-cleanup-plan'
+import { prepareProjectStore, storeMediaAsset, writeProjectClaim } from './media/persist'
+import { ProjectLock } from './media/project-lock'
+import { rehydrateMedia, revokeRehydratedUrls } from './media/rehydrate'
 import { shouldProxy } from './proxy'
 import { parseSerializedDoc, projectFileName, serializeDoc } from './serialization'
 import { useEditorStore } from './store'
-import type { Doc, MediaAsset } from './types'
+import type { Doc, MediaAsset, PendingRestore } from './types'
 
 /**
  * Project file I/O shared by the toolbar, the menu bar and the media bin:
  * - `downloadProjectJSON()`     save the current project as `.veproj.json`
  * - `loadProjectFile()`         parse + validate a project JSON file
  * - `importMediaFiles()`        import media files with auto-relink (File > Import)
- * - `openProjectFile(file)`     THE project open: parse, install, report
+ * - `openProjectFile(file)`     THE project open: parse, rehydrate, install, report
+ * - `restoreAutosaveProject()`  the autosave banner's install path
  * - `openProjectFromPicker()`   picker + `openProjectFile` (the File > Open path)
  * - `bumpProjectGeneration()`   invalidate in-flight loads when a project installs
+ * - `ensureProjectLock()`       hold the shared multi-tab media lock
+ *
+ * 0.23.0: durable media. An open rehydrates stored bytes, claims them, and only
+ * then installs; a save claims before it writes a file. Parsing stays
+ * synchronous and `installProject` stays the one install path.
  */
 
-/** Serialize the current doc and trigger a browser download. Returns filename. */
-export function downloadProjectJSON(): string {
+/** A save failed because the copy's stored media could not be claimed. */
+export class ProjectClaimError extends Error {
+  constructor() {
+    super(
+      "Could not record this project's stored media. Nothing was downloaded; save again or keep the original files.",
+    )
+    this.name = 'ProjectClaimError'
+  }
+}
+
+export interface ProjectToken {
+  projectId: string
+  /** Bumped only by replaceDoc, so an edit does not look like an install. */
+  epoch: number
+}
+
+/** Identity of the live project, captured before an async media operation. */
+export function currentProjectToken(): ProjectToken {
   const state = useEditorStore.getState()
-  const json = JSON.stringify(serializeDoc(state.doc), null, 2)
+  return { projectId: state.doc.project.id, epoch: state.projectEpoch }
+}
+
+/** True while the live project is still the one the token was captured from. */
+export function isProjectTokenCurrent(token: ProjectToken): boolean {
+  const state = useEditorStore.getState()
+  return state.projectEpoch === token.epoch && state.doc.project.id === token.projectId
+}
+
+/** Releases a probed asset whose project was replaced before it was attached. */
+function discardFreshMedia(asset: MediaAsset): void {
+  if (!asset.url) return
+  try {
+    URL.revokeObjectURL(asset.url)
+  } catch {
+    // An already revoked URL is harmless.
+  }
+}
+
+/**
+ * Serializes the current doc and triggers a browser download. The claim shard
+ * is written from the SAME snapshot that is serialized, before the file is
+ * produced, so a copy is never written with unclaimed bytes. Returns filename.
+ */
+export async function downloadProjectJSON(): Promise<string> {
+  const snapshot = useEditorStore.getState().doc
+  const token = currentProjectToken()
+  const json = JSON.stringify(serializeDoc(snapshot), null, 2)
+  if (collectMediaHashes(snapshot).length > 0) {
+    // Hold an independent shared lock on this copy through publication. The
+    // active hold may switch to another project (or be released) while the
+    // claim writes; without this, another tab's clean of this project would
+    // no longer see our announcement and could delete what we are claiming.
+    let claimLock: ProjectLock | null = null
+    try {
+      claimLock = await ProjectLock.acquire(snapshot.project.id)
+    } catch {
+      claimLock = null
+    }
+    try {
+      const claimed = await writeProjectClaim(snapshot)
+      if (!claimed) throw new ProjectClaimError()
+    } finally {
+      if (claimLock && claimLock !== currentProjectLock()) claimLock.dispose()
+    }
+    // The claim succeeded: a previous degraded open can clean again. Only for
+    // the project this save belongs to; a newer install owns its own flag.
+    if (isProjectTokenCurrent(token)) {
+      useEditorStore.getState().setMediaCleanBlocked(false)
+    }
+  }
   const blob = new Blob([json], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
-  const filename = projectFileName(state.doc.project.name)
+  const filename = projectFileName(snapshot.project.name)
   const a = document.createElement('a')
   a.href = url
   a.download = filename
@@ -46,16 +122,46 @@ export async function loadProjectFile(file: File): Promise<{ doc: Doc; warnings:
 }
 
 /**
+ * The relink patch for a freshly probed file. The hash is part of the patch
+ * only when the bytes are actually stored; a session-only relink clears it so
+ * no persisted hash names bytes the store does not have.
+ */
+export function relinkPatchFor(fresh: MediaAsset, stored: boolean): Partial<MediaAsset> {
+  return {
+    ...relinkPatchFrom(fresh, 'manual'),
+    contentHash: stored ? fresh.contentHash : undefined,
+  }
+}
+
+/**
  * Import media files into the project, auto-relinking assets whose name
  * matches an offline (missing) asset. Returns the number of files imported
- * (relinks count as imports). Never throws — failures surface as toasts.
+ * (relinks count as imports). Never throws: failures surface as toasts.
  */
 export async function importMediaFiles(files: FileList | File[]): Promise<number> {
   let imported = 0
   const heavy: MediaAsset[] = []
   for (const file of Array.from(files)) {
+    // The project can be replaced while a probe or a store write is in flight.
+    // A completion from the old project must not attach its bytes to the new
+    // one, so every await is followed by a token check.
+    const token = currentProjectToken()
+    let fresh: MediaAsset | null = null
+    /** True only once the doc takes the probed asset. */
+    let attached = false
     try {
-      const asset = await importFile(file)
+      fresh = await importFile(file)
+      if (!isProjectTokenCurrent(token)) return imported
+      const { asset, stored, warning } = await storeMediaAsset(token.projectId, fresh)
+      if (!isProjectTokenCurrent(token)) return imported
+      if (warning) {
+        toast({
+          title: 'Media is session-only',
+          description: warning,
+          variant: 'destructive',
+        })
+      }
+      // Re-read after the awaits: the doc may have changed while the bytes wrote.
       const store = useEditorStore.getState()
       const missing = store.doc.media.find((m) => m.missing && m.name === asset.name)
       if (missing) {
@@ -63,22 +169,29 @@ export async function importMediaFiles(files: FileList | File[]): Promise<number
           !store.apply({
             type: 'relinkMedia',
             mediaId: missing.id,
-            patch: relinkPatchFrom(asset, 'manual'),
+            patch: relinkPatchFor(asset, stored),
           })
         )
           continue
+        attached = true
         toast({ title: 'Media relinked', description: asset.name })
       } else {
-        store.apply({ type: 'addMediaAsset', asset })
+        if (!store.apply({ type: 'addMediaAsset', asset })) continue
+        attached = true
         if (shouldProxy(asset)) heavy.push(asset)
       }
       imported += 1
     } catch (error) {
+      if (!isProjectTokenCurrent(token)) return imported
       toast({
         title: `Could not import ${file.name}`,
         description: error instanceof Error ? error.message : String(error),
         variant: 'destructive',
       })
+    } finally {
+      // A refused relink (a locked track) or a replaced project leaves the
+      // probed bytes owned by nobody; release their object URL with them.
+      if (fresh && !attached) discardFreshMedia(fresh)
     }
   }
   // Heavy sources: build a proxy now when proxies are on, else prompt once.
@@ -107,12 +220,14 @@ export function pickFiles(accept: string, multiple = false): Promise<File[]> {
       resolve(input.files ? Array.from(input.files) : [])
       input.remove()
     })
-    // If the user cancels, `change` never fires — resolve empty on focus return.
+    // If the user cancels, `change` never fires: resolve empty on focus return.
     window.addEventListener('focus', () => setTimeout(() => resolve([]), 300), { once: true })
     document.body.appendChild(input)
     input.click()
   })
 }
+
+// project install coordination
 
 /**
  * Project-install coordination.
@@ -142,30 +257,193 @@ export function isCurrentProjectLoad(loadId: number): boolean {
   return loadId === projectGeneration
 }
 
+// multi-tab media lock
+
+let activeProjectLock: ProjectLock | null = null
+let activeLockProjectId: string | null = null
+/**
+ * A lock acquired for a doc that is about to be installed but is not live yet.
+ * It is held alongside the installed project's lock, so another tab's clean
+ * cannot slip in while a restore or open prepares, and it is swapped in by
+ * `installProject`.
+ */
+let preparedLock: ProjectLock | null = null
+let preparedLockProjectId: string | null = null
+/** Orders concurrent `ensureProjectLock` calls so a superseded open cannot steal the lock. */
+let lockRequest = 0
+
+/** Removes and disposes the prepared lock unless it belongs to `projectId`. */
+function takePreparedLock(projectId: string): ProjectLock | null {
+  if (preparedLockProjectId !== projectId) {
+    preparedLock?.dispose()
+    preparedLock = null
+    preparedLockProjectId = null
+    return null
+  }
+  const lock = preparedLock
+  preparedLock = null
+  preparedLockProjectId = null
+  return lock
+}
+
+function activateLock(lock: ProjectLock, projectId: string): void {
+  if (activeProjectLock === lock && activeLockProjectId === projectId) return
+  activeProjectLock?.dispose()
+  activeProjectLock = lock
+  activeLockProjectId = projectId
+}
+
+/**
+ * Holds the shared project lock for the installed doc, or prepares one for a
+ * doc that is about to be installed. Idempotent per project id. A caller that
+ * was superseded releases the lock it just acquired and gets null.
+ *
+ * `forInstall` keeps the installed project's lock until `installProject`
+ * swaps the prepared one in, so a failed or discarded load never drops the
+ * live project's hold. Each load owns a distinct prepared hold: a newer load
+ * supersedes and disposes the previous one, so a stale load's cancellation can
+ * never release a newer load's hold.
+ */
+export async function ensureProjectLock(
+  doc: Doc,
+  options: { forInstall?: boolean } = {},
+): Promise<ProjectLock | null> {
+  // Advance the token BEFORE the idempotent reuse check: a re-opened current
+  // project must invalidate an acquire for another project that is still
+  // waiting, or that older request would later dispose this lock and take over.
+  const request = ++lockRequest
+  if (activeLockProjectId === doc.project.id && activeProjectLock) return activeProjectLock
+  const acquired = await ProjectLock.acquire(doc.project.id)
+  if (request !== lockRequest) {
+    // A newer project request won while this one waited for the lock.
+    acquired.dispose()
+    return null
+  }
+  if (options.forInstall) {
+    preparedLock?.dispose()
+    preparedLock = acquired
+    preparedLockProjectId = doc.project.id
+    return acquired
+  }
+  // The doc is already live: hand the lock over now. A prepared hold for the
+  // same project is reused instead of leaked: it leaves the registry here but
+  // its shared hold would otherwise stay unreachable to releaseProjectLock.
+  const prepared = takePreparedLock(doc.project.id)
+  if (prepared) {
+    activateLock(prepared, doc.project.id)
+    acquired.dispose()
+    return activeProjectLock
+  }
+  activateLock(acquired, doc.project.id)
+  return activeProjectLock
+}
+
+/** The lock held for the current project, when one has been acquired. */
+export function currentProjectLock(): ProjectLock | null {
+  return activeProjectLock
+}
+
+/**
+ * Releases the hold a cancelled or superseded load acquired, identified by its
+ * own lock object rather than by project id. The installed project's lock and
+ * another load's prepared hold are never touched.
+ */
+export function discardProjectLock(lock: ProjectLock | null): void {
+  if (!lock || lock === activeProjectLock) return
+  if (preparedLock === lock) {
+    preparedLock = null
+    preparedLockProjectId = null
+  }
+  lock.dispose()
+}
+
+/** Releases the shared media lock (page teardown). */
+export function releaseProjectLock(): void {
+  // Retire any acquisition still waiting: without the bump it would see a
+  // current request, activate, and resurrect a hold after teardown.
+  lockRequest += 1
+  preparedLock?.dispose()
+  preparedLock = null
+  preparedLockProjectId = null
+  activeProjectLock?.dispose()
+  activeProjectLock = null
+  activeLockProjectId = null
+}
+
 /**
  * THE project install path (0.20.0): invalidate in-flight loads, revoke the
  * old project's proxy URLs, replace the doc, and clear any restore banner.
  * Every installer routes through this, so no path can leave a stale autosave
  * prompt over a project that is already live. Callers keep their warnings and
  * toasts.
+ *
+ * 0.23.0: the new project announces itself to other tabs through the shared
+ * media lock. A prepared lock (from `ensureProjectLock(..., { forInstall })`)
+ * swaps in here, after the doc has been replaced, so the old project's hold is
+ * never dropped before this install commits. The fallback acquisition is not
+ * awaited so this stays synchronous.
  */
 export function installProject(doc: Doc): void {
   bumpProjectGeneration()
   revokeAllProxies()
+  const prepared = takePreparedLock(doc.project.id)
   const store = useEditorStore.getState()
   store.replaceDoc(doc)
   store.clearPendingRestore()
+  // A fresh install has no unclaimed stored bytes; a degraded open sets the
+  // flag again after this call.
+  store.setMediaCleanBlocked(false)
+  if (prepared) activateLock(prepared, doc.project.id)
+  else void ensureProjectLock(doc)
+  // Every installed project owns a project directory with an empty claims
+  // directory, even before its first save.
+  void prepareProjectStore(doc.project.id)
+}
+
+/** Rehydration + claim for a doc that is about to be installed, or null when superseded. */
+async function prepareForInstall(
+  doc: Doc,
+  loadId: number,
+): Promise<{ doc: Doc; warnings: string[]; claimFailed: boolean } | null> {
+  const lock = await ensureProjectLock(doc, { forInstall: true })
+  if (!lock || !isCurrentProjectLoad(loadId)) {
+    discardProjectLock(lock)
+    return null
+  }
+  const rehydration = await rehydrateMedia(doc)
+  if (!isCurrentProjectLoad(loadId)) {
+    revokeRehydratedUrls(rehydration.urls)
+    discardProjectLock(lock)
+    return null
+  }
+  // The claims directory exists for every installed project, empty or not, so
+  // a missing directory always means lost records rather than "nothing saved".
+  const storeReady = await prepareProjectStore(rehydration.doc.project.id)
+  const hashes = collectMediaHashes(rehydration.doc)
+  const claimed = storeReady && (hashes.length === 0 || (await writeProjectClaim(rehydration.doc)))
+  if (!isCurrentProjectLoad(loadId)) {
+    revokeRehydratedUrls(rehydration.urls)
+    discardProjectLock(lock)
+    return null
+  }
+  const warnings = [...rehydration.warnings]
+  if (!claimed) {
+    warnings.push(
+      'Stored media could not be claimed, so Clean Unused Media stays unavailable until you save this project.',
+    )
+  }
+  return { doc: rehydration.doc, warnings, claimFailed: !claimed }
 }
 
 /**
  * The one project-open implementation, shared by the menu and the toolbar:
- * parse the chosen file, install, report.
+ * parse the chosen file, rehydrate, claim, install, report.
  *
  * A load request is numbered as it ENTERS this function, and parsing,
- * install and error reporting all check the generation, so a load that a
- * newer request (or a new project) has superseded writes nothing and reports
- * nothing. Canceling a picker never reaches here, so it can never invalidate
- * a load that is already in flight.
+ * rehydration, install and error reporting all check the generation, so a load
+ * that a newer request (or a new project) has superseded writes nothing and
+ * reports nothing. Canceling a picker never reaches here, so it can never
+ * invalidate a load that is already in flight.
  */
 export async function openProjectFile(file: File): Promise<void> {
   const loadId = bumpProjectGeneration()
@@ -175,16 +453,18 @@ export async function openProjectFile(file: File): Promise<void> {
   // that point must still be reported.
   let installStarted = false
   try {
-    const { doc, warnings } = await loadProjectFile(file)
+    const { doc: parsed, warnings: parseWarnings } = await loadProjectFile(file)
     if (!isCurrentProjectLoad(loadId)) return // a newer request superseded this one
-    // The old project's proxy object URLs belong to it; installProject
-    // revokes them, installs the doc, and clears any restore banner.
+    const prepared = await prepareForInstall(parsed, loadId)
+    if (!prepared) return
     installStarted = true
-    installProject(doc)
-    const remaining = doc.media.filter((asset) => asset.missing).length
+    installProject(prepared.doc)
+    if (prepared.claimFailed) useEditorStore.getState().setMediaCleanBlocked(true)
+    const remaining = prepared.doc.media.filter((asset) => asset.missing).length
     const description = [
       remaining > 0 ? `${remaining} media file(s) need relinking.` : undefined,
-      ...warnings,
+      ...parseWarnings,
+      ...prepared.warnings,
     ]
       .filter(Boolean)
       .join(' ')
@@ -200,6 +480,32 @@ export async function openProjectFile(file: File): Promise<void> {
       variant: 'destructive',
     })
   }
+}
+
+/**
+ * The autosave banner's install path. Rehydrates first, then installs through
+ * the one install function. An autosave restore writes no claim: the slot is a
+ * live reference and clean reads it directly. Returns null when superseded.
+ */
+export async function restoreAutosaveProject(
+  restore: PendingRestore,
+  stillWanted: () => boolean = () => true,
+): Promise<{ doc: Doc; warnings: string[] } | null> {
+  const loadId = bumpProjectGeneration()
+  const lock = await ensureProjectLock(restore.doc, { forInstall: true })
+  if (!lock || !isCurrentProjectLoad(loadId) || !stillWanted()) {
+    discardProjectLock(lock)
+    return null
+  }
+  const rehydration = await rehydrateMedia(restore.doc)
+  if (!isCurrentProjectLoad(loadId) || !stillWanted()) {
+    revokeRehydratedUrls(rehydration.urls)
+    discardProjectLock(lock)
+    return null
+  }
+  const doc = rehydration.doc
+  installProject(doc)
+  return { doc, warnings: [...restore.warnings, ...rehydration.warnings] }
 }
 
 /**

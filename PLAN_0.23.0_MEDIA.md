@@ -63,14 +63,20 @@ Add a browser-bound media store module under `src/lib/editor/media/` with a smal
 - `readMediaFile(projectId, contentHash)`
 - `deleteMediaFile(projectId, contentHash)`
 - `listMediaFiles(projectId)`
-- `beginPendingWrite(projectId, contentHash)` and `endPendingWrite(projectId, contentHash)`
 - `writeMediaClaim(projectId, hashes): Promise<string>` and `readMediaClaims(projectId)`
 - `deleteMediaClaim(projectId, claimId)`
-- `beginInstallReservation(projectId, installId, hashes)` and `endInstallReservation(projectId, installId)`
 - `cleanProjectMedia(projectId, keepHashes)`
 - `clearProjectMedia(projectId)`
 - `estimateMediaStore()`
 - `requestPersistentStorage()`
+- `holdProjectLock(projectId)` and `withExclusiveProjectLock(projectId, fn)`, the multi-tab guard
+
+Multi-tab guard: every open tab holds a shared Web Lock `media-project:<project-id>` for its
+lifetime. The clean action temporarily releases this tab's shared lock, then requests the same lock in
+exclusive mode with `ifAvailable`. A granted lock proves no other tab has the project open, because any
+other open tab holds the shared mode. A refused request, or a browser without Web Locks, refuses clean
+outright and deletes nothing. Claim shards, not the lock, protect closed copies. There are no tab
+records, recovery locks, install reservations, heartbeats, pending markers, or grace windows.
 
 Use OPFS as the primary store, with a documented fallback when OPFS is unavailable or the write fails.
 Do not make OPFS a hard requirement for import. A failed write degrades to the current session-only
@@ -90,53 +96,46 @@ segment. Do not accept slashes, `..`, uppercase, or non-hex.
 
 Explicit project save and project open write a new immutable claim shard at
 `<project-id>/claims/<claim-id>.json` listing every referenced `contentHash`. Shards are never merged
-or overwritten; clean reads every shard and unions them, so concurrent saves cannot lose a claim. The
-claim set only grows and is the record of hashes a closed copy may reference. It is not a pointer and
-never changes which bytes an asset loads. Clean keeps every claimed hash. The store creates an empty
-claims directory when a project is created or installed, so a missing directory means lost or
-unreadable claims, not a new project. If the claims directory is missing or unreadable, clean refuses
-to delete content hashes and only removes temp, quarantine, and stale pending files; it does not assume
-no copies exist. `clear-all` is the only action that removes claims and reservations, and its
-confirmation names that saved copies will lose their media. The claims directory, the `.cleaning`
-marker, reservation files, temp files, and quarantine entries are store metadata, not media hashes;
-list and clean exclude them from the hash candidates.
+or overwritten; clean reads every shard and unions them, so a save can never lose a claim. The claim
+set only grows and is the record of hashes a closed copy may reference. It is not a pointer and never
+changes which bytes an asset loads. Clean keeps every claimed hash. The store creates an empty claims
+directory when a project is created or installed, and when a project directory holds no stored hashes.
+An existing project that still holds stored hashes but has no claims directory stays claims-missing
+instead of gaining an empty record, so a missing directory means lost or unreadable claims, not a new
+project. If claims are missing or unreadable, clean refuses to delete content hashes and only removes
+temp and quarantine files, and an explicit claim write refuses too, so a save fails rather than hide
+the lost records. Only clear-all resets that state.
+`clear-all` is the only action that removes claims, and its confirmation names that saved copies will
+lose their media. The claims directory, temp files, and quarantine entries are store metadata, not
+media hashes; list and clean exclude them from the hash candidates.
 
-Claim writes take the same exclusive media lock as clean. Without Web Locks, a claim write creates a
-unique shard through temp write plus rename and broadcasts `claim` with its id; clean re-reads every
-shard immediately before deleting. Immutable shards mean two concurrent saves cannot overwrite each
-other, so there is no read-merge-write to serialize. A claim write that sees a `cleaning` marker waits
-for `done`, and a clean that sees a new shard includes it before the delete.
+A claim write needs no cross-tab lock: shards are immutable and uniquely named, so two saves cannot
+overwrite each other and there is no read-merge-write to serialize. In one tab, a clean holds a flag
+across its reference snapshot and every delete, and a claim write, import, relink, Freeze Frame write,
+or rehydration waits for that flag, so no candidate hash is rewritten during the delete.
 
 ### Import lifecycle
 
-- On import, hash the file, mark the hash pending, then participate in the `.cleaning` handshake
-  before attaching it to the doc. With Web Locks, hold the exclusive media lock across the pending
-  marker, write, and attachment. Without Web Locks, write the pending marker first, broadcast `join`,
-  check the `.cleaning` marker, wait for `done` when it is set, and recheck after the wait. Write the
-  bytes and sidecar, add the asset with `contentHash`, then clear the pending marker. A clean that
-  starts after the check sees the pending marker or the new live hash. A clean that finished before
-  the import started has already completed its deletes; the import then writes a new pending marker
-  and hash, so that clean cannot reach them. If a marker is present, the import waits for `done` and
-  rechecks before attaching. If the write fails, delete the partial entry, clear the marker, still add
-  the session-only asset, and surface a warning.
-- On relink, hash the replacement, then participate in the same `.cleaning` handshake as import
-  before attaching it: mark the new hash pending with a heartbeat, write it, set `asset.contentHash`
-  under the finalization lock, then clear the pending marker. With Web Locks, hold the exclusive media
-  lock across the pending marker, write, and attachment. Without Web Locks, write the pending marker
-  first, broadcast `join`, check the `.cleaning` marker, wait for `done` when it is set, and recheck
-  after the wait before attaching. Drop any proxy built for the old file. If the write succeeds, keep
-  the new hash and bytes and the persistent path below. If the media store is unsupported, unavailable,
-  or full, or the write fails, delete only the partial temp and marker, then apply `relinkMedia` as a
-  session-only relink with a warning. For that session-only result, do not claim the new hash and clear
-  the asset's `contentHash` so no persisted hash names different bytes. Leave any previous stored hash
-  and its bytes untouched for undo and other copies. A later explicit save or autosave may promote the
-  session file and write a new hash; until then, reopening the project needs another relink. This also
-  recovers a missing v4 asset that has no stored hash. The persistent-storage path is unchanged when
-  the write succeeds.
+Clean cannot race an import, so the import has no handshake. The clean refuses while this tab has an
+import or install in flight, and while any other tab holds the project open. The import only writes a
+hash that this tab then attaches to the live doc.
+
+- On import, hash the file, then write the bytes and sidecar. Add the asset with `contentHash` only
+  after the write succeeds. If the media store is unsupported, unavailable, or full, or the write
+  fails, still add the session-only asset, leave `contentHash` unset, and surface a warning naming the
+  file. A failed write deletes its partial temp entry first.
+- On relink, hash the replacement and write it, then set `asset.contentHash` through `relinkMedia` in
+  the same patch that carries the new file and URL. Drop any proxy built for the old file. If the write
+  fails, apply `relinkMedia` as a session-only relink with a warning and set `contentHash` to
+  `undefined`, so no persisted hash names different bytes. Leave any previous stored hash and its bytes
+  untouched for undo and other copies. A later saved project may write a new hash; until then,
+  reopening the project needs another relink. This also recovers a missing v4 asset that has no stored
+  hash.
 - On remove, do not delete the stored bytes. `removeMediaAsset` is undoable, and undo restores the
   asset entry but cannot restore bytes that are already gone. Deletion belongs to the clean action
   below.
-- On project unload, clear any session-only warning state. Do not clear stored bytes.
+- On project unload, clear any session-only warning state and release the project lock. Do not clear
+  stored bytes.
 
 ### Deletion and cleanup
 
@@ -144,97 +143,34 @@ Removal never deletes bytes. The first version has no automatic GC on load. Clea
 action that lists the candidate hashes, their sizes, and the reason they are unreferenced, then
 requires confirmation:
 
-1. List the stored hashes for the loaded project id.
-2. Read every claim shard under `<project-id>/claims/` and keep every claimed hash. If the directory is
-   missing or unreadable, do not delete any content hash; clean may only remove temp, quarantine, and
-   stale pending files.
-3. Keep every hash referenced by `doc.media` or by any snapshot held by undo or redo.
-4. If the autosave slot parses to the loaded project id, keep the media and font hashes it references.
-   An autosave restore does not write a claim; the autosave slot is a live reference, and its hashes
+1. Refuse when an import, a relink, or a project install is in flight in this tab.
+2. Release this tab's shared project lock and request `media-project:<project-id>` in exclusive mode
+   with `ifAvailable`. Refuse, deleting nothing, when another tab holds the project open or the browser
+   has no Web Locks. Re-acquire the shared lock in a finally block.
+3. List the stored hashes for the loaded project id.
+4. Read every claim shard under `<project-id>/claims/` and keep every claimed hash. If the directory is
+   missing or unreadable, do not delete any content hash; clean may only remove temp and quarantine
+   files.
+5. Keep every hash referenced by `doc.media` or by any snapshot held by undo or redo.
+6. If the autosave slot parses to the loaded project id, keep the media hashes it references. An
+   autosave restore does not write a claim; the autosave slot is a live reference, and its hashes
    become eligible for cleanup once the slot no longer references them.
-5. Keep every hash with a pending marker whose heartbeat is recent, regardless of the marker's age,
-   every hash marked reserved by an install, import, or promotion, and every hash written within a
-   short grace window. The importer updates the heartbeat every 30 seconds while the write is active,
-   and the stale threshold is at least five minutes so a throttled background tab is not mistaken for
-   abandoned. A marker with no heartbeat for the stale threshold may be listed as a candidate with a
-   warning.
-6. Delete only the hashes the user confirms, plus their sidecars.
-7. Report the reclaimed size.
+7. Re-read the doc, both history stacks, the claim shards, and the autosave slot immediately before
+   each delete. If any reference appeared since the candidate list was built, abort and rebuild it.
+8. Delete only the hashes the user confirms, plus their sidecars. Hold a same-tab clean flag across
+   the reference snapshot and every delete, so an import, relink, or rehydration waits instead of
+   rewriting a candidate hash.
+9. Report the reclaimed size.
 
-Each open project tab writes a durable membership record under `<project-id>/tabs/` before loading,
-then joins `BroadcastChannel('videoh-media:<project-id>')` and publishes its live hash set, the union
-of `doc.media` and both history stacks, on change, on visibility change, and every 10 seconds. The
-record, not a received heartbeat, establishes membership: a suspended or inactive tab that never
-answers is still listed. The clean action lists every record, waits 30 seconds, retries once, unions
-every live set it receives, and keeps those hashes. A recorded tab that cannot be reached blocks
-content-hash deletion even when its heartbeat is stale; only the explicit `clear-all` action, whose
-confirmation names that saved copies lose media, may proceed. Confirmation is not a substitute for
-reachability in a normal clean. The whole collect, revalidate, and delete sequence runs under the
-exclusive cross-tab lock. With Web Locks unavailable, the durable membership records, the
-BroadcastChannel union, and the pending-marker heartbeat are the protection.
-
-A record carries a tab id, session id, open time, heartbeat time, state (`open` or `closing`), and its
-live hash set. On orderly unload, the tab stops its heartbeat, writes `closing`, broadcasts `leave`
-with the record id, then removes the record. Any tab that receives `leave` may remove a matching
-`closing` record; a failed removal is left for recovery. Recovery never deletes a hash. Each tab holds
-a lifetime Web Lock named `media-tab:<record-id>`. A dedicated recovery action probes that lock with
-`ifAvailable`; only a free lock proves the page is closed, because a suspended or unreachable tab
-still holds it. Remove only the record after that proof, then let a later clean recompute candidates.
-Without Web Locks, unresolved open records keep protecting media and only `clear-all` may bypass them,
-unchanged. Content-hash deletion and clear-all behavior do not change.
-
-Every project install takes the same exclusive lock before rehydration and holds it through
-`installProject`. A new project or reset also takes it before replacing the doc. Before rehydration,
-the install parses the doc and writes a reservation at
-`<project-id>/reservations/<install-id>.json` listing every serialized `contentHash`, including hashes
-that fail to hydrate, then publishes the set on the channel. The reservation is written before the
-install checks for a clean, and clean keeps every reserved hash.
-
-With Web Locks unavailable, clean and install use one publication barrier. The install writes its
-reservation first, then broadcasts `join` and checks the `.cleaning` marker. A fresh marker means it
-waits for `done`, then verifies every reserved hash still exists. If any is missing, it restores or
-reacquires the bytes from its source before installing, or aborts before install with a clear error;
-it never installs with a reserved hash silently missing. Clean writes the marker first, then
-broadcasts `cleaning` and waits for every durable membership record to answer `idle` or `reserved`.
-A tab with an install in flight publishes its reservation before answering `reserved`. Clean may not
-collect or delete a hash until every existing member has answered. A tab that starts after the marker
-checks it before writing a reservation, joins the waiters, and publishes nothing until `done`; a new
-membership record appearing during the barrier restarts the wait. Clean re-reads membership records,
-reservations, and the marker immediately before each hash deletion, and any new reservation aborts the
-delete and restarts the barrier. The marker is held for the whole barrier and delete, and cleared with
-`done` in a finally block. Publication and deletion are therefore mutually exclusive for the entire
-delete window. The Web Locks path follows the same rule under its exclusive lock.
-
-A normal install releases its reservation after install or failure and broadcasts `release`. The
-install refreshes the heartbeat every 30 seconds while rehydration and installation are active. A
-degraded install keeps its reservation for the whole session, as described under Load and
-rehydration. A reservation whose heartbeat is stale and whose durable membership record is gone is
-abandoned and may be listed as a candidate with a warning. A stale heartbeat alone never makes a
-reservation abandoned while its tab record still exists.
-
-The clean action still answers `join` with `cleaning` for its whole delete window and writes the
-`.cleaning` marker with a start time, clearing it after the last delete. An install refuses while a
-fresh marker exists; fresh means younger than the stale threshold, and an older marker is stale and may
-be cleared with a warning after the install queries the live tabs.
-
-The clean action records the project generation and the live-set generation before collecting. Under
-the same lock, immediately before each delete, it re-reads the current doc and both history stacks,
-rechecks the claimed hashes and live tab sets, and compares the generations. If a reference appeared or
-a generation changed, it aborts the delete and restarts. Every project install, new project, or reset
-bumps the project generation and publishes it before changing the doc; a relink publishes its new live
-hash set before changing the doc. A hash that becomes referenced during the wait is therefore never
-deleted.
-
-Before collecting, the clean sets a local `mediaCleanInProgress` guard and broadcasts `cleaning` on the
-channel. A project install or reset in this tab refuses or waits while the guard is set, and another tab
-that receives `cleaning` defers its install until `done`. Clear the guard and the persistent marker in a
-finally block after the last delete. This closes the gap between the generation check and the delete.
+The exclusive lock covers the whole collect and delete. Because clean can only run when no other tab
+has the project open, the union of live tab sets is not needed: there is exactly one open tab, this
+one, and its doc, history, and autosave slot are read directly.
 
 This keeps undo and redo whole for the whole session. Relink is independent because each doc carries
 its own hash. Two files that share a project id still share one directory, but every explicit save and
 open claims its hashes, so clean cannot delete bytes that a closed copy may reference. Clean never
 deletes a claimed hash automatically. Only `clear-all`, with a confirmation that names the risk, can
-break a saved copy.
+break a saved copy. Clear-all also removes the claims directory, and is the only action that may.
 
 ### Load and rehydration
 
@@ -243,30 +179,26 @@ Keep `parseSerializedDoc` synchronous. Add an async `rehydrateMedia(doc)` step t
 
 1. For each serialized media asset with a `contentHash`, read `<project-id>/<content-hash>`. A legacy
    asset with no hash stays missing and uses the existing relink path.
-2. If bytes exist, read the sidecar MIME type, use the serialized asset's name, create a new `File`,
-   create an object URL, and set `file`, `url`, and `missing: false`. If the sidecar is missing or
-   malformed, derive the type from the file extension, then warn.
-3. If bytes do not exist, keep `missing: true` and the existing relink path.
+2. If bytes exist and verify, read the sidecar MIME type, use the serialized asset's name, create a new
+   `File`, create an object URL, and set `file`, `url`, and `missing: false`. If the sidecar is missing
+   or malformed, derive the type from the file extension, then warn.
+3. If bytes do not exist or fail verification, keep `missing: true` and the existing relink path.
 4. If a font or other future asset type needs hydration, extend this step, not each caller.
 
 Before install, write a claim shard listing every validated referenced `contentHash` in the doc,
 including assets whose hydration failed. The claim is written before the doc is live, so a closed copy
 keeps its bytes even if the project is replaced immediately after opening. When the claim write
 succeeds, keep this claim-before-install order. If the media store is unsupported, unavailable, or
-rejects the claim, open in degraded mode instead of blocking the project: write the install
-reservation, install the hydrated or session-only doc with a warning, and keep that reservation live
-for the whole session so clean cannot reclaim promoted bytes. Session-only assets have no hash and
-stay relinkable. Refresh the reservation heartbeat every 30 seconds until the tab unloads; the durable
-tab membership record also keeps it from being treated as abandoned. Retry the claim on the next
-explicit save or autosave. A successful retry writes the claim first, then releases the degraded
-reservation. A failed retry keeps both and leaves the warning in place. An autosave may proceed because
-its slot is a live reference and the reservation protects its hashes. A legacy project with no content
-hashes needs no claim and opens normally. This fallback applies to opening or restoring an existing
-project; a bundle import keeps its stricter claim-before-install rule because it promotes new bytes. Do
-not delete existing shards or bytes on this path. An autosave restore does not write a claim; clean
-reads the autosave slot as a live reference. Explicit save through `downloadProjectJSON` is different:
-it must still await its claim write and fail rather than write a copy whose bytes are unclaimed. Do not
-fire-and-forget a claim for a copy that is about to be written.
+rejects the claim, open in degraded mode instead of blocking the project: install the hydrated or
+session-only doc with a warning, and mark clean unavailable for this session until a claim write
+succeeds. The mark is session state, not a store record: a later explicit save retries the claim first
+and clears the mark on success. No claim, no clean. Session-only assets have no hash and stay
+relinkable. A legacy project with no content hashes needs no claim and opens normally. This fallback
+applies to opening or restoring an existing project. Do not delete existing shards or bytes on this
+path. An autosave restore does not write a claim; clean reads the autosave slot as a live reference.
+Explicit save through `downloadProjectJSON` is different: it must still await its claim write and fail
+rather than write a copy whose bytes are unclaimed. Do not fire-and-forget a claim for a copy that is
+about to be written.
 
 Install the hydrated doc once, so history, selection, and the restore banner behave exactly as they do
 today. Revoke replaced object URLs. Do not leave a second install path.
@@ -371,21 +303,24 @@ Expected modified files:
 ### Phase 1: store adapter
 
 - Add feature detection, the OPFS read, write, delete, estimate, clean, and clear methods, the SHA-256
-  helper, the content-hash key, the pending marker, claim shards, and install reservations.
+  helper, the content-hash key and path validation, the sidecar, claim shards, and the project lock
+  helpers.
 - Verify a red test fails before the adapter exists.
 - Cover unsupported OPFS, a write failure, a quota failure, an invalid hash, a missing entry, a delete
-  of a missing entry, a partial write, a malformed sidecar, a stale pending marker, an existing valid
-  hash that is reused, an invalid existing hash that is quarantined and replaced, two concurrent claim
-  shard writes that both survive, and a missing claims directory that disables content-hash deletion.
+  of a missing entry, a partial write, a malformed sidecar, an existing valid hash that is reused, an
+  invalid existing hash that is quarantined and replaced, two concurrent claim shard writes that both
+  survive, and a missing claims directory that disables content-hash deletion.
+- Cover the lock: a clean refuses when another holder owns the shared project lock, refuses when Web
+  Locks is unavailable, and restores this tab's shared lock after a refused or completed clean.
 
 ### Phase 2: import, relink, remove
 
 - Wire the store into the single import boundary and set `MediaAsset.contentHash`.
-- Verify an import writes one hash and clears the pending marker.
-- Verify relink participates in the `.cleaning` handshake before attaching, rechecks after waiting
-  for `done`, marks the new hash pending, writes it, updates only the current asset's `contentHash`
-  under the finalization lock, then clears the marker; a failed write leaves the old hash and old bytes
-  and does not apply the relink.
+- Verify an import writes one hash and attaches it only after the write succeeds.
+- Verify a failed import write still adds a session-only asset with no `contentHash`.
+- Verify relink writes the new bytes before attaching, updates only the current asset's `contentHash`,
+  and that a failed write leaves the old hash and old bytes and applies a session-only relink with
+  `contentHash` cleared.
 - Verify two docs that share a project id but carry different hashes load different bytes, and that a
   relink in one leaves the other doc's bytes unchanged.
 - Verify undo of a relink restores the old `contentHash` and the old bytes still load.
@@ -396,18 +331,10 @@ Expected modified files:
 - Verify two concurrent claim shard writes both survive and clean unions them.
 - Verify an autosave restore writes no claim, clean keeps the autosave slot's hashes, and the hashes
   become eligible after the slot no longer references them.
-- Verify clean on a project with a missing claims directory deletes only temp, quarantine, and stale
-  pending files.
-- Verify an install reservation is written before rehydration, clean keeps its hashes, and release
-  makes them eligible again.
-- Verify a reservation created during the clean's delete window cannot be followed by deletion of its
-  hashes; clean rechecks before each deletion and aborts or restarts. Verify the waiting install then
-  rechecks its reserved hashes and either reacquires missing bytes or aborts before installing.
-- Verify a clean that starts while an install is rehydrating cannot delete a reserved hash without Web
-  Locks, and an install that starts while clean is running waits.
-- Verify the clean action skips a pending import and a hash written inside the grace window.
-- Verify an import finalize and a clean action on the same project id serialize under the cross-tab
-  lock; the import's entry survives.
+- Verify clean on a project with a missing claims directory deletes only temp and quarantine files.
+- Verify the clean action refuses while this tab has an import in flight.
+- Verify a clean and an import on the same project id cannot overlap: the clean holds the exclusive
+  lock for the whole delete, and the import runs only in a tab that holds the shared lock.
 
 ### Phase 3: rehydration
 
@@ -415,11 +342,12 @@ Expected modified files:
 - Verify a saved project with stored bytes reopens with a working `url` and `file`, not just an image.
 - Verify a v4 asset with no hash hydrates as `missing` and relinks, and a v5 asset with a hash hydrates
   from that hash.
-- Verify the sidecar name and MIME type rebuild the `File`; a missing sidecar falls back with a warning.
+- Verify the sidecar MIME type rebuilds the `File`; a missing sidecar falls back with a warning.
 - Verify a missing entry still hydrates as `missing` and relinks.
 - Verify object URLs for replaced assets are revoked.
 - Verify an open writes a claim shard for every validated referenced hash before install, including an
   asset whose bytes fail to hydrate, and an autosave restore writes no claim.
+- Verify a failed claim write opens degraded, warns, and disables clean until a later save claims.
 - Verify the clean action removes an orphaned hash and keeps a referenced one.
 - Verify a superseded open or autosave restore does not install and revokes its object URLs.
 - Verify undo and the autosave restore banner still behave as one install.
@@ -429,16 +357,10 @@ Expected modified files:
 - Add usage, clean, clear-all, and persistent-storage request.
 - Verify the UI handles unsupported OPFS and quota errors.
 - Verify the clean action lists candidates, requires confirmation, and leaves referenced media intact.
-- Verify a reference that appears during the clean wait aborts the delete and restarts the candidate
-  list.
-- Verify a suspended tab's durable membership record is listed and blocks normal deletion even when
-  the tab never heartbeats; only clear-all proceeds, and the claim union and revalidation still apply.
-- Verify an install or reset during the clean guard refuses or waits and the clean finishes, including
-  when Web Locks is unavailable and the install starts after the `cleaning` broadcast.
-- Verify an install reservation is not released until install finishes or fails, and clean never
-  deletes a reserved hash.
+- Verify a reference that appears while the candidate list waits aborts the delete and restarts it.
+- Verify clean refuses when a second tab holds the project open, and when Web Locks is unavailable.
 - Verify clear-all leaves the project and clips intact, marks every asset missing, removes the claims
-  and reservations directories, and warns that saved copies lose their media.
+  directory, and warns that saved copies lose their media.
 
 ### Phase 5: freeze frame
 
@@ -467,35 +389,26 @@ Expected modified files:
 - Store: supported and unsupported runtime, write, read, delete, clean, clear, estimate, invalid hash,
   project id and hash traversal attempts, quota rejection, concurrent writes for different hashes,
   duplicate hash write, sidecar type round trip, two assets with different names and one hash keep
-  independent names, stale pending marker, heartbeat keeps a long import alive, cross-tab lock, clean
-  unions another tab's live hash set, durable membership lists a suspended tab that never heartbeats
-  and blocks normal deletion, only clear-all proceeds for an unreachable recorded tab, clean
-  revalidates immediately before delete and aborts on a changed generation, clean skips a reserved
-  hash, clean keeps a claimed hash, two concurrent claim shard writes both survive, a missing claims
-  directory disables content-hash deletion, an existing valid hash is reused, an invalid existing hash
-  is quarantined and replaced.
-- Lifecycle: import writes and clears the pending marker, import participates in the `.cleaning`
-  handshake before attaching the hash, a clean that finishes its pending and live-set checks before an
-  import starts cannot delete the hash the import then attaches, the imported asset resolves its
-  bytes, relink participates in the same handshake and rechecks after waiting for `done`, a failed
-  relink keeps the old hash and bytes, a failed claim write opens degraded with a live reservation
-  while explicit save still waits and fails, remove keeps the hash, clean
-  deletes an orphan, clean keeps a referenced hash, clean skips pending, reserved, and recent entries,
-  an explicit save and an open write a claim shard for every validated referenced hash including failed
-  hydration, an autosave restore writes no claim, clean keeps the autosave slot's hashes until the slot
-  no longer references them, object URL revoke.
+  independent names, clean keeps a claimed hash, two concurrent claim shard writes both survive, a
+  missing claims directory disables content-hash deletion, an existing valid hash is reused, an invalid
+  existing hash is quarantined and replaced, clean refuses while another holder owns the shared project
+  lock, clean refuses when Web Locks is unavailable, the shared lock is restored after a refused or
+  completed clean.
+- Lifecycle: import attaches the hash only after the write, a failed import write adds a session-only
+  asset, the imported asset resolves its bytes, relink writes before attaching and a failed write keeps
+  the old hash and bytes with a session-only relink, a failed claim write opens degraded and disables
+  clean until a save claims, remove keeps the hash, clean deletes an orphan, clean keeps a referenced
+  hash, clean refuses while an import is in flight, an explicit save and an open write a claim shard
+  for every validated referenced hash including failed hydration, an autosave restore writes no claim,
+  clean keeps the autosave slot's hashes until the slot no longer references them, object URL revoke.
 - Rehydration: v5 asset restores `file` and `url` from its hash and sidecar, v4 asset with no hash stays
   missing and relinks, missing sidecar falls back with a warning, autosave restore, one install,
   superseded install discarded, an open writes its claim shard before install, a claim write failure
-  opens degraded with a live reservation and a legacy project with no hashes opens normally, a
-  reservation created during deletion is never deleted and the install rechecks or reacquires before
-  proceeding, a new project or reset
+  opens degraded and a legacy project with no hashes opens normally, a new project or reset
   invalidates an in-flight restore, history reset as today.
-- Install coordination: clean and install serialize under the exclusive lock; an install writes its
-  reservation before rehydration and releases it after success or failure; a long rehydration heartbeat
-  keeps the reservation fresh; clean keeps every reserved hash; an install that starts after the
-  `cleaning` broadcast waits for `done`; a clean that starts during an install cannot delete a reserved
-  hash without Web Locks; a fresh `.cleaning` marker blocks an install when Web Locks is unavailable.
+- Install coordination: install does not delete or reorder a claim shard; a clean refuses while an
+  install or import is in flight in this tab; the exclusive project lock excludes every other open tab
+  for the whole clean; a second tab opening the project during a clean makes the delete fail closed.
 - Schema: v4 loads with no hash, v5 round trip, hostile hash values rejected or dropped, newer version
   refused.
 - Copy independence: two docs that share a project id and carry different hashes load different bytes;
@@ -553,18 +466,18 @@ half-created asset path.
 - **Autosave references.** An autosave restore does not write a claim, because that would keep every
   restored hash forever. Clean reads the autosave slot as a live reference for the loaded project id;
   the hashes become eligible when the slot no longer references them.
-- **In-flight imports.** A pending marker with a periodic heartbeat, a short grace window, and a
-  cross-tab lock keep a clean action from deleting bytes that an import in this tab or another tab has
-  written but not yet added. A long import stays protected past the stale threshold without Web Locks.
-- **Clean and install race.** Clean and install take the same exclusive lock. Without Web Locks, both
-  write their intent before checking the other: the install writes a reservation, the clean writes the
-  `.cleaning` marker and waits one heartbeat window, and the clean re-reads reservations immediately
-  before deleting. A reservation is released after install or failure, so clean cannot delete its
-  hashes while the install is rehydrating. A stale reservation expires with a warning.
-- **Other tabs' undo history.** The current tab cannot see another tab's `past` and `future`. Each open
-  tab publishes its live hash set over `BroadcastChannel`, the clean action unions every live set and
-  blocks on an unanswered tab, and the delete runs under the exclusive lock. With Web Locks unavailable,
-  the same union plus the pending heartbeat is the protection.
+- **In-flight imports.** Clean refuses while this tab has an import or install in flight, and while any
+  other tab holds the project open. A clean can therefore never run beside a write that has not yet
+  been attached to a doc.
+- **Clean and install race.** Clean releases this tab's shared lock, takes the project lock exclusively,
+  and holds it across collect and delete. Another tab that opens the project during that window keeps
+  its shared request queued; the exclusive request is already granted, so no other tab can open the
+  project until the delete finishes. If the exclusive request is not granted, clean deletes nothing.
+- **Other tabs' undo history.** A clean cannot run while another tab has the project open, so the only
+  history stack that matters is this tab's, and clean reads it directly. A closed tab's history is
+  covered by its claim shards and the autosave slot.
+- **Degraded open.** A failed claim write opens the project with a warning and disables clean for the
+  session. A save retries the claim and clears the mark on success. No claim, no clean.
 - **Stale installs.** A new project, a reset, or any `installProject` call bumps the restore token, so
   an older rehydration cannot replace it.
 - **Relink atomicity.** Write the new hash and sidecar first, then set `asset.contentHash`. A failed
@@ -593,8 +506,10 @@ half-created asset path.
 - Missing and unsupported storage paths fall back to relink without data loss.
 - A closed copy's claimed hashes are never deleted by clean; a missing claims directory disables
   content-hash deletion.
-- An install reservation protects its hashes from clean until install finishes or fails, including
-  without Web Locks.
+- A clean refuses while another tab holds the project open, or when Web Locks is unavailable, and
+  deletes nothing in either case.
+- A failed claim write opens the project in degraded mode and clean stays unavailable until a save
+  claims the bytes.
 - Removing an asset keeps its bytes for undo; the clean action frees them once history no longer
   reaches them.
 - Freeze frame creates a durable still on a new topmost video track, adds one clip, and undoes as one

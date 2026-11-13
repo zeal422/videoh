@@ -517,16 +517,21 @@ f11_whatsnew_once() {
   n=$(evaln 'document.querySelectorAll("[data-testid=release-notes-modal]").length')
   [ "$n" = "0" ] || return 1
   ab find role button click --name 'Restore' >/dev/null 2>&1 && sleep 1.5
-  # 0.18.0 removed the bundled sample bytes, so a restored session hydrates its
-  # media offline. Relink the committed fixtures by name before the decode-heavy
-  # steps that follow.
-  upload_fixtures || return 1
-  local offline=1 offline_wait=0
-  while [ "$offline" != "0" ] && [ "$offline_wait" -lt 30 ]; do
+  # 0.23.0 stores imported bytes, so the restored session rehydrates them and
+  # every fixture comes back online. Uploading them again would add duplicate
+  # bin items; wait for the bin to settle and require the three originals, none
+  # offline. This is the durable-media proof: a failed rehydration leaves them
+  # offline and the step fails.
+  local offline=1 offline_wait=0 items=0
+  while { [ "$offline" != "0" ] || [ "$items" != "3" ]; } && [ "$offline_wait" -lt 30 ]; do
     offline=$(evaln '(() => [...document.querySelectorAll("[data-testid^=media-item-]")].filter((e) => e.textContent.includes("offline")).length)()')
-    [ "$offline" = "0" ] || { sleep 0.5; offline_wait=$((offline_wait + 1)); }
+    items=$(evaln 'document.querySelectorAll("[data-testid^=media-item-]").length')
+    if [ "$offline" = "0" ] && [ "$items" = "3" ]; then break; fi
+    sleep 0.5
+    offline_wait=$((offline_wait + 1))
   done
-  [ "$offline" = "0" ] || { echo "f11: restored media still offline" >&2; return 1; }
+  [ "$offline" = "0" ] || { echo "f11: restored media is offline" >&2; return 1; }
+  [ "$items" = "3" ] || { echo "f11: expected 3 durable assets after restore, got $items" >&2; return 1; }
   [ "$(clipcount)" -ge 3 ]
 }
 
@@ -3894,9 +3899,12 @@ f02_ratestretch_relinked() {
     return 1
   }
 
-  # Save the project, then reopen it: the WAV's blob URL cannot persist, so the
-  # open path marks it offline (the bundled samples relink themselves by name),
-  # and the clip keeps the 2s window that now over-consumes a 1s asset.
+  # Save the project, then reopen it. 0.23.0 stores the WAV's bytes, so a plain
+  # reopen would bring it back ONLINE; clear the stored media first (the real
+  # user path for a saved copy that lost its media, which also exercises Clear
+  # All Stored Media). The reopen then marks every asset offline, the bundled
+  # samples relink by name, the WAV needs a manual relink, and the clip keeps
+  # the 2s window that now over-consumes a 1s asset.
   ab download 'button[aria-label="Save project (Ctrl+S)"]' "$proj" >/dev/null 2>&1 || {
     echo "f02_ratestretch_relinked: project save download failed" >&2
     clean_relink
@@ -3907,6 +3915,45 @@ f02_ratestretch_relinked() {
     clean_relink
     return 1
   }
+  ab click '[data-testid="media-storage"]' >/dev/null 2>&1 || {
+    echo "f02_ratestretch_relinked: the storage dialog did not open" >&2
+    clean_relink
+    return 1
+  }
+  local clear_ready=0 deadline=$((SECONDS + 8))
+  while [ "$clear_ready" = "0" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    clear_ready=$(evaln '(() => { const b = document.querySelector("[data-testid=storage-clear]"); return b && !b.disabled ? "1" : "0"; })()')
+    [ "$clear_ready" = "0" ] && sleep 0.25
+  done
+  [ "$clear_ready" = "1" ] || {
+    echo "f02_ratestretch_relinked: Clear All Stored Media is unavailable" >&2
+    clean_relink
+    return 1
+  }
+  ab click '[data-testid="storage-clear"]' >/dev/null 2>&1
+  sleeps 0.4
+  ab click '[data-testid="storage-clear-confirm"]' >/dev/null 2>&1
+  ab wait --text 'Cleared' --timeout 5000 >/dev/null 2>&1 || {
+    echo "f02_ratestretch_relinked: Clear All Stored Media did not confirm" >&2
+    clean_relink
+    return 1
+  }
+  # Close through the dialog's own X: Escape was not dismissing it in this
+  # state, and a Radix dialog hides the rest of the app from the a11y tree
+  # while it is open, so the File menu is unreachable until it is really gone.
+  ab click '[data-testid="storage-dialog"] [data-slot="dialog-close"]' >/dev/null 2>&1
+  sleeps 0.3
+  local dialog=1 deadline=$((SECONDS + 5))
+  while [ "$dialog" != "0" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    dialog=$(evaln 'document.querySelectorAll("[data-testid=storage-dialog]").length')
+    [ "$dialog" = "0" ] || sleep 0.25
+  done
+  [ "$dialog" = "0" ] || {
+    echo "f02_ratestretch_relinked: the storage dialog did not close" >&2
+    clean_relink
+    return 1
+  }
+  sleeps 0.4
   ab find role menuitem click --name 'File' >/dev/null 2>&1 && sleeps 0.4
   ab find role menuitem click --name 'New Project' >/dev/null 2>&1 && sleeps 0.8
   ab wait --text 'New project created' --timeout 5000 >/dev/null 2>&1 || {
@@ -3919,8 +3966,22 @@ f02_ratestretch_relinked() {
     clean_relink
     return 1
   }
-  # 0.18.0 removed the bundled sample bytes, so the reopened project's sample
-  # assets are offline too. Relink the committed fixtures before the LUT proof.
+  # The upload only starts the open: rehydration installs later. Wait for the
+  # reopened clips (the same clip-count readiness f07_open_project uses)
+  # before relinking, or the fixture import can land on the bare New Project
+  # doc and the relink silently attaches to the wrong generation.
+  local reopened=0 deadline=$((SECONDS + 15))
+  while [ "$reopened" = "0" ] && [ "$SECONDS" -lt "$deadline" ]; do
+    [ "$(clipcount)" -gt 0 ] && reopened=1 || sleep 0.25
+  done
+  [ "$reopened" = "1" ] || {
+    echo "f02_ratestretch_relinked: the reopened project did not install" >&2
+    clean_relink
+    return 1
+  }
+  # Clear All Stored Media left the reopened project's sample assets offline
+  # (and the WAV stays offline because it is not bundled). Relink the committed
+  # fixtures by name before the LUT proof.
   upload_fixtures || { clean_relink; return 1; }
   # Reopen poll (item 3): the offline relink button renders asynchronously.
   item="none" deadline=$((SECONDS + 8))

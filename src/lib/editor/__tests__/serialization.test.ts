@@ -79,9 +79,9 @@ describe('serializeDoc', () => {
     expect(json.media[0].waveformPeaks).toEqual([0.1, 0.5, 0.9])
     expect(json.media[0].thumbnail).toBeTruthy()
     // Pin the WIRE value, not the constant serializeDoc itself stamps: the
-    // round-trip contract is "this text is version 4", and a literal here
+    // round-trip contract is "this text is version 5", and a literal here
     // notices a silent constant change instead of restating it.
-    expect(json.version).toBe(4)
+    expect(json.version).toBe(5)
     expect(json.project.tracks[0].clips[0].transitionOut).toEqual({
       type: 'crossfade',
       duration: 0.5,
@@ -775,7 +775,7 @@ describe('marker serialization (0.5.5)', () => {
       },
     ]
     const json = serializeDoc(doc)
-    expect(json.version).toBe(4)
+    expect(json.version).toBe(5)
     expect(json.project.textPresets).toEqual(doc.project.textPresets)
     const back = deserializeDoc(json)
     expect(back.doc.project.textPresets).toEqual(doc.project.textPresets)
@@ -850,7 +850,7 @@ describe('marker serialization (0.5.5)', () => {
     doc.project.luts = [lut]
     doc.project.tracks[0].clips[0].lutId = 'lut_fixed'
     const json = serializeDoc(doc)
-    expect(json.version).toBe(4)
+    expect(json.version).toBe(5)
     expect(json.project.luts).toEqual([lut])
     const back = deserializeDoc(json)
     expect(back.doc.project.luts).toEqual([lut])
@@ -1230,7 +1230,7 @@ describe('effects serialization (0.8.6)', () => {
     return doc
   }
 
-  it('round-trips effects, blend mode and visibility at v4', () => {
+  it('round-trips effects, blend mode and visibility at v5', () => {
     const doc = fxWireDoc()
     doc.project.tracks[1].clips[0].effects = [
       { id: 'fx_crop', type: 'crop', left: 10, feather: 5 },
@@ -1239,7 +1239,7 @@ describe('effects serialization (0.8.6)', () => {
     doc.project.tracks[1].clips[0].blendMode = 'multiply'
     doc.project.tracks[1].visible = false
     const json = serializeDoc(doc)
-    expect(json.version).toBe(4)
+    expect(json.version).toBe(5)
     const { doc: loaded } = deserializeDoc(JSON.parse(JSON.stringify(json)))
     expect(loaded.project.tracks[1].clips[0].effects).toEqual([
       { id: 'fx_crop', type: 'crop', left: 10, right: 0, top: 0, bottom: 0, feather: 5 },
@@ -1341,9 +1341,9 @@ describe('track solo and lock serialization (0.14.0)', () => {
     return doc
   }
 
-  it('round-trips solo and locked at v4 without a schema bump', () => {
+  it('round-trips solo and locked at v5 without a schema bump', () => {
     const json = serializeDoc(flagsDoc())
-    expect(json.version).toBe(4)
+    expect(json.version).toBe(5)
     const { doc } = deserializeDoc(JSON.parse(JSON.stringify(json)))
     expect(doc.project.tracks[0].locked).toBe(true)
     expect(doc.project.tracks[0].solo).toBeUndefined()
@@ -1393,5 +1393,56 @@ describe('track solo and lock serialization (0.14.0)', () => {
         expect(track.locked, `v${version}`).toBeUndefined()
       }
     }
+  })
+})
+
+describe('media content hash serialization (0.23.0)', () => {
+  const HASH = 'a'.repeat(64)
+
+  it('round-trips a valid content hash and writes schema version 5', () => {
+    const doc = makeDoc()
+    doc.media[0].contentHash = HASH
+    const wire = serializeDoc(doc)
+    expect(wire.version).toBe(5)
+    expect(wire.media[0].contentHash).toBe(HASH)
+    const { doc: restored } = deserializeDoc(JSON.parse(JSON.stringify(wire)))
+    expect(restored.media[0].contentHash).toBe(HASH)
+    // Hydration still marks the asset offline until rehydration restores bytes.
+    expect(restored.media[0].missing).toBe(true)
+  })
+
+  it('loads a v4 asset with no hash as missing and relinkable', () => {
+    const wire = JSON.parse(JSON.stringify(serializeDoc(makeDoc())))
+    wire.version = 4
+    delete wire.media[0].contentHash
+    const { doc } = deserializeDoc(wire)
+    expect(doc.media[0].contentHash).toBeUndefined()
+    expect(doc.media[0].missing).toBe(true)
+  })
+
+  it('drops hostile hash values instead of naming a path', () => {
+    const base = JSON.parse(JSON.stringify(serializeDoc(makeDoc())))
+    const hostile: unknown[] = [
+      '../../evil',
+      1,
+      HASH.toUpperCase(),
+      'g'.repeat(64),
+      'a'.repeat(65),
+      null,
+      { hash: HASH },
+    ]
+    for (const contentHash of hostile) {
+      const wire = JSON.parse(JSON.stringify(base))
+      wire.media[0].contentHash = contentHash
+      const { doc } = deserializeDoc(wire)
+      expect(doc.media[0].contentHash, JSON.stringify(contentHash)).toBeUndefined()
+      expect(doc.media[0].missing).toBe(true)
+    }
+  })
+
+  it('never serializes an invalid in-memory hash', () => {
+    const doc = makeDoc()
+    doc.media[0].contentHash = '../evil'
+    expect(serializeDoc(doc).media[0].contentHash).toBeUndefined()
   })
 })

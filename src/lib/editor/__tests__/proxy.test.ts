@@ -133,7 +133,9 @@ describe('proxy URL lifetime (static locks)', () => {
     expect(context, 'action context installs through installProject').toMatch(/installProject\(/)
     expect(context, 'action context has no inline replaceDoc').not.toMatch(/\.replaceDoc\(/)
     const shell = read('../../../components/editor/EditorShell.tsx')
-    expect(shell, 'shell installs through installProject').toMatch(/installProject\(/)
+    expect(shell, 'shell restores through the shared install path').toMatch(
+      /restoreAutosaveProject\(/,
+    )
     expect(shell, 'shell has no inline replaceDoc').not.toMatch(/\.replaceDoc\(/)
   })
 })
