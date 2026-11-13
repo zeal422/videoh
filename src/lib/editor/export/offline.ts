@@ -494,9 +494,10 @@ export const EXPORT_VIDEO_BITRATES = {
 export const EXPORT_AUDIO_BITRATE = 192_000
 
 /**
- * Estimated MP4 size in bytes for a duration and quality tier, from the same
- * bitrates the exporter encodes at. A hint for the dialog, not a guarantee:
- * the real file size varies with encoder decisions.
+ * Estimated video export size in bytes at a quality tier, from the same
+ * bitrates the exporter encodes at. Used by `estimateExportBytesForOptions`
+ * for the no-override path. Not a guarantee: the real file size varies with
+ * encoder decisions.
  */
 export function estimateExportBytes(
   duration: number,

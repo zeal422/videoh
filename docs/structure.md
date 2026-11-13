@@ -223,8 +223,9 @@ src/lib/editor/
 │   └── text-box.ts       # text-box measurement (twins the compositor's text renderer)
 ├── export/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
-│   └── mp4.ts            # WebCodecs MP4 pipeline + downloadBlob
-└── __tests__/            # 100 test files (2317 tests) in `src/lib/editor/__tests__/`: see testing.md
+│   ├── options.ts        # pure container matrix, output bounds/bitrate, contain fit (Node-testable)
+│   └── mp4.ts            # WebCodecs export pipeline: MP4/MOV/MKV/WAV/MP3/M4A + downloadBlob
+└── __tests__/            # 103 test files (2368 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

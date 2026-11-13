@@ -235,9 +235,10 @@ describe('export dialog (MP4 pipeline)', () => {
   const dialog = read('src/components/editor/ExportDialog.tsx')
   const mp4 = read('src/lib/editor/export/mp4.ts')
 
-  it('uses the WebCodecs exporter and reports MP4', () => {
+  it('uses the WebCodecs exporter and the shared container matrix', () => {
     expect(dialog).toMatch(/from '@\/lib\/editor\/export\/mp4'/)
-    expect(dialog).toMatch(/\.mp4/)
+    expect(dialog).toMatch(/from '@\/lib\/editor\/export\/options'/)
+    expect(dialog).toMatch(/EXPORT_CONTAINER_ORDER/)
     expect(dialog).toMatch(/data-testid="export-unsupported"/)
     expect(dialog).not.toMatch(/WebM/)
   })
@@ -247,9 +248,11 @@ describe('export dialog (MP4 pipeline)', () => {
     // condition up front instead of rendering an all-black MP4 with a success
     // toast (every restored asset is url-less until relinked).
     expect(dialog).toMatch(/from '@\/lib\/editor\/offline'/)
+    expect(dialog).toMatch(/offlineAudibleMedia/)
     expect(dialog).toMatch(/hasOfflineMedia/)
     expect(dialog).toMatch(/data-testid="export-offline-warning"/)
-    expect(dialog).toMatch(/disabled=\{[^}]*hasOfflineMedia/)
+    expect(dialog).toMatch(/!offlineBlocked/)
+    expect(dialog).toMatch(/disabled=\{!canStart\}/)
   })
 
   it('the pipeline composites via the offline plan and encodes avc + the adaptive audio codec', () => {
@@ -265,7 +268,9 @@ describe('export dialog (MP4 pipeline)', () => {
   it('every track is opened before the output starts (Mediabunny rejects later adds)', () => {
     const addVideo = mp4.indexOf('addVideoTrack')
     const addAudio = mp4.indexOf('addAudioTrack')
-    const start = mp4.indexOf('await output.start()')
+    // The audio-only path starts its output first; the video path's start is
+    // the last one and must follow both track adds.
+    const start = mp4.lastIndexOf('await output.start()')
     expect(addVideo).toBeGreaterThan(-1)
     expect(addAudio).toBeGreaterThan(-1)
     expect(start).toBeGreaterThan(addVideo)

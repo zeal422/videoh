@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.21.0',
+    date: '2026-11-13',
+    highlights: [
+      'Export audio-only WAV, MP3, and M4A files directly from the timeline',
+      'Choose MP4, MOV, or MKV for video, with a custom bitrate and output resolution',
+      'Sequence Settings gains 16:9, 9:16, 1:1, 4:5, 4:3, and 21:9 canvas presets',
+      'Custom sizes letterbox instead of stretching, and unsupported audio codecs are disabled up front',
+      'The project format stays at version 4 and the existing MP4 defaults are unchanged',
+    ],
+  },
+  {
     version: '0.20.2',
     date: '2026-11-11',
     highlights: [

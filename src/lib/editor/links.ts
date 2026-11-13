@@ -127,12 +127,32 @@ export function clipRendersAudio(doc: Doc, clip: Clip): boolean {
  * rather than stored, so it cannot go stale.
  */
 export function linkGroupChangesRate(doc: Doc, clip: Clip): boolean {
+  return linkGroupChangesRateCore(doc, clip, true)
+}
+
+/**
+ * The export audit variant: answers whether `clip`'s audio would be dropped
+ * by the rate rule if its media were online. Unlike the render predicate, it
+ * keeps offline members in the comparison, so an offline clip that a live mix
+ * would skip cannot block an audio-only export.
+ */
+export function linkGroupChangesRateIgnoringPlayability(doc: Doc, clip: Clip): boolean {
+  return linkGroupChangesRateCore(doc, clip, false)
+}
+
+function linkGroupChangesRateCore(doc: Doc, clip: Clip, requirePlayability: boolean): boolean {
   const group = linkedClips(doc, clip.id)
-  const members = group.filter((c) => mediaPlayable(findMedia(doc, c.mediaId)))
+  const members = requirePlayability
+    ? group.filter((c) => mediaPlayable(findMedia(doc, c.mediaId)))
+    : group
   if (members.length === 0) return false
   // A real ramp on THIS clip makes its own audio unrenderable, carrier or not.
   // (Playability matters here too: a dead clip has no audio to drop, item 11.)
-  if (mediaPlayable(findMedia(doc, clip.mediaId)) && hasTimeScaleRamp(clip)) return true
+  if (
+    (!requirePlayability || mediaPlayable(findMedia(doc, clip.mediaId))) &&
+    hasTimeScaleRamp(clip)
+  )
+    return true
   // The rest is A/V pair semantics: only a group with an `audioOnly` carrier
   // has a designated sound that must follow the picture's rate. Carrier-ness
   // is STRUCTURAL, tested on the whole group: a carrier whose media is gone

@@ -24,7 +24,15 @@ import {
   preloadImage,
   renderAudioMix,
 } from '../export/mp4'
-import { BufferTarget, StreamTarget } from 'mediabunny'
+import {
+  BufferTarget,
+  MkvOutputFormat,
+  MovOutputFormat,
+  Mp4OutputFormat,
+  Mp3OutputFormat,
+  StreamTarget,
+  WavOutputFormat,
+} from 'mediabunny'
 import { blendWeight } from '../export/offline'
 import { addBlendLayer, beginBlendPair } from '../playback/compositor'
 import { createFake2DContext } from './mocks/browser-mocks'
@@ -997,6 +1005,41 @@ describe('renderAudioMix (solo video embedded audio)', () => {
     // Every shape short-circuited before a mix context was built.
     expect(contexts).toBe(0)
   })
+
+  it('returns null when no source is actually scheduled inside the export interval', async () => {
+    const file = new File([new Uint8Array([1])], 'a.mp3', { type: 'audio/mpeg' })
+    const music = { ...asset({ id: 'ma', kind: 'audio', duration: 2, url: 'blob:a' }), file }
+    const d = doc([{ kind: 'audio', clips: [audioClip({ start: 5, duration: 2 })] }], [music])
+    let renders = 0
+    class FakeOfflineContext {
+      destination = {}
+      sampleRate = 48000
+      createGain() {
+        return {
+          gain: {
+            value: 1,
+            setValueAtTime: () => undefined,
+            linearRampToValueAtTime: () => undefined,
+          },
+          connect: () => undefined,
+        }
+      }
+      startRendering(): Promise<AudioBuffer> {
+        renders++
+        return Promise.resolve(fakeBuffer())
+      }
+    }
+    vi.stubGlobal('OfflineAudioContext', FakeOfflineContext)
+    try {
+      // The only clip starts after the two-second export, so the mix would be
+      // silent. Returning a rendered buffer would make an audio-only export
+      // succeed with empty sound instead of refusing.
+      expect(await renderAudioMix(d, 2)).toBeNull()
+      expect(renders).toBe(0)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })
 
 describe('clipCrossfadeSchedule', () => {
@@ -1161,11 +1204,16 @@ describe('estimateExportBytes', () => {
 })
 
 describe('createExportOutput (bounded export target)', () => {
-  it('buffers in memory by default', () => {
+  it('buffers in memory by default and maps every container to its muxer', () => {
     const { output, target, streamed } = createExportOutput()
     expect(streamed).toBe(false)
     expect(target).toBeInstanceOf(BufferTarget)
-    expect(output).toBeDefined()
+    expect(output.format).toBeInstanceOf(Mp4OutputFormat)
+    expect(createExportOutput(undefined, 'mov').output.format).toBeInstanceOf(MovOutputFormat)
+    expect(createExportOutput(undefined, 'mkv').output.format).toBeInstanceOf(MkvOutputFormat)
+    expect(createExportOutput(undefined, 'wav').output.format).toBeInstanceOf(WavOutputFormat)
+    expect(createExportOutput(undefined, 'mp3').output.format).toBeInstanceOf(Mp3OutputFormat)
+    expect(createExportOutput(undefined, 'm4a').output.format).toBeInstanceOf(Mp4OutputFormat)
   })
 
   it('streams through a StreamTarget over the file sink', () => {
@@ -1235,6 +1283,32 @@ describe('export sink lifecycle (static locks)', () => {
     const catchAt = s.indexOf('} catch (error) {')
     expect(closeAt).toBeGreaterThan(-1)
     expect(closeAt).toBeLessThan(catchAt)
+  })
+})
+
+describe('audio/video interleaving (static lock)', () => {
+  function loopBody(source: string, startAt: number): string {
+    const open = source.indexOf('{', startAt)
+    let depth = 0
+    for (let i = open; i < source.length; i++) {
+      if (source[i] === '{') depth++
+      else if (source[i] === '}') {
+        depth--
+        if (depth === 0) return source.slice(open, i + 1)
+      }
+    }
+    return ''
+  }
+
+  it('feeds audio chunks inside the video loop, not after it', () => {
+    const s = readFileSync(new URL('../export/mp4.ts', import.meta.url), 'utf8')
+    const loopAt = s.indexOf('for (let i = 0; i < totalFrames; i++)')
+    expect(loopAt).toBeGreaterThan(-1)
+    // Isolate the actual loop body so moving the audio submission after the
+    // loop cannot still match text between the loop and finalize.
+    const body = loopBody(s, loopAt)
+    expect(body).toMatch(/audioSource\.add\(sliceAudioChunk/)
+    expect(body).toMatch(/await videoSource\.add\(t, 1 \/ fps\)/)
   })
 })
 

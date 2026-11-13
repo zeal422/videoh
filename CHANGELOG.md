@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.21.0] - 2026-11-13
+
+### Added
+
+- Audio-only export writes WAV (PCM), MP3 where the browser exposes an MP3 encoder, and M4A only with an AAC encoder. The path never opens a video encoder, refuses a silent timeline instead of writing an empty container, and backfills a streamed WAV header through the file sink.
+- MOV and MKV join MP4 as video containers, using the same H.264 source and the existing AAC or Opus audio policy. MKV carries H.264/AAC without a VP9 path; MOV labels the Opus fallback because strict QuickTime players may not read it.
+- Export options gain a video bitrate override, clamped to 0.5 to 40 Mbps, and a custom output resolution from 16 to 4096 pixels per side, rounded to even dimensions. The frame plan and compositor stay at project size; a different delivery size is contain-fitted into a second canvas with black bars, never stretched.
+- Sequence Settings gains 16:9, 9:16, 1:1, 4:5, 4:3, and 21:9 canvas presets. They set the project dimensions only; clip positions stay absolute and are not moved or scaled.
+
+### Changed
+
+- The export dialog offers the shared container matrix, disables MP3 and M4A when their encoder probes fail, validates the size and bitrate before starting, and uses the matching extension, MIME type, picker type, filename, and result player for the chosen container. A silent timeline disables every audio-only container with a reason.
+- The size estimate follows the chosen container and bitrate: PCM bytes per second for WAV, the 192 kbps audio track for MP3 and M4A, and the preset or override plus audio for video.
+
 ## [0.20.2] - 2026-11-11
 
 ### Changed

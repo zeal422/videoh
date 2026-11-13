@@ -140,9 +140,13 @@ helpers. The full catalog is in
 
 Export is offline and frame-accurate: `export/offline.ts` builds a pure frame plan, and
 `export/mp4.ts` decodes source frames, composites them, mixes audio in an `OfflineAudioContext`, and
-encodes H.264 with AAC (Opus where AAC is unavailable). Quality presets set the video bitrate: about
-2.5, 6, or 12 Mbps. Export needs WebCodecs; HEVC and ProRes are deliberately not offered, and
-`Download` buffers the MP4 while `Export to file` streams it to disk.
+encodes H.264 with AAC (Opus where AAC is unavailable). Video goes to MP4, MOV, or MKV. Quality
+presets set the video bitrate at about 2.5, 6, or 12 Mbps, with an optional 0.5 to 40 Mbps override
+and a custom output resolution from 16 to 4096 pixels per side; a different aspect ratio is
+letterboxed, never stretched. WAV, MP3, and M4A export audio only, and MP3 or M4A is offered only
+when the browser has the matching encoder. Sequence Settings offers 16:9, 9:16, 1:1, 4:5, 4:3, and
+21:9 canvas presets that do not move existing clips. Export needs WebCodecs; HEVC and ProRes are
+deliberately not offered, and `Download` buffers the file while `Export to file` streams it to disk.
 
 Project files use `.veproj.json` (version 4; versions 1 to 3 still load). Object URLs are stripped;
 offline assets hydrate as `missing` and relink by matching name or by hand. Autosave writes to
@@ -162,7 +166,7 @@ bun run battery:pair   # dev + artifact concurrently (needs a current build and 
 PAIR_SHARDS=1 bun run battery:pair # sequential rollback, one session per leg
 ```
 
-Current state: **2317 tests across 100 files, all passing**. Coverage is enforced at 70/60/75/70 over
+Current state: **2368 tests across 103 files, all passing**. Coverage is enforced at 70/60/75/70 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -191,7 +195,7 @@ src/lib/editor/            # state core (commands, store, serialization) + brows
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, landing sections, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 100 test files (2317 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 103 test files (2368 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations

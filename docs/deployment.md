@@ -168,7 +168,9 @@ the standalone server and also passed 70/70 with `BATTERY_EXIT=0`. The 0.20.0 ar
 against a 1166s median baseline (1171s, 1166s, 1156s), a 51.2 percent reduction. All six runs started the
 dev server or reused the standalone artifact as required, passed 70/70 with `BATTERY_EXIT=0`, and the
 optimized runs reported `PAIR_EXIT=0`. At 0.20.2 on 2026-11-11, the four-shard pair measured 163s; the same map's earlier runs were
-164s and 165s, all with 70/70 on both legs and `PAIR_EXIT=0`.
+164s and 165s, all with 70/70 on both legs and `PAIR_EXIT=0`. At 0.21.0 on 2026-11-13, the four-shard
+pair measured 167s; the dev leg started its own server and the artifact leg reused the standalone
+server, and both legs passed 70/70 with `PAIR_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 

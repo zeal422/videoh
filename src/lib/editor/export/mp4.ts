@@ -8,13 +8,17 @@ import {
   canEncodeAudio,
   CanvasSource,
   Input,
+  MkvOutputFormat,
+  MovOutputFormat,
   Mp4OutputFormat,
+  Mp3OutputFormat,
   Output,
   Quality,
   StreamTarget,
   type StreamTargetChunk,
   VideoSampleSink,
   VideoSampleSource,
+  WavOutputFormat,
 } from 'mediabunny'
 import {
   SOURCE_END_MARGIN,
@@ -25,6 +29,7 @@ import {
   findSequence,
   sequenceTracks,
 } from '../factories'
+import { offlineAudibleMedia } from '../offline'
 import { constantTimeScaleRate } from '../keyframes'
 import { clipRendersAudio, linkGroupChangesRate } from '../links'
 import { audibleTrackIds } from '../tracks'
@@ -64,6 +69,16 @@ import {
   type ClipDraw,
 } from './offline'
 import type { Clip, Doc, EffectEntry, ProjectLut, Track } from '../types'
+import {
+  containRect,
+  containerSpec,
+  resolveOutputSize,
+  resolveVideoBitrate,
+  EXPORT_MAX_DIMENSION,
+  EXPORT_MIN_DIMENSION,
+  type ExportContainer,
+  type ExportContainerSpec,
+} from './options'
 
 /**
  * WebCodecs/MP4 export, offline (no realtime capture), frame-accurate.
@@ -113,16 +128,44 @@ export interface ExportFileSink {
 export interface ExportOptions {
   onProgress?: (t: number, duration: number) => void
   quality?: 'low' | 'medium' | 'high'
-  /** Stream the MP4 to this file sink instead of buffering it in memory. */
+  /** Output container. Defaults to mp4. */
+  container?: ExportContainer
+  /** Video bitrate override in bits per second; clamped by the exporter. */
+  videoBitrate?: number
+  /** Output frame size. Both must be set, or neither (the project size). */
+  width?: number
+  height?: number
+  /** Stream the output to this file sink instead of buffering it in memory. */
   fileStream?: ExportFileSink
   /** The name reported for a streamed export. */
   fileName?: string
 }
 
 const AUDIO_SAMPLE_RATE = 48_000
+/** Audio is submitted to the muxer in these slices during a video export. */
+const AUDIO_CHUNK_SECONDS = 1
 
 export function webCodecsSupported(): boolean {
   return typeof window !== 'undefined' && 'VideoEncoder' in window && 'VideoFrame' in window
+}
+
+/** True when WebCodecs can encode audio at all; video encoding is not required. */
+export function audioCodecSupported(): boolean {
+  return typeof window !== 'undefined' && 'AudioEncoder' in window
+}
+
+/** Probes the compressed audio encoders the dialog can offer. */
+export async function probeExportCodecs(): Promise<{ aac: boolean; mp3: boolean }> {
+  if (!audioCodecSupported()) return { aac: false, mp3: false }
+  const probe = async (codec: 'aac' | 'mp3'): Promise<boolean> => {
+    try {
+      return await canEncodeAudio(codec)
+    } catch {
+      return false
+    }
+  }
+  const [aac, mp3] = await Promise.all([probe('aac'), probe('mp3')])
+  return { aac, mp3 }
 }
 
 /** Decoded-frame provider per video asset, keyed by asset id. */
@@ -815,7 +858,7 @@ interface BlendSample {
  * @internal exported for tests
  */
 export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioBuffer | null> {
-  if (duration <= 0 || !docHasAudibleClips(doc)) return null
+  if (duration <= 0 || !hasAudibleMix(doc)) return null
 
   const length = exportAudioSampleCount(duration, AUDIO_SAMPLE_RATE)
   const offline = new OfflineAudioContext({
@@ -831,8 +874,14 @@ export async function renderAudioMix(doc: Doc, duration: number): Promise<AudioB
   // count. Negative results are cached too, so a broken file fails once.
   const audioBuffers = new Map<string, AudioBuffer | null>()
 
-  await scheduleTracks(offline, master, doc, doc.project.tracks, 0, audioBuffers)
-  return offline.startRendering()
+  // The early-out is a prediction. `scheduleTracks` is the truth: a decode can
+  // fail, or every source can fall outside the export interval. In those cases
+  // a rendered AudioBuffer would be pure silence, so the caller must get null.
+  let scheduled = 0
+  await scheduleTracks(offline, master, doc, doc.project.tracks, 0, audioBuffers, duration, () => {
+    scheduled++
+  })
+  return scheduled > 0 ? offline.startRendering() : null
 }
 
 /**
@@ -849,8 +898,10 @@ async function scheduleTracks(
   tracks: readonly Track[],
   offset: number,
   audioBuffers: Map<string, AudioBuffer | null>,
-  /** Absolute timeline end of the innermost container (Infinity at the root). */
+  /** Absolute timeline end of the innermost container and the export. */
   limitEnd: number = Number.POSITIVE_INFINITY,
+  /** Counts each source actually started into the graph. */
+  onScheduled?: () => void,
 ): Promise<void> {
   // Solo + mute for THIS sequence (tracks.ts). The container gate uses the
   // parent's set; the recursive call computes the child's own set, so a
@@ -892,6 +943,7 @@ async function scheduleTracks(
           containerStart,
           audioBuffers,
           Math.min(limitEnd, containerStart + clip.duration),
+          onScheduled,
         )
         continue
       }
@@ -958,6 +1010,7 @@ async function scheduleTracks(
       )
       source.start(startAt, sourceOffset, timelineSpan * constantRate)
       if (constantRate !== 1) source.playbackRate.value = constantRate
+      onScheduled?.()
     }
   }
 }
@@ -993,7 +1046,7 @@ function scheduledAudioSource(
  * at all instead of a silent one. A solo video's embedded audio still makes
  * the doc audible, unlike the old asset-kind scan.
  */
-function docHasAudibleClips(doc: Doc): boolean {
+export function hasAudibleMix(doc: Doc): boolean {
   const scan = (tracks: readonly Track[]): boolean => {
     const audibleTracks = audibleTrackIds(tracks)
     return tracks.some((track) =>
@@ -1033,7 +1086,27 @@ async function decodeAudio(file: File, ctx: BaseAudioContext): Promise<AudioBuff
  * partial file on failure. The caller commits the file only after finalize
  * resolves.
  */
-export function createExportOutput(fileStream?: ExportFileSink): {
+/** The muxer format for a container. MP4/M4A can fast-start in memory. */
+function outputFormatFor(container: ExportContainer, streamed: boolean) {
+  switch (container) {
+    case 'mov':
+      return new MovOutputFormat()
+    case 'mkv':
+      return new MkvOutputFormat()
+    case 'wav':
+      return new WavOutputFormat()
+    case 'mp3':
+      return new Mp3OutputFormat()
+    case 'm4a':
+    case 'mp4':
+      return new Mp4OutputFormat(streamed ? undefined : { fastStart: 'in-memory' })
+  }
+}
+
+export function createExportOutput(
+  fileStream?: ExportFileSink,
+  container: ExportContainer = 'mp4',
+): {
   output: Output
   target: BufferTarget | StreamTarget
   streamed: boolean
@@ -1041,7 +1114,7 @@ export function createExportOutput(fileStream?: ExportFileSink): {
   if (!fileStream) {
     const target = new BufferTarget()
     return {
-      output: new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target }),
+      output: new Output({ format: outputFormatFor(container, false), target }),
       target,
       streamed: false,
     }
@@ -1051,7 +1124,7 @@ export function createExportOutput(fileStream?: ExportFileSink): {
   })
   const target = new StreamTarget(writable, { chunked: true })
   return {
-    output: new Output({ format: new Mp4OutputFormat(), target }),
+    output: new Output({ format: outputFormatFor(container, true), target }),
     target,
     streamed: true,
   }
@@ -1067,15 +1140,79 @@ async function safeAbort(sink: ExportFileSink | undefined): Promise<void> {
   }
 }
 
-/** Renders the whole timeline to an MP4 blob (H.264 + AAC/Opus). Throws on unsupported browsers. */
+/** The result of a finalized output, shared by the video and audio-only paths. */
+async function finishExport(
+  target: BufferTarget | StreamTarget,
+  streamed: boolean,
+  opts: ExportOptions,
+  spec: ExportContainerSpec,
+  bytes: number,
+  duration: number,
+): Promise<ExportResult> {
+  if (streamed && opts.fileStream) {
+    // finalize resolved: NOW commit the file (close, not abort).
+    await opts.fileStream.close()
+    return {
+      kind: 'file',
+      fileName: opts.fileName ?? `export${spec.extension}`,
+      bytes,
+      mimeType: spec.mimeType,
+      duration,
+    }
+  }
+  const buffer = (target as BufferTarget).buffer
+  if (!buffer) throw new Error('Export produced no data')
+  return {
+    kind: 'blob',
+    blob: new Blob([buffer], { type: spec.mimeType }),
+    mimeType: spec.mimeType,
+    duration,
+  }
+}
+
+/**
+ * Sample ranges for bounded audio submission. One second by default, so the
+ * muxer holds a small audio queue while the video loop runs.
+ * @internal exported for tests
+ */
+export function audioChunkRanges(
+  length: number,
+  sampleRate: number,
+  chunkSeconds = AUDIO_CHUNK_SECONDS,
+): { start: number; end: number }[] {
+  const frames = Math.max(0, Math.floor(length))
+  const chunkFrames = Math.max(1, Math.floor(sampleRate * chunkSeconds))
+  const ranges: { start: number; end: number }[] = []
+  for (let start = 0; start < frames; start += chunkFrames) {
+    ranges.push({ start, end: Math.min(frames, start + chunkFrames) })
+  }
+  return ranges
+}
+
+/** A copy of one channel-aligned slice of the rendered mix. */
+function sliceAudioChunk(buffer: AudioBuffer, start: number, end: number): AudioBuffer {
+  const chunk = new AudioBuffer({
+    length: end - start,
+    numberOfChannels: buffer.numberOfChannels,
+    sampleRate: buffer.sampleRate,
+  })
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+    chunk.getChannelData(channel).set(buffer.getChannelData(channel).subarray(start, end))
+  }
+  return chunk
+}
+
+/** Renders the whole timeline to the chosen container. Throws on unsupported browsers. */
 export async function exportTimeline(
   doc: Doc,
   opts: ExportOptions = {},
   handle: ExportHandle = { cancelled: false },
 ): Promise<ExportResult> {
+  const container = opts.container ?? 'mp4'
+  const spec = containerSpec(container)
   // Create the output (and any streamed sink) FIRST: every failure below,
   // including the preflight, must be able to abort a sink the caller opened.
-  const { output, target, streamed } = createExportOutput(opts.fileStream)
+  const { output, target, streamed } = createExportOutput(opts.fileStream, container)
   // The final file size, from the target's write ranges (the largest end offset).
   let bytes = 0
   if (streamed) {
@@ -1093,28 +1230,81 @@ export async function exportTimeline(
   let finalized = false
 
   try {
+    const duration = docDuration(doc)
+    if (duration <= 0) throw new Error('Timeline is empty, nothing to export')
+
+    if (spec.audioOnly) {
+      // Audio-only export never opens a video encoder. It still needs an
+      // audible mix and a real audio encoder, so a silent timeline refuses
+      // instead of writing an empty container. WAV uses PCM, so it needs no
+      // AudioEncoder at all.
+      const missingAudio = offlineAudibleMedia(doc)
+      if (missingAudio.length > 0) {
+        throw new Error(
+          `Audio media is offline: ${missingAudio.join(', ')}. Relink the missing files before exporting.`,
+        )
+      }
+      if (container !== 'wav' && !audioCodecSupported()) {
+        throw new Error('This browser cannot encode audio for export')
+      }
+      if (handle.cancelled) throw new Error('Export cancelled')
+      const audioBuffer = await renderAudioMix(doc, duration)
+      if (!audioBuffer) throw new Error('Timeline has no audible audio to export')
+      const audioSource = await createAudioSource(container)
+      output.addAudioTrack(audioSource)
+      await output.start()
+      opts.onProgress?.(duration / 2, duration)
+      await audioSource.add(audioBuffer)
+      audioSource.close()
+      if (handle.cancelled) throw new Error('Export cancelled')
+      opts.onProgress?.(duration, duration)
+      await output.finalize()
+      finalized = true
+      if (handle.cancelled) throw new Error('Export cancelled')
+      return await finishExport(target, streamed, opts, spec, bytes, duration)
+    }
+
     if (!webCodecsSupported()) {
       throw new Error(
         'This browser does not support WebCodecs export (use a current Chromium, Edge, Firefox 130+, or Safari 26+)',
       )
     }
-    const duration = docDuration(doc)
-    if (duration <= 0) throw new Error('Timeline is empty, nothing to export')
 
     const { width, height, fps } = doc.project
+    const outputSize = resolveOutputSize(opts.width, opts.height, { width, height })
+    if (!outputSize) {
+      throw new Error(
+        `Output size must be ${EXPORT_MIN_DIMENSION} to ${EXPORT_MAX_DIMENSION} pixels per side`,
+      )
+    }
+    const bitrate =
+      resolveVideoBitrate(opts.videoBitrate) ?? EXPORT_VIDEO_BITRATES[opts.quality ?? 'medium']
 
-    // Offscreen export canvas.
+    // Offscreen export canvas at project size: the frame plan, effects,
+    // transitions and text geometry never see the delivery size.
     const canvas = document.createElement('canvas')
     canvas.width = width
     canvas.height = height
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Canvas 2D context unavailable')
 
+    // A delivery size that differs from the project is a contain fit into a
+    // second canvas, never a stretch: clips keep their absolute geometry.
+    let videoCanvas = canvas
+    let outputCtx: CanvasRenderingContext2D | null = null
+    if (outputSize.width !== width || outputSize.height !== height) {
+      videoCanvas = document.createElement('canvas')
+      videoCanvas.width = outputSize.width
+      videoCanvas.height = outputSize.height
+      outputCtx = videoCanvas.getContext('2d')
+      if (!outputCtx) throw new Error('Canvas 2D context unavailable')
+    }
+
     const totalFrames = exportFrameCount(duration, fps)
 
-    const videoSource = new CanvasSource(canvas, {
+    const videoSource = new CanvasSource(videoCanvas, {
       codec: 'avc',
-      quality: new Quality({ bitrate: EXPORT_VIDEO_BITRATES[opts.quality ?? 'medium'] }),
+      quality: new Quality({ bitrate }),
     })
     output.addVideoTrack(videoSource, { frameRate: fps })
 
@@ -1123,10 +1313,17 @@ export async function exportTimeline(
 
     // Audio mix first (fast, offline). Every track must exist before the output
     // is started, Mediabunny rejects `addTrack` afterwards, so the audio
-    // source is created and attached here, then fed after the video loop.
+    // source is created and attached here, then fed in slices during the video
+    // loop. Matroska's muxer only interleaves while both tracks have queued
+    // chunks; submitting the whole mix after every video packet would queue
+    // the video until the end and defeat the streamed target's memory bound.
     const audioBuffer = await renderAudioMix(doc, duration)
-    const audioSource = audioBuffer ? await createAudioSource() : null
+    const audioSource = audioBuffer ? await createAudioSource(container) : null
     if (audioSource) output.addAudioTrack(audioSource)
+    const audioChunks = audioBuffer
+      ? audioChunkRanges(audioBuffer.length, audioBuffer.sampleRate)
+      : []
+    let nextAudioChunk = 0
 
     await output.start()
 
@@ -1213,12 +1410,40 @@ export async function exportTimeline(
         }
       }
 
+      if (audioSource && audioBuffer) {
+        // Keep the audio queue about one chunk ahead of the video. Mixing the
+        // whole timeline into one `add()` here would leave every video packet
+        // queued in the MKV muxer until the final audio submission.
+        while (
+          nextAudioChunk < audioChunks.length &&
+          audioChunks[nextAudioChunk].start / audioBuffer.sampleRate <= t + 1 / fps
+        ) {
+          const range = audioChunks[nextAudioChunk]
+          await audioSource.add(sliceAudioChunk(audioBuffer, range.start, range.end))
+          nextAudioChunk++
+        }
+      }
+
       compositeFrame(ctx, doc, plan, frames, width, height, blends)
+      if (outputCtx) {
+        // Black bars are written explicitly; the fit never crops or stretches.
+        outputCtx.save()
+        outputCtx.globalAlpha = 1
+        outputCtx.fillStyle = '#000000'
+        outputCtx.fillRect(0, 0, outputSize.width, outputSize.height)
+        const rect = containRect(width, height, outputSize.width, outputSize.height)
+        outputCtx.drawImage(canvas, rect.x, rect.y, rect.width, rect.height)
+        outputCtx.restore()
+      }
       await videoSource.add(t, 1 / fps)
       opts.onProgress?.(t + 1 / fps, duration)
     }
     if (audioSource && audioBuffer) {
-      await audioSource.add(audioBuffer)
+      while (nextAudioChunk < audioChunks.length) {
+        const range = audioChunks[nextAudioChunk]
+        await audioSource.add(sliceAudioChunk(audioBuffer, range.start, range.end))
+        nextAudioChunk++
+      }
       audioSource.close()
     }
 
@@ -1227,26 +1452,7 @@ export async function exportTimeline(
 
     if (handle.cancelled) throw new Error('Export cancelled')
 
-    if (streamed && opts.fileStream) {
-      // finalize resolved: NOW commit the file (close, not abort).
-      await opts.fileStream.close()
-      return {
-        kind: 'file',
-        fileName: opts.fileName ?? 'export.mp4',
-        bytes,
-        mimeType: 'video/mp4',
-        duration,
-      }
-    }
-
-    const buffer = (target as BufferTarget).buffer
-    if (!buffer) throw new Error('Export produced no data')
-    return {
-      kind: 'blob',
-      blob: new Blob([buffer], { type: 'video/mp4' }),
-      mimeType: 'video/mp4',
-      duration,
-    }
+    return await finishExport(target, streamed, opts, spec, bytes, duration)
   } catch (error) {
     // Any failure discards the destination: a streamed file is aborted, never
     // committed (the wrapper's close() is a no-op, so nothing partial lands).
@@ -1284,8 +1490,34 @@ export async function pickAudioCodec(
   return (await canEncodeAac()) ? 'aac' : 'opus'
 }
 
-/** Opens the audio track's source (feeds the mix once the video loop is done). */
-async function createAudioSource(): Promise<AudioBufferSource> {
+/**
+ * Opens the audio track's source for a container. Video containers use AAC
+ * when available and Opus otherwise; WAV is PCM, while MP3 and M4A need the
+ * browser's matching encoder. The dialog disables those options when a probe
+ * fails; the throws here are the export-path backstop.
+ */
+async function createAudioSource(container: ExportContainer): Promise<AudioBufferSource> {
+  if (container === 'wav') {
+    return new AudioBufferSource({ codec: 'pcm-s16' })
+  }
+  if (container === 'mp3') {
+    if (!(await canEncodeAudio('mp3'))) {
+      throw new Error('This browser cannot encode MP3 audio')
+    }
+    return new AudioBufferSource({
+      codec: 'mp3',
+      quality: new Quality({ bitrate: EXPORT_AUDIO_BITRATE }),
+    })
+  }
+  if (container === 'm4a') {
+    if (!(await canEncodeAudio('aac'))) {
+      throw new Error('M4A export needs an AAC encoder, which this browser does not have')
+    }
+    return new AudioBufferSource({
+      codec: 'aac',
+      quality: new Quality({ bitrate: EXPORT_AUDIO_BITRATE }),
+    })
+  }
   return new AudioBufferSource({
     codec: await pickAudioCodec(() => canEncodeAudio('aac')),
     quality: new Quality({ bitrate: EXPORT_AUDIO_BITRATE }),

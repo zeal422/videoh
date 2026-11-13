@@ -600,16 +600,29 @@ Stable hooks used across flows and tests:
 
 - `exportTimeline` (WebCodecs) executes the pure frame plan from `export/offline.ts`: per output frame
   it decodes the source samples (`VideoSampleSink`, frame-accurate, honoring speed and reverse),
-  composites onto an offscreen canvas, and encodes H.264 through Mediabunny (`CanvasSource`).
+  composites onto an offscreen canvas at project size, and encodes H.264 through Mediabunny
+  (`CanvasSource`). The delivery container is MP4, MOV, or MKV. A custom output size is contain-fitted
+  into a second canvas with black bars, never stretched, so transitions, effects, and text geometry
+  keep the project canvas.
 - Audio is mixed in one `OfflineAudioContext` render (gain keyframes, pan, EQ, compressor, crossfade
   ramps) and encoded as an AAC track (Opus where the browser cannot encode AAC, notably desktop
-  Linux and Firefox), so the file is an MP4 with a correct duration.
-- The dialog shows progress, supports cancel, previews the result (`export-result-video`), and
-  downloads `<project name>.mp4`. On browsers without WebCodecs it disables itself and says why.
-- `Export to file` (Chromium/Edge only, behind a `showSaveFilePicker` probe) streams the same MP4
+  Linux and Firefox), so video files are MP4, MOV, or MKV with a correct duration. Audio-only WAV uses
+  PCM; MP3 and M4A use their browser encoders and are disabled by the dialog when unavailable. An
+  audio-only export refuses a timeline with no audible mix instead of writing an empty container. A
+  video export can proceed without audio; the audible-mix gate disables only audio-only containers.
+- The dialog shows progress, supports cancel, previews the result (`export-result-video`, or
+  `export-result-audio` for an audio-only file), and downloads `<project name>` plus the container
+  extension. It validates a custom bitrate (0.5 to 40 Mbps) and output size (16 to 4096 pixels per
+  side, even-rounded) before starting. It disables an audio-only container whose encoder or audible
+  mix is missing, while a video container is disabled only when WebCodecs is unavailable. On browsers
+  without WebCodecs it disables itself and says why.
+- `Export to file` (Chromium/Edge only, behind a `showSaveFilePicker` probe) streams the same file
   straight to a file the user picks, through a `chunked: true` `StreamTarget`; the destination is
   committed only after the muxer finalizes and aborted on cancel or any failure, and the result view
   shows the saved name and bytes. The dialog also shows a size estimate and nudges to it past ~100 MB.
+- Sequence Settings offers 16:9, 9:16, 1:1, 4:5, 4:3, and 21:9 presets. They set the project width and
+  height only. Clip positions are absolute, so existing clips do not move or scale when the canvas
+  changes.
 - Export runs offline (no realtime capture) and does not need tab focus; wall time tracks source
   decode speed. HEVC and ProRes are deliberately not offered: ProRes has no shipping browser
   `VideoEncoder`, and HEVC is left out on value grounds (an encoder exists, and a probe could gate it

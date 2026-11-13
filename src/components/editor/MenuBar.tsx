@@ -27,6 +27,13 @@ import {
   MenubarShortcut,
   MenubarTrigger,
 } from '@/components/ui/menubar'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 import {
   audibleClipId,
@@ -531,6 +538,16 @@ function AudioGainDialog({
   )
 }
 
+/** Sequence Settings aspect shortcuts. They set the canvas only. */
+const ASPECT_PRESETS = [
+  { id: '16:9', label: '16:9 (1920 × 1080)', width: 1920, height: 1080 },
+  { id: '9:16', label: '9:16 (1080 × 1920)', width: 1080, height: 1920 },
+  { id: '1:1', label: '1:1 (1080 × 1080)', width: 1080, height: 1080 },
+  { id: '4:5', label: '4:5 (1080 × 1350)', width: 1080, height: 1350 },
+  { id: '4:3', label: '4:3 (1440 × 1080)', width: 1440, height: 1080 },
+  { id: '21:9', label: '21:9 (2560 × 1080)', width: 2560, height: 1080 },
+] as const
+
 /** Sequence > Sequence Settings… — Premiere-style modal over the shared
  * project settings (frame size, frame rate, name). Draft edits stay local;
  * OK commits a single undoable `setProjectSettings`, Cancel discards. */
@@ -547,6 +564,10 @@ function SequenceSettingsDialog({
   onDraftChange: (draft: { name: string; width: string; height: string; fps: string }) => void
   onSave: () => void
 }) {
+  const presetId =
+    ASPECT_PRESETS.find(
+      (preset) => String(preset.width) === draft.width && String(preset.height) === draft.height,
+    )?.id ?? 'custom'
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
@@ -573,6 +594,46 @@ function SequenceSettingsDialog({
               value={draft.name}
               onChange={(e) => onDraftChange({ ...draft, name: e.target.value })}
             />
+          </div>
+          <div>
+            <Label className="text-xs" htmlFor="sequence-settings-aspect">
+              Aspect ratio
+            </Label>
+            <Select
+              value={presetId}
+              onValueChange={(value) => {
+                const preset = ASPECT_PRESETS.find((p) => p.id === value)
+                if (preset) {
+                  onDraftChange({
+                    ...draft,
+                    width: String(preset.width),
+                    height: String(preset.height),
+                  })
+                }
+              }}
+            >
+              <SelectTrigger
+                id="sequence-settings-aspect"
+                className="mt-1 h-8 text-xs"
+                aria-label="Aspect ratio preset"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="custom" disabled>
+                  Custom
+                </SelectItem>
+                {ASPECT_PRESETS.map((preset) => (
+                  <SelectItem key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+              Presets set the canvas size only. Clip positions are absolute, so existing clips do
+              not move or scale when the frame changes.
+            </p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>

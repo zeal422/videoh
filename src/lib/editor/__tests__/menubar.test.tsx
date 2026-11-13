@@ -264,6 +264,11 @@ describe('sequence settings dialog', () => {
 
   beforeEach(() => {
     h = installBrowserMocks()
+    // Radix Select queries pointer capture and scrollIntoView; jsdom has neither.
+    Element.prototype.hasPointerCapture = () => false
+    Element.prototype.setPointerCapture = () => undefined
+    Element.prototype.releasePointerCapture = () => undefined
+    Element.prototype.scrollIntoView = () => undefined
     vi.stubGlobal('matchMedia', (query: string) => ({
       matches: false,
       media: query,
@@ -323,6 +328,40 @@ describe('sequence settings dialog', () => {
     expect(state.doc.project.height).toBe(1080)
     expect(state.past).toHaveLength(0)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('applies every aspect preset to the canvas without moving clips', async () => {
+    const media = createMediaAsset({ kind: 'video', name: 'a.mp4', duration: 10 })
+    const clip = createClip({ id: 'keep', mediaId: media.id, start: 1, duration: 2 })
+    const doc = createDoc()
+    doc.project.tracks = [createTrack('video', 1, { clips: [clip] })]
+    doc.media = [media]
+    useEditorStore.setState({ doc })
+    renderBar()
+    await openSettings()
+
+    const user = userEvent.setup()
+    const presets: [string, number, number][] = [
+      ['16:9', 1920, 1080],
+      ['9:16', 1080, 1920],
+      ['1:1', 1080, 1080],
+      ['4:5', 1080, 1350],
+      ['4:3', 1440, 1080],
+      ['21:9', 2560, 1080],
+    ]
+    for (const [label, width, height] of presets) {
+      await user.click(screen.getByLabelText('Aspect ratio preset'))
+      await user.click(screen.getByRole('option', { name: new RegExp(label) }))
+      expect(screen.getByLabelText('Width (px)')).toHaveValue(width)
+      expect(screen.getByLabelText('Height (px)')).toHaveValue(height)
+    }
+
+    await user.click(screen.getByText('OK'))
+    const state = useEditorStore.getState()
+    expect(state.doc.project.width).toBe(2560)
+    expect(state.doc.project.height).toBe(1080)
+    expect(state.past).toHaveLength(1)
+    expect(state.doc.project.tracks[0].clips[0]).toMatchObject({ start: 1, duration: 2 })
   })
 })
 
