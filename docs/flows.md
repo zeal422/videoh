@@ -233,6 +233,13 @@ Stable hooks used across flows and tests:
 - **Duplicate (`Ctrl+Shift+/`)** copies the group butt-to-tail with an independent fresh link.
 - **Delete** removes the whole link group; **Ripple Delete (`Shift+Del`)** also closes the gap on each
   affected track (merged removed intervals, so crossfade overlaps never double-count).
+- **Close Gaps** shifts each clip on a track left over the empty time before it, transition-aware, so
+  an overlap is never mistaken for a gap. Linked partners move by the same delta or the whole close
+  refuses, and sequence markers stay at their absolute times. Menu and context entries only.
+- **Join Clips** merges two adjacent same-source clips into one, keeping the previous clip's id and
+  source window. It refuses anything it would have to reinterpret: a gap or overlap, a different
+  speed or direction, a source discontinuity, an outgoing transition, any keyframe curve, text,
+  compound, or a clip property that differs. Links join lane by lane or refuse whole.
 - **Snapping (`S`)** toggles snapping to clip edges, the playhead, timeline bounds and every
   reachable marker (`SNAP_THRESHOLD_PX = 8`).
 

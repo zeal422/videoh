@@ -59,6 +59,7 @@ import {
   type MarqueeRect,
 } from '@/lib/editor/marquee'
 import { autoScrollStep, autoScrollStepX, nextZoomPxPerSec } from '@/lib/editor/timeline-scroll'
+import { canCloseGaps } from '@/lib/editor/timeline-edit-plan'
 import {
   activeTracks,
   docDuration,
@@ -1045,6 +1046,7 @@ function TimelineFilmstripProgress() {
 function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean }) {
   const KindIcon = track.kind === 'video' ? Video : track.kind === 'audio' ? AudioLines : TypeIcon
   const untargeted = useEditorStore((s) => s.untargetedTracks.includes(track.id))
+  const doc = useEditorStore((s) => s.doc)
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(track.name)
   const renameInputRef = useRef<HTMLInputElement>(null)
@@ -1079,6 +1081,15 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
     useEditorStore.getState().setTrackTargeted(track.id, targeted)
   const deleteTrack = () =>
     useEditorStore.getState().apply({ type: 'removeTrack', trackId: track.id })
+  // Close Gaps targets THIS lane, which is what makes the per-track row work
+  // with nothing selected. The shared predicate covers both the plan and the
+  // lock gate, so the row cannot promise a refused edit.
+  const closeGapsAvailable = canCloseGaps(doc, track.id)
+  const closeGaps = () => {
+    const store = useEditorStore.getState()
+    if (!canCloseGaps(store.doc, track.id)) return
+    store.apply({ type: 'closeGaps', trackId: track.id })
+  }
   const startRename = () => {
     setDraft(track.name)
     setRenaming(true)
@@ -1274,6 +1285,13 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
           onSelect={() => useEditorStore.getState().selectTrackClips(track.id)}
         >
           Select Track Clips
+        </ContextMenuItem>
+        <ContextMenuItem
+          data-testid="track-menu-close-gaps"
+          disabled={!closeGapsAvailable}
+          onSelect={closeGaps}
+        >
+          Close Gaps
         </ContextMenuItem>
         <ContextMenuItem data-testid="track-menu-mute" onSelect={toggleMute}>
           {track.muted ? 'Unmute Track' : 'Mute Track'}

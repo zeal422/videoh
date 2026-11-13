@@ -66,6 +66,7 @@ import {
 } from './effects'
 import { linkedClips } from './links'
 import { lutBudgetMessage, lutLibraryChars } from './lut'
+import { planCloseGaps, planJoinGroup } from './timeline-edit-plan'
 import { sharesSourceWindow } from './slip'
 import { clipGroupTracks, findLockedTrack, trackLockMessage } from './tracks'
 import { clamp } from './time'
@@ -210,6 +211,9 @@ export type EditorCommand =
       edge: TrimEdge
     }
   | { type: 'splitClip'; clipId: string; atTime: number; rightId?: string; rightLinkId?: string }
+  // timeline commands (0.22.0): close a track's gaps, join two same-source clips
+  | { type: 'closeGaps'; trackId: string }
+  | { type: 'joinClips'; clipId: string; nextId: string }
   | { type: 'deleteClip'; clipId: string }
   | { type: 'unlinkClip'; clipId: string }
   | { type: 'linkClips'; clipIds: string[] }
@@ -466,6 +470,23 @@ const LOCK_RULES: LockRuleMap = {
   // whole link group; trim does not, so a locked partner does not block it.
   trimClip: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   splitClip: { tracks: (doc, command) => clipGroupTracks(doc, [command.clipId]) },
+  // Close Gaps moves every clip on the target lane (and each one's link
+  // partners), so the lane plus every partner lane refuses as a unit. Join
+  // Clips removes the next clip of each pair, so both groups' lanes are checked
+  // before any pair is merged.
+  closeGaps: {
+    tracks: (doc, command) => {
+      const found = findTrackIn(doc, command.trackId)
+      if (!found) return []
+      return clipGroupTracks(
+        doc,
+        found.track.clips.map((clip) => clip.id),
+      )
+    },
+  },
+  joinClips: {
+    tracks: (doc, command) => clipGroupTracks(doc, [command.clipId, command.nextId]),
+  },
   deleteClip: { tracks: (doc, command) => clipGroupTracks(doc, [command.clipId]) },
   unlinkClip: { tracks: (doc, command) => clipGroupTracks(doc, [command.clipId]) },
   linkClips: { tracks: (doc, command) => clipGroupTracks(doc, command.clipIds) },
@@ -1374,6 +1395,37 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       if (clip.effects?.length === 0) clip.effects = undefined
       track.clips.push(right)
       track.clips.sort((a, b) => a.start - b.start)
+      return
+    }
+
+    case 'closeGaps': {
+      // The planner owns the geometry (transitions, link groups, collisions);
+      // this case only writes the starts it proved safe. A plan is against the
+      // same doc this command mutates, so a refusal discards the whole clone.
+      const plan = planCloseGaps(doc, command.trackId)
+      if (!plan.ok) throw new EditorCommandError(plan.reason)
+      for (const move of plan.moves) {
+        const { clip } = requireClip(doc, move.clipId)
+        clip.start = move.start
+      }
+      return
+    }
+
+    case 'joinClips': {
+      // The planner re-expands both link groups and pairs them lane by lane, so
+      // a linked pair joins as ONE atomic batch (or refuses before any merge).
+      // Each pair keeps the previous clip's id and selection; a reversed pair
+      // moves the low anchor to the next clip's, which is what leaves the
+      // joined head on the original high source end.
+      const plan = planJoinGroup(doc, command.clipId, command.nextId)
+      if (!plan.ok) throw new EditorCommandError(plan.reason)
+      for (const pair of plan.pairs) {
+        const { clip: previous } = requireClip(doc, pair.previousId)
+        const { clip: next, track: nextTrack } = requireClip(doc, pair.nextId)
+        previous.duration += next.duration
+        if (previous.reverse) previous.inPoint = next.inPoint
+        nextTrack.clips = nextTrack.clips.filter((clip) => clip.id !== next.id)
+      }
       return
     }
 

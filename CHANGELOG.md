@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.22.0] - 2026-11-13
+
+### Added
+
+- Close Gaps (Clip menu, and each track header's context menu) removes the empty time before every clip on a track in one action. It reads a crossfade overlap as occupied time rather than a negative gap, and shifts each clip's link partners by the same delta so picture and sound stay in sync. A conflicting delta, a partner that would start before zero, a new overlap on a partner lane, or a shortened transition refuses the whole batch, and sequence markers keep their absolute times.
+- Join Clips merges two adjacent clips from one source, keeping the previous clip's id, source window, effects, markers, and selection. A reversed pair joins to the original source window. It refuses a gap or overlap, a different source, speed, or direction, a source discontinuity, an outgoing transition on either side, any clip or effect keyframe curve, text, compound, and any retained property that differs, naming the field. Linked groups join lane by lane as one atomic batch or refuse without a partial merge.
+
+### Changed
+
+- Both commands decide through one pure planner (`timeline-edit-plan.ts`) that the menus also read, so a clickable row can never be refused and a refused edit can never look available. The command catalog grows from 60 to 62 variants, each with its lock rule: Close Gaps checks the target lane and every partner lane, and Join Clips checks both groups' lanes before merging.
+
 ## [0.21.0] - 2026-11-13
 
 ### Added

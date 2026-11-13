@@ -648,3 +648,38 @@ A probe showed the stale entry clears by itself within a second.
 Would-have-caught: confirm the browser process is alive before treating a
 `session list` entry as a leak; the CLI's listing lags its close.
 Action: no code change; the browser is closed and the listing catches up.
+
+## 2026-11-13 - 0.22.0 manual proof, a lock that survived its mutation
+
+What happened: the first close-gaps planner test used a crossfade pair whose
+next clip ENDED after the outgoing one, so the naive `previous.end` walk and
+the occupied-end walk agreed and the test passed with the rule removed.
+Would-have-caught: run the mutation on every new lock, not just the first one
+and not only the ones you expect to bite. A lock that still passes under the
+mutation is decoration (rule 5).
+Action: promoted into this run's practice; the test now covers a transition
+partner shorter than the outgoing clip, and the mutation fails it.
+
+## 2026-11-13 - 0.22.0 manual proof, agent-browser uploaded a 0-byte file
+
+What happened: `agent-browser --session X upload <selector> e2e/fixtures/sample-video.mp4`
+reported `Done` and fired the input's change event, but the File had size 0, so
+the import silently produced no media and two manual-proof runs failed at
+"media item never appeared". The same command with an absolute path imported
+correctly.
+Would-have-caught: an untrusted tool result is a claim, not proof (rule 7).
+Read the value the page actually received (`input.files[0].size`) before
+concluding the UI rejected the input, and use absolute paths for file transfers
+(AGENTS.md already says files cross machines as bytes).
+Action: kept as a note; the manual proof scripts pass absolute fixture paths.
+
+## 2026-11-13 - 0.22.0 review, a scripted table row split the table
+
+What happened: the roadmap row was inserted with a trailing newline in the
+scripted row string, so a blank line landed between the 0.22.0 and 0.21.0 rows
+and the rows below it stopped being part of the table. `bun run check` stayed
+green because Prettier treats two adjacent tables as valid markdown.
+Would-have-caught: after any scripted markdown insert, read the edited region
+back (or `git diff -U3` that file) instead of trusting `format:check`. Prettier
+cannot see a semantic table break.
+Action: kept as a note; the row was re-joined and the region re-read.

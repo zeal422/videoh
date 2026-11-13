@@ -6,6 +6,7 @@ import {
   commandsToDeleteClips,
   commandsToDeleteMarker,
   commandsToDuplicateClips,
+  commandsToJoinClips,
   commandsToLinkClips,
   commandsToRippleDeleteClips,
   commandsToSplitAllAt,
@@ -19,6 +20,7 @@ import { markerSelectionExists as markerExists, neighborMarker } from './markers
 import type { MarkerSelection } from './markers'
 import type { MenuActionId } from './menus'
 import { nextZoomPxPerSec } from './timeline-scroll'
+import { canCloseGaps } from './timeline-edit-plan'
 import type { Doc } from './types'
 
 /**
@@ -184,6 +186,18 @@ export function executeAction(action: ExecutorActionId, ctx: ActionContext): Act
           ? commandsToRippleDeleteClips(state.doc, ids, state.activeSequencePath)
           : null,
       )
+    case 'clip.closeGaps': {
+      // The Clip menu closes the PRIMARY selection's lane. With no selection
+      // there is no target lane; the per-lane row lives in the track menu.
+      const primary = ids[0]
+      if (!primary) return handled()
+      const owner = findClip(state.doc, primary)
+      if (!owner) return handled()
+      if (!canCloseGaps(state.doc, owner.track.id)) return handled()
+      return handled([{ type: 'closeGaps', trackId: owner.track.id }])
+    }
+    case 'clip.joinClips':
+      return handled(commandsToJoinClips(state.doc, ids), 'Clips joined')
     case 'clip.cut':
       return handled(ids.length > 0 ? commandsToCutClips(state.doc, ids) : null)
     case 'clip.copy': {

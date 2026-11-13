@@ -65,6 +65,8 @@ function baseCtx(overrides: Partial<MenuContext> = {}): MenuContext {
     canPaste: false,
     selectionLinked: false,
     canLink: false,
+    canCloseGaps: false,
+    canJoinClips: false,
     canCreateCompound: false,
     hasMarkers: false,
     hasSelectedMarker: false,
@@ -156,13 +158,19 @@ describe('menu structure (Premiere Pro–style)', () => {
     expect(itemOf('Edit', 'edit.deselect').shortcut).toBe('Ctrl+Shift+A')
   })
 
-  it('Clip menu exposes split/duplicate/delete/ripple/cut/copy/paste/link/unlink/mute/gain', () => {
+  it('Clip menu exposes split/duplicate/delete/ripple/close-gaps/join/cut/copy/paste/link/unlink/mute/gain', () => {
     expect(itemOf('Clip', 'clip.split').label).toBe('Add Edit')
     expect(itemOf('Clip', 'clip.split').shortcut).toBe('Ctrl+K')
     expect(itemOf('Clip', 'clip.duplicate').shortcut).toBe('D')
     expect(itemOf('Clip', 'clip.delete').shortcut).toBe('Del')
     expect(itemOf('Clip', 'clip.rippleDelete').action).toBe('clip.rippleDelete')
     expect(itemOf('Clip', 'clip.rippleDelete').shortcut).toBe('Shift+Del')
+    expect(itemOf('Clip', 'clip.closeGaps').label).toBe('Close Gaps on Selected Track')
+    expect(itemOf('Clip', 'clip.closeGaps').action).toBe('clip.closeGaps')
+    expect(itemOf('Clip', 'clip.closeGaps').shortcut).toBeUndefined()
+    expect(itemOf('Clip', 'clip.joinClips').label).toBe('Join Clips')
+    expect(itemOf('Clip', 'clip.joinClips').action).toBe('clip.joinClips')
+    expect(itemOf('Clip', 'clip.joinClips').shortcut).toBeUndefined()
     expect(itemOf('Clip', 'clip.cut').action).toBe('clip.cut')
     expect(itemOf('Clip', 'clip.cut').shortcut).toBe('Ctrl+X')
     expect(itemOf('Clip', 'clip.copy').action).toBe('clip.copy')
@@ -289,6 +297,25 @@ describe('menu state resolution (buildMenus)', () => {
     const multi = buildMenus(baseCtx({ hasSelection: true, selectionCount: 2, canLink: true }))
     const clipMenu2 = multi.find((m) => m.spec.id === 'clip')!
     expect(clipMenu2.items.find((i) => i.spec.id === 'clip.link')!.enabled).toBe(true)
+  })
+
+  it('Close Gaps and Join Clips follow their planners', () => {
+    const noSelection = buildMenus(baseCtx())
+    const clipMenu = noSelection.find((m) => m.spec.id === 'clip')!
+    expect(clipMenu.items.find((i) => i.spec.id === 'clip.closeGaps')!.enabled).toBe(false)
+    expect(clipMenu.items.find((i) => i.spec.id === 'clip.joinClips')!.enabled).toBe(false)
+
+    // Selection alone is not enough: the planner must find something to do.
+    const selected = buildMenus(baseCtx({ hasSelection: true }))
+    const clipMenu2 = selected.find((m) => m.spec.id === 'clip')!
+    expect(clipMenu2.items.find((i) => i.spec.id === 'clip.closeGaps')!.enabled).toBe(false)
+
+    const plannable = buildMenus(
+      baseCtx({ hasSelection: true, canCloseGaps: true, canJoinClips: true }),
+    )
+    const clipMenu3 = plannable.find((m) => m.spec.id === 'clip')!
+    expect(clipMenu3.items.find((i) => i.spec.id === 'clip.closeGaps')!.enabled).toBe(true)
+    expect(clipMenu3.items.find((i) => i.spec.id === 'clip.joinClips')!.enabled).toBe(true)
   })
 
   it('Select All follows hasClips; Ripple Delete follows hasSelection', () => {

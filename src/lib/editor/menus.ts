@@ -35,6 +35,8 @@ export type MenuActionId =
   | 'clip.duplicate'
   | 'clip.delete'
   | 'clip.rippleDelete'
+  | 'clip.closeGaps'
+  | 'clip.joinClips'
   | 'clip.cut'
   | 'clip.copy'
   | 'clip.paste'
@@ -95,6 +97,16 @@ export interface MenuContext {
   selectionLinked: boolean
   /** ≥2 selected clips in distinct groups — "Link" would do something. */
   canLink: boolean
+  /**
+   * "Close Gaps" would move something: the primary selection's lane has empty
+   * time to close. Resolved by the same pure planner the command uses.
+   */
+  canCloseGaps: boolean
+  /**
+   * "Join Clips" would merge: the selection resolves to exactly two same-source
+   * groups that pass every adjacency, source, and property check.
+   */
+  canJoinClips: boolean
   /** At least one clip is selected — "Create Compound Clip" would do something. */
   canCreateCompound: boolean
   snapEnabled: boolean
@@ -167,6 +179,8 @@ const hasAudioSelection: (ctx: MenuContext) => boolean = (ctx) => ctx.selectionH
 const canPaste: (ctx: MenuContext) => boolean = (ctx) => ctx.canPaste
 const selectionLinked: (ctx: MenuContext) => boolean = (ctx) => ctx.selectionLinked
 const canLink: (ctx: MenuContext) => boolean = (ctx) => ctx.canLink
+const canCloseGaps: (ctx: MenuContext) => boolean = (ctx) => ctx.canCloseGaps
+const canJoinClips: (ctx: MenuContext) => boolean = (ctx) => ctx.canJoinClips
 const hasMarkers: (ctx: MenuContext) => boolean = (ctx) => ctx.hasMarkers
 const hasSelectedMarker: (ctx: MenuContext) => boolean = (ctx) => ctx.hasSelectedMarker
 /** Reset makes sense as soon as the workspace deviates from its defaults. */
@@ -269,6 +283,22 @@ export const MENU_SPECS: MenuSpec[] = [
         action: 'clip.rippleDelete',
         shortcut: 'Shift+Del',
         enabled: hasSelection,
+      },
+      {
+        id: 'clip.closeGaps',
+        kind: 'item',
+        // The row names its target: with no layer picker in this release the
+        // command acts on the primary selection's lane, never on every lane.
+        label: 'Close Gaps on Selected Track',
+        action: 'clip.closeGaps',
+        enabled: canCloseGaps,
+      },
+      {
+        id: 'clip.joinClips',
+        kind: 'item',
+        label: 'Join Clips',
+        action: 'clip.joinClips',
+        enabled: canJoinClips,
       },
       { id: 'clip.sep1', kind: 'separator' },
       {

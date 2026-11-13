@@ -35,6 +35,7 @@ import {
   type MarkerSelection,
 } from './markers'
 import { clamp } from './time'
+import { planJoinSelection } from './timeline-edit-plan'
 import type { Clip, Doc, MediaAsset, TextStyle } from './types'
 
 /**
@@ -342,6 +343,21 @@ export function commandsToSplitAllAt(
     ),
     atTime,
   )
+}
+
+/**
+ * Join Clips (0.22.0): resolves the selection into two same-source link groups
+ * and emits ONE join command. The command re-expands both groups and merges
+ * them lane by lane, so an A/V pair joins both halves or refuses the batch.
+ * Null when the selection cannot be joined safely; the planner is the one
+ * answer the menu enablement and this route share.
+ */
+export function commandsToJoinClips(doc: Doc, clipIds: string[]): EditorCommand[] | null {
+  const plan = planJoinSelection(doc, clipIds)
+  if (!plan.ok) return null
+  const [first] = plan.pairs
+  if (!first) return null
+  return [{ type: 'joinClips', clipId: first.previousId, nextId: first.nextId }]
 }
 
 function splitGroupMembers(doc: Doc, members: Clip[], atTime: number): EditorCommand[] | null {

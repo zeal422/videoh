@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.22.0',
+    date: '2026-11-13',
+    highlights: [
+      'Close Gaps removes every gap on a track in one action, with linked audio moving in sync',
+      'Join Clips merges two adjacent same-source clips into a single clip',
+      'Both commands refuse a case they would have to reinterpret instead of guessing',
+      'Close Gaps sits on the Clip menu and on each track header menu',
+      'One undo step restores every clip a command moved or merged',
+    ],
+  },
+  {
     version: '0.21.0',
     date: '2026-11-13',
     highlights: [

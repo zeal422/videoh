@@ -66,6 +66,7 @@ export default defineConfig({
         'src/lib/editor/workspace.ts',
         'src/lib/editor/theme.ts',
         'src/lib/editor/menus.ts',
+        'src/lib/editor/timeline-edit-plan.ts',
         'src/lib/releases.ts',
         'src/lib/seo.ts',
       ],

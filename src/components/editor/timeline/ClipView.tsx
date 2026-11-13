@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react'
 import {
+  ChevronsLeft,
+  Combine,
   Copy,
   CopyPlus,
   Layers,
@@ -42,11 +44,13 @@ import {
   commandsToCreateCompoundClip,
   commandsToDeleteClips,
   commandsToDuplicateClips,
+  commandsToJoinClips,
   commandsToLinkClips,
   commandsToRippleDeleteClips,
   commandsToSplitClipsAt,
   commandsToUnlinkClips,
 } from '@/lib/editor/actions'
+import { canCloseGaps, canJoinClips } from '@/lib/editor/timeline-edit-plan'
 import {
   commandsToCutClips,
   commandsToPasteClips,
@@ -1073,6 +1077,21 @@ export function ClipView({
       store.apply(commands)
     })
 
+  const onMenuCloseGaps = () =>
+    runMenuAction(() => {
+      const store = useEditorStore.getState()
+      store.apply({ type: 'closeGaps', trackId: track.id })
+    })
+
+  const onMenuJoinClips = () =>
+    runMenuAction(() => {
+      const store = useEditorStore.getState()
+      const commands = commandsToJoinClips(store.doc, menuSelectionIds())
+      if (!commands) return
+      if (!store.apply(commands)) return
+      toast({ title: 'Clips joined' })
+    })
+
   const onMenuLink = () =>
     runMenuAction(() => {
       const store = useEditorStore.getState()
@@ -1370,6 +1389,24 @@ export function ClipView({
         </ContextMenuItem>
         <ContextMenuItem data-testid="menu-create-compound" onSelect={onMenuCreateCompound}>
           <Layers className="mr-2 size-4" /> Create Compound Clip
+        </ContextMenuItem>
+        <ContextMenuItem
+          data-testid="menu-close-gaps"
+          // Availability is computed at OPEN time, inside the content: every
+          // clip mounts its own menu, and planning this lane is O(n^2) over
+          // its clips. Planning in the component body ran once per clip on
+          // every drag frame (1.4ms at 100 clips, times 100 menus).
+          disabled={!canCloseGaps(doc, track.id)}
+          onSelect={onMenuCloseGaps}
+        >
+          <ChevronsLeft className="mr-2 size-4" /> Close Gaps
+        </ContextMenuItem>
+        <ContextMenuItem
+          data-testid="menu-join-clips"
+          disabled={!canJoinClips(doc, selIds)}
+          onSelect={onMenuJoinClips}
+        >
+          <Combine className="mr-2 size-4" /> Join Clips
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem data-testid="menu-link" disabled={!canLink} onSelect={onMenuLink}>

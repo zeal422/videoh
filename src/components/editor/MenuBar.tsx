@@ -50,6 +50,7 @@ import { GAIN_MAX, GAIN_MIN } from '@/lib/editor/constants'
 import { buildMenus, type MenuActionId, type MenuContext } from '@/lib/editor/menus'
 import { CURRENT_VERSION } from '@/lib/releases'
 import { hasNavigableMarkers, markerSelectionExists } from '@/lib/editor/markers'
+import { canCloseGaps, canJoinClips } from '@/lib/editor/timeline-edit-plan'
 import { PANEL_BOUNDS, PANEL_IDS } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
 import { useEditorStore, useStableDoc } from '@/lib/editor/store'
@@ -134,6 +135,19 @@ export function MenuBar({
     [doc, selections],
   )
 
+  // Both timeline commands decide availability through the shared predicates
+  // (plan plus lock gate), so a clickable row can never be refused and a
+  // refused batch can never look available.
+  const selectedTrackId = useMemo(
+    () => (selections[0] ? findClip(doc, selections[0])?.track.id : undefined),
+    [doc, selections],
+  )
+  const closeGapsAvailable = useMemo(
+    () => !!selectedTrackId && canCloseGaps(doc, selectedTrackId),
+    [doc, selectedTrackId],
+  )
+  const joinClipsAvailable = useMemo(() => canJoinClips(doc, selections), [doc, selections])
+
   const allClipIds = useMemo(
     () => activeTracks(doc, activeSequencePath).flatMap((t) => t.clips.map((c) => c.id)),
     [doc, activeSequencePath],
@@ -168,6 +182,8 @@ export function MenuBar({
     canPaste: hasClipboardContent(),
     selectionLinked: selections.length > 0 && anySelectionLinked(doc, selections),
     canLink: canLinkClips(doc, selections),
+    canCloseGaps: closeGapsAvailable,
+    canJoinClips: joinClipsAvailable,
     canCreateCompound: selections.length > 0,
     hasMarkers,
     hasSelectedMarker: !!selectedMarker && markerSelectionExists(doc, selectedMarker),

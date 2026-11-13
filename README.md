@@ -28,7 +28,7 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/u
   auto names renumber while custom names stay; the last lane is protected, and an emptied lane is
   pruned with the edit.
 - **Editing, links, and markers.** Selection, Razor, Ripple Trim, Slip, and Pen, plus multi-select,
-  marquee, track targeting, and ripple delete. A video with audio lands as a linked pair; compound
+  marquee, track targeting, ripple delete, Close Gaps, and Join Clips. A video with audio lands as a linked pair; compound
   clips fold a selection into a reusable nested sequence. The Source monitor marks In/Out for
   insert or overwrite, and sequence and clip markers carry names, eight colors, notes, and snapping.
 - **Text and captions.** Styled text clips with built-in and saved presets, direct dragging in the
@@ -166,7 +166,7 @@ bun run battery:pair   # dev + artifact concurrently (needs a current build and 
 PAIR_SHARDS=1 bun run battery:pair # sequential rollback, one session per leg
 ```
 
-Current state: **2368 tests across 103 files, all passing**. Coverage is enforced at 70/60/75/70 over
+Current state: **2410 tests across 104 files, all passing**. Coverage is enforced at 70/60/75/70 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -195,7 +195,7 @@ src/lib/editor/            # state core (commands, store, serialization) + brows
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, landing sections, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 103 test files (2368 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 104 test files (2410 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations
