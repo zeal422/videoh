@@ -25,6 +25,7 @@ import {
   uid,
 } from '@/lib/editor/factories'
 import { hasTimeScaleCurve } from '@/lib/editor/keyframes'
+import { shapeKindLabel } from '@/lib/editor/shapes'
 import { computeSnapPoints } from '@/lib/editor/snap'
 import {
   decideMove,
@@ -1140,7 +1141,13 @@ export function ClipView({
     })
 
   // ————— visuals —————
-  const palette = paletteFor(track.kind, asset, clip.text !== undefined, clip.audioOnly)
+  const palette = paletteFor(
+    track.kind,
+    asset,
+    clip.text !== undefined,
+    clip.audioOnly,
+    clip.shape !== undefined,
+  )
   const prevTransition = clip.transitionOut
   const clipboardHasContent = hasClipboardContent()
   const { playhead: menuPlayhead } = useEditorStore.getState()
@@ -1166,7 +1173,7 @@ export function ClipView({
           data-testid={`clip-${clip.id}`}
           data-in-point={clip.inPoint}
           role="button"
-          aria-label={`Clip ${clip.text ?? asset?.name ?? 'text'} from ${clip.start.toFixed(2)} to ${(clip.start + clip.duration).toFixed(2)} seconds`}
+          aria-label={`Clip ${clip.text ?? asset?.name ?? (clip.shape ? shapeKindLabel(clip.shape.kind) : 'text')} from ${clip.start.toFixed(2)} to ${(clip.start + clip.duration).toFixed(2)} seconds`}
           tabIndex={0}
           className={cn(
             'absolute inset-y-1 select-none overflow-hidden rounded-md border text-[11px] shadow-sm transition-colors',
@@ -1287,6 +1294,8 @@ export function ClipView({
               <span className="truncate">{compoundSequence?.name ?? 'Compound Clip'}</span>
             ) : clip.text !== undefined ? (
               <span className="truncate">{clip.text || '(empty text)'}</span>
+            ) : clip.shape ? (
+              <span className="truncate">{shapeKindLabel(clip.shape.kind)}</span>
             ) : (
               <span className="truncate">{asset?.name ?? 'missing media'}</span>
             )}
@@ -1465,8 +1474,10 @@ export function paletteFor(
   asset: MediaAsset | undefined,
   isText: boolean,
   audioOnly = false,
+  isShape = false,
 ) {
   if (isText) return { body: 'border-violet-400/40 bg-violet-800/70' }
+  if (isShape) return { body: 'border-sky-400/40 bg-sky-900/70' }
   if (!asset) return { body: 'border-red-500/50 bg-red-950/50' }
   if (audioOnly) return { body: 'border-amber-400/40 bg-amber-900/70' }
   if (asset.kind === 'video') return { body: 'border-emerald-400/40 bg-emerald-900/70' }

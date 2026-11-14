@@ -23,6 +23,7 @@ import {
   resolveMatteTrack,
 } from '../effects'
 import { applyChromaKeyToRgba, buildMatteMask, parseKeyColor } from '../chroma-key'
+import { shapePathData, type ShapePath } from '../shapes'
 import { textLayoutBox } from './text-box'
 import {
   applyRotationFlip,
@@ -567,6 +568,11 @@ function drawClipCore(
     }
     sctx.restore()
     drawContain(ctx, sequenceSurfaces[depth], width, height, alpha, filter, transform, lut)
+    return
+  }
+
+  if (clip.shape) {
+    drawShapeClip(ctx, clip, width, height, alpha, filter, transform)
     return
   }
 
@@ -1289,4 +1295,114 @@ export function drawTextClip(
     ctx.fillText(line, anchorX, y)
   })
   ctx.restore()
+}
+
+/** Traces a pure shape path in project pixels. Shared by preview and export. */
+function traceShapePath(ctx: CanvasRenderingContext2D, path: ShapePath): void {
+  ctx.beginPath()
+  if (path.kind === 'ellipse') {
+    ctx.ellipse(path.cx, path.cy, path.rx, path.ry, 0, 0, Math.PI * 2)
+    return
+  }
+  if (path.kind === 'polygon') {
+    const first = path.points[0]
+    if (!first) return
+    ctx.moveTo(first.x, first.y)
+    for (let i = 1; i < path.points.length; i++) {
+      ctx.lineTo(path.points[i].x, path.points[i].y)
+    }
+    ctx.closePath()
+    return
+  }
+  // Rounded rectangle, traced with arcs so it needs no roundRect support.
+  const { rect } = path
+  const r = Math.max(0, Math.min(path.radius, Math.min(rect.w, rect.h) / 2))
+  if (r <= 0) {
+    ctx.rect(rect.x, rect.y, rect.w, rect.h)
+    return
+  }
+  ctx.moveTo(rect.x + r, rect.y)
+  ctx.arcTo(rect.x + rect.w, rect.y, rect.x + rect.w, rect.y + rect.h, r)
+  ctx.arcTo(rect.x + rect.w, rect.y + rect.h, rect.x, rect.y + rect.h, r)
+  ctx.arcTo(rect.x, rect.y + rect.h, rect.x, rect.y, r)
+  ctx.arcTo(rect.x, rect.y, rect.x + rect.w, rect.y, r)
+  ctx.closePath()
+}
+
+/**
+ * Dedicated scratch for translucent shape group composites. A single canvas
+ * suffices: the paint-and-blit below is fully synchronous, so no second shape
+ * can interleave, and no caller ever passes this canvas back in.
+ */
+let shapeScratch: HTMLCanvasElement | null = null
+
+function shapeScratchCtx(width: number, height: number): CanvasRenderingContext2D | null {
+  if (typeof document === 'undefined') return null
+  shapeScratch ??= document.createElement('canvas')
+  if (shapeScratch.width !== width || shapeScratch.height !== height) {
+    shapeScratch.width = width
+    shapeScratch.height = height
+  }
+  return shapeScratch.getContext('2d')
+}
+
+/**
+ * Shape clip renderer (0.25.0). The path is generated in project pixels and
+ * transformed exactly like media: position and scale around the frame center,
+ * rotation/flip around the positioned center. A shape box is centered, so that
+ * pivot is also its path-bounds center. Preview, the effect path, and export
+ * all call this one function.
+ */
+export function drawShapeClip(
+  ctx: CanvasRenderingContext2D,
+  clip: Clip,
+  width: number,
+  height: number,
+  alpha: number,
+  filter: string,
+  transform: ClipTransform | null,
+): void {
+  const shape = clip.shape
+  if (!shape) return
+  const t = transform ?? IDENTITY_TRANSFORM
+  const frameCenter = { x: width / 2, y: height / 2 }
+  // Group composite for translucency: fill and stroke overlap along the
+  // stroke's inner half, so painting both at `alpha` would double-apply it
+  // there. Paint the shape at full opacity onto a transparent scratch, then
+  // composite once at the requested alpha (the compound-clip contract in
+  // drawClipCore). Opaque shapes keep the direct path the shape locks assert.
+  const scratch = alpha < 1 ? shapeScratchCtx(width, height) : null
+  const target = scratch ?? ctx
+  target.save()
+  if (scratch) {
+    target.globalAlpha = 1
+    target.clearRect(0, 0, width, height)
+  } else {
+    target.globalAlpha = alpha
+    if (filter !== 'none') target.filter = filter
+  }
+  applyRotationFlip(target, t, frameCenter.x + t.posX, frameCenter.y + t.posY)
+  target.translate(frameCenter.x + t.posX, frameCenter.y + t.posY)
+  target.scale(t.scale, t.scale)
+  target.translate(-frameCenter.x, -frameCenter.y)
+
+  traceShapePath(target, shapePathData(shape, width, height))
+  target.fillStyle = shape.fill
+  target.fill()
+  if (shape.stroke) {
+    target.strokeStyle = shape.stroke
+    // The path box keeps a margin, but a very wide stroke on a tiny project
+    // could still run off the frame; cap it against the short axis.
+    target.lineWidth = Math.min(shape.strokeWidth ?? 1, Math.min(width, height) * 0.08)
+    target.lineJoin = 'round'
+    target.stroke()
+  }
+  target.restore()
+  if (scratch && shapeScratch) {
+    ctx.save()
+    ctx.globalAlpha = alpha
+    if (filter !== 'none') ctx.filter = filter
+    ctx.drawImage(shapeScratch, 0, 0)
+    ctx.restore()
+  }
 }

@@ -42,6 +42,7 @@ import {
 } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
 import { clearAutosave, initAutosave, readValidAutosave } from '@/lib/editor/persistence'
+import { activateProjectFonts } from '@/lib/editor/media/font-store'
 import {
   downloadProjectJSON,
   ensureProjectLock,
@@ -274,6 +275,11 @@ export function EditorShell() {
   // project's stored bytes while this tab is the one importing them.
   useEffect(() => {
     void ensureProjectLock(useEditorStore.getState().doc)
+    // The initial doc never routes through installProject either: make its
+    // (usually empty) font set the active one so a first upload can commit.
+    // Repaint once the faces land: the monitor would otherwise keep the frame
+    // it painted with the fallback metrics.
+    void activateProjectFonts(useEditorStore.getState().doc).then(refreshPausedPreview)
     return () => releaseProjectLock()
   }, [])
 
@@ -285,6 +291,11 @@ export function EditorShell() {
     return useEditorStore.subscribe((state, previous) => {
       if (state.doc.project.id !== previous.doc.project.id) {
         void ensureProjectLock(state.doc)
+        // An undo/redo that crosses projects switches the registered faces
+        // too; loadProjectFonts runs for a project whose fonts are not active.
+        // Repaint when they land so the paused monitor does not keep the
+        // fallback frame (and its fallback text metrics) indefinitely.
+        void activateProjectFonts(state.doc).then(refreshPausedPreview)
       }
     })
   }, [])
@@ -301,16 +312,17 @@ export function EditorShell() {
     // fresh state (a microtask also keeps the cascading-render lint happy).
     queueMicrotask(() => setAutosaveScanned(true))
 
-    // Safety net: commit any dangling drag gesture (e.g. pointer released
-    // outside the clip after capture loss) so history never stays open.
-    // Pointer-scoped: a pointerup from a DIFFERENT pointer than the one that
-    // started the live gesture must not end it (multi-touch); pointerless
-    // events (blur) and pointerless synthetic events always apply.
+    // Safety net: commit any dangling POINTER-owned drag gesture (e.g. pointer
+    // released outside the clip after capture loss) so history never stays
+    // open. A focus-owned gesture (Inspector text or color editing) has no
+    // pointer, and a click inside that field must not split the edit: it stays
+    // open for typing and ends on blur. Pointer-scoped: a pointerup from a
+    // DIFFERENT pointer than the one that started the live gesture must not end
+    // it (multi-touch); pointerless events (blur) always apply.
     const commitDangling = (ev?: PointerEvent) => {
-      const state = useEditorStore.getState()
       const owner = activeTransientPointerId()
-      if (ev && owner !== null && ev.pointerId !== owner) return
-      state.commitTransient()
+      if (ev && (owner === null || ev.pointerId !== owner)) return
+      useEditorStore.getState().commitTransient()
     }
     // One function object for add + remove: two inline closures would never
     // match, so the blur listener would leak past the unmount.

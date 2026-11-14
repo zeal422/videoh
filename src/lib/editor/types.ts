@@ -60,6 +60,46 @@ export interface TextPreset {
   style: TextStyle
 }
 
+/**
+ * A custom font uploaded into the project (0.25.0). The bytes live in the
+ * project's font namespace in OPFS, keyed by `contentHash`; the project file
+ * carries metadata only. `family` is generated from `id` and is immutable, so
+ * renaming a font never breaks the `TextStyle.fontFamily` strings that
+ * reference it.
+ */
+export interface ProjectFont {
+  /** `font_` id, unique within the project. */
+  id: string
+  /** Display name shown in the picker. */
+  name: string
+  /** Generated CSS font-family string, including a fallback stack. */
+  family: string
+  /** SHA-256 of the stored font bytes. */
+  contentHash: string
+  /** CSS weight 100..900. Absent means the browser default (400). */
+  weight?: number
+  /** CSS style. Absent means normal. */
+  style?: 'normal' | 'italic'
+}
+
+/** Parameterized shape primitives (0.25.0). No arbitrary paths or morphing. */
+export type ShapeKind = 'rectangle' | 'ellipse' | 'triangle' | 'star' | 'polygon' | 'heart'
+
+/** The fill/stroke settings of a shape clip. */
+export interface ShapeStyle {
+  kind: ShapeKind
+  /** `#rrggbb` fill color. */
+  fill: string
+  /** `#rrggbb` stroke color. Absent means no stroke. */
+  stroke?: string
+  /** Stroke width in project pixels, 0..SHAPE_STROKE_MAX. */
+  strokeWidth?: number
+  /** Corner radius in project pixels, rectangle only, 0..SHAPE_RADIUS_MAX. */
+  radius?: number
+  /** Point count, star and polygon only, SHAPE_POINTS_MIN..SHAPE_POINTS_MAX. */
+  points?: number
+}
+
 /** Cross-dissolve, dip-to-black, or a spatial move into the next clip (0.8.4 adds the spatial types). */
 export type TransitionType = 'crossfade' | 'dipToBlack' | 'wipe' | 'slide' | 'push'
 
@@ -331,6 +371,13 @@ export interface Clip {
   /** Caption cue (0.8.5). Set on text clips by SRT import; SRT export collects flagged clips. */
   isCaption?: boolean
   /**
+   * Shape settings (0.25.0): present for shape clips only. Mutually exclusive
+   * with `mediaId`, `text`/`style`, `isCaption`, `sequenceId`, and audio-only
+   * fields; shape clips render picture and live on a video track. `inPoint` is
+   * ignored (text semantics); `speed` and `reverse` are refused.
+   */
+  shape?: ShapeStyle
+  /**
    * Ordered per-clip effect stack (0.8.6). Absent means an empty stack, never
    * null. Applies top-first with motion blur always evaluating last;
    * clip Motion and Opacity apply after the whole stack.
@@ -463,6 +510,12 @@ export interface Project {
    * like `luts`. Absent for a project with no saved presets.
    */
   textPresets?: TextPreset[]
+  /**
+   * The project's custom font library (0.25.0). Font bytes live in OPFS under
+   * this project's font namespace, keyed by each entry's content hash. Absent
+   * for a project with no uploaded fonts.
+   */
+  fonts?: ProjectFont[]
   /** Index 0 = topmost layer. Conventional order: text tracks, video tracks, audio tracks. */
   tracks: Track[]
 }

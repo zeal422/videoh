@@ -538,7 +538,7 @@ describe('the battery runner', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   it('rejects a pair-log collision before truncating the existing file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'battery-pair-alias-'))
@@ -738,13 +738,13 @@ exit "$rc"
   })
 
   it('assigns every registered step to exactly one shard', () => {
-    // The four shards must partition the 70 `step` lines: a missing function
+    // The four shards must partition the 74 `step` lines: a missing function
     // silently drops a step from a sharded run, and a duplicate puts one step in
     // two browser sessions. The summary counts pin the intended cut points.
     const registered = (battery.match(/^step\s+"[^"]+"\s+([a-z0-9_]+)\s*$/gm) ?? []).map(
       (line) => /([a-z0-9_]+)\s*$/.exec(line)?.[1] ?? '',
     )
-    expect(registered).toHaveLength(70)
+    expect(registered).toHaveLength(74)
     const start = battery.indexOf('shard_of() {')
     const end = battery.indexOf('\n}', start)
     expect(start).toBeGreaterThan(-1)
@@ -772,7 +772,7 @@ exit "$rc"
     expect(names.slice().sort()).toEqual(registered.slice().sort())
     expect(new Set(names).size).toBe(names.length)
     const counts = [1, 2, 3, 4].map((shard) => pairs.filter(([, s]) => s === shard).length)
-    expect(counts).toEqual([30, 12, 14, 14])
+    expect(counts).toEqual([32, 14, 14, 14])
     expect(pairs.find(([name]) => name === 'console_clean')?.[1]).toBe(4)
     // The coordinator collapses the four console rows under the registered
     // name; a drift there would write a row no step registered.

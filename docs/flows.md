@@ -393,6 +393,33 @@ Stable hooks used across flows and tests:
 - **Drag the text in the program monitor** to reposition it: a dashed outline
   (`[data-testid="text-drag-outline"]`) shows the box, one drag is one undo step, and the geometry is
   measured by `measureTextBox`, the twin of the compositor's renderer.
+- **Font picker (0.25.0).** The Inspector's Font control lists the built-in system families first,
+  then the project's uploaded fonts by display name. Selecting writes `TextStyle.fontFamily` through
+  `setTextStyle`; the generated family string is the reference, so a later rename changes only the
+  label.
+- **Font upload (0.25.0).** The upload dialog accepts WOFF2, WOFF, TTF, or OTF up to 8 MB. The file
+  is checked by extension and header, hashed, and staged as a `FontFace` that must load before the
+  entry commits. The bytes are written to the OPFS `fonts/<hash>` namespace and the font entry plus
+  the clip's family are applied in one command batch. A staging, parse, or store failure toasts and
+  leaves the project untouched; a project change during the upload discards the staged face. Opening
+  or switching to a project loads its fonts in the background and repaints the monitor once they
+  land; export awaits `ensureProjectFontsReady` (every face loaded plus `document.fonts.ready`)
+  before the first exported frame. A missing or corrupt font warns and falls back to Arial; the
+  project stays editable.
+- **Animated text presets (0.25.0).** The Inspector's Text animation section applies Fade In, Slide
+  Up, Pop, or Slow Reveal as ordinary opacity/position/scale keyframes with documented easing. The
+  command refuses when any target property already has a curve and names the property; applying is
+  one undo step and never writes a custom preset format.
+- **Shapes (0.25.0).** Graphics > Add Rectangle/Ellipse/Triangle/Star/Polygon/Heart inserts a shape
+  clip at the playhead on a video track. The Inspector edits kind, fill, optional stroke color and
+  width, rectangle corner radius, and star/polygon point count; every edit is re-sanitized by
+  `setClipShape`. Shapes use the normal position, scale, rotation, flip, opacity, blend, and keyframe
+  surface, render through one shared path in preview and export, and take their gizmo and rotation
+  origin from the generated path bounds.
+- **Stickers (0.25.0).** Graphics > Stickers opens a grid of bundled local SVGs. Choosing one fetches
+  the same-origin asset, imports it through the normal image path (probe, thumbnail, content hash,
+  OPFS write), and adds an image clip at the playhead as one undo step. There is no remote request,
+  no sticker marketplace, and no new schema.
 
 ## Captions
 
@@ -714,16 +741,19 @@ Stable hooks used across flows and tests:
 
 ## Save, load, autosave, restore
 
-- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 5; versions 1 to 4 still load, and a v5
-  file needs this build), writes a claim shard for every hash the snapshot references, and downloads
-  the file. A refused claim downloads nothing: a copy is never written with unclaimed media. Object
-  URLs are stripped and never persisted.
+- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 7; versions 1 to 6 still load, and a v7
+  file needs this build), including the media content hashes, the project font library, and shape
+  clips, writes a claim shard for every hash the snapshot references, and downloads the file. A
+  refused claim downloads nothing: a copy is never written with unclaimed media. Object URLs are
+  stripped and never persisted.
 - **Open** parses synchronously, then rehydrates: each asset with a `contentHash` reads its verified
   bytes, rebuilds the `File` from the serialized name plus the sidecar MIME type, and creates a fresh
-  object URL before `installProject` runs once. An asset without a hash, or with missing or damaged
-  bytes, stays `missing` and relinks. The open writes the claim shard before install; a failed claim
-  still opens the project, warns, and disables Clean Unused Media until a save claims the bytes. A
-  load superseded by a newer open or File > New revokes the URLs it created and installs nothing.
+  object URL before `installProject` runs once. Project fonts are staged as already-loaded `FontFace`
+  objects and join the registry at install, so a superseded open never swaps the live faces. An asset
+  without a hash, or with missing or damaged bytes, stays `missing` and relinks. The open writes the
+  claim shard before install; a failed claim still opens the project, warns, and disables Clean Unused
+  Media until a save claims the bytes. A load superseded by a newer open or File > New revokes the
+  URLs it created and installs nothing.
 - Every open tab holds the shared Web Lock `media-project:<project-id>`. The boot doc announces itself
   on mount even though it never installs, an open or restore prepares the incoming project's hold while
   the live project keeps its own until the install commits. Each load owns a distinct prepared hold, so
@@ -743,7 +773,8 @@ Stable hooks used across flows and tests:
   the file names and a relink hint. The frame is genuinely black and silent; the overlay is what keeps
   that from reading as a broken preview.
 - **Autosave** writes to `localStorage` (`web-video-editor:autosave:v1`, 800 ms debounce) after each
-  settled change; transient drag frames are skipped.
+  settled change; transient drag frames are skipped. The snapshot carries the project font library
+  (names and hashes, never bytes), so a restore relinks the same stored faces.
 - On startup a valid autosave raises a banner: **Restore** rehydrates and installs the doc (undoable)
   or **Discard** clears it. Discarding a restore that is still rehydrating prevents it from installing.
   A restore writes no claim; the autosave slot is a live reference, so Clean Unused Media keeps its

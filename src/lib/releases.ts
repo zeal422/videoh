@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.25.0',
+    date: '2026-11-13',
+    highlights: [
+      'Pick a built-in font or upload WOFF2, WOFF, TTF, and OTF files that stay with the project',
+      'Four animated text presets apply ordinary opacity, position, and scale keyframes in one undo step',
+      'Add rectangles, ellipses, triangles, stars, polygons, and hearts, then style them in the Inspector',
+      'Drop bundled stickers onto the timeline through the normal image import, with no remote requests',
+      'Project files move to format version 7; older files still open',
+    ],
+  },
+  {
     version: '0.24.0',
     date: '2026-11-13',
     highlights: [

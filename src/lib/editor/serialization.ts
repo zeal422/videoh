@@ -63,11 +63,15 @@ import {
   sanitizeTransitionDuration,
 } from './project-validation'
 import {
+  TEXT_PRESET_FONT_MAX,
+  TEXT_PRESET_FONT_MIN,
   createBuiltinTextPresets,
   createDefaultTextStyle,
   sanitizePresetStyle,
   uid,
 } from './factories'
+import { sanitizeFontFamily, sanitizeProjectFont } from './fonts'
+import { sanitizeShape } from './shapes'
 import { clamp } from './time'
 import type {
   AnimStaticProperty,
@@ -82,6 +86,7 @@ import type {
   Marker,
   MediaAsset,
   Project,
+  ProjectFont,
   ProjectLut,
   Sequence,
   TextPreset,
@@ -100,11 +105,12 @@ import type {
 /**
  * v2 added markers (0.5.5); v3 added the LUT library (0.7.0); v4 added
  * compound-clip sequences (0.8.1); v5 added the per-asset media content hash
- * (0.23.0); v6 added clip rotation and the flip pair (0.24.0). The loader
- * accepts every version from 1 up to the current one, so older files load with
- * the newer features absent; only files from a NEWER app version are refused.
+ * (0.23.0); v6 added clip rotation and the flip pair (0.24.0); v7 added the
+ * project font library and shape clips (0.25.0). The loader accepts every
+ * version from 1 up to the current one, so older files load with the newer
+ * features absent; only files from a NEWER app version are refused.
  */
-export const SERIALIZATION_VERSION = 6
+export const SERIALIZATION_VERSION = 7
 export const PROJECT_FILE_EXTENSION = '.veproj.json'
 
 export interface SerializedMedia {
@@ -184,6 +190,7 @@ interface HydrationStats {
   droppedOverCapClips: number
   droppedOverflowClips: number
   droppedMarkers: number
+  droppedInvalidClips: number
 }
 
 function hydrationWarnings(stats: HydrationStats): string[] {
@@ -206,6 +213,11 @@ function hydrationWarnings(stats: HydrationStats): string[] {
   if (stats.droppedMarkers > 0) {
     warnings.push(
       `Dropped ${stats.droppedMarkers} marker${stats.droppedMarkers === 1 ? '' : 's'} past the ${MAX_TIMELINE_SECONDS / 3600}-hour timeline limit.`,
+    )
+  }
+  if (stats.droppedInvalidClips > 0) {
+    warnings.push(
+      `Dropped ${stats.droppedInvalidClips} malformed shape clip${stats.droppedInvalidClips === 1 ? '' : 's'}.`,
     )
   }
   return warnings
@@ -243,12 +255,14 @@ export function deserializeDoc(data: unknown): {
     droppedOverCapClips: 0,
     droppedOverflowClips: 0,
     droppedMarkers: 0,
+    droppedInvalidClips: 0,
   }
   const projectMarkers = hydrateMarkers(projectRaw.markers, stats)
   const projectDefaults = hydrateKeyframeDefaults(projectRaw.keyframeDefaults)
   const projectLuts = hydrateLuts(projectRaw.luts)
   const projectSequences = hydrateSequences(projectRaw.sequences, media, stats)
   const projectPresets = hydrateTextPresets(projectRaw.textPresets)
+  const projectFonts = hydrateProjectFonts(projectRaw.fonts)
   const project: Project = {
     id: typeof projectRaw.id === 'string' ? projectRaw.id : 'proj_loaded',
     name: typeof projectRaw.name === 'string' ? projectRaw.name : 'Imported Project',
@@ -264,6 +278,7 @@ export function deserializeDoc(data: unknown): {
     ...(projectLuts ? { luts: projectLuts } : {}),
     ...(projectSequences ? { sequences: projectSequences } : {}),
     ...(projectPresets ? { textPresets: projectPresets } : {}),
+    ...(projectFonts ? { fonts: projectFonts } : {}),
     tracks: hydrateTracks(projectRaw.tracks, media, stats),
   }
 
@@ -274,6 +289,9 @@ export function deserializeDoc(data: unknown): {
   // A compound clip's shape is mutually exclusive with media, text and
   // retiming: a file that carries both is malformed and refused.
   assertCompoundShapes(project)
+  // A shape clip is likewise exclusive with media, text, captions, compounds,
+  // audio-only fields, and retiming.
+  assertShapeClips(project)
   // Link groups are sequence-local: a link id shared across sequences has no
   // safe move semantics and is refused.
   assertLinkScopes(project)
@@ -361,6 +379,14 @@ function hydrateTracks(rawTracks: unknown, media: MediaAsset[], stats: Hydration
       ...(t.locked === true ? { locked: true as const } : {}),
       clips: (Array.isArray(t.clips) ? (t.clips as Record<string, unknown>[]) : []).flatMap((c) => {
         const clip = hydrateClip(c, media, stats)
+        // Shapes render picture and live on video lanes only, the same rule
+        // `addClip` enforces: a foreign file that parks one elsewhere drops
+        // it with a warning instead of leaving an inert clip on the lane.
+        // The shape body itself is already sanitized; only the lane mismatches.
+        if (clip?.shape && kind !== 'video') {
+          stats.droppedInvalidClips += 1
+          return []
+        }
         return clip ? [clip] : []
       }),
     }
@@ -447,6 +473,36 @@ function assertCompoundShapes(project: Project): void {
         ) {
           throw new SerializationError(
             'Compound clip carries incompatible media, text or retiming fields',
+          )
+        }
+      }
+    }
+  }
+  check(project.tracks)
+  for (const sequence of project.sequences ?? []) check(sequence.tracks)
+}
+
+/** Rejects a shape clip that also carries media, text, compound, LUT, or retiming fields. */
+function assertShapeClips(project: Project): void {
+  const check = (tracks: Track[]) => {
+    for (const track of tracks) {
+      for (const clip of track.clips) {
+        if (!clip.shape) continue
+        if (
+          clip.mediaId !== undefined ||
+          clip.text !== undefined ||
+          clip.style !== undefined ||
+          clip.isCaption === true ||
+          clip.sequenceId !== undefined ||
+          clip.audioOnly === true ||
+          clip.linkId !== undefined ||
+          clip.speed !== undefined ||
+          clip.reverse ||
+          clip.lutId !== undefined ||
+          clip.keyframes?.timeScale !== undefined
+        ) {
+          throw new SerializationError(
+            'Shape clip carries incompatible media, text, compound, LUT or retiming fields',
           )
         }
       }
@@ -679,6 +735,18 @@ function hydrateClip(
   if (typeof raw.text === 'string') {
     clip.text = raw.text
     clip.style = hydrateStyle(raw.style as Record<string, unknown> | undefined)
+  }
+  // Shape clips (0.25.0). The shape field declares the clip kind: a malformed
+  // entry drops the clip instead of leaving a source-less ghost on the lane.
+  // A well-formed shape that also carries media/text is refused later by the
+  // exclusivity check.
+  if (raw.shape !== undefined) {
+    const shape = sanitizeShape(raw.shape)
+    if (!shape) {
+      stats.droppedInvalidClips += 1
+      return undefined
+    }
+    clip.shape = shape
   }
   if (typeof raw.transitionOut === 'object' && raw.transitionOut !== null) {
     const rawTransition = raw.transitionOut as Record<string, unknown>
@@ -987,9 +1055,18 @@ function hydrateStyle(raw: Record<string, unknown> | undefined): Clip['style'] {
   }
   if (!raw) return defaults
   return {
-    fontSize: numOr(raw.fontSize, defaults.fontSize),
+    // Bounded exactly like the preset path: a finite-but-wild file value would
+    // otherwise reach ctx.font and the shadow math.
+    fontSize: clamp(
+      numOr(raw.fontSize, defaults.fontSize),
+      TEXT_PRESET_FONT_MIN,
+      TEXT_PRESET_FONT_MAX,
+    ),
     color: typeof raw.color === 'string' ? raw.color : defaults.color,
-    fontFamily: typeof raw.fontFamily === 'string' ? raw.fontFamily : defaults.fontFamily,
+    // A family string reaches a canvas `font` shorthand; the same restricted
+    // grammar every other trust boundary uses rejects control characters and
+    // CSS-function syntax while keeping legacy system-family stacks.
+    fontFamily: sanitizeFontFamily(raw.fontFamily) ?? defaults.fontFamily,
     bold: typeof raw.bold === 'boolean' ? raw.bold : defaults.bold,
     italic: typeof raw.italic === 'boolean' ? raw.italic : defaults.italic,
     align: raw.align === 'left' || raw.align === 'right' ? raw.align : 'center',
@@ -1058,6 +1135,41 @@ function hydrateTextPresets(raw: unknown): TextPreset[] | undefined {
     console.warn('[serialization] dropped a broken title preset entry')
   }
   return presets.length > 0 ? presets : undefined
+}
+
+/**
+ * Hydrates the project's custom font library (0.25.0). A malformed entry is
+ * dropped with one warning; duplicate ids or generated families are refused,
+ * because the family string is the identity every text clip resolves and a
+ * duplicate would silently retarget clips. Names are not unique: two weights of
+ * one family are valid library entries.
+ */
+function hydrateProjectFonts(raw: unknown): ProjectFont[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const fonts: ProjectFont[] = []
+  const ids = new Set<string>()
+  const families = new Set<string>()
+  let dropped = false
+  for (const entry of raw) {
+    const font = sanitizeProjectFont(entry)
+    if (!font) {
+      dropped = true
+      continue
+    }
+    // CSS family names match ASCII case-insensitively: `font_A` and `font_a`
+    // generate families that answer the same face, so the duplicate check
+    // folds case the same way `addProjectFont` does.
+    if (ids.has(font.id) || families.has(font.family.toLowerCase())) {
+      throw new SerializationError(`Duplicate project font: ${font.id}`)
+    }
+    ids.add(font.id)
+    families.add(font.family.toLowerCase())
+    fonts.push(font)
+  }
+  if (dropped) {
+    console.warn('[serialization] dropped a broken project font entry')
+  }
+  return fonts.length > 0 ? fonts : undefined
 }
 
 /** Builds a downloadable filename from the project name. */

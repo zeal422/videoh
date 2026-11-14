@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import { ExportDialog } from '@/components/editor/ExportDialog'
@@ -324,5 +324,159 @@ describe('export dialog validation and start (0.21.0)', () => {
       expect.any(Blob),
       expect.stringMatching(/\.mp4$/),
     )
+  })
+})
+
+describe('export project guard (0.25.0)', () => {
+  it('cancels the export when the live project changes mid-export', async () => {
+    let resolveExport!: (result: {
+      kind: 'blob'
+      blob: Blob
+      mimeType: string
+      duration: number
+    }) => void
+    const pending = new Promise<{
+      kind: 'blob'
+      blob: Blob
+      mimeType: string
+      duration: number
+    }>((resolve) => {
+      resolveExport = resolve
+    })
+    // Mirror the real engine contract: it polls the handle and throws once
+    // the export is no longer wanted.
+    mocks.exportTimeline.mockImplementation(
+      (_doc: unknown, _options: unknown, handle: { cancelled: boolean }) =>
+        pending.then((result) => {
+          if (handle.cancelled) throw new Error('Export cancelled')
+          return result
+        }),
+    )
+    render(<ExportDialog open onOpenChange={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Start export' }))
+    await waitFor(() => expect(mocks.exportTimeline).toHaveBeenCalledTimes(1))
+    const handle = mocks.exportTimeline.mock.calls[0][2] as { cancelled: boolean }
+    expect(handle.cancelled).toBe(false)
+
+    // A same-project edit must not disturb the running export.
+    useEditorStore.setState((state) => ({ doc: { ...state.doc } }))
+    expect(handle.cancelled).toBe(false)
+
+    // A keyboard undo that crosses projects swaps the live doc (and, via the
+    // shell subscription, the font registry) while the export is in flight.
+    const other = doc()
+    expect(other.project.id).not.toBe(useEditorStore.getState().doc.project.id)
+    useEditorStore.setState({ doc: other } as never)
+    expect(handle.cancelled).toBe(true)
+
+    resolveExport({
+      kind: 'blob',
+      blob: new Blob(['x'], { type: 'video/mp4' }),
+      mimeType: 'video/mp4',
+      duration: 4,
+    })
+    // The cancellation surfaces as a return to setup, not a result or error.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Start export' })).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId('export-result-video')).not.toBeInTheDocument()
+  })
+
+  it('cancels the export when the same project is reinstalled mid-export', async () => {
+    let resolveExport!: (result: {
+      kind: 'blob'
+      blob: Blob
+      mimeType: string
+      duration: number
+    }) => void
+    const pending = new Promise<{
+      kind: 'blob'
+      blob: Blob
+      mimeType: string
+      duration: number
+    }>((resolve) => {
+      resolveExport = resolve
+    })
+    mocks.exportTimeline.mockImplementation(
+      (_doc: unknown, _options: unknown, handle: { cancelled: boolean }) =>
+        pending.then((result) => {
+          if (handle.cancelled) throw new Error('Export cancelled')
+          return result
+        }),
+    )
+    render(<ExportDialog open onOpenChange={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Start export' }))
+    await waitFor(() => expect(mocks.exportTimeline).toHaveBeenCalledTimes(1))
+    const handle = mocks.exportTimeline.mock.calls[0][2] as { cancelled: boolean }
+    const before = useEditorStore.getState().doc
+    expect(handle.cancelled).toBe(false)
+
+    // Reinstalling the SAME saved project swaps staged font faces into the
+    // registry without changing the id, so only the install generation sees it.
+    useEditorStore.getState().replaceDoc(structuredClone(before))
+    expect(useEditorStore.getState().doc.project.id).toBe(before.project.id)
+    expect(handle.cancelled).toBe(true)
+
+    resolveExport({
+      kind: 'blob',
+      blob: new Blob(['x'], { type: 'video/mp4' }),
+      mimeType: 'video/mp4',
+      duration: 4,
+    })
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Start export' })).toBeInTheDocument(),
+    )
+  })
+
+  it('does not start a file export when the project changes while createWritable is pending', async () => {
+    let resolveWritable!: (sink: {
+      write: () => Promise<void>
+      close: () => Promise<void>
+      abort: () => Promise<void>
+    }) => void
+    const writable = new Promise<{
+      write: () => Promise<void>
+      close: () => Promise<void>
+      abort: () => Promise<void>
+    }>((resolve) => {
+      resolveWritable = resolve
+    })
+    const abort = vi.fn(async () => {})
+    const picker = vi.fn(async () => ({
+      name: 'movie.mp4',
+      createWritable: () => writable,
+    }))
+    Object.defineProperty(window, 'showSaveFilePicker', {
+      configurable: true,
+      value: picker,
+    })
+    mocks.exportTimeline.mockResolvedValue({
+      kind: 'blob',
+      blob: new Blob(['x'], { type: 'video/mp4' }),
+      mimeType: 'video/mp4',
+      duration: 4,
+    })
+    render(<ExportDialog open onOpenChange={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /Export to file/ }))
+    await waitFor(() => expect(picker).toHaveBeenCalled())
+
+    // A keyboard undo crosses projects while the writable is pending, before
+    // the mid-export switch listener exists. Starting now would load the
+    // stale snapshot's fonts into the registry the live project owns.
+    const other = doc()
+    expect(other.project.id).not.toBe(useEditorStore.getState().doc.project.id)
+    useEditorStore.setState({ doc: other } as never)
+    resolveWritable({ write: async () => {}, close: async () => {}, abort })
+
+    // Flush start()'s continuations past the writable: unfixed code calls
+    // exportTimeline here.
+    await act(async () => {
+      await writable
+    })
+    expect(mocks.exportTimeline).not.toHaveBeenCalled()
+    expect(abort).toHaveBeenCalled()
+    // The dialog never left setup: no result, still ready to start.
+    expect(screen.getByRole('button', { name: 'Start export' })).toBeInTheDocument()
+    expect(screen.queryByTestId('export-result-video')).not.toBeInTheDocument()
   })
 })

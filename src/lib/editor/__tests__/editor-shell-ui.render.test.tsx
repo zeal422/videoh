@@ -87,6 +87,19 @@ describe('EditorShell dangling-gesture safety net', () => {
     expect(isTransientActive()).toBe(false)
   })
 
+  it('a focus-owned gesture survives a pointer release and ends on blur', () => {
+    const { unmount } = render(<EditorShell />)
+    // Inspector text and color editing open a gesture with no pointer. A click
+    // that lands inside the field lifts a pointer but must not commit it, or
+    // typing after that click would continue without a base snapshot.
+    useEditorStore.getState().beginTransient()
+    fireEvent.pointerUp(window, { pointerId: 1 })
+    expect(isTransientActive()).toBe(true)
+    fireEvent(window, new Event('blur'))
+    expect(isTransientActive()).toBe(false)
+    unmount()
+  })
+
   it('greys out marker navigation when every marker is past the sequence end', async () => {
     // A sequence that shrank (clips deleted) can strand markers beyond the end.
     // Navigation ignores them, so the menu must not offer a jump that no-ops.

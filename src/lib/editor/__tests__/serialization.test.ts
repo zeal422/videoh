@@ -8,6 +8,9 @@ import {
   SERIALIZATION_VERSION,
 } from '../serialization'
 import { createClip, createDoc, createMediaAsset, createTextClip } from '../factories'
+import { createDefaultTextStyle, createShapeClip, createTrack } from '../factories'
+import { createShapeStyle } from '../shapes'
+import { fontFamilyForId } from '../fonts'
 import { parseCubeLut } from '../lut'
 
 /** An identity cube of the given size, in `.cube` row order (red fastest). */
@@ -79,9 +82,9 @@ describe('serializeDoc', () => {
     expect(json.media[0].waveformPeaks).toEqual([0.1, 0.5, 0.9])
     expect(json.media[0].thumbnail).toBeTruthy()
     // Pin the WIRE value, not the constant serializeDoc itself stamps: the
-    // round-trip contract is "this text is version 6", and a literal here
+    // round-trip contract is "this text is version 7", and a literal here
     // notices a silent constant change instead of restating it.
-    expect(json.version).toBe(6)
+    expect(json.version).toBe(7)
     expect(json.project.tracks[0].clips[0].transitionOut).toEqual({
       type: 'crossfade',
       duration: 0.5,
@@ -399,6 +402,19 @@ describe('deserializeDoc', () => {
     expect(style.fontSize).toBe(99)
     expect(style.color).toBe('#ffffff')
     expect(style.align).toBe('center')
+  })
+
+  it('clamps a hostile clip font size at hydration', () => {
+    // The preset path already clamps; the clip path used to accept any finite
+    // number, which reaches ctx.font and the shadow math.
+    const doc = createDoc()
+    doc.project.tracks[0].kind = 'text'
+    doc.project.tracks[0].clips = [
+      createTextClip({ id: 't_big', start: 0, style: { fontSize: 1e9 } } as never),
+      createTextClip({ id: 't_small', start: 10, style: { fontSize: -50 } } as never),
+    ]
+    const { doc: restored } = deserializeDoc(JSON.parse(JSON.stringify(serializeDoc(doc))))
+    expect(restored.project.tracks[0].clips.map((clip) => clip.style?.fontSize)).toEqual([400, 8])
   })
 })
 
@@ -841,7 +857,7 @@ describe('marker serialization (0.5.5)', () => {
       },
     ]
     const json = serializeDoc(doc)
-    expect(json.version).toBe(6)
+    expect(json.version).toBe(7)
     expect(json.project.textPresets).toEqual(doc.project.textPresets)
     const back = deserializeDoc(json)
     expect(back.doc.project.textPresets).toEqual(doc.project.textPresets)
@@ -916,7 +932,7 @@ describe('marker serialization (0.5.5)', () => {
     doc.project.luts = [lut]
     doc.project.tracks[0].clips[0].lutId = 'lut_fixed'
     const json = serializeDoc(doc)
-    expect(json.version).toBe(6)
+    expect(json.version).toBe(7)
     expect(json.project.luts).toEqual([lut])
     const back = deserializeDoc(json)
     expect(back.doc.project.luts).toEqual([lut])
@@ -1296,7 +1312,7 @@ describe('effects serialization (0.8.6)', () => {
     return doc
   }
 
-  it('round-trips effects, blend mode and visibility at v6', () => {
+  it('round-trips effects, blend mode and visibility at v7', () => {
     const doc = fxWireDoc()
     doc.project.tracks[1].clips[0].effects = [
       { id: 'fx_crop', type: 'crop', left: 10, feather: 5 },
@@ -1305,7 +1321,7 @@ describe('effects serialization (0.8.6)', () => {
     doc.project.tracks[1].clips[0].blendMode = 'multiply'
     doc.project.tracks[1].visible = false
     const json = serializeDoc(doc)
-    expect(json.version).toBe(6)
+    expect(json.version).toBe(7)
     const { doc: loaded } = deserializeDoc(JSON.parse(JSON.stringify(json)))
     expect(loaded.project.tracks[1].clips[0].effects).toEqual([
       { id: 'fx_crop', type: 'crop', left: 10, right: 0, top: 0, bottom: 0, feather: 5 },
@@ -1407,9 +1423,9 @@ describe('track solo and lock serialization (0.14.0)', () => {
     return doc
   }
 
-  it('round-trips solo and locked at v6 without a schema bump', () => {
+  it('round-trips solo and locked at v7 without a schema bump', () => {
     const json = serializeDoc(flagsDoc())
-    expect(json.version).toBe(6)
+    expect(json.version).toBe(7)
     const { doc } = deserializeDoc(JSON.parse(JSON.stringify(json)))
     expect(doc.project.tracks[0].locked).toBe(true)
     expect(doc.project.tracks[0].solo).toBeUndefined()
@@ -1465,11 +1481,11 @@ describe('track solo and lock serialization (0.14.0)', () => {
 describe('media content hash serialization (0.23.0)', () => {
   const HASH = 'a'.repeat(64)
 
-  it('round-trips a valid content hash and writes schema version 6', () => {
+  it('round-trips a valid content hash and writes schema version 7', () => {
     const doc = makeDoc()
     doc.media[0].contentHash = HASH
     const wire = serializeDoc(doc)
-    expect(wire.version).toBe(6)
+    expect(wire.version).toBe(7)
     expect(wire.media[0].contentHash).toBe(HASH)
     const { doc: restored } = deserializeDoc(JSON.parse(JSON.stringify(wire)))
     expect(restored.media[0].contentHash).toBe(HASH)
@@ -1510,5 +1526,203 @@ describe('media content hash serialization (0.23.0)', () => {
     const doc = makeDoc()
     doc.media[0].contentHash = '../evil'
     expect(serializeDoc(doc).media[0].contentHash).toBeUndefined()
+  })
+})
+
+describe('fonts and shapes at schema v7 (0.25.0)', () => {
+  const FONT_ID = 'font_123e4567-e89b-12d3-a456-426614174000'
+  const HASH = 'a'.repeat(64)
+  const font = () => ({
+    id: FONT_ID,
+    name: 'Inter',
+    family: fontFamilyForId(FONT_ID),
+    contentHash: HASH,
+    weight: 700,
+    style: 'italic' as const,
+  })
+
+  function docWithFontAndShape() {
+    const doc = makeDoc()
+    doc.project.fonts = [font()]
+    const text = createTrack('text', 1, { name: 'T1' })
+    text.clips.push(
+      createTextClip({
+        id: 'clip_text',
+        text: 'Title',
+        style: { ...createDefaultTextStyle(), fontFamily: font().family },
+      }),
+    )
+    doc.project.tracks.unshift(text)
+    const video = doc.project.tracks.find((track) => track.kind === 'video')!
+    video.clips.push(
+      createShapeClip({
+        id: 'clip_shape',
+        start: 6,
+        duration: 3,
+        shape: {
+          ...createShapeStyle('star'),
+          fill: '#ff0000',
+          stroke: '#000000',
+          strokeWidth: 8,
+          points: 6,
+        },
+      }),
+    )
+    return doc
+  }
+
+  it('writes version 7 and round-trips a project font and a shape clip', () => {
+    const doc = docWithFontAndShape()
+    const wire = serializeDoc(doc)
+    expect(wire.version).toBe(7)
+    expect(wire.project.fonts).toEqual([font()])
+    const { doc: loaded } = deserializeDoc(JSON.parse(JSON.stringify(wire)))
+    expect(loaded.project.fonts).toEqual([font()])
+    const shape = loaded.project.tracks
+      .flatMap((track) => track.clips)
+      .find((clip) => clip.id === 'clip_shape')
+    expect(shape?.shape).toEqual({
+      kind: 'star',
+      fill: '#ff0000',
+      stroke: '#000000',
+      strokeWidth: 8,
+      points: 6,
+    })
+    const text = loaded.project.tracks
+      .flatMap((track) => track.clips)
+      .find((clip) => clip.id === 'clip_text')
+    expect(text?.style?.fontFamily).toBe(font().family)
+  })
+
+  it('loads a v6 project with no font library and no shapes', () => {
+    const doc = makeDoc()
+    const wire = serializeDoc(doc) as unknown as Record<string, unknown> & {
+      project: Record<string, unknown>
+    }
+    wire.version = 6
+    delete wire.project.fonts
+    const { doc: loaded, warnings } = deserializeDoc(wire)
+    expect(loaded.project.fonts).toBeUndefined()
+    expect(loaded.project.tracks.flatMap((track) => track.clips).some((clip) => clip.shape)).toBe(
+      false,
+    )
+    expect(warnings).toEqual([])
+  })
+
+  it('refuses a duplicate font id and drops a hostile family entry', () => {
+    const doc = makeDoc()
+    const wire = serializeDoc(doc) as unknown as {
+      project: Record<string, unknown>
+    }
+    wire.project.fonts = [font(), font()]
+    expect(() => deserializeDoc(wire)).toThrow(SerializationError)
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    wire.project.fonts = [
+      font(),
+      { ...font(), id: 'font_other' },
+      { ...font(), family: 'Arial; background: url(x)' },
+      { ...font(), contentHash: '../hash' },
+    ]
+    const { doc: loaded } = deserializeDoc(wire)
+    expect(loaded.project.fonts).toEqual([font()])
+    expect(warn).toHaveBeenCalledWith('[serialization] dropped a broken project font entry')
+  })
+
+  it('refuses generated families that differ only by case (CSS matches them as one)', () => {
+    const doc = makeDoc()
+    const wire = serializeDoc(doc) as unknown as {
+      project: Record<string, unknown>
+    }
+    const upper = { ...font(), id: 'font_A', family: fontFamilyForId('font_A') }
+    const lower = { ...font(), id: 'font_a', family: fontFamilyForId('font_a') }
+    expect(upper.family).not.toBe(lower.family)
+    wire.project.fonts = [upper, lower]
+    expect(() => deserializeDoc(wire)).toThrow(/Duplicate project font/)
+  })
+
+  it('drops a malformed shape clip with one warning', () => {
+    const doc = makeDoc()
+    const video = doc.project.tracks.find((track) => track.kind === 'video')!
+    const shape = createShapeClip({ id: 'clip_bad_shape' })
+    ;(shape as unknown as { shape: unknown }).shape = { kind: 'rectangle', fill: 'url(#x)' }
+    video.clips.push(shape)
+    const wire = serializeDoc(doc)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { doc: loaded, warnings } = deserializeDoc(JSON.parse(JSON.stringify(wire)))
+    expect(
+      loaded.project.tracks
+        .flatMap((track) => track.clips)
+        .some((clip) => clip.id === 'clip_bad_shape'),
+    ).toBe(false)
+    expect(warnings).toContain('Dropped 1 malformed shape clip.')
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('drops a well-formed shape parked on a non-video lane with one warning', () => {
+    const doc = makeDoc()
+    const text = createTrack('text', 1, { name: 'T1' })
+    text.clips.push(createShapeClip({ id: 'clip_misplaced_shape' }))
+    doc.project.tracks.push(text)
+    const wire = serializeDoc(doc)
+    const { doc: loaded, warnings } = deserializeDoc(JSON.parse(JSON.stringify(wire)))
+    expect(
+      loaded.project.tracks
+        .flatMap((track) => track.clips)
+        .some((clip) => clip.id === 'clip_misplaced_shape'),
+    ).toBe(false)
+    expect(warnings).toContain('Dropped 1 malformed shape clip.')
+  })
+
+  it('refuses a shape that also carries media, text, compound, LUT, or retiming fields', () => {
+    for (const patch of [
+      { mediaId: 'media_fixed' },
+      { text: 'both', style: createTextClip().style },
+      { sequenceId: 'seq_x' },
+      { speed: 2 },
+      { reverse: true },
+      { isCaption: true },
+      { linkId: 'link_x' },
+      { lutId: 'lut_x' },
+    ]) {
+      const doc = makeDoc()
+      const video = doc.project.tracks.find((track) => track.kind === 'video')!
+      video.clips.push(createShapeClip({ id: 'clip_bad_shape', ...patch }))
+      expect(() => deserializeDoc(JSON.parse(JSON.stringify(serializeDoc(doc))))).toThrow(
+        /Shape clip carries incompatible/,
+      )
+    }
+  })
+
+  it('sanitizes shape fields at hydration and clamps hostile values', () => {
+    const doc = makeDoc()
+    const video = doc.project.tracks.find((track) => track.kind === 'video')!
+    video.clips.push(createShapeClip({ id: 'clip_shape' }))
+    const wire = serializeDoc(doc) as unknown as {
+      project: { tracks: { clips: { id: string; shape?: Record<string, unknown> }[] }[] }
+    }
+    const rawShape = wire.project.tracks
+      .flatMap((track) => track.clips)
+      .find((clip) => clip.id === 'clip_shape')!.shape!
+    rawShape.fill = '#ABCDEF'
+    rawShape.stroke = undefined
+    rawShape.strokeWidth = -10
+    rawShape.radius = 10_000
+    rawShape.points = 500
+    const { doc: loaded } = deserializeDoc(wire)
+    expect(
+      loaded.project.tracks.flatMap((track) => track.clips).find((clip) => clip.id === 'clip_shape')
+        ?.shape,
+    ).toEqual({
+      kind: 'rectangle',
+      fill: '#abcdef',
+      radius: 400,
+    })
+  })
+
+  it('refuses a schema newer than this build', () => {
+    const wire = serializeDoc(makeDoc()) as unknown as { version: number }
+    wire.version = SERIALIZATION_VERSION + 1
+    expect(() => deserializeDoc(wire)).toThrow(/Unsupported project version/)
   })
 })

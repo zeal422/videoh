@@ -698,3 +698,77 @@ Unit tests and `bun run check` cannot see shell helpers.
 Action: promoted to the release gate note; `fill_timing` now needs at least two
 spinbuttons and reads the first two by DOM order, with a comment naming the
 Transform field that follows Timing.
+
+## 2026-11-13 - 0.25.0 battery, new graphics steps polluted a shared shard state
+
+What happened: the new shape and sticker steps inserted clips at the playhead on
+the same video lane the shard-2 seed trims. Later chroma, matte, blur, and
+reverse pixel steps sampled the new top clip, so six steps failed on both legs
+even though the new features worked.
+Would-have-caught: a battery step that mutates the timeline is a seed change for
+every later step in that shard. Either place it in a shard with no
+pixel-sensitive successors, or undo its insertion before the step returns, and
+let a downstream behavioral step prove the cleanup.
+Action: both steps now press Ctrl+Z after asserting and the later pixel steps
+are the cleanup proof; the pair is 74/74 on both legs.
+
+## 2026-11-13 - 0.25.0 manual proof, FontFace was registered under the fallback stack
+
+What happened: `ProjectFont.family` is the full `videoh-font-id, Arial,
+sans-serif` stack, and `new FontFace(font.family, ...)` registered the face
+under that whole string. Canvas resolves the first family in the stack, so the
+uploaded font never answered it; the manual proof caught it only by measuring
+canvas text width against Arial.
+Would-have-caught: when a value has two consumers with different grammars, test
+each one at its own boundary. The face constructor needs the bare family token,
+while the style string needs the fallback stack.
+Action: added `fontFaceFamily(id)` and a regression assertion that the
+constructed and registered face carries the bare token.
+
+## 2026-11-13 - 0.25.0 coverage, a subprocess guard test needed a real timeout
+
+What happened: `battery-runner.test.ts` "rejects colliding or conflicting pair
+inputs" spawns the pair runner once per guard case. It passed in the normal
+suite but timed out at the default 5 s twice under v8 coverage.
+Would-have-caught: subprocess tests scale with instrumentation and case count;
+give them an explicit timeout instead of relying on the default.
+Action: kept as a note; the test now has a 30 s timeout and coverage is green.
+
+## 2026-11-14 - review fixes, a -t filter ran the wrong test and sed no-ops hid it
+
+What happened: `vitest -t "hostile payload"` matched the captions test, not
+the new shape test, so the "fails unfixed" proof passed vacuously twice. A
+probe `sed` with the wrong indentation then no-op'd silently, and its "still
+passes" read as confirmation. The exact-name run (`-t "sanitizes a hostile
+shape payload on add"`) failed unfixed as required.
+Would-have-caught: use the exact test name with -t, and assert every scripted
+file edit (a missing oldString must fail the script, never slide through).
+`sed -i` always exits 0 whether it replaced anything or not.
+Action: kept as a note; the shape proof now uses the exact name and the
+python edits assert.
+
+## 2026-11-14 - pair battery, dev-leg s02 boot failure was a flake
+
+What happened: `bun run battery:pair` on the font-race fix tree came back
+dev 73/74 (FAIL s02 boot) with artifact 74/74 on the same tree. The dev server
+log showed clean 200s and no errors; the failing step runs on a fresh profile
+with zero fonts, which the changed code cannot reach.
+Would-have-caught: a boot-step failure with a healthy server log and a green
+artifact leg on the identical tree points at dev-server boot timing, not the
+change. Rerunning the single dev leg is the correct next step, not a code hunt.
+Action: reran `bun run battery` alone: 74/74, BATTERY_EXIT=0. No code change.
+
+## 2026-11-14 - red-run toggle scripts, an empty replacement prepends
+
+What happened: the throwaway scripts that reverted a fix to prove its test red
+used `str.replace(fixed, '')` and later restored by `str.replace('', fixed)`.
+Python inserts an empty needle at position 0, so the restore prepended the
+guard to the top of commands.ts and serialization.ts (and later the sticker
+keydown handler), turning the file into a parse error and the "still passes"
+run into a load failure.
+Would-have-caught: a toggle helper whose reverted form is empty must restore
+against a sentinel comment, never against '', and a restore step must assert
+the sentinel is absent/present before writing.
+Action: rewrote the helpers to insert a `removed for the red run` sentinel and
+asserted every swap; the affected files were repaired by hand and the suites
+went green again.

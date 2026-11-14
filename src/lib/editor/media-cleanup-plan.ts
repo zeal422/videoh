@@ -37,11 +37,18 @@ export interface MediaCleanupPlan {
   blocked: boolean
 }
 
-/** Every valid content hash a doc references, deduped and sorted. */
+/**
+ * Every valid content hash a doc references, deduped and sorted. Media and
+ * custom fonts share the content-addressed store and its claim shards, so both
+ * kinds of bytes are protected by the same reference set.
+ */
 export function collectMediaHashes(doc: Doc): string[] {
   const hashes = new Set<string>()
   for (const asset of doc.media) {
     if (isValidContentHash(asset.contentHash)) hashes.add(asset.contentHash)
+  }
+  for (const font of doc.project.fonts ?? []) {
+    if (isValidContentHash(font.contentHash)) hashes.add(font.contentHash)
   }
   return [...hashes].sort()
 }

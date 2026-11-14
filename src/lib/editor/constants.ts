@@ -63,6 +63,37 @@ export const FREEZE_FRAME_DURATION = 2
 /** Default timeline duration assigned to new text clips (seconds). */
 export const DEFAULT_TEXT_DURATION = 4
 
+/** Default timeline duration assigned to new shape clips (seconds). */
+export const DEFAULT_SHAPE_DURATION = 5
+
+/** Shape bounds (0.25.0). Colors are validated separately as `#rrggbb`. */
+export const SHAPE_STROKE_MAX = 40
+export const SHAPE_RADIUS_MAX = 400
+export const SHAPE_POINTS_MIN = 3
+export const SHAPE_POINTS_MAX = 12
+export const SHAPE_POINTS_DEFAULT = 5
+export const SHAPE_FILL_DEFAULT = '#ffffff'
+export const SHAPE_STROKE_DEFAULT = '#000000'
+export const SHAPE_STROKE_WIDTH_DEFAULT = 4
+/** The shape path box is centered and covers this fraction of each frame axis. */
+export const SHAPE_FRAME_SCALE = 0.8
+
+/** Largest accepted custom font file (bytes). */
+export const FONT_FILE_MAX_BYTES = 8 * 1024 * 1024
+/** Largest display name for a project font (characters). */
+export const FONT_NAME_MAX = 64
+export const FONT_WEIGHT_MIN = 100
+export const FONT_WEIGHT_MAX = 900
+export const FONT_WEIGHT_DEFAULT = 400
+
+/** Built-in animated text preset timings (seconds). */
+export const TEXT_ANIMATION_FADE_SECONDS = 0.6
+export const TEXT_ANIMATION_SLIDE_SECONDS = 0.6
+export const TEXT_ANIMATION_POP_SECONDS = 0.5
+export const TEXT_ANIMATION_REVEAL_SECONDS = 1.5
+/** Shortest clip a built-in animation preset will animate (seconds). */
+export const TEXT_ANIMATION_MIN_CLIP_DURATION = 0.2
+
 /** Timeline zoom limits (pixels per second). */
 export const PPS_MIN = 1
 export const PPS_MAX = 400

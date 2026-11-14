@@ -2,6 +2,7 @@ import type { EditorCommand } from './commands'
 import { firstFreeCaptionsName } from './commands'
 import {
   activeTracks,
+  createShapeClip,
   createTextClip,
   docDuration,
   findClip,
@@ -10,7 +11,8 @@ import {
   trackKindForMedia,
   uid,
 } from './factories'
-import { DEFAULT_TEXT_DURATION, MIN_SPLIT_HEADROOM } from './constants'
+import { DEFAULT_SHAPE_DURATION, DEFAULT_TEXT_DURATION, MIN_SPLIT_HEADROOM } from './constants'
+import { createShapeStyle } from './shapes'
 import { type PlacementMode, type SourceRange } from './sequence-ops'
 import {
   avPairCommands,
@@ -36,7 +38,7 @@ import {
 } from './markers'
 import { clamp } from './time'
 import { planJoinSelection } from './timeline-edit-plan'
-import type { Clip, Doc, MediaAsset, TextStyle } from './types'
+import type { Clip, Doc, MediaAsset, ShapeKind, TextStyle } from './types'
 
 /**
  * High-level UI actions that compose MULTIPLE commands into a single undoable
@@ -172,6 +174,42 @@ export function commandsToAddText(
     ...(style ? { style: structuredClone(style) } : {}),
   })
   commands.push({ type: 'addClip', trackId: textTrack.id, clip })
+  return commands
+}
+
+/**
+ * Commands that add a shape clip at `start` (0.25.0), creating a video track
+ * when none exists. Shapes are generated picture sources, so they live on a
+ * video lane exactly like media.
+ */
+export function commandsToAddShape(
+  doc: Doc,
+  kind: ShapeKind,
+  start: number,
+  untargetedTrackIds: readonly string[] = [],
+  sequenceId?: string,
+): EditorCommand[] {
+  if (!Number.isFinite(start)) return []
+  const commands: EditorCommand[] = []
+  let videoTrack =
+    firstTargetedTrack(doc, untargetedTrackIds, (t) => t.kind === 'video', sequenceId) ??
+    sequenceTracks(doc, sequenceId).find((t) => t.kind === 'video')
+  if (!videoTrack) {
+    const newId = pendingTrackId()
+    commands.push({
+      type: 'addTrack',
+      kind: 'video',
+      trackId: newId,
+      ...(sequenceId ? { sequenceId } : {}),
+    })
+    videoTrack = { id: newId, kind: 'video', name: '', clips: [] }
+  }
+  const clip = createShapeClip({
+    start: Math.max(0, start),
+    duration: DEFAULT_SHAPE_DURATION,
+    shape: createShapeStyle(kind),
+  })
+  commands.push({ type: 'addClip', trackId: videoTrack.id, clip })
   return commands
 }
 

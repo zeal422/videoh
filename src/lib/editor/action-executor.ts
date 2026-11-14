@@ -1,6 +1,7 @@
 import type { EditorCommand } from './commands'
 import {
   commandsToAddMarker,
+  commandsToAddShape,
   commandsToAddText,
   commandsToCreateCompoundClip,
   commandsToDeleteClips,
@@ -21,7 +22,17 @@ import type { MarkerSelection } from './markers'
 import type { MenuActionId } from './menus'
 import { nextZoomPxPerSec } from './timeline-scroll'
 import { canCloseGaps } from './timeline-edit-plan'
-import type { Doc } from './types'
+import type { Doc, ShapeKind } from './types'
+
+/** The six shape insertion actions and the kind each one creates. */
+const SHAPE_ACTIONS = {
+  'graphics.addShape.rectangle': 'rectangle',
+  'graphics.addShape.ellipse': 'ellipse',
+  'graphics.addShape.triangle': 'triangle',
+  'graphics.addShape.star': 'star',
+  'graphics.addShape.polygon': 'polygon',
+  'graphics.addShape.heart': 'heart',
+} as const satisfies Partial<Record<MenuActionId, ShapeKind>>
 
 /**
  * Policy-free action dispatch (0.20.0).
@@ -310,6 +321,22 @@ export function executeAction(action: ExecutorActionId, ctx: ActionContext): Act
       return handled(
         commandsToAddText(
           state.doc,
+          state.playhead,
+          state.untargetedTracks,
+          state.activeSequencePath[state.activeSequencePath.length - 1],
+        ),
+      )
+
+    case 'graphics.addShape.rectangle':
+    case 'graphics.addShape.ellipse':
+    case 'graphics.addShape.triangle':
+    case 'graphics.addShape.star':
+    case 'graphics.addShape.polygon':
+    case 'graphics.addShape.heart':
+      return handled(
+        commandsToAddShape(
+          state.doc,
+          SHAPE_ACTIONS[action],
           state.playhead,
           state.untargetedTracks,
           state.activeSequencePath[state.activeSequencePath.length - 1],

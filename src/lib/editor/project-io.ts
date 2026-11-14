@@ -7,6 +7,12 @@ import { importFile } from './media/probe'
 import { buildProxy, revokeAllProxies } from './media/proxies'
 import { collectMediaHashes } from './media-cleanup-plan'
 import { prepareProjectStore, storeMediaAsset, writeProjectClaim } from './media/persist'
+import {
+  activateProjectFonts,
+  activateStagedProjectFonts,
+  stageProjectFontFaces,
+  type StagedProjectFonts,
+} from './media/font-store'
 import { ProjectLock } from './media/project-lock'
 import { rehydrateMedia, revokeRehydratedUrls } from './media/rehydrate'
 import { shouldProxy } from './proxy'
@@ -383,9 +389,20 @@ export function releaseProjectLock(): void {
  * never dropped before this install commits. The fallback acquisition is not
  * awaited so this stays synchronous.
  */
-export function installProject(doc: Doc): void {
+export function installProject(doc: Doc, stagedFonts?: StagedProjectFonts): void {
   bumpProjectGeneration()
   revokeAllProxies()
+  // The font registry follows the installed project. An open stages the
+  // incoming faces without touching the registry, so this activation is the
+  // single commit point: a superseded open drops its staged set and the
+  // installed project's faces are never disturbed. Paths without a staged
+  // set (a brand-new project) fall back to the live registry switch.
+  if (stagedFonts && stagedFonts.projectId === doc.project.id) {
+    activateStagedProjectFonts(stagedFonts)
+  } else {
+    // The fallback load is fire-and-forget; the shell repaints once it lands.
+    void activateProjectFonts(doc)
+  }
   const prepared = takePreparedLock(doc.project.id)
   const store = useEditorStore.getState()
   store.replaceDoc(doc)
@@ -404,13 +421,26 @@ export function installProject(doc: Doc): void {
 async function prepareForInstall(
   doc: Doc,
   loadId: number,
-): Promise<{ doc: Doc; warnings: string[]; claimFailed: boolean } | null> {
+): Promise<{
+  doc: Doc
+  warnings: string[]
+  claimFailed: boolean
+  stagedFonts: StagedProjectFonts
+} | null> {
   const lock = await ensureProjectLock(doc, { forInstall: true })
   if (!lock || !isCurrentProjectLoad(loadId)) {
     discardProjectLock(lock)
     return null
   }
   const rehydration = await rehydrateMedia(doc)
+  if (!isCurrentProjectLoad(loadId)) {
+    revokeRehydratedUrls(rehydration.urls)
+    discardProjectLock(lock)
+    return null
+  }
+  // Staged, never live: a superseded request drops its staged faces below and
+  // the installed project's registry is untouched either way.
+  const stagedFonts = await stageProjectFontFaces(rehydration.doc)
   if (!isCurrentProjectLoad(loadId)) {
     revokeRehydratedUrls(rehydration.urls)
     discardProjectLock(lock)
@@ -432,7 +462,8 @@ async function prepareForInstall(
       'Stored media could not be claimed, so Clean Unused Media stays unavailable until you save this project.',
     )
   }
-  return { doc: rehydration.doc, warnings, claimFailed: !claimed }
+  warnings.push(...stagedFonts.warnings)
+  return { doc: rehydration.doc, warnings, claimFailed: !claimed, stagedFonts }
 }
 
 /**
@@ -458,7 +489,7 @@ export async function openProjectFile(file: File): Promise<void> {
     const prepared = await prepareForInstall(parsed, loadId)
     if (!prepared) return
     installStarted = true
-    installProject(prepared.doc)
+    installProject(prepared.doc, prepared.stagedFonts)
     if (prepared.claimFailed) useEditorStore.getState().setMediaCleanBlocked(true)
     const remaining = prepared.doc.media.filter((asset) => asset.missing).length
     const description = [
@@ -503,9 +534,18 @@ export async function restoreAutosaveProject(
     discardProjectLock(lock)
     return null
   }
+  const stagedFonts = await stageProjectFontFaces(rehydration.doc)
+  if (!isCurrentProjectLoad(loadId) || !stillWanted()) {
+    revokeRehydratedUrls(rehydration.urls)
+    discardProjectLock(lock)
+    return null
+  }
   const doc = rehydration.doc
-  installProject(doc)
-  return { doc, warnings: [...restore.warnings, ...rehydration.warnings] }
+  installProject(doc, stagedFonts)
+  return {
+    doc,
+    warnings: [...restore.warnings, ...rehydration.warnings, ...stagedFonts.warnings],
+  }
 }
 
 /**

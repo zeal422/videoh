@@ -20,17 +20,30 @@ import {
   createDefaultTextStyle,
   createDoc,
   createMediaAsset,
+  createShapeClip,
   createTextClip,
   createTrack,
   docDuration,
   sourceTimeAt,
 } from '../factories'
+import { createShapeStyle } from '../shapes'
+import { fontFaceFamily, fontFamilyForId } from '../fonts'
 import { decideTrimStart, trimRooms } from '../clip-gesture'
 import { resolveMatteTrack } from '../effects'
 import { evaluateKeyframes, integrateKeyframes } from '../keyframes'
 import { LUT_LIBRARY_MAX_CHARS, lutLibraryChars, parseCubeLut } from '../lut'
 import { relinkPatchFrom } from '../media/relink'
-import type { Clip, Doc, EffectEntry, Keyframe, MediaAsset, ProjectLut, Track } from '../types'
+import type {
+  Clip,
+  Doc,
+  EffectEntry,
+  Keyframe,
+  MediaAsset,
+  ProjectFont,
+  ProjectLut,
+  ShapeStyle,
+  Track,
+} from '../types'
 import { MIN_CLIP_DURATION, MAX_TIMELINE_SECONDS, WAVEFORM_BUCKETS } from '../constants'
 
 /** A 2-cube in `.cube` row order (red fastest): enough to exercise the model. */
@@ -3808,5 +3821,397 @@ describe('clip transform commands (0.24.0)', () => {
     })
     const curve = next.project.tracks[0].clips[0].keyframes?.rotation
     expect(curve?.map((k) => k.value)).toEqual([0, 3600])
+  })
+})
+
+describe('fonts, shapes, and text animations (0.25.0)', () => {
+  const FONT_ID = 'font_123e4567-e89b-12d3-a456-426614174000'
+  const HASH = 'a'.repeat(64)
+  const font = (): ProjectFont => ({
+    id: FONT_ID,
+    name: 'Inter',
+    family: fontFamilyForId(FONT_ID),
+    contentHash: HASH,
+  })
+
+  function docWithText(): Doc {
+    const { doc } = makeDoc()
+    const text = createTrack('text', 1, { name: 'T1' })
+    text.clips.push(
+      createTextClip({
+        id: 'clip_text',
+        text: 'Title',
+        style: { ...createDefaultTextStyle(), fontFamily: fontFamilyForId(FONT_ID) },
+      }),
+    )
+    doc.project.tracks.unshift(text)
+    const video = doc.project.tracks.find((track) => track.kind === 'video')!
+    video.clips.push(createClip({ id: 'clip_v', mediaId: doc.media[0].id, start: 0, duration: 4 }))
+    return doc
+  }
+
+  function docWithShape(): Doc {
+    const { doc } = makeDoc()
+    const video = doc.project.tracks.find((track) => track.kind === 'video')!
+    video.clips.push(
+      createClip({ id: 'clip_v', mediaId: doc.media[0].id, start: 0, duration: 4 }),
+      createShapeClip({ id: 'clip_shape', start: 6, shape: createShapeStyle('star') }),
+    )
+    return doc
+  }
+
+  it('adds, renames, and removes an unreferenced project font', () => {
+    const base = makeDoc().doc
+    const added = applyCommand(base, { type: 'addProjectFont', font: font() })
+    expect(added.project.fonts).toEqual([font()])
+
+    const renamed = applyCommand(added, {
+      type: 'renameProjectFont',
+      fontId: FONT_ID,
+      name: '  Inter Display  ',
+    })
+    expect(renamed.project.fonts?.[0]).toEqual({ ...font(), name: 'Inter Display' })
+    // The family is the immutable reference; the rename cannot change it.
+    expect(renamed.project.fonts?.[0].family).toBe(fontFamilyForId(FONT_ID))
+
+    const removed = applyCommand(renamed, { type: 'removeProjectFont', fontId: FONT_ID })
+    expect(removed.project.fonts).toBeUndefined()
+  })
+
+  it('rejects a malformed font entry and duplicate ids or families', () => {
+    const base = makeDoc().doc
+    expect(() =>
+      applyCommand(base, {
+        type: 'addProjectFont',
+        font: { ...font(), family: 'Arial, sans-serif' },
+      }),
+    ).toThrow(EditorCommandError)
+    const added = applyCommand(base, { type: 'addProjectFont', font: font() })
+    expect(() => applyCommand(added, { type: 'addProjectFont', font: font() })).toThrow(
+      /already exists/,
+    )
+    const other = {
+      ...font(),
+      id: 'font_other',
+      family: fontFamilyForId('font_other'),
+    }
+    expect(applyCommand(added, { type: 'addProjectFont', font: other }).project.fonts).toHaveLength(
+      2,
+    )
+  })
+
+  it('rejects families that differ only by case (CSS matches them as one)', () => {
+    // Font ids are case-sensitive, but CSS family names are not: `font_A` and
+    // `font_a` generate families that would answer the same face, so the
+    // second add refuses.
+    const upper = {
+      id: 'font_A',
+      name: 'Case',
+      family: fontFamilyForId('font_A'),
+      contentHash: 'a'.repeat(64),
+    }
+    const lower = {
+      id: 'font_a',
+      name: 'Case',
+      family: fontFamilyForId('font_a'),
+      contentHash: 'b'.repeat(64),
+    }
+    expect(upper.family).not.toBe(lower.family)
+    expect(upper.family.toLowerCase()).toBe(lower.family.toLowerCase())
+    const added = applyCommand(makeDoc().doc, { type: 'addProjectFont', font: upper })
+    expect(() => applyCommand(added, { type: 'addProjectFont', font: lower })).toThrow(
+      /already exists/,
+    )
+  })
+
+  it('refuses to remove a font a text clip, compound text, or preset still uses', () => {
+    const withFont = applyCommand(docWithText(), { type: 'addProjectFont', font: font() })
+    expect(() => applyCommand(withFont, { type: 'removeProjectFont', fontId: FONT_ID })).toThrow(
+      /still used by a text clip/,
+    )
+
+    const nested = structuredClone(withFont)
+    const rootText = nested.project.tracks.find((track) => track.kind === 'text')!
+    const sequence = {
+      id: 'seq_nested',
+      name: 'Nested',
+      tracks: [rootText],
+    }
+    nested.project.sequences = [sequence]
+    nested.project.tracks = nested.project.tracks.filter((track) => track.kind !== 'text')
+    expect(() => applyCommand(nested, { type: 'removeProjectFont', fontId: FONT_ID })).toThrow(
+      /compound clip/,
+    )
+
+    const presetDoc = applyCommand(makeDoc().doc, { type: 'addProjectFont', font: font() })
+    presetDoc.project.textPresets = [
+      {
+        id: 'preset_x',
+        name: 'Mine',
+        style: { ...createDefaultTextStyle(), fontFamily: font().family },
+      },
+    ]
+    expect(() => applyCommand(presetDoc, { type: 'removeProjectFont', fontId: FONT_ID })).toThrow(
+      /saved title preset/,
+    )
+  })
+
+  it('refuses to remove a font whose family appears in a different stack', () => {
+    // The reference keeps the generated token but changes its fallbacks, is
+    // quoted, and is uppercased: the stack string differs while canvas still
+    // resolves the same face.
+    const token = fontFaceFamily(FONT_ID)
+    const withFont = applyCommand(docWithText(), { type: 'addProjectFont', font: font() })
+    const clip = withFont.project.tracks
+      .flatMap((track) => track.clips)
+      .find((entry) => entry.id === 'clip_text')!
+    clip.style = { ...clip.style!, fontFamily: `"${token.toUpperCase()}", serif` }
+    expect(() => applyCommand(withFont, { type: 'removeProjectFont', fontId: FONT_ID })).toThrow(
+      /still used by a text clip/,
+    )
+
+    // A clip on the shared fallback (plain Arial) does not use the custom
+    // family, so it must not block removal.
+    const unrelated = applyCommand(docWithText(), { type: 'addProjectFont', font: font() })
+    const other = unrelated.project.tracks
+      .flatMap((track) => track.clips)
+      .find((entry) => entry.id === 'clip_text')!
+    other.style = { ...other.style!, fontFamily: 'Arial, sans-serif' }
+    expect(
+      applyCommand(unrelated, { type: 'removeProjectFont', fontId: FONT_ID }).project.fonts,
+    ).toBeUndefined()
+  })
+
+  it('refuses to remove a font a differently-cased reference still names', () => {
+    // Canvas resolves families case-insensitively and the sanitizer preserves
+    // case, so a payload that uppercases the family still renders with it:
+    // exact comparison would remove a font that is in use.
+    const upper = font().family.toUpperCase()
+    expect(upper).not.toBe(font().family)
+    const clipDoc = applyCommand(docWithText(), { type: 'addProjectFont', font: font() })
+    clipDoc.project.tracks
+      .flatMap((track) => track.clips)
+      .find((clip) => clip.id === 'clip_text')!.style!.fontFamily = upper
+    expect(() => applyCommand(clipDoc, { type: 'removeProjectFont', fontId: FONT_ID })).toThrow(
+      /still used by a text clip/,
+    )
+
+    const presetDoc = applyCommand(makeDoc().doc, { type: 'addProjectFont', font: font() })
+    presetDoc.project.textPresets = [
+      {
+        id: 'preset_x',
+        name: 'Mine',
+        style: { ...createDefaultTextStyle(), fontFamily: upper },
+      },
+    ]
+    expect(() => applyCommand(presetDoc, { type: 'removeProjectFont', fontId: FONT_ID })).toThrow(
+      /saved title preset/,
+    )
+  })
+
+  it('validates the font family on setTextStyle', () => {
+    const doc = docWithText()
+    const next = applyCommand(doc, {
+      type: 'setTextStyle',
+      clipId: 'clip_text',
+      style: { fontFamily: font().family },
+    })
+    expect(next.project.tracks[0].clips[0].style?.fontFamily).toBe(font().family)
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setTextStyle',
+        clipId: 'clip_text',
+        style: { fontFamily: 'url(https://example.com/x.woff2)' },
+      }),
+    ).toThrow(/Invalid font family/)
+  })
+
+  it('adds a shape only to a video track and refuses source or retiming fields', () => {
+    const { doc } = makeDoc()
+    const video = videoTrack(doc)
+    const added = applyCommand(doc, {
+      type: 'addClip',
+      trackId: video.id,
+      clip: createShapeClip({ id: 'clip_shape', shape: createShapeStyle('heart') }),
+    })
+    expect(added.project.tracks.find((track) => track.kind === 'video')?.clips[0].shape).toEqual(
+      createShapeStyle('heart'),
+    )
+    expect(clipFitsTrack(added, createShapeClip(), video)).toBe(true)
+    const text = createTrack('text', 1, { name: 'T1' })
+    doc.project.tracks.push(text)
+    expect(() =>
+      applyCommand(doc, {
+        type: 'addClip',
+        trackId: text.id,
+        clip: createShapeClip(),
+      }),
+    ).toThrow(/cannot be placed/)
+
+    for (const bad of [
+      createShapeClip({ mediaId: doc.media[0].id }),
+      createShapeClip({ text: 'x', style: createDefaultTextStyle() }),
+      createShapeClip({ sequenceId: 'seq_x' }),
+      createShapeClip({ speed: 2 }),
+      createShapeClip({ reverse: true }),
+      createShapeClip({ linkId: 'link_x' }),
+      createShapeClip({ lutId: 'lut_x' }),
+    ]) {
+      expect(() => applyCommand(doc, { type: 'addClip', trackId: video.id, clip: bad })).toThrow(
+        /Shape clips cannot carry/,
+      )
+    }
+  })
+
+  it('sanitizes a hostile shape payload on add and refuses an invalid one', () => {
+    const { doc } = makeDoc()
+    const video = videoTrack(doc)
+    const added = applyCommand(doc, {
+      type: 'addClip',
+      trackId: video.id,
+      clip: createShapeClip({
+        id: 'clip_hostile',
+        shape: {
+          kind: 'rectangle',
+          fill: '#AABBCC',
+          stroke: '#001122',
+          strokeWidth: 9999,
+          radius: 10_000,
+          points: 500,
+        },
+      }),
+    })
+    // Same sanitize behavior as `setClipShape`: colors normalize, stroke
+    // width and radius clamp, and the kind-ignored point count drops.
+    expect(added.project.tracks.find((track) => track.kind === 'video')?.clips[0].shape).toEqual({
+      kind: 'rectangle',
+      fill: '#aabbcc',
+      stroke: '#001122',
+      strokeWidth: 40,
+      radius: 400,
+    })
+    const badKind = createShapeClip({
+      id: 'clip_bad',
+      shape: { kind: 'blob', fill: '#ffffff' } as unknown as ShapeStyle,
+    })
+    expect(() => applyCommand(doc, { type: 'addClip', trackId: video.id, clip: badKind })).toThrow(
+      /Invalid shape settings/,
+    )
+    const badFill = createShapeClip({ id: 'clip_bad', shape: { kind: 'ellipse', fill: 'red' } })
+    expect(() => applyCommand(doc, { type: 'addClip', trackId: video.id, clip: badFill })).toThrow(
+      /Invalid shape settings/,
+    )
+  })
+
+  it('sanitizes shape edits and refuses hostile colors', () => {
+    const doc = docWithShape()
+    const next = applyCommand(doc, {
+      type: 'setClipShape',
+      clipId: 'clip_shape',
+      shape: {
+        kind: 'rectangle',
+        fill: '#AABBCC',
+        stroke: '#001122',
+        strokeWidth: 12,
+        radius: 20,
+      },
+    })
+    expect(next.project.tracks[0].clips.find((clip) => clip.id === 'clip_shape')?.shape).toEqual({
+      kind: 'rectangle',
+      fill: '#aabbcc',
+      stroke: '#001122',
+      strokeWidth: 12,
+      radius: 20,
+    })
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setClipShape',
+        clipId: 'clip_shape',
+        shape: { kind: 'rectangle', fill: 'url(#x)' },
+      }),
+    ).toThrow(/Invalid shape/)
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setClipShape',
+        clipId: 'clip_v',
+        shape: createShapeStyle('star'),
+      }),
+    ).toThrow(/Not a shape clip/)
+    expect(() =>
+      applyCommand(doc, { type: 'setClipSpeed', clipId: 'clip_shape', speed: 2 }),
+    ).toThrow(/Shape clips cannot change speed/)
+    expect(() =>
+      applyCommand(doc, { type: 'setClipReverse', clipId: 'clip_shape', reverse: true }),
+    ).toThrow(/Shape clips cannot reverse/)
+  })
+
+  it('refuses a LUT on a shape clip instead of storing a silent no-op grade', () => {
+    // The renderer has no decoded pixels to grade for a shape, and the
+    // Inspector hides the row; accepting the reference would make the clip
+    // read as graded while drawing ungraded. Clearing stays a no-op.
+    const doc = docWithShape()
+    expect(() =>
+      applyCommand(doc, { type: 'setClipLut', clipId: 'clip_shape', lutId: 'lut_x' }),
+    ).toThrow(/Shape clips do not support 3D LUTs/)
+    const cleared = applyCommand(doc, { type: 'setClipLut', clipId: 'clip_shape', lutId: null })
+    expect(
+      cleared.project.tracks[0].clips.find((clip) => clip.id === 'clip_shape')?.lutId,
+    ).toBeUndefined()
+  })
+
+  it('applies an animated preset as ordinary keyframes', () => {
+    const doc = docWithText()
+    const next = applyCommand(doc, {
+      type: 'applyTextAnimation',
+      clipId: 'clip_text',
+      presetId: 'anim_slide_up',
+    })
+    const curve = next.project.tracks[0].clips[0].keyframes?.positionY
+    expect(curve?.map((keyframe) => keyframe.value)).toEqual([120, 0])
+    expect(curve?.[0].interpolation).toBe('easeOut')
+    // The input doc is untouched (commands clone).
+    expect(doc.project.tracks[0].clips[0].keyframes).toBeUndefined()
+  })
+
+  it('refuses a preset over an existing curve and names the property', () => {
+    const doc = docWithText()
+    const animated = applyCommand(doc, {
+      type: 'applyTextAnimation',
+      clipId: 'clip_text',
+      presetId: 'anim_fade_in',
+    })
+    expect(() =>
+      applyCommand(animated, {
+        type: 'applyTextAnimation',
+        clipId: 'clip_text',
+        presetId: 'anim_slow_reveal',
+      }),
+    ).toThrow(/already animates Opacity/)
+    expect(() =>
+      applyCommand(doc, {
+        type: 'applyTextAnimation',
+        clipId: 'clip_v',
+        presetId: 'anim_fade_in',
+      }),
+    ).toThrow(/text clips only/)
+    expect(() =>
+      applyCommand(doc, {
+        type: 'applyTextAnimation',
+        clipId: 'clip_text',
+        presetId: 'missing',
+      }),
+    ).toThrow(/Unknown text animation/)
+  })
+
+  it('refuses a preset on a clip shorter than the animation window', () => {
+    const doc = docWithText()
+    doc.project.tracks[0].clips[0].duration = 0.05
+    expect(() =>
+      applyCommand(doc, {
+        type: 'applyTextAnimation',
+        clipId: 'clip_text',
+        presetId: 'anim_fade_in',
+      }),
+    ).toThrow(/too short/)
   })
 })

@@ -486,7 +486,7 @@ echo "running $EXPECTED steps from $BATTERY_SH into $OUT"
 
 if [ "$SHARDS" = "1" ]; then
   SHARD_SESSIONS=("$SESSION")
-  # The sequential rollback path: one battery, the registered 1-70 order, no
+  # The sequential rollback path: one battery, the registered 1-74 order, no
   # filter, no seed, and the same session and result-file names as before.
   BASE_URL="$BASE_URL" SESSION="$SESSION" OUT="$OUT" TIMING="$TIMING" TIMING_OUT="$TIMING_OUT" \
     BATTERY_SHARD=1 BATTERY_SHARDS=1 bash "$BATTERY_SH"

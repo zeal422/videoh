@@ -13,7 +13,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 │   ├── google80671fa4533bcad3.html  # Search Console verification file
 │   └── robots.txt           # allow all plus the sitemap URL
 ├── e2e/
-│   ├── battery.sh           # scripted UI battery (70 steps) driven by agent-browser
+│   ├── battery.sh           # scripted UI battery (74 steps) driven by agent-browser
 │   ├── fixtures/            # committed battery media, parity project, and provenance
 │   ├── run-battery.sh       # runner: dev server, shard sessions, strict verdict
 │   └── run-battery-pair.sh  # concurrent dev + artifact runner, four shards per leg
@@ -101,6 +101,8 @@ src/components/
 │   ├── SourcePanel.tsx           #   source monitor: preview, transport, mark In/Out
 │   ├── PreviewPanel.tsx          #   program monitor + transport + text drag + gizmo + offline/decode overlays
 │   ├── TransformGizmo.tsx        #   monitor gizmo overlay: box, corner scale, rotation handle
+│   ├── FontPicker.tsx            #   built-in/project font select + upload dialog
+│   ├── StickerPicker.tsx         #   bundled sticker grid, imports through the image path
 │   ├── ColorFilterDefs.tsx       #   hidden SVG grade/LUT filter host
 │   ├── ScopesPanel.tsx           #   histogram, RGB balance, waveform, vectorscope
 │   ├── InspectorPanel.tsx        #   clip properties / project settings
@@ -189,10 +191,10 @@ src/lib/editor/
 ├── chroma-key.ts         # Ultra-Key-lite math: chroma distance, key ramp, despill, mask values (pure)
 ├── links.ts              # multi-selection / A/V link-group helpers
 ├── clipboard.ts          # copy / cut / paste (module memory, outside undo)
-├── actions.ts            # multi-command UI actions (add media/text, group ops, ripple delete)
+├── actions.ts            # multi-command UI actions (add media/text/shape, group ops, ripple delete)
 ├── action-executor.ts    # policy-free dispatch for the menu, toolbar, and keyboard (pure)
 ├── store.ts              # zustand store: doc, history, transients, selection, playhead, zoom
-├── serialization.ts      # .veproj.json v5 (v1 to v4 still load): serialize / parse / hydrate, media content hash
+├── serialization.ts      # .veproj.json v7 (v1 to v6 still load): serialize / parse / hydrate, fonts, shapes, media content hash
 ├── persistence.ts        # debounced localStorage autosave; readValidAutosave returns a typed PendingRestore
 ├── workspace.ts          # panel + keyframe-graph layout state (pure)
 ├── workspace-store.ts    # zustand wrapper over workspace.ts (layout + graph heights)
@@ -205,6 +207,9 @@ src/lib/editor/
 ├── proxy.ts              # pure proxy planning: dimensions, bitrate, eligibility
 ├── freeze-plan.ts        # pure Freeze Frame plan (visible/offline scan) and the still batch
 ├── transform.ts          # the ONE clip Motion trigonometry: rotation/flip matrix, gizmo geometry
+├── fonts.ts              # pure project-font metadata: generated family, validation, file magic/size checks
+├── shapes.ts             # pure shape primitives: six path kinds, bounds, hit testing, hostile-value sanitize
+├── text-animations.ts    # four built-in text animation curves, keyframe generation, property labels (pure)
 ├── media-cleanup-plan.ts # pure cleanup reference set: doc, both history stacks, autosave slot, claim gate
 ├── media/
 │   ├── probe.ts          # importFile: probe duration/size, thumbnail, waveform peaks, hasAudio
@@ -214,8 +219,10 @@ src/lib/editor/
 │   ├── elements.ts       # ClipMediaPool: per-clip media elements, source nodes, the parked blend partner
 │   ├── keyframes.ts      # verified video keyframe lookup for decode recovery (mediabunny)
 │   ├── proxies.ts        # session proxy build/revoke and effective media URL
-│   ├── media-store.ts    # OPFS store keyed by SHA-256: promote, quarantine, sidecar, claims, clean, clear
+│   ├── media-store.ts    # OPFS store keyed by SHA-256: media + font namespaces, promote, quarantine, sidecar, claims, clean, clear
 │   ├── persist.ts        # asset-to-store bridge, claim writes, clean orchestration, in-flight counter
+│   ├── font-store.ts     # font bytes in OPFS, FontFace registry per project, staged upload, export wait
+│   ├── stickers.ts       # bundled local sticker manifest + same-origin fetch into an image File
 │   ├── rehydrate.ts      # rebuild File + object URL from stored bytes before install
 │   ├── project-lock.ts   # shared Web Lock per open project; exclusive clean refuses a second tab
 │   └── freeze-frame.ts   # two-pass compositor render to an opaque PNG still
@@ -234,7 +241,7 @@ src/lib/editor/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   ├── options.ts        # pure container matrix, output bounds/bitrate, contain fit (Node-testable)
 │   └── mp4.ts            # WebCodecs export pipeline: MP4/MOV/MKV/WAV/MP3/M4A + downloadBlob
-└── __tests__/            # 113 test files (2616 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 120 test files (2743 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

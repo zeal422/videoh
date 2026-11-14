@@ -116,7 +116,7 @@ if [ "$TIMING" = "1" ]; then
   : >"$TIMING_OUT" || { echo "cannot write the timing file $TIMING_OUT" >&2; exit 9; }
 fi
 
-# Optional sharding. BATTERY_SHARDS=1 is the registered 1-70 sequence with no
+# Optional sharding. BATTERY_SHARDS=1 is the registered 1-74 sequence with no
 # filter and no seed, exactly the pre-shard behavior. BATTERY_SHARDS=4 runs one
 # of four independent partitions; every step still registers once, and the
 # coordinator (run-battery.sh) launches one process per BATTERY_SHARD. Only the
@@ -1376,6 +1376,90 @@ f04_text_edit() {
   insp 'textarea[aria-label="Text content"]'
   local t; t=$(firstref 'textbox "Text content"')
   [ -n "$t" ] && ab fill "@$t" 'Hello A/B' >/dev/null && sleeps 0.3
+}
+
+# ----- G graphics (0.25.0) -----
+g01_shape() {
+  # Add a star through the Graphics menu, then open its Inspector section. The
+  # shape lands at the playhead on the first video track and is selected by the
+  # click; the gizmo is the proof that the path bounds drive selection.
+  ab find role menuitem click --name 'Graphics' >/dev/null 2>&1 || return 1
+  sleeps 0.3
+  ab find role menuitem click --name 'Add Star at Playhead' >/dev/null 2>&1 || return 1
+  sleeps 0.6
+  click_clip 'Star from' || return 1
+  ab eval 'document.querySelector("[data-testid=inspector-tab-clip]")?.click()' >/dev/null 2>&1
+  sleeps 0.2
+  insp '[data-testid=clip-shape-section]'
+  # The full snapshot carries the static labels and the SVG's accessible name;
+  # the interactive snapshot only lists the combobox and unlabeled spinbutton.
+  ab snapshot -c 2>/dev/null | grep -q 'Points' || {
+    echo 'g01: the star point count is missing' >&2
+    return 1
+  }
+  ab snapshot -c 2>/dev/null | grep -q 'Transform gizmo' || {
+    echo 'g01: the shape gizmo is missing' >&2
+    return 1
+  }
+  # The shape overlaps the seeded video at 0.00. Undo it so the effects and
+  # reverse pixel steps later in this shard sample the seeded picture again;
+  # those steps are the real proof that the timeline is clean again (the a11y
+  # snapshot can still mention the clip label after the undo).
+  ab press Control+z >/dev/null 2>&1 && sleeps 0.5
+}
+
+g02_sticker() {
+  # The picker fetches a bundled local SVG, imports it through the image path,
+  # writes it to OPFS, and adds an image clip at the playhead. Wait for the
+  # async import, close the modal, then prove the clip is on the timeline.
+  ab find role menuitem click --name 'Graphics' >/dev/null 2>&1 || return 1
+  sleeps 0.3
+  ab find role menuitem click --name 'Stickers…' >/dev/null 2>&1 || return 1
+  sleeps 0.4
+  ab find role button click --name 'Add Star sticker' >/dev/null 2>&1 || return 1
+  sleeps 2.5
+  # The modal's footer Close is the reliable exit; Escape does not close this
+  # Radix dialog in the battery's browser. The import continues if it is still
+  # in flight and the clip lands after the dialog unmounts.
+  ab find role button click --name 'Close' >/dev/null 2>&1 || ab press Escape >/dev/null 2>&1
+  sleeps 0.3
+  local landed=0 i
+  for i in $(seq 1 20); do
+    # Scope to the timeline clip button: the media bin lists the imported
+    # `sticker-star.svg` asset too, and that match would set `landed` (and
+    # trigger the undo below) without proving a clip is on the timeline.
+    if snap | grep -q 'button "Clip sticker-star'; then landed=1; break; fi
+    sleep 0.25
+  done
+  [ "$landed" = "1" ] || { echo 'g02: the sticker clip never landed' >&2; return 1; }
+  # The image clip overlaps the seeded video at 0.00. The insert batch (asset +
+  # clip) is one undo step, so remove both before the effects steps run; those
+  # steps prove the clean timeline, since the a11y snapshot can lag the undo.
+  ab press Control+z >/dev/null 2>&1 && sleeps 0.6
+}
+
+g03_text_animation() {
+  click_clip 'Hello A/B' || return 1
+  ab scrollintoview '[data-testid=apply-text-animation]' >/dev/null 2>&1
+  sleeps 0.2
+  ab click '[data-testid=apply-text-animation]' >/dev/null 2>&1 || return 1
+  sleeps 0.4
+  # A second apply must refuse by naming the property: that proves the first
+  # click wrote the opacity curve instead of only updating the UI.
+  ab click '[data-testid=apply-text-animation]' >/dev/null 2>&1 || return 1
+  sleeps 0.4
+  ab snapshot -c 2>/dev/null | grep -q 'already animates Opacity' || {
+    echo 'g03: the preset did not write an opacity curve' >&2
+    return 1
+  }
+}
+
+g04_font_pick() {
+  # The built-in picker writes TextStyle.fontFamily through setTextStyle.
+  # Arial is first in the list, so one ArrowDown picks Georgia.
+  select_option 'Font family' 1 || return 1
+  sleeps 0.3
+  snap | grep -q 'Georgia' || { echo 'g04: the built-in font did not apply' >&2; return 1; }
 }
 
 # ————— C captions (0.8.5) —————
@@ -4309,10 +4393,10 @@ console_clean() {
 # step() runs it in every shard.
 shard_of() {
   case "$1" in
-    s01_public | s02_boot | s03_fresh | f01_import | f01b_import_real_file | f02_add | zoom_out | f02b_insert_place | f09_marquee | f09_marquee_clear | f11_whatsnew_opens | f11_whatsnew_once | f10_markers_sequence | f10_markers_clip | f06_play | f06_canvas | f06_scopes | f02_split | f08_undo | f08_redo | f02_trim | f02_duplicate | f02_copy_paste | f02_link_unlink | f03_crossfade | t01_wipe | t02_slide_push | f04_text_add | f04_text_edit | f08_ripple_delete)
+    s01_public | s02_boot | s03_fresh | f01_import | f01b_import_real_file | f02_add | zoom_out | f02b_insert_place | f09_marquee | f09_marquee_clear | f11_whatsnew_opens | f11_whatsnew_once | f10_markers_sequence | f10_markers_clip | f06_play | f06_canvas | f06_scopes | f02_split | f08_undo | f08_redo | f02_trim | f02_duplicate | f02_copy_paste | f02_link_unlink | f03_crossfade | t01_wipe | t02_slide_push | f04_text_add | f04_text_edit | f08_ripple_delete | g03_text_animation | g04_font_pick)
       echo 1
       ;;
-    c01_captions_import | c02_captions_export | e00_effects_tab | e01_crop_add_remove | e02_blend_mode | e03_chroma_hex | e04_matte_masks_and_survives_hide | e05_blur_accumulates | e06_effects_export | f05_reverse | f05_reverse_frame | f05b_curve_handles)
+    c01_captions_import | c02_captions_export | e00_effects_tab | e01_crop_add_remove | e02_blend_mode | e03_chroma_hex | e04_matte_masks_and_survives_hide | e05_blur_accumulates | e06_effects_export | f05_reverse | f05_reverse_frame | f05b_curve_handles | g01_shape | g02_sticker)
       echo 2
       ;;
     panels_close_media | panels_close_preview | panels_hide_upper | panels_close_bottom | panels_close_all | panels_reset_all | panels_reset_reduced | f08_autosave | f08_capture_project | f08_save | f07_open_project | f07_prep | f07_export | f07_close_dialog)
@@ -4416,6 +4500,10 @@ step "t01 wipe: type wipe applies and direction select appears" t01_wipe
 step "t02 slide+push: each type applies without errors" t02_slide_push
 step "f04 text: T adds a text clip"                f04_text_add
 step "f04 text: content edited via Inspector"      f04_text_edit
+step "g01 graphics: star shape, path bounds, and gizmo" g01_shape
+step "g02 graphics: bundled sticker imports and lands"  g02_sticker
+step "g03 graphics: text animation writes a curve"  g03_text_animation
+step "g04 graphics: built-in font picker applies"   g04_font_pick
 step "c01 captions: SRT import creates timed flagged clips" c01_captions_import
 step "c02 captions: SRT and VTT export download the cues in order" c02_captions_export
 step "e00 effects: Effect Controls hosts the effects section" e00_effects_tab

@@ -85,6 +85,13 @@ import { parseKeyColor } from './chroma-key'
 import { isValidContentHash, isValidWaveformPeaks, sanitizeThumbnail } from './project-validation'
 import { MAX_SRT_TIME_SECONDS } from './srt'
 import { maxTransitionDuration, TRANSITION_FEATHER_DEFAULT } from './transition'
+import { fontFaceFamily, sanitizeFontFamily, sanitizeFontName, sanitizeProjectFont } from './fonts'
+import { sanitizeShape } from './shapes'
+import {
+  buildTextAnimation,
+  textAnimationPropertyLabel,
+  type TextAnimationProperty,
+} from './text-animations'
 import {
   largestFittingDuration,
   rebaseCurveFromCut,
@@ -105,8 +112,10 @@ import type {
   MarkerPatch,
   MediaAsset,
   Project,
+  ProjectFont,
   ProjectLut,
   Sequence,
+  ShapeStyle,
   TextPreset,
   TextStyle,
   Track,
@@ -266,6 +275,14 @@ export type EditorCommand =
   | { type: 'saveTextPreset'; preset: TextPreset }
   | { type: 'renameTextPreset'; presetId: string; name: string }
   | { type: 'deleteTextPreset'; presetId: string }
+  // project font library (0.25.0)
+  | { type: 'addProjectFont'; font: ProjectFont }
+  | { type: 'removeProjectFont'; fontId: string }
+  | { type: 'renameProjectFont'; fontId: string; name: string }
+  // shape clips (0.25.0)
+  | { type: 'setClipShape'; clipId: string; shape: ShapeStyle }
+  // animated text presets (0.25.0)
+  | { type: 'applyTextAnimation'; clipId: string; presetId: string }
   // captions (0.8.5)
   | { type: 'importCaptions'; cues: { start: number; duration: number; text: string }[] }
   | { type: 'addCaptionCue'; trackId: string; start: number; text?: string }
@@ -525,12 +542,20 @@ const LOCK_RULES: LockRuleMap = {
   saveTextPreset: { exempt: true },
   renameTextPreset: { exempt: true },
   deleteTextPreset: { exempt: true },
+  // The font library is project metadata; no clip lane is edited. The remove
+  // command refuses while any text clip or saved preset still references it.
+  addProjectFont: { exempt: true },
+  removeProjectFont: { exempt: true },
+  renameProjectFont: { exempt: true },
 
   // Text and captions. Property edits hit the clip's lane; a new cue hits the
   // text lane it names. `importCaptions` always creates a NEW text track, so it
   // cannot touch a locked one and needs no refusal.
   setTextContent: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setTextStyle: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  // Shape clips and animated text presets edit the clip's lane.
+  setClipShape: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  applyTextAnimation: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   importCaptions: { exempt: true },
   addCaptionCue: { tracks: (doc, command) => trackRef(doc, command.trackId) },
 
@@ -972,6 +997,14 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       // position to clamp to, so it lands at zero rather than poisoning
       // sort order and span math with NaN.
       if (!Number.isFinite(clip.start) || clip.start < 0) clip.start = 0
+      assertShapeClipFields(clip)
+      if (clip.shape) {
+        // Sanitize like `setClipShape`: a hostile payload (negative widths,
+        // wild radii, unknown kinds) is clamped or refused here, never stored.
+        const shape = sanitizeShape(clip.shape)
+        if (!shape) throw new EditorCommandError('Invalid shape settings')
+        clip.shape = shape
+      }
       if (!clipFitsTrack(doc, clip, track)) {
         throw new EditorCommandError(
           `${describeClip(doc, clip)} cannot be placed on a ${track.kind} track`,
@@ -1598,6 +1631,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
     case 'setClipSpeed': {
       const { clip } = requireClip(doc, command.clipId)
       if (clip.sequenceId) throw new EditorCommandError('Compound clips cannot change speed')
+      if (clip.shape) throw new EditorCommandError('Shape clips cannot change speed')
       if (clip.text !== undefined) throw new EditorCommandError('Text clips cannot change speed')
       const speed = clamp(command.speed, SPEED_MIN, SPEED_MAX)
       const asset = findMedia(doc, clip.mediaId)
@@ -1648,6 +1682,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
     case 'setClipReverse': {
       const { clip } = requireClip(doc, command.clipId)
       if (clip.sequenceId) throw new EditorCommandError('Compound clips cannot reverse')
+      if (clip.shape) throw new EditorCommandError('Shape clips cannot reverse')
       if (clip.text !== undefined) throw new EditorCommandError('Text clips cannot reverse')
       clip.reverse = command.reverse
       return
@@ -1722,6 +1757,11 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
         clip.lutId = undefined
         return
       }
+      // A shape has no decoded pixels for the 3D pass, and the Inspector hides
+      // the LUT row for it. Accepting the reference would render ungraded while
+      // the clip still reads as graded, so refuse at the command boundary.
+      // Clearing stays allowed: it is a no-op on a clip that cannot hold one.
+      if (clip.shape) throw new EditorCommandError('Shape clips do not support 3D LUTs')
       // A reference to no entry would render as nothing while the clip still
       // reads as graded, so the command is the one place that can refuse it.
       if (!doc.project.luts?.some((l) => l.id === command.lutId)) {
@@ -1755,7 +1795,16 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
     case 'setTextStyle': {
       const { clip } = requireClip(doc, command.clipId)
       if (!clip.style) throw new EditorCommandError('Not a text clip')
-      clip.style = { ...clip.style, ...command.style }
+      const patch = { ...command.style }
+      if (patch.fontFamily !== undefined) {
+        // The family crosses into a canvas font shorthand. The picker only
+        // emits built-ins and generated families, but a command payload is a
+        // trust boundary of its own.
+        const family = sanitizeFontFamily(patch.fontFamily)
+        if (!family) throw new EditorCommandError('Invalid font family')
+        patch.fontFamily = family
+      }
+      clip.style = { ...clip.style, ...patch }
       return
     }
 
@@ -1819,6 +1868,83 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       const index = presets.findIndex((p) => p.id === command.presetId)
       if (index === -1) throw new EditorCommandError(`Unknown preset ${command.presetId}`)
       presets.splice(index, 1)
+      return
+    }
+
+    case 'addProjectFont': {
+      const font = sanitizeProjectFont(command.font)
+      if (!font) throw new EditorCommandError('Invalid font entry')
+      const fonts = doc.project.fonts ?? (doc.project.fonts = [])
+      if (fonts.some((entry) => entry.id === font.id)) {
+        throw new EditorCommandError(`Font ${font.id} already exists`)
+      }
+      // CSS family names match ASCII case-insensitively, so generated
+      // families that differ only by case would answer the same face.
+      if (fonts.some((entry) => entry.family.toLowerCase() === font.family.toLowerCase())) {
+        throw new EditorCommandError(`Font family ${font.family} already exists`)
+      }
+      fonts.push(structuredClone(font))
+      return
+    }
+
+    case 'removeProjectFont': {
+      const fonts = doc.project.fonts ?? []
+      const font = fonts.find((entry) => entry.id === command.fontId)
+      if (!font) throw new EditorCommandError(`Unknown font ${command.fontId}`)
+      const user = referenceToFont(doc, fontFaceFamily(font.id))
+      if (user) {
+        throw new EditorCommandError(
+          `This font is still used by ${user}; change those text clips or presets before removing it.`,
+        )
+      }
+      const index = fonts.indexOf(font)
+      fonts.splice(index, 1)
+      if (fonts.length === 0) delete doc.project.fonts
+      return
+    }
+
+    case 'renameProjectFont': {
+      const name = sanitizeFontName(command.name)
+      if (!name) throw new EditorCommandError('Font name cannot be empty')
+      const font = doc.project.fonts?.find((entry) => entry.id === command.fontId)
+      if (!font) throw new EditorCommandError(`Unknown font ${command.fontId}`)
+      // The generated family is the immutable reference; only the display
+      // name changes, so no text clip reroutes.
+      font.name = name
+      return
+    }
+
+    case 'setClipShape': {
+      const { clip } = requireClip(doc, command.clipId)
+      if (!clip.shape) throw new EditorCommandError('Not a shape clip')
+      const shape = sanitizeShape(command.shape)
+      if (!shape) throw new EditorCommandError('Invalid shape settings')
+      clip.shape = shape
+      return
+    }
+
+    case 'applyTextAnimation': {
+      const { clip } = requireClip(doc, command.clipId)
+      if (clip.text === undefined || !clip.style) {
+        throw new EditorCommandError('Text animations apply to text clips only')
+      }
+      const built = buildTextAnimation(command.presetId, clip.duration)
+      if (!built) throw new EditorCommandError('Unknown text animation or clip too short')
+      // First version: never merge over an existing curve. Name the first
+      // property so the refusal explains itself instead of silently replacing
+      // work the user authored.
+      for (const [property, curve] of Object.entries(built.keyframes) as [
+        TextAnimationProperty,
+        Keyframe[],
+      ][]) {
+        if (clip.keyframes?.[property]?.length) {
+          throw new EditorCommandError(
+            `This clip already animates ${textAnimationPropertyLabel(property)}. Remove that curve before applying the preset.`,
+          )
+        }
+        clip.keyframes = clip.keyframes ?? {}
+        clip.keyframes[property] = curve.map((keyframe) => ({ ...keyframe }))
+      }
       return
     }
 
@@ -2316,6 +2442,60 @@ function presetNameTaken(doc: Doc, name: string, exceptId?: string): boolean {
   )
 }
 
+/**
+ * The first thing that references a generated font family token, or null.
+ * Removal refuses while any text clip (root or nested sequence) or saved title
+ * preset still names that family, mirroring the media clean rule: a reachable
+ * reference is never silently broken.
+ *
+ * The comparison parses the CSS stack into tokens and folds case. A reference
+ * that keeps the generated family but changes its fallbacks (`token, serif`)
+ * still uses the font, and canvas resolves family names case-insensitively.
+ * Only the generated token is compared, so a clip on plain `Arial` does not
+ * block removing an unrelated project font whose stack also lists Arial.
+ */
+function fontFamilyTokens(value: string): string[] {
+  return value
+    .split(',')
+    .map((token) =>
+      token
+        .trim()
+        .replace(/^["'](.*)["']$/, '$1')
+        .trim()
+        .toLowerCase(),
+    )
+    .filter(Boolean)
+}
+
+function fontFamilyReferences(value: string | undefined, token: string): boolean {
+  if (!value) return false
+  const target = token
+    .trim()
+    .replace(/^["'](.*)["']$/, '$1')
+    .trim()
+    .toLowerCase()
+  return fontFamilyTokens(value).includes(target)
+}
+
+function referenceToFont(doc: Doc, token: string): string | null {
+  const visit = (tracks: Track[]): boolean =>
+    tracks.some((track) =>
+      track.clips.some((clip) => fontFamilyReferences(clip.style?.fontFamily, token)),
+    )
+  if (visit(doc.project.tracks)) return 'a text clip'
+  if ((doc.project.sequences ?? []).some((sequence) => visit(sequence.tracks))) {
+    return 'a text clip in a compound clip'
+  }
+  if (
+    (doc.project.textPresets ?? []).some((preset) =>
+      fontFamilyReferences(preset.style.fontFamily, token),
+    )
+  ) {
+    return 'a saved title preset'
+  }
+  return null
+}
+
 function markerTime(time: number): number {
   if (!Number.isFinite(time) || time < 0) {
     throw new EditorCommandError('Marker time must be a non-negative number')
@@ -2363,10 +2543,38 @@ function foundTrackId(doc: Doc, clipId: string): string {
 }
 
 function describeClip(doc: Doc, clip: Clip): string {
+  if (clip.shape) return 'Shape'
   if (clip.sequenceId) return 'Compound clip'
   if (clip.text !== undefined) return 'Text'
   const asset = findMedia(doc, clip.mediaId)
   return asset ? `“${asset.name}” (${asset.kind})` : 'Clip'
+}
+
+/**
+ * A shape clip is a source in itself: it may not also name media, carry text,
+ * be a caption or compound, belong to a link group, or be retimed. The add and
+ * paste paths call this before lane compatibility, so a malformed command
+ * payload is refused rather than stored.
+ */
+function assertShapeClipFields(clip: Clip): void {
+  if (!clip.shape) return
+  if (
+    clip.mediaId !== undefined ||
+    clip.text !== undefined ||
+    clip.style !== undefined ||
+    clip.isCaption === true ||
+    clip.sequenceId !== undefined ||
+    clip.audioOnly === true ||
+    clip.linkId !== undefined ||
+    clip.speed !== undefined ||
+    clip.reverse ||
+    clip.lutId !== undefined ||
+    clip.keyframes?.timeScale !== undefined
+  ) {
+    throw new EditorCommandError(
+      'Shape clips cannot carry media, text, compound, linked, LUT or retiming fields',
+    )
+  }
 }
 
 /**

@@ -5,7 +5,7 @@
 **Effort:** XL
 **Schema:** 6 to 7
 **Depends on:** 0.24.0
-**Status:** planned
+**Status:** implemented
 
 ## 1. Goal
 
@@ -350,3 +350,14 @@ revert the whole commit.
 - v6 projects load with neutral defaults and v7 projects round-trip.
 - `bun run check` and `bun run battery:pair` are green.
 - The 0.25.0 schema and version bumps are atomic in one commit.
+
+## 13. Implementation notes
+
+- The brand kit does not exist until 0.26.0, so font removal guards text clips, compound text clips,
+  and saved title presets. Extend `referenceToFont` when the brand kit lands.
+- The 0.23.0 store coordinates tabs with Web Locks and a same-tab activity counter; there is no
+  BroadcastChannel. Font hashes join the claim shards and the activity counter instead.
+- The animated preset module is `text-animations.ts`, named separately from the existing
+  `TextPreset` title-style library (`factories.ts` / `Project.textPresets`).
+- Shapes use one centered path box covering 80 percent of each frame axis plus uniform Motion scale;
+  per-axis width and height and the shape-path gizmo origin unification remain future work.

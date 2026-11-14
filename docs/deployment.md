@@ -148,7 +148,7 @@ Open editor link; the second opens `/editor`; the third clears storage and opens
 verdicts. It writes `PAIR_LOG` and a terminal `PAIR_EXIT`, and stops only the artifact server it
 started. It is a clean-gate command, not a local check while a dev server is running. Each leg runs
 four shards by default (`PAIR_SHARDS=4`), one browser session per shard, and still requires the same
-70/70. `PAIR_SHARDS=1` runs the registered sequential order as the rollback. The sharded pair targets
+74/74. `PAIR_SHARDS=1` runs the registered sequential order as the rollback. The sharded pair targets
 under 300s wall clock; the first four-shard map measured 198s and 200s, and the rebalanced map
 measured 163s, 164s, and 165s across three runs; every run was 70/70 on both legs. The partition, seeds, and
 per-shard times are in [testing.md](testing.md#sharded-release-run).
@@ -157,7 +157,7 @@ The runner reuses any HTTP server already on port 3000, so each run needs a serv
 Before the dev run, confirm `curl -s -o /dev/null -w '%{http_code}' http://localhost:3000` prints
 `000`, and require `starting the dev server` in the log. Before the artifact run, start the
 standalone server yourself and require `using the server already serving` with no
-`starting the dev server` line. A 70/70 result on the wrong server type is not a valid result.
+`starting the dev server` line. A 74/74 result on the wrong server type is not a valid result.
 
 The dev server is not the shipped artifact. To verify the build that actually ships, serve the
 standalone output and let the runner reuse it (it starts a server only on the default port when
@@ -191,6 +191,8 @@ optimized runs reported `PAIR_EXIT=0`. At 0.20.2 on 2026-11-11, the four-shard p
 pair measured 167s; the dev leg started its own server and the artifact leg reused the standalone
 server, and both legs passed 70/70 with `PAIR_EXIT=0`. At 0.24.0 on 2026-11-13 the four-shard pair
 measured 166s on the final tree, with the same server split and 70/70 on both legs with `PAIR_EXIT=0`.
+At 0.25.0 the same day the four-shard pair measured 178s, with the same server split and 74/74 on
+both legs with `PAIR_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 

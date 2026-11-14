@@ -6,6 +6,7 @@ import { useIsMobile } from '@/hooks/use-mobile'
 
 import { NamedSlider } from '@/components/editor/NamedSlider'
 import { AppearanceDialog } from '@/components/editor/AppearanceDialog'
+import { StickerPicker } from '@/components/editor/StickerPicker'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -119,6 +120,7 @@ export function MenuBar({
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
   const [gainOpen, setGainOpen] = useState(false)
+  const [stickersOpen, setStickersOpen] = useState(false)
   const [gainValue, setGainValue] = useState(1)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
@@ -319,6 +321,9 @@ export function MenuBar({
           case 'view.appearance':
             setAppearanceOpen(true)
             break
+          case 'graphics.stickers':
+            setStickersOpen(true)
+            break
 
           case 'window.toggleMedia':
             toggleHidden('media')
@@ -502,6 +507,7 @@ export function MenuBar({
       />
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
+      <StickerPicker open={stickersOpen} onOpenChange={setStickersOpen} />
       {appearanceOpen && <AppearanceDialog open onOpenChange={setAppearanceOpen} />}
     </>
   )

@@ -174,6 +174,16 @@ export function ExportDialog({
     // the state later would let a format change alter the result's handling.
     const exportContainer = container
     const exportSpec = containerSpec(exportContainer)
+    // The export renders this doc snapshot, but the font registry is global:
+    // a keyboard undo that crosses projects (or a pending open installing)
+    // swaps the registered faces mid-export and the frames silently fall back
+    // to Arial. Cancel instead: the registry stays owned by the live project.
+    const exportProjectId = doc.project.id
+    // Reinstalling a saved version of the SAME project also swaps the staged
+    // faces into the registry, and the id alone cannot see it. `replaceDoc`
+    // bumps projectEpoch on every install, so that is the installation
+    // generation to compare against.
+    const exportProjectEpoch = useEditorStore.getState().projectEpoch
     // A streamed export opens a native picker first; a dismissal is not an error.
     let fileStream: ExportFileSink | undefined
     let fileName: string | undefined
@@ -218,12 +228,38 @@ export function ExportDialog({
       }
     }
 
+    // The picker and createWritable() yield while the dialog stays
+    // interactive, so a keyboard undo that crosses projects (or a pending
+    // open installing) can land in that window, before the switch listener
+    // below exists. Starting now would load the stale snapshot's fonts into
+    // the registry the live project owns, so stop instead. A same-id reinstall
+    // is caught by the epoch, not the id.
+    const live = useEditorStore.getState()
+    if (live.doc.project.id !== exportProjectId || live.projectEpoch !== exportProjectEpoch) {
+      if (fileStream) {
+        try {
+          await fileStream.abort()
+        } catch {
+          // Nothing was written; dropping the stream is the cleanup.
+        }
+      }
+      return
+    }
+
     // Pause the preview engine while the export engine owns the media elements.
     useEditorStore.getState().setPlaying(false)
     setPhase('exporting')
     setProgress(0)
     const handle: ExportHandle = { cancelled: false }
     handleRef.current = handle
+    const stopOnProjectSwitch = useEditorStore.subscribe((state) => {
+      // A different project id covers undo crossing projects; the epoch covers
+      // reinstalling the same saved version, which replaces the font registry
+      // without changing the id.
+      if (state.doc.project.id !== exportProjectId || state.projectEpoch !== exportProjectEpoch) {
+        handle.cancelled = true
+      }
+    })
     try {
       const result = await exportTimeline(
         doc,
@@ -234,6 +270,8 @@ export function ExportDialog({
           width: outputSize?.width,
           height: outputSize?.height,
           onProgress: (t) => setProgress(duration > 0 ? t / duration : 0),
+          onWarning: (message) =>
+            toast({ title: 'Font fallback', description: message, variant: 'destructive' }),
           fileStream,
           fileName,
         },
@@ -269,6 +307,7 @@ export function ExportDialog({
       }
       setPhase('setup')
     } finally {
+      stopOnProjectSwitch()
       handleRef.current = null
     }
   }

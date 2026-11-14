@@ -6,6 +6,7 @@ import {
   planMediaCleanup,
 } from '../media-cleanup-plan'
 import { createDoc, createMediaAsset } from '../factories'
+import { fontFamilyForId } from '../fonts'
 import { serializeDoc } from '../serialization'
 import type { Doc } from '../types'
 
@@ -33,6 +34,25 @@ describe('collectMediaHashes', () => {
   it('keeps only valid hashes, deduped and sorted', () => {
     const doc = docWith([B, A, B])
     doc.media.push(createMediaAsset({ id: 'bad', kind: 'video', contentHash: '../evil' }))
+    expect(collectMediaHashes(doc)).toEqual([A, B])
+  })
+
+  it('includes valid project font hashes, because fonts share the claim set', () => {
+    const doc = docWith([A])
+    doc.project.fonts = [
+      {
+        id: 'font_123',
+        name: 'Inter',
+        family: fontFamilyForId('font_123'),
+        contentHash: B,
+      },
+      {
+        id: 'font_bad',
+        name: 'Bad',
+        family: fontFamilyForId('font_bad'),
+        contentHash: 'not-a-hash',
+      },
+    ]
     expect(collectMediaHashes(doc)).toEqual([A, B])
   })
 })

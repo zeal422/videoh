@@ -56,7 +56,7 @@ Running the suite (these are the steps agents get wrong):
   is the sequential rollback. `SHARDS=4 bun run battery` is the dev-only
   four-shard run; per-shard results, timing, and logs carry `.s<n>` before the
   extension, and a single shard failure still fails the leg: every shard must
-  exit 0 and the aggregate must have 70 rows with no FAIL. The pair runner starts only the standalone
+  exit 0 and the aggregate must have 74 rows with no FAIL. The pair runner starts only the standalone
   artifact on `:3100`, requires `:3000` free for the dev leg, and stops only the
   artifact server it started.
   It runs minutes (1080p export included) and needs `agent-browser` on PATH. For the SHIPPED
@@ -97,7 +97,7 @@ Running the suite (these are the steps agents get wrong):
   `PageViewBeacon`, and `AnalyticsToggle`. It never imports the editor store or browser engines.
 - `src/lib/seo.ts`: site constants, canonical URLs, page metadata, sitemap routes, and JSON-LD.
 - `src/lib/editor/__tests__/`: all tests (`*.test.ts(x)`), plus the mocked browser harness in `mocks/`.
-- `e2e/battery.sh`: 70-step UI battery, first step loads the public hero and its editor link (needs the
+- `e2e/battery.sh`: 74-step UI battery, first step loads the public hero and its editor link (needs the
   dev server + `agent-browser`). Drive it through `e2e/run-battery.sh` (`bun run battery`), which owns
   the server, the sessions, and the strict verdict; four shards per leg is the pair default, and
   `SHARDS=1` keeps the registered sequential order. `e2e/run-battery-pair.sh` (`bun run battery:pair`)

@@ -21,6 +21,7 @@ import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { clamp01, measureTextBox } from '@/lib/editor/playback/text-box'
 import { clipTransform } from '@/lib/editor/export/offline'
 import { containRect } from '@/lib/editor/playback/compositor'
+import { shapeBounds } from '@/lib/editor/shapes'
 import { animatedValue, clampPropertyValue, keyframeDefaultEasing } from '@/lib/editor/keyframes'
 import { withEasing } from '@/lib/editor/ease-segment'
 import {
@@ -163,7 +164,7 @@ export function PreviewPanel() {
     if (!selected || selected.track.kind === 'audio') return undefined
     const clip = selected.clip
     const visual =
-      clip.text !== undefined || clip.sequenceId !== undefined
+      clip.text !== undefined || clip.sequenceId !== undefined || clip.shape !== undefined
         ? true
         : !!selectedAsset && selectedAsset.kind !== 'audio'
     if (!visual) return undefined
@@ -174,6 +175,11 @@ export function PreviewPanel() {
   const gizmoBase: Rect | null = (() => {
     if (!gizmoClip) return null
     const { width, height } = doc.project
+    if (gizmoClip.shape) {
+      // The generated path bounds are the selection and transform box: a star
+      // or triangle does not fill the frame the way media does.
+      return shapeBounds(gizmoClip.shape, width, height)
+    }
     if (gizmoClip.text !== undefined) {
       const box = measureTextBox(gizmoClip, width, height)
       return box

@@ -22,6 +22,17 @@ import { Separator } from '@/components/ui/separator'
 import { toast } from '@/hooks/use-toast'
 
 import { EditorCommandError } from '@/lib/editor/commands'
+import { FontPicker } from '@/components/editor/FontPicker'
+import { TEXT_ANIMATION_PRESETS, getTextAnimationPreset } from '@/lib/editor/text-animations'
+import { SHAPE_KINDS, shapeKindLabel } from '@/lib/editor/shapes'
+import {
+  SHAPE_POINTS_MAX,
+  SHAPE_POINTS_MIN,
+  SHAPE_RADIUS_MAX,
+  SHAPE_STROKE_DEFAULT,
+  SHAPE_STROKE_MAX,
+  SHAPE_STROKE_WIDTH_DEFAULT,
+} from '@/lib/editor/constants'
 import {
   createBuiltinTextPresets,
   findClip,
@@ -45,8 +56,16 @@ import {
   TRANSITION_MAX,
   TRANSITION_MIN,
 } from '@/lib/editor/constants'
-import { useEditorStore } from '@/lib/editor/store'
-import type { BlendMode, Clip, Doc, TextPreset, TextStyle, Transition } from '@/lib/editor/types'
+import { isTransientActive, useEditorStore } from '@/lib/editor/store'
+import type {
+  BlendMode,
+  Clip,
+  Doc,
+  ShapeKind,
+  TextPreset,
+  TextStyle,
+  Transition,
+} from '@/lib/editor/types'
 import { BLEND_MODES } from '@/lib/editor/effects'
 import { useState } from 'react'
 import {
@@ -181,10 +200,14 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
   // twin for an A/V pair, otherwise the clip itself. `clipCarriesSound` is the
   // one carrier rule, so a silent video no longer gets a gain/mute section.
   const hasAudio = clipCarriesSound(doc, audioClip)
-  // Opacity applies to every visually rendered clip (video/image/text). A
+  // Opacity applies to every visually rendered clip (video/image/text/shape). A
   // compound clip renders its nested sequence, so it counts as visual too,
   // matching the monitor gizmo's own visual rule.
-  const isVisual = isText || clip.sequenceId !== undefined || (!!asset && asset.kind !== 'audio')
+  const isVisual =
+    isText ||
+    clip.shape !== undefined ||
+    clip.sequenceId !== undefined ||
+    (!!asset && asset.kind !== 'audio')
   // Rotation follows the Effect Controls contract: a clip carrying a rotation
   // curve edits the keyframe at the playhead, because the static field has no
   // visible effect while the curve exists. Without a curve the static wins.
@@ -507,7 +530,7 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                   </div>
                 )
               })}
-              {!isText && (
+              {!isText && !clip.shape && (
                 <div>
                   <div className="mb-1.5 flex items-center justify-between">
                     <Label htmlFor="clip-lut" className="text-xs">
@@ -588,6 +611,7 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
       )}
 
       {isText && <TextFields clip={clip} />}
+      {clip.shape && <ShapeFields clip={clip} />}
 
       <Section title="Transition out">
         {nextClip ? (
@@ -943,12 +967,184 @@ function VolumeSection({ clip, audioClip, doc }: { clip: Clip; audioClip: Clip; 
   )
 }
 
+/**
+ * Shape controls (0.25.0): kind, fill, optional stroke, rectangle radius, and
+ * star/polygon point count. Every edit goes through `setClipShape`, which
+ * re-sanitizes the whole shape, so switching kind cannot leave a stale field
+ * the renderer would ignore.
+ */
+function ShapeFields({ clip }: { clip: Clip }) {
+  const apply = useEditorStore((s) => s.apply)
+  const applyTransient = useEditorStore((s) => s.applyTransient)
+  const beginTransient = useEditorStore((s) => s.beginTransient)
+  const commitTransient = useEditorStore((s) => s.commitTransient)
+  const shape = clip.shape!
+  const setShape = (patch: Partial<typeof shape>) =>
+    apply({
+      type: 'setClipShape',
+      clipId: clip.id,
+      shape: { ...shape, ...patch },
+    })
+  // Live color picking previews through a gesture slot opened on focus and
+  // commits one history entry on blur, so undo returns to the pre-edit color.
+  const setShapeTransient = (patch: Partial<typeof shape>) =>
+    applyTransient({
+      type: 'setClipShape',
+      clipId: clip.id,
+      shape: { ...shape, ...patch },
+    })
+  return (
+    <>
+      <Separator />
+      <Section title="Shape">
+        <div data-testid="clip-shape-section" className="space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label htmlFor="shape-kind" className="text-xs">
+                Kind
+              </Label>
+              <Select
+                value={shape.kind}
+                onValueChange={(value) => setShape({ kind: value as ShapeKind })}
+              >
+                <SelectTrigger id="shape-kind" className="mt-1 h-8" aria-label="Shape kind">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SHAPE_KINDS.map((kind) => (
+                    <SelectItem key={kind} value={kind}>
+                      {shapeKindLabel(kind)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label htmlFor="shape-fill" className="text-xs">
+                Fill
+              </Label>
+              <Input
+                id="shape-fill"
+                type="color"
+                aria-label="Shape fill"
+                value={shape.fill}
+                onFocus={() => beginTransient()}
+                onChange={(e) => setShapeTransient({ fill: e.target.value })}
+                onBlur={() => commitTransient()}
+                className="mt-1 h-8 w-full cursor-pointer p-0.5"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label className="text-xs">Stroke</Label>
+              <label className="mt-1 flex h-8 items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  aria-label="Enable shape stroke"
+                  checked={shape.stroke !== undefined}
+                  onChange={(e) =>
+                    setShape(
+                      e.target.checked
+                        ? {
+                            stroke: SHAPE_STROKE_DEFAULT,
+                            strokeWidth: SHAPE_STROKE_WIDTH_DEFAULT,
+                          }
+                        : { stroke: undefined, strokeWidth: undefined },
+                    )
+                  }
+                  className="accent-foreground"
+                />
+                Draw outline
+              </label>
+            </div>
+            {shape.stroke !== undefined && (
+              <div>
+                <Label htmlFor="shape-stroke" className="text-xs">
+                  Stroke color
+                </Label>
+                <Input
+                  id="shape-stroke"
+                  type="color"
+                  aria-label="Shape stroke color"
+                  value={shape.stroke}
+                  onFocus={() => beginTransient()}
+                  onChange={(e) => setShapeTransient({ stroke: e.target.value })}
+                  onBlur={() => commitTransient()}
+                  className="mt-1 h-8 w-full cursor-pointer p-0.5"
+                />
+              </div>
+            )}
+          </div>
+
+          {shape.stroke !== undefined && (
+            <NumberField
+              label="Stroke width (px)"
+              value={shape.strokeWidth ?? SHAPE_STROKE_WIDTH_DEFAULT}
+              min={1}
+              max={SHAPE_STROKE_MAX}
+              step={1}
+              onCommit={(value) => setShape({ strokeWidth: value })}
+            />
+          )}
+
+          {shape.kind === 'rectangle' && (
+            <NumberField
+              label="Corner radius (px)"
+              value={shape.radius ?? 0}
+              min={0}
+              max={SHAPE_RADIUS_MAX}
+              step={2}
+              onCommit={(value) => setShape({ radius: value })}
+            />
+          )}
+
+          {(shape.kind === 'star' || shape.kind === 'polygon') && (
+            <NumberField
+              label="Points"
+              value={shape.points ?? 5}
+              min={SHAPE_POINTS_MIN}
+              max={SHAPE_POINTS_MAX}
+              step={1}
+              onCommit={(value) => setShape({ points: value })}
+            />
+          )}
+
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            Shapes use the same position, scale, rotation, flip, opacity, blend, and keyframes as
+            other visual clips. Select one in the monitor to use the transform gizmo.
+          </p>
+        </div>
+      </Section>
+    </>
+  )
+}
+
 function TextFields({ clip }: { clip: Clip }) {
   const apply = useEditorStore((s) => s.apply)
+  const applyTransient = useEditorStore((s) => s.applyTransient)
+  const beginTransient = useEditorStore((s) => s.beginTransient)
+  const commitTransient = useEditorStore((s) => s.commitTransient)
   const style = clip.style!
+
+  // Typing opens one gesture slot on focus and commits it on blur, so a whole
+  // edit session is one undo entry that restores the pre-edit text (the plain
+  // applyTransient/apply pair would record the last transient frame, leaving
+  // undo with nothing to revert). An unmount commits too: otherwise the next
+  // edit would roll the uncommitted text back to the focus snapshot.
+  useEffect(() => () => useEditorStore.getState().commitTransient(), [])
 
   const setStyle = (patch: Partial<TextStyle>) =>
     apply({ type: 'setTextStyle', clipId: clip.id, style: patch })
+  // Slider frames preview through a gesture opened on the FIRST frame, so the
+  // commit's rollback restores the pre-drag value: undo after a drag returns to
+  // where the slider started, not to its last preview frame. The commit below
+  // uses `apply`, which rolls the open gesture back to its base first.
+  const setStyleTransient = (patch: Partial<TextStyle>) => {
+    if (!isTransientActive()) beginTransient()
+    applyTransient({ type: 'setTextStyle', clipId: clip.id, style: patch })
+  }
 
   return (
     <>
@@ -957,18 +1153,25 @@ function TextFields({ clip }: { clip: Clip }) {
           aria-label="Text content"
           value={clip.text ?? ''}
           rows={3}
+          onFocus={() => beginTransient()}
           onChange={(e) =>
-            apply({
+            applyTransient({
               type: 'setTextContent',
               clipId: clip.id,
               text: e.target.value,
             })
           }
+          onBlur={() => commitTransient()}
         />
       </Section>
       <Separator />
       <Section title="Text style">
         <div className="space-y-3">
+          <FontPicker
+            clipId={clip.id}
+            value={style.fontFamily}
+            onSelect={(family) => setStyle({ fontFamily: family })}
+          />
           <div className="grid grid-cols-2 gap-2">
             <NumberField
               label="Size (px)"
@@ -986,7 +1189,9 @@ function TextFields({ clip }: { clip: Clip }) {
                 id="text-color"
                 type="color"
                 value={style.color}
-                onChange={(e) => setStyle({ color: e.target.value })}
+                onFocus={() => beginTransient()}
+                onChange={(e) => setStyleTransient({ color: e.target.value })}
+                onBlur={() => commitTransient()}
                 className="mt-1 h-8 w-full cursor-pointer p-0.5"
               />
             </div>
@@ -1049,7 +1254,9 @@ function TextFields({ clip }: { clip: Clip }) {
               min={0}
               max={1}
               step={0.01}
-              onValueChange={([v]) => setStyle({ x: v })}
+              onValueChange={([v]) => setStyleTransient({ x: v })}
+              onValueCommit={([v]) => setStyle({ x: v })}
+              onBlur={() => commitTransient()}
             />
             <div className="mb-1 mt-2 flex items-center justify-between">
               <Label className="text-xs">Position Y</Label>
@@ -1061,7 +1268,9 @@ function TextFields({ clip }: { clip: Clip }) {
               min={0}
               max={1}
               step={0.01}
-              onValueChange={([v]) => setStyle({ y: v })}
+              onValueChange={([v]) => setStyleTransient({ y: v })}
+              onValueCommit={([v]) => setStyle({ y: v })}
+              onBlur={() => commitTransient()}
             />
           </div>
         </div>
@@ -1069,7 +1278,76 @@ function TextFields({ clip }: { clip: Clip }) {
       <Separator />
       <TextPresetFields clip={clip} />
       <Separator />
+      <TextAnimationFields clip={clip} />
+      <Separator />
     </>
+  )
+}
+
+/**
+ * Built-in animated text presets (0.25.0): a command batch of ordinary
+ * keyframes, applied to this text clip. The command refuses when the target
+ * property already has a curve, and the refusal names it here.
+ */
+function TextAnimationFields({ clip }: { clip: Clip }) {
+  const apply = useEditorStore((s) => s.apply)
+  const [presetId, setPresetId] = useState(TEXT_ANIMATION_PRESETS[0].id)
+  const [error, setError] = useState<string | null>(null)
+  const preset = getTextAnimationPreset(presetId) ?? TEXT_ANIMATION_PRESETS[0]
+  const run = () => {
+    setError(null)
+    try {
+      apply({ type: 'applyTextAnimation', clipId: clip.id, presetId: preset.id })
+    } catch (reason) {
+      if (reason instanceof EditorCommandError) setError(reason.message)
+      else throw reason
+    }
+  }
+  return (
+    <Section title="Text animation">
+      <div className="space-y-2">
+        <Select
+          value={preset.id}
+          onValueChange={(value) => {
+            setPresetId(value)
+            setError(null)
+          }}
+        >
+          <SelectTrigger className="h-8" aria-label="Text animation preset">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {TEXT_ANIMATION_PRESETS.map((entry) => (
+              <SelectItem key={entry.id} value={entry.id}>
+                {entry.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-[11px] leading-relaxed text-muted-foreground">{preset.description}</p>
+        <Button
+          type="button"
+          size="sm"
+          className="h-8 w-full"
+          data-testid="apply-text-animation"
+          onClick={run}
+        >
+          Apply animation
+        </Button>
+        {error && (
+          <p
+            role="alert"
+            data-testid="text-animation-error"
+            className="text-[11px] text-destructive"
+          >
+            {error}
+          </p>
+        )}
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          Presets never replace an existing curve. Remove that property's keyframes first.
+        </p>
+      </div>
+    </Section>
   )
 }
 

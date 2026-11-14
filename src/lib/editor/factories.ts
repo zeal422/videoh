@@ -1,4 +1,6 @@
+import { DEFAULT_SHAPE_DURATION } from './constants'
 import { constantTimeScaleRate, integrateKeyframes } from './keyframes'
+import { createShapeStyle } from './shapes'
 import { clamp } from './time'
 import type {
   Clip,
@@ -53,6 +55,18 @@ export function createTextClip(partial: Partial<Clip> = {}): Clip {
     inPoint: 0,
     text: 'Your text here',
     style: createDefaultTextStyle(),
+    ...partial,
+  }
+}
+
+/** A generated shape clip (0.25.0). Callers pass `shape` to choose the kind. */
+export function createShapeClip(partial: Partial<Clip> = {}): Clip {
+  return {
+    id: uid('clip'),
+    start: 0,
+    duration: DEFAULT_SHAPE_DURATION,
+    inPoint: 0,
+    shape: createShapeStyle('rectangle'),
     ...partial,
   }
 }
@@ -484,6 +498,8 @@ export function clipFitsTrack(doc: Doc, clip: Clip, track: Track): boolean {
   // A compound clip renders picture and nowhere else. Checked FIRST: it has no
   // `mediaId`, so the `!asset` gate below would otherwise refuse it everywhere.
   if (clip.sequenceId) return track.kind === 'video'
+  // A shape clip is a generated picture source with no media asset.
+  if (clip.shape) return track.kind === 'video'
   if (track.kind === 'text')
     return typeof clip.text === 'string' && (!!clip.text || clip.isCaption === true)
   const asset = findMedia(doc, clip.mediaId)

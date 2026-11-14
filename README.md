@@ -31,8 +31,10 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/u
   marquee, track targeting, ripple delete, Close Gaps, and Join Clips. A video with audio lands as a linked pair; compound
   clips fold a selection into a reusable nested sequence. The Source monitor marks In/Out for
   insert or overwrite, and sequence and clip markers carry names, eight colors, notes, and snapping.
-- **Text and captions.** Styled text clips with built-in and saved presets, direct dragging in the
-  monitor, SRT import, and an editable Captions panel with SRT/VTT download; captions burn into the MP4.
+- **Text and graphics.** Styled text clips with built-in and uploaded fonts, built-in and saved
+  presets, four animated text presets, six shape primitives, and a bundled local sticker set.
+  Direct dragging in the monitor, SRT import, and an editable Captions panel with SRT/VTT download;
+  captions burn into the MP4.
 - **Effects, keyframes, and color.** Cross-dissolve, dip to black, wipe, slide, and push transitions;
   opacity, sixteen blend modes, crop, chroma key, track mattes, motion blur, per-segment bezier
   easing, color grading, monitor scopes, and a project-level 1D/3D `.cube` LUT library. Preview and
@@ -159,17 +161,19 @@ when the browser has the matching encoder. Sequence Settings offers 16:9, 9:16, 
 21:9 canvas presets that do not move existing clips. Export needs WebCodecs; HEVC and ProRes are
 deliberately not offered, and `Download` buffers the file while `Export to file` streams it to disk.
 
-Project files use `.veproj.json` (version 6; versions 1 to 5 still load, and a v6 file needs this
+Project files use `.veproj.json` (version 7; versions 1 to 6 still load, and a v7 file needs this
 build). Object URLs are stripped. Imported bytes live in OPFS under `<project-id>/<content-hash>`, and
-each asset persists its own hash, so an open restores file handles and preview URLs before the project
-installs. An asset without a hash, or one whose bytes are gone, hydrates as `missing` and relinks by
-matching name or by hand. The project file stores those references, not the media bytes: clearing site
-data, browser eviction, or opening the file on another device leaves assets missing until the original
-files are relinked, so keep the originals or a separate backup. An explicit save and open write an
-immutable claim shard for the hashes that copy may use, and a save refuses rather than publish a shard
-beside lost or unreadable records. Clean Unused Media refuses while another tab has the project open,
-when Web Locks is unavailable, or when a claim is missing, and it never deletes a hash the doc, both
-history slots, or a claim still reaches. Clear All Stored Media needs a second confirmation, removes
+custom font bytes live under `<project-id>/fonts/<content-hash>`; the project file stores metadata and
+content hashes, never the bytes. Each asset persists its own hash, so an open restores file handles
+and preview URLs before the project installs. An asset without a hash, or one whose bytes are gone,
+hydrates as `missing` and relinks by matching name or by hand. The project file stores those
+references, not the media bytes: clearing site data, browser eviction, or opening the file on another
+device leaves assets missing until the original files are relinked, so keep the originals or a
+separate backup. An explicit save and open write an immutable claim shard for the hashes that copy may
+use, and a save refuses rather than publish a shard beside lost or unreadable records. Clean Unused
+Media refuses while another tab has the project open, when Web Locks is unavailable, or when a claim
+is missing, and it never deletes a hash the doc, both history slots, or a claim still reaches. Clear
+All Stored Media needs a second confirmation, removes
 every stored file for the project, waits for an in-flight write, and refuses while another tab has the
 project open or Web Locks are unavailable. Autosave writes to `localStorage` with an 800 ms debounce and
 offers restore on the next visit. The full contracts are in [docs/flows.md](docs/flows.md#export) and
@@ -181,13 +185,13 @@ offers restore on the next visit. The full contracts are in [docs/flows.md](docs
 bun run check          # full gate: format:check → lint → typecheck → test → build
 bun run test           # vitest run (single pass)
 bun run test:coverage  # v8 coverage + thresholds
-bun run battery        # 70-step UI battery (needs agent-browser; reuses :3000 or starts a server)
-SHARDS=4 bun run battery # dev-only four-shard run, same 70 steps
+bun run battery        # 74-step UI battery (needs agent-browser; reuses :3000 or starts a server)
+SHARDS=4 bun run battery # dev-only four-shard run, same 74 steps
 bun run battery:pair   # dev + artifact concurrently (needs a current build and free :3000/:3100)
 PAIR_SHARDS=1 bun run battery:pair # sequential rollback, one session per leg
 ```
 
-Current state: **2616 tests across 113 files, all passing**. Coverage is enforced at 70/60/75/70 over
+Current state: **2743 tests across 120 files, all passing**. Coverage is enforced at 70/60/75/70 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -216,7 +220,7 @@ src/lib/editor/            # state core (commands, store, serialization) + brows
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, landing sections, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 113 test files (2616 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 120 test files (2743 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations

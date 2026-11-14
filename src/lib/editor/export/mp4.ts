@@ -20,6 +20,7 @@ import {
   VideoSampleSource,
   WavOutputFormat,
 } from 'mediabunny'
+import { ensureProjectFontsReady } from '../media/font-store'
 import {
   SOURCE_END_MARGIN,
   clampSourceTime,
@@ -38,6 +39,7 @@ import {
   blitTransformed,
   drawBlendedContain,
   drawContain,
+  drawShapeClip,
   drawTextClip,
   motionPivot,
   paintSoftRectMask,
@@ -129,6 +131,8 @@ export interface ExportFileSink {
 
 export interface ExportOptions {
   onProgress?: (t: number, duration: number) => void
+  /** User-facing fallback warnings (currently missing or corrupt project fonts). */
+  onWarning?: (message: string) => void
   quality?: 'low' | 'medium' | 'high'
   /** Output container. Defaults to mp4. */
   container?: ExportContainer
@@ -489,6 +493,11 @@ function paintExportCore(
   // preview compositor uses, so exported titles match the program monitor.
   if (draw.clip.text !== undefined && draw.clip.style) {
     drawTextClip(ctx, draw.clip, width, height, clamped, filter, transform)
+    return
+  }
+  // Shape clips are generated sources: no decode entry, one shared renderer.
+  if (draw.clip.shape) {
+    drawShapeClip(ctx, draw.clip, width, height, clamped, filter, transform)
     return
   }
   const source = frames.get(draw.clip.id)
@@ -1287,6 +1296,10 @@ export async function exportTimeline(
         'This browser does not support WebCodecs export (use a current Chromium, Edge, Firefox 130+, or Safari 26+)',
       )
     }
+
+    // Export waits for the project's custom fonts before the first frame. A
+    // missing font is reported, never silently swapped mid-render.
+    for (const warning of await ensureProjectFontsReady(doc)) opts.onWarning?.(warning)
 
     const { width, height, fps } = doc.project
     const outputSize = resolveOutputSize(opts.width, opts.height, { width, height })

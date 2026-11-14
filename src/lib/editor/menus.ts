@@ -56,6 +56,13 @@ export type MenuActionId =
   | 'marker.next'
   | 'marker.previous'
   | 'graphics.newText'
+  | 'graphics.addShape.rectangle'
+  | 'graphics.addShape.ellipse'
+  | 'graphics.addShape.triangle'
+  | 'graphics.addShape.star'
+  | 'graphics.addShape.polygon'
+  | 'graphics.addShape.heart'
+  | 'graphics.stickers'
   | 'view.zoomIn'
   | 'view.zoomOut'
   | 'view.zoomFit'
@@ -468,6 +475,50 @@ export const MENU_SPECS: MenuSpec[] = [
         label: 'New Text Layer at Playhead',
         action: 'graphics.newText',
         shortcut: 'T',
+      },
+      { id: 'graphics.sep1', kind: 'separator' },
+      {
+        id: 'graphics.addShape.rectangle',
+        kind: 'item',
+        label: 'Add Rectangle at Playhead',
+        action: 'graphics.addShape.rectangle',
+      },
+      {
+        id: 'graphics.addShape.ellipse',
+        kind: 'item',
+        label: 'Add Ellipse at Playhead',
+        action: 'graphics.addShape.ellipse',
+      },
+      {
+        id: 'graphics.addShape.triangle',
+        kind: 'item',
+        label: 'Add Triangle at Playhead',
+        action: 'graphics.addShape.triangle',
+      },
+      {
+        id: 'graphics.addShape.star',
+        kind: 'item',
+        label: 'Add Star at Playhead',
+        action: 'graphics.addShape.star',
+      },
+      {
+        id: 'graphics.addShape.polygon',
+        kind: 'item',
+        label: 'Add Polygon at Playhead',
+        action: 'graphics.addShape.polygon',
+      },
+      {
+        id: 'graphics.addShape.heart',
+        kind: 'item',
+        label: 'Add Heart at Playhead',
+        action: 'graphics.addShape.heart',
+      },
+      { id: 'graphics.sep2', kind: 'separator' },
+      {
+        id: 'graphics.stickers',
+        kind: 'item',
+        label: 'Stickers…',
+        action: 'graphics.stickers',
       },
     ],
   },

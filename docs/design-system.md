@@ -174,7 +174,7 @@ them:
 - The program monitor and transport bar use fixed zinc (`bg-zinc-950`, `border-zinc-800`,
   `text-zinc-300`) so the preview canvas reads as a monitor, not a page.
 - **The clip palette is intentionally colour-coded by kind**, mirroring Premiere-style track colours:
-  - video → emerald, audio → amber, text → violet
+  - video → emerald, audio → amber, text → violet, shape → sky
   - selection ring and playhead → rose; snap guide → amber-300
   - drop indicators take the dragged media's kind colour (`+ V2` emerald, `+ A2` amber)
 - **Filmstrip layer.** Video and image clips paint a `Filmstrip` layer at the bottom of the clip
@@ -191,6 +191,19 @@ them:
   the clip's position, scale, rotation, and the measured text box for text clips; hit radii are
   computed in project pixels from the canvas size, so the overlay stays usable at any monitor scale.
   A locked lane renders no gizmo at all.
+- **Font picker and upload (0.25.0).** The text Inspector's Font control is a standard shadcn Select
+  with a compact outline Upload button beside it. Built-in families group above project fonts; the
+  trigger shows the display name, never the generated CSS family. The upload dialog is a small
+  `sm:max-w-md` form (file, display name, weight, style) with one primary Upload action and a ghost
+  Cancel; errors use the existing destructive toast. No font-manager page.
+- **Shape controls (0.25.0).** The Shape section uses the same 2-column grid as Text style: kind and
+  fill in the first row, an outline checkbox plus stroke color, then stroke width, corner radius
+  (rectangle), or point count (star/polygon). Controls reuse `NumberField`, `Input type=color`, and
+  the standard Select, so focus, locked-lane notices, and undo behavior match every other Inspector
+  section. Shape clips use the sky palette on the timeline with their kind as the label.
+- **Sticker picker (0.25.0).** A compact dialog with a 3-column grid of bundled SVGs on the muted
+  surface, a per-tile spinner while the import runs, and one ghost Close. The tiles are real buttons
+  with descriptive accessible names; the dialog never links out or loads a remote image.
 - **Automation envelopes.** Audio-bearing clips paint volume as a 1.5px white line with
   `stroke-white/90` and 6px white dots inside 12px hit targets; picture clips use the same component
   for opacity, mapped 0..100% instead of the dB domain. The curve is deliberately not the selection

@@ -63,7 +63,7 @@ These are out of scope for this sequence and must not be smuggled into a release
 | 0.27.0  | Capture: voiceover, screen and camera recording                                 | 8, no bump | 0.26.0   | [PLAN_0.27.0_CAPTURE.md](PLAN_0.27.0_CAPTURE.md)             |
 | 0.28.0  | Project bundle: ZIP with project, media, and fonts                              | 8, no bump | 0.27.0   | [PLAN_0.28.0_BUNDLE.md](PLAN_0.28.0_BUNDLE.md)               |
 
-Releases 0.21.0 through 0.24.0 are implemented. Releases 0.25.0 through 0.28.0 remain planned and are not implemented by this plan.
+Releases 0.21.0 through 0.25.0 are implemented. Releases 0.26.0 through 0.28.0 remain planned and are not implemented by this plan.
 
 The table's "Previous" column is release order, not a hard dependency. Section 5 lists the hard
 dependencies: 0.27.0 and 0.28.0 are sequenced after 0.26.0, but they only require 0.23.0 and, for

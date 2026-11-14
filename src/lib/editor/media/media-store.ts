@@ -27,6 +27,9 @@ const TEMPORARY_PREFIX = '.tmp-'
 const QUARANTINE_PREFIX = '.quarantine-'
 /** Metadata entries the hash iterator must never treat as media. */
 const SIDECAR_SUFFIX = '.json'
+/** Font bytes live in a subdirectory so the two content namespaces never mix. */
+export const FONT_NAMESPACE = 'fonts'
+export type StoreNamespace = 'media' | typeof FONT_NAMESPACE
 
 export class MediaStoreError extends Error {
   constructor(message: string) {
@@ -146,6 +149,7 @@ function temporaryName(kind: 'tmp' | 'quarantine'): string {
 function isEntryNameMetadata(name: string): boolean {
   return (
     name === CLAIMS_DIR ||
+    name === FONT_NAMESPACE ||
     name.startsWith(TEMPORARY_PREFIX) ||
     name.startsWith(QUARANTINE_PREFIX) ||
     // A sidecar belongs to its hash; it is never a media entry itself.
@@ -189,6 +193,26 @@ async function projectDirectory(
   } catch (error) {
     if (!create && isNotFound(error)) return null
     throw new MediaStoreError('Media storage could not open the project')
+  }
+}
+
+/**
+ * The directory holding one content namespace. Media keeps the project root
+ * (v1 layout, so 0.23.0 stores keep loading); fonts live in `fonts/`. Both
+ * namespaces share the same content-hash keys and claim shards.
+ */
+async function namespaceDirectory(
+  projectId: string,
+  namespace: StoreNamespace,
+  create: boolean,
+): Promise<MediaStoreDirectory | null> {
+  const dir = await projectDirectory(projectId, create)
+  if (!dir || namespace === 'media') return dir
+  try {
+    return await dir.getDirectoryHandle(FONT_NAMESPACE, create ? { create: true } : undefined)
+  } catch (error) {
+    if (!create && isNotFound(error)) return null
+    throw new MediaStoreError('Media storage could not open the font namespace')
   }
 }
 
@@ -386,10 +410,11 @@ async function readSidecar(
 export async function readMediaFile(
   projectId: string,
   contentHash: string,
+  namespace: StoreNamespace = 'media',
 ): Promise<StoredMediaFile | null> {
   assertProjectId(projectId)
   assertContentHash(contentHash)
-  const dir = await projectDirectory(projectId, false)
+  const dir = await namespaceDirectory(projectId, namespace, false)
   if (!dir) return null
   const file = await readFileHandle(dir, contentHash)
   if (!file) return null
@@ -413,10 +438,11 @@ export async function writeMediaFile(
   projectId: string,
   contentHash: string,
   file: Blob,
+  namespace: StoreNamespace = 'media',
 ): Promise<void> {
   assertProjectId(projectId)
   assertContentHash(contentHash)
-  const dir = await projectDirectory(projectId, true)
+  const dir = await namespaceDirectory(projectId, namespace, true)
   if (!dir) throw new MediaStoreError('Media storage could not create the project')
   const bytes = await file.arrayBuffer()
   if ((await sha256Hex(bytes)) !== contentHash) {
@@ -523,10 +549,13 @@ async function writeSidecar(
   }
 }
 
-/** Lists stored media entries for a project. Damaged entries are included; reads reject them. */
-export async function listMediaFiles(projectId: string): Promise<StoredHashEntry[]> {
+/** Lists stored entries for a project namespace. Damaged entries are included; reads reject them. */
+export async function listMediaFiles(
+  projectId: string,
+  namespace: StoreNamespace = 'media',
+): Promise<StoredHashEntry[]> {
   assertProjectId(projectId)
-  const dir = await projectDirectory(projectId, false)
+  const dir = await namespaceDirectory(projectId, namespace, false)
   if (!dir) return []
   const entries: StoredHashEntry[] = []
   for (const name of await directoryNames(dir)) {
@@ -540,10 +569,14 @@ export async function listMediaFiles(projectId: string): Promise<StoredHashEntry
 }
 
 /** Deletes one stored entry and its sidecar. A missing entry is not an error. */
-export async function deleteMediaFile(projectId: string, contentHash: string): Promise<void> {
+export async function deleteMediaFile(
+  projectId: string,
+  contentHash: string,
+  namespace: StoreNamespace = 'media',
+): Promise<void> {
   assertProjectId(projectId)
   assertContentHash(contentHash)
-  const dir = await projectDirectory(projectId, false)
+  const dir = await namespaceDirectory(projectId, namespace, false)
   if (!dir) return
   await removeEntryQuiet(dir, contentHash)
   await removeEntryQuiet(dir, sidecarName(contentHash))
@@ -660,25 +693,35 @@ export async function deleteMediaClaim(projectId: string, claimId: string): Prom
 // cleanup
 
 /**
- * Deletes unclaimed, unreferenced media entries and their sidecars, plus temp
- * and quarantine leftovers. `keepHashes` is the caller's live reference set
- * (doc, both history stacks, and the autosave slot); claimed hashes are added
- * here. A missing or unreadable claims directory deletes no content hash.
+ * Deletes unclaimed, unreferenced entries and their sidecars across both the
+ * media and font namespaces, plus temp and quarantine leftovers. `keepHashes`
+ * is the caller's live reference set (doc, both history stacks, and the
+ * autosave slot); claimed hashes are added here. A missing or unreadable claims
+ * directory deletes no content hash.
  */
 export async function cleanProjectMedia(
   projectId: string,
   keepHashes: readonly string[],
 ): Promise<MediaCleanupResult> {
   assertProjectId(projectId)
-  const dir = await projectDirectory(projectId, false)
-  if (!dir) {
+  const mediaDir = await projectDirectory(projectId, false)
+  if (!mediaDir) {
     return { deleted: [], reclaimed: 0, claimsUnreadable: false, removedTemporary: 0 }
   }
-  const names = await directoryNames(dir)
+  const fontDir = await namespaceDirectory(projectId, FONT_NAMESPACE, false)
+  const dirs = fontDir ? [mediaDir, fontDir] : [mediaDir]
+  const entries: { dir: MediaStoreDirectory; hash: string; size: number }[] = []
   let removedTemporary = 0
-  for (const name of names) {
-    if (name.startsWith(TEMPORARY_PREFIX) || name.startsWith(QUARANTINE_PREFIX)) {
-      if (await removeEntryQuiet(dir, name, { recursive: true })) removedTemporary += 1
+  for (const dir of dirs) {
+    const names = await directoryNames(dir)
+    for (const name of names) {
+      if (name.startsWith(TEMPORARY_PREFIX) || name.startsWith(QUARANTINE_PREFIX)) {
+        if (await removeEntryQuiet(dir, name, { recursive: true })) removedTemporary += 1
+        continue
+      }
+      if (!isValidContentHash(name)) continue
+      const file = await readFileHandle(dir, name)
+      entries.push({ dir, hash: name, size: file?.size ?? 0 })
     }
   }
   const claims = await readMediaClaims(projectId)
@@ -687,21 +730,24 @@ export async function cleanProjectMedia(
   }
   const keep = new Set(keepHashes.filter(isValidContentHash))
   for (const hash of claims) keep.add(hash)
-  const deleted: string[] = []
+  const deleted = new Set<string>()
   let reclaimed = 0
-  for (const name of names) {
-    if (!isValidContentHash(name) || keep.has(name)) continue
-    const file = await readFileHandle(dir, name)
-    const size = file?.size ?? 0
+  for (const entry of entries) {
+    if (keep.has(entry.hash)) continue
     // Strict: a failed delete must surface instead of reading as "nothing to
     // clean" downstream. Temp and quarantine sweeping above stays best-effort.
-    if (await removeEntryStrict(dir, name)) {
-      deleted.push(name)
-      reclaimed += size
+    if (await removeEntryStrict(entry.dir, entry.hash)) {
+      deleted.add(entry.hash)
+      reclaimed += entry.size
     }
-    await removeEntryStrict(dir, sidecarName(name))
+    await removeEntryStrict(entry.dir, sidecarName(entry.hash))
   }
-  return { deleted, reclaimed, claimsUnreadable: false, removedTemporary }
+  return {
+    deleted: [...deleted].sort(),
+    reclaimed,
+    claimsUnreadable: false,
+    removedTemporary,
+  }
 }
 
 /**
@@ -715,11 +761,23 @@ export async function clearProjectMedia(projectId: string): Promise<MediaClearRe
   if (!dir) return { deleted: 0, reclaimed: 0 }
   let deleted = 0
   let reclaimed = 0
+  // Fonts live in their own directory; count and remove it before the root
+  // sweep so its files are never mistaken for unknown root leftovers.
+  const fontDir = await namespaceDirectory(projectId, FONT_NAMESPACE, false)
+  if (fontDir) {
+    for (const name of await directoryNames(fontDir)) {
+      if (!isValidContentHash(name)) continue
+      deleted += 1
+      reclaimed += await entrySizeQuiet(fontDir, name)
+    }
+    await removeEntryStrict(dir, FONT_NAMESPACE, { recursive: true })
+  }
   for (const name of await directoryNames(dir)) {
     if (name === CLAIMS_DIR) {
       await removeEntryStrict(dir, name, { recursive: true })
       continue
     }
+    if (name === FONT_NAMESPACE) continue
     if (isValidContentHash(name)) {
       const file = await readFileHandle(dir, name)
       const size = file?.size ?? 0
@@ -739,10 +797,11 @@ export async function clearProjectMedia(projectId: string): Promise<MediaClearRe
   return { deleted, reclaimed }
 }
 
-/** Bytes stored for one project. */
+/** Bytes stored for one project, across media and fonts. */
 export async function projectMediaUsage(projectId: string): Promise<number> {
-  const entries = await listMediaFiles(projectId)
-  return entries.reduce((total, entry) => total + entry.size, 0)
+  const media = await listMediaFiles(projectId)
+  const fonts = await listMediaFiles(projectId, FONT_NAMESPACE)
+  return [...media, ...fonts].reduce((total, entry) => total + entry.size, 0)
 }
 
 /** Origin storage estimate, or null when the browser cannot report one. */

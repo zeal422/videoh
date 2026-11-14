@@ -284,7 +284,7 @@ describe('color flow: one builder for both render paths', () => {
     // effect-composite rotation pivot (`motionPivot`) rides the same import so
     // text rotates around its measured box center in both renders.
     expect(mp4).toMatch(
-      /import \{\s*blitTransformed,\s*drawBlendedContain,\s*drawContain,\s*drawTextClip,\s*motionPivot,\s*paintSoftRectMask,\s*paintSpatialMask,?\s*\} from '\.\.\/playback\/compositor'/,
+      /import \{\s*blitTransformed,\s*drawBlendedContain,\s*drawContain,\s*drawShapeClip,\s*drawTextClip,\s*motionPivot,\s*paintSoftRectMask,\s*paintSpatialMask,?\s*\} from '\.\.\/playback\/compositor'/,
     )
     expect(mp4).not.toMatch(/applyLut3d\(/)
     expect(mp4).toMatch(/findLut\(doc\.project\.luts, draw\.clip\.lutId\)/)

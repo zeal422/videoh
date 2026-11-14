@@ -44,6 +44,16 @@ describe('preview panel layout wiring', () => {
     expect(shell.indexOf('id="source"')).toBeLessThan(shell.indexOf('id="preview"'))
   })
 
+  it('repaints the monitor once a project font load lands', () => {
+    const shell = read('src/components/editor/EditorShell.tsx')
+    // Both activation paths (initial mount and a cross-project undo) must chain
+    // the repaint. A bare fire-and-forget activation leaves a paused monitor
+    // showing the Arial fallback frame until the user seeks or edits.
+    const chained =
+      shell.match(/activateProjectFonts\([^\n]*\)\.then\(refreshPausedPreview\)/g) ?? []
+    expect(chained).toHaveLength(2)
+  })
+
   it('keeps the transport row fixed-height and shrink-0 (always visible)', () => {
     const panel = read('src/components/editor/PreviewPanel.tsx')
     expect(panel).toMatch(/h-12[^"]*shrink-0|shrink-0[^"]*h-12/)

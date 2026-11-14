@@ -5,6 +5,53 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.25.0] - 2026-11-13
+
+### Added
+
+- The text Inspector gains a Font control listing the built-in system families and the project's uploaded fonts. Selecting writes the existing `TextStyle.fontFamily`; a project font's display name can change without changing the generated CSS family its clips reference.
+- Custom font upload accepts WOFF2, WOFF, TTF, and OTF files up to 8 MB. The file is checked by extension and header, hashed, staged as a `FontFace` that must load, and stored in the OPFS `fonts/<content-hash>` namespace before the font entry and clip family commit as one undo step.
+- Project fonts load before the first preview composite and before export. A missing or corrupt file warns and falls back to Arial instead of failing the load. A project switch removes the previous project's faces before registering the new set.
+- Removing a font leaves its bytes for Clean Unused Media and refuses while any text clip, compound text clip, or saved title preset still names the family. Undo restores the entry, and the active face keeps rendering.
+- Four built-in animated text presets (Fade In, Slide Up, Pop, Slow Reveal) write ordinary opacity, position, or scale keyframes with documented easing. Applying refuses when a target property already has a curve and names that property.
+- Shape clips support rectangle, ellipse, triangle, star, polygon, and heart, with fill, optional stroke color and width, rectangle corner radius, and star/polygon point count. Shapes use the normal transform, opacity, blend, effect, and keyframe surface, render through one shared path in preview and export, and take their gizmo and rotation origin from the generated path bounds. Real-path hit testing misses a triangle's empty corners and a star's notches.
+- A bundled sticker picker inserts six local SVG stickers through the normal image import, so each gets a thumbnail, content hash, OPFS persistence, and an image clip at the playhead as one undo step. Nothing contacts a remote host.
+- The Graphics menu gains the six shape insertion actions and the sticker picker. The Clip Inspector gains the Shape section and the Text Inspector gains the animation presets.
+
+### Changed
+
+- The project format moves to version 7. `Project.fonts` carries validated font metadata and `Clip.shape` carries a parameterized shape. A v6 project loads with no font library and no shapes, and a v7 file is refused by an older build.
+- Hydration validates font ids, display names, generated families, content hashes, weights, styles, and duplicate ids. A malformed font entry drops with one warning; a duplicate id refuses the file. A CSS family that was not generated from the font id is rejected.
+- Hydration validates shape kind, strict `#rrggbb` colors, stroke width, radius, and point count. A malformed shape clip drops with one warning. A shape that also carries media, text, a caption flag, a compound reference, a link, or retiming fields refuses the file.
+- `setTextStyle` re-validates a font family through the shared safe CSS stack grammar, and `Clip.shape` clips are refused on text and audio tracks.
+- Clean Unused Media, the live reference set, claim shards, storage usage, and Clear All Stored Media include the font namespace, so font bytes are protected and reclaimed by the same rules as media.
+- Export waits for the project's fonts and reports a missing font as a warning instead of silently swapping it mid-render.
+- The battery grows to 74 steps: a star shape with its path bounds and gizmo, a bundled sticker imported to the timeline, a text animation that writes a curve, and the built-in font picker.
+
+### Fixed
+
+- A background project-font load racing the export/preview retry no longer leaves an orphaned face: registering a family evicts the previously registered face first, so a later project switch removes it and a next project reusing the family renders its own bytes.
+- Removing a project font now refuses when a text clip or saved preset names the family in a different letter case: canvas resolves families case-insensitively, so the guard compares folded on both sides.
+- Starting an export no longer risks silent Arial fallbacks from a mid-export project switch: a keyboard undo that crosses projects (or a pending open installing) cancels the running export instead of swapping the font registry underneath it.
+- A file export whose project changes while the save picker or createWritable() is pending no longer starts: the stale snapshot would load its fonts into the registry the live project owns, so the export stops and the unused stream is aborted.
+- A translucent shape no longer double-applies its alpha where the stroke overlaps the fill: the shape paints at full opacity onto a scratch surface and composites once at the requested alpha.
+- A font whose stored bytes fail to read warns and falls back to Arial instead of failing the project open or export that triggered the load.
+- Uploading an oversized font is refused from its reported size before the bytes are read into memory.
+- Shape clips now refuse a 3D LUT at both the command and hydration boundaries instead of storing a reference the renderer would ignore.
+- The program monitor repaints when a project's fonts finish loading, so a paused frame no longer keeps the Arial fallback metrics after an open or a cross-project undo.
+- A clip font size is clamped at hydration like a saved preset, so a finite-but-wild value in a project file cannot reach the canvas font or the shadow math.
+- Typing in the Inspector's text field, or dragging a color picker, is one undo entry for the whole edit session instead of one per change event.
+- Uploaded fonts can now be renamed and removed from the Inspector's font manager; removal still refuses while a clip or preset uses the family and names it.
+- A font upload holds the media reservation across the whole read and parse, not only around the write, so a clean cannot run between them.
+- A same-family font commit evicts the previous face like a normal registration, so a re-upload cannot leave two faces answering one family.
+- A sticker URL uses only the file's basename and a sticker response must be an image within the size cap; the picker's tiles also support arrow-key focus.
+- The docs now match the shipped behavior: the save contract is version 7 and mentions the font library, the seven 0.25.0 inventory rows sit in the inventory table, `media/stickers.ts` is in the coverage set, and the battery references say 74 steps.
+- Reinstalling the same saved project during an export now cancels it: the export tracks the install generation (`projectEpoch`), not only the project id, so swapped font faces cannot silently change the running render.
+- A click inside the Inspector text field no longer commits the edit gesture: the gesture is pointerless and now ends only on blur, so typing around a caret click stays one undo entry.
+- The text position sliders commit from their pre-drag value, so one undo returns to where the drag started instead of its last preview frame.
+- Removing a font compares parsed family tokens across the CSS stack: a reference that keeps the generated family with different fallbacks, quoting, or case still blocks removal, while a clip on plain Arial no longer blocks an unrelated font.
+- Discarding a staged font upload no longer deletes the active face tracked for the same family, so a later project switch still unregisters the live face instead of orphaning it.
+
 ## [0.24.0] - 2026-11-13
 
 ### Added

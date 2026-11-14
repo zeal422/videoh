@@ -49,7 +49,7 @@ const REFUSALS: Record<MediaCleanRefusal, string> = {
   unclaimed:
     'This project opened without a saved-copy record. Save the project once, then clean again.',
   claims:
-    'The saved-copy records are missing or unreadable, so stored media cannot be deleted safely.',
+    'The saved-copy records are missing or unreadable, so stored media and fonts cannot be deleted safely.',
   busy: 'Another tab has this project open. Close it, then try again.',
   changed: 'The open project changed before the clean ran, so nothing was deleted.',
 }
@@ -185,8 +185,8 @@ export function StorageDialog({
             count > 0 ? `Reclaimed ${formatBytes(outcome.report.reclaimed)}` : 'Nothing to clean',
           description:
             count > 0
-              ? `${count} unused media file${count === 1 ? '' : 's'} removed from this project's storage.`
-              : 'Every stored media file is still referenced.',
+              ? `${count} unused stored file${count === 1 ? '' : 's'} removed from this project's storage.`
+              : 'Every stored media or font file is still referenced.',
         })
       } else {
         toast({
@@ -247,7 +247,7 @@ export function StorageDialog({
         description:
           result.deleted > 0
             ? 'Every asset becomes offline on reload until you relink it. Saved copies of this project lose their media.'
-            : 'No stored media was found for this project.',
+            : 'No stored media or fonts were found for this project.',
       })
     } catch (error) {
       toast({

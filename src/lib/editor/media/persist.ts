@@ -206,7 +206,16 @@ export async function listUnusedMedia(
 ): Promise<UnusedMediaListing> {
   if (!isMediaStoreSupported()) return { candidates: [], reclaimed: 0, blocked: false }
   try {
-    const stored = await listMediaFiles(projectId)
+    // Media and font bytes share the reference/claim sets and the clean action,
+    // so the listing unions both namespaces (one hash used by both counts once).
+    const byHash = new Map<string, number>()
+    for (const entry of [
+      ...(await listMediaFiles(projectId)),
+      ...(await listMediaFiles(projectId, 'fonts')),
+    ]) {
+      byHash.set(entry.hash, (byHash.get(entry.hash) ?? 0) + entry.size)
+    }
+    const stored = [...byHash].map(([hash, size]) => ({ hash, size }))
     const claimed = await readMediaClaims(projectId)
     const plan = planMediaCleanup({ stored, referenced, claimed })
     return { candidates: plan.candidates, reclaimed: plan.reclaimed, blocked: plan.blocked }

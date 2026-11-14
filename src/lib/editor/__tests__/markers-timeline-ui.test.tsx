@@ -418,10 +418,10 @@ describe('static-source locks (stacking, mount points)', () => {
   // markers-keyboard.test.tsx through the real window listener; a static
   // string check here would pass against a wrong mapping, so there is none.
 
-  it('the schema is v6 and hydrates marker arrays', () => {
+  it('the schema is v7 and hydrates marker arrays', () => {
     // v5 added the media content hash (0.23.0); the literal is pinned on
     // purpose, so a silent version change is noticed instead of restated.
-    expect(serialization).toContain('SERIALIZATION_VERSION = 6')
+    expect(serialization).toContain('SERIALIZATION_VERSION = 7')
     expect(serialization).toContain('function hydrateMarkers')
   })
 
