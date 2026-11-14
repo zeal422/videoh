@@ -1,5 +1,6 @@
 import { findClip, rootReferences, sequenceReferences } from './factories'
 import { linkedClips } from './links'
+import { normalizeProjectTrackGroups } from './track-groups'
 import type { Doc, Track } from './types'
 
 // ————— Audibility (0.14.0) —————
@@ -132,7 +133,7 @@ export function pruneEmptiedTracks(prev: Doc, next: Doc): Doc {
     })
   }
   if (!rootChanged && !sequencesChanged) return next
-  return {
+  const result: Doc = {
     ...next,
     project: {
       ...next.project,
@@ -140,6 +141,10 @@ export function pruneEmptiedTracks(prev: Doc, next: Doc): Doc {
       ...(sequences ? { sequences } : {}),
     },
   }
+  // Pruning lanes can empty a group: drop the ghost in the same committed
+  // edit so `removeTrack` and auto-prune agree.
+  normalizeProjectTrackGroups(result.project)
+  return result
 }
 
 /**

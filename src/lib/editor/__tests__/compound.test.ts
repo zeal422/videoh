@@ -228,7 +228,7 @@ describe('serialization (compound clips)', () => {
   it('round-trips a compound clip', () => {
     const { doc, compound, sequence } = withCompound(docWithClips())
     const json = serializeDoc(doc)
-    expect(json.version).toBe(7)
+    expect(json.version).toBe(8)
     const back = deserializeDoc(JSON.parse(JSON.stringify(json))).doc
     expect(back.project.sequences).toHaveLength(1)
     expect(findClip(back, compound.id)?.clip.sequenceId).toBe(sequence.id)

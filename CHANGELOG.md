@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.26.0] - 2026-11-14
+
+### Added
+
+- Track groups name a set of lanes and select their members from the timeline header. The group menu batch-writes mute, solo (audio members only), visibility, and lock to every member, and the all-on/mixed rule turns every member off only when all are already on.
+- A track can join an existing group from its context menu, leave it, or be grouped from the current selection with `Sequence > Group Selected Tracks`. Groups rename from the header chip and delete without touching their tracks or clips.
+- The project brand kit saves strict `#rrggbb` colors with trimmed names and font family references. Saved colors appear as swatches beside the text color, shape fill, and shape stroke controls, and the plus button saves the current value.
+- Graphics > Brand Kit manages the palette and font list. The Font picker lists brand families in their own group and renders a family this project no longer has as unavailable instead of failing the load.
+- Local templates create a new sequence from text and shape clips. Three built-ins ship, and user templates save to IndexedDB with apply, rename, and delete. Applying installs a fresh compound sequence at the playhead and opens it as one undo entry.
+- A template is parsed before any id is minted: version, unknown fields, duplicate track and clip ids, path-like names, colors, shape kinds, lane fit, and track/clip/text/duration limits all refuse whole.
+
+### Changed
+
+- The project format moves to version 8. `Project.trackGroups` and `Track.groupId` carry group membership, and `Project.brandKit` carries the palette and font references. A v7 project loads with neither surface, and a v8 file is refused by an older build.
+- Hydration clears dangling group ids, keeps the first owner's members when a group spans sequences, drops a group left empty, and refuses duplicate group ids. Brand hydration drops invalid colors, duplicate ids or values, oversized palettes, and malformed font references with one warning.
+- Group commands refuse a mixed-sequence selection and keep all members in one sequence. Removing a group clears membership, and compound creation and template application leave their new tracks ungrouped.
+- Templates never store media or `Track.groupId`. Saving the current sequence keeps text and shape clips and drops the rest; applying mints fresh sequence, track, and clip ids plus one fresh link id per link group.
+- Applying a template naming a font this project does not have refuses with that family named. Shape clips in a template use the same sanitizer and lane rules as the editor.
+- The docs, test inventory, coverage scope, structure map, roadmap, and release record move with the release.
+
 ## [0.25.0] - 2026-11-13
 
 ### Added

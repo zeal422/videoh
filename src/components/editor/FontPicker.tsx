@@ -68,6 +68,7 @@ export function FontPicker({
 }) {
   const fonts = useEditorStore((s) => s.doc.project.fonts)
   const projectFonts = fonts ?? []
+  const brandFamilies = useEditorStore((s) => s.doc.project.brandKit?.fontFamilies) ?? []
   const [uploadOpen, setUploadOpen] = useState(false)
   const [manageOpen, setManageOpen] = useState(false)
   const known = new Set<string>(projectFonts.map((font) => font.family))
@@ -96,6 +97,19 @@ export function FontPicker({
                     {fontLabel(font)}
                   </SelectItem>
                 ))}
+              </SelectGroup>
+            )}
+            {brandFamilies.length > 0 && (
+              <SelectGroup>
+                <SelectLabel>Brand kit</SelectLabel>
+                {brandFamilies.map((family) => {
+                  const available = known.has(family) || isBuiltinFontFamily(family)
+                  return (
+                    <SelectItem key={family} value={family} disabled={!available}>
+                      {brandFamilyLabel(family, projectFonts)}
+                    </SelectItem>
+                  )
+                })}
               </SelectGroup>
             )}
             {!known.has(value) && !isBuiltinFontFamily(value) && (
@@ -229,6 +243,15 @@ function fontLabel(font: ProjectFont): string {
     .filter(Boolean)
     .join(' ')
   return details ? `${font.name} (${details})` : font.name
+}
+
+/** A brand reference that no built-in or project font answers is shown, disabled. */
+function brandFamilyLabel(family: string, projectFonts: readonly ProjectFont[]): string {
+  const builtin = BUILTIN_FONTS.find((font) => font.family === family)
+  if (builtin) return builtin.label
+  const project = projectFonts.find((font) => font.family === family)
+  if (project) return project.name
+  return `${family} (unavailable)`
 }
 
 function fileStem(name: string): string {

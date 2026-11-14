@@ -192,7 +192,9 @@ pair measured 167s; the dev leg started its own server and the artifact leg reus
 server, and both legs passed 70/70 with `PAIR_EXIT=0`. At 0.24.0 on 2026-11-13 the four-shard pair
 measured 166s on the final tree, with the same server split and 70/70 on both legs with `PAIR_EXIT=0`.
 At 0.25.0 the same day the four-shard pair measured 178s, with the same server split and 74/74 on
-both legs with `PAIR_EXIT=0`.
+both legs with `PAIR_EXIT=0`. At 0.26.0 on 2026-11-14 the four-shard pair measured 182s, with the
+dev leg starting its own server, the artifact leg reusing the standalone server, and 74/74 on both
+legs with `PAIR_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 

@@ -20,9 +20,10 @@ import { anySelectionLinked, audibleClipId, canLinkClips } from './links'
 import { markerSelectionExists as markerExists, neighborMarker } from './markers'
 import type { MarkerSelection } from './markers'
 import type { MenuActionId } from './menus'
+import { nextTrackGroupName, tracksShareSequence } from './track-groups'
 import { nextZoomPxPerSec } from './timeline-scroll'
 import { canCloseGaps } from './timeline-edit-plan'
-import type { Doc, ShapeKind } from './types'
+import type { Doc, ShapeKind, Track } from './types'
 
 /** The six shape insertion actions and the kind each one creates. */
 const SHAPE_ACTIONS = {
@@ -294,6 +295,34 @@ export function executeAction(action: ExecutorActionId, ctx: ActionContext): Act
         return handled()
       }
       return handled(commands)
+    }
+    case 'sequence.groupTracks': {
+      // Group the distinct tracks the selection touches. The row is enabled
+      // only when that is at least two, and the command re-validates the
+      // single-sequence rule.
+      const tracks: Track[] = []
+      const seen = new Set<string>()
+      for (const id of ids) {
+        const found = findClip(state.doc, id)
+        if (!found || seen.has(found.track.id)) continue
+        seen.add(found.track.id)
+        tracks.push(found.track)
+      }
+      if (tracks.length < 2 || !tracksShareSequence(state.doc, tracks)) {
+        ctx.notify({
+          title: 'Cannot group tracks',
+          description: 'Select clips on at least two tracks in one sequence.',
+          variant: 'destructive',
+        })
+        return handled()
+      }
+      return handled([
+        {
+          type: 'createTrackGroup',
+          name: nextTrackGroupName(state.doc.project.trackGroups ?? []),
+          trackIds: tracks.map((track) => track.id),
+        },
+      ])
     }
 
     case 'marker.add':

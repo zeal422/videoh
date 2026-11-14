@@ -1419,6 +1419,33 @@ describe('track solo and lock controls (0.14.0)', () => {
     )
   })
 
+  it('keeps the group rename dialog and draft open when the name is refused', async () => {
+    const doc = createDoc()
+    doc.project.tracks[0].groupId = 'grp_a'
+    doc.project.tracks[1].groupId = 'grp_b'
+    doc.project.trackGroups = [
+      { id: 'grp_a', name: 'Hero' },
+      { id: 'grp_b', name: 'Other' },
+    ]
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    const chip = screen.getByTestId(`track-group-${doc.project.tracks[0].id}`)
+    fireEvent.pointerDown(chip, { button: 0 })
+    const rename = await screen.findByTestId('group-rename')
+    clickMenuItem('group-rename')
+    const input = await screen.findByLabelText('Group name')
+    fireEvent.change(input, { target: { value: 'Other' } })
+    fireEvent.click(screen.getByTestId('track-group-rename-save'))
+
+    expect(await screen.findByTestId('track-group-rename-error')).toHaveTextContent(
+      /already exists/,
+    )
+    expect(screen.getByLabelText('Group name')).toHaveValue('Other')
+    expect(useEditorStore.getState().doc.project.trackGroups![0].name).toBe('Hero')
+    expect(rename).toBeDefined()
+  })
+
   it('a locked clip refuses a drag before any transient starts', () => {
     const { doc } = controlsDoc(true)
     useEditorStore.setState({ doc })

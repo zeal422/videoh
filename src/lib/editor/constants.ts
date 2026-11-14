@@ -86,6 +86,25 @@ export const FONT_WEIGHT_MIN = 100
 export const FONT_WEIGHT_MAX = 900
 export const FONT_WEIGHT_DEFAULT = 400
 
+/** Track groups (0.26.0). One group per track; groups are shortcuts over member flags. */
+export const TRACK_GROUP_NAME_MAX = 64
+export const TRACK_GROUPS_MAX = 32
+
+/** Brand kit (0.26.0): saved hex colors and font family references. */
+export const BRAND_COLOR_NAME_MAX = 48
+export const BRAND_COLORS_MAX = 24
+export const BRAND_FONT_FAMILIES_MAX = 16
+
+/** Local templates (0.26.0): deterministic sequence descriptions, never media. */
+export const TEMPLATE_VERSION = 1
+export const TEMPLATE_NAME_MAX = 64
+export const TEMPLATE_DESCRIPTION_MAX = 200
+export const TEMPLATE_MAX_TRACKS = 24
+export const TEMPLATE_MAX_CLIPS = 200
+export const TEMPLATE_MAX_TEXT_LENGTH = 500
+/** Longest local timeline a template may describe (seconds). */
+export const TEMPLATE_MAX_DURATION = 3600
+
 /** Built-in animated text preset timings (seconds). */
 export const TEXT_ANIMATION_FADE_SECONDS = 0.6
 export const TEXT_ANIMATION_SLIDE_SECONDS = 0.6

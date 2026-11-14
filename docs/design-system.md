@@ -204,6 +204,19 @@ them:
 - **Sticker picker (0.25.0).** A compact dialog with a 3-column grid of bundled SVGs on the muted
   surface, a per-tile spinner while the import runs, and one ghost Close. The tiles are real buttons
   with descriptive accessible names; the dialog never links out or loads a remote image.
+- **Track group chip (0.26.0).** A grouped header carries a 20px ghost layers button in the sky
+  accent, with the group name as its title and accessible name. Its dropdown holds the batch
+  controls (select, mute, solo when audio members exist, hide, lock, rename, remove, delete); a mixed
+  flag appends a muted `mixed` label. The chip stays in the existing header row instead of adding a
+  second row or a collapse control.
+- **Brand palette (0.26.0).** Saved colors are 16px rounded swatches directly under the text/shape
+  color input, with data-driven inline backgrounds (content, like marker swatches) and one dashed
+  plus button to save the current value. The manager dialog lists color names with a swatch and hex
+  readout, and the same dialog manages font references. No new token.
+- **Template gallery (0.26.0).** A `sm:max-w-2xl` scrollable dialog: built-ins in a three-column card
+  grid with name, one-line description, and one outline Apply; saved templates in full-width rows
+  with an editable name, Apply, and a trash action; then the save-current form. Keeping the cards
+  text-only avoids a thumbnail pipeline and any remote asset.
 - **Automation envelopes.** Audio-bearing clips paint volume as a 1.5px white line with
   `stroke-white/90` and 6px white dots inside 12px hit targets; picture clips use the same component
   for opacity, mapped 0..100% instead of the dB domain. The curve is deliberately not the selection

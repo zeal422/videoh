@@ -772,3 +772,13 @@ the sentinel is absent/present before writing.
 Action: rewrote the helpers to insert a `removed for the red run` sentinel and
 asserted every swap; the affected files were repaired by hand and the suites
 went green again.
+
+## 2026-11-14 - schema bump leaves stale version assertions and counts
+
+What happened: raising `SERIALIZATION_VERSION` to 8 failed nine existing tests
+that hardcode `toBe(7)` or `SERIALIZATION_VERSION = 7`, then docs-drift failed
+on the serialization inventory row and the repo-wide totals.
+Would-have-caught: grep the test tree for the old schema literals in the same
+pass as the version edit, and treat every inventory row and headline total as
+part of the bump rather than a follow-up.
+Action: kept as a note; rule 6 already makes count locks part of the change.

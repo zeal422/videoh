@@ -49,6 +49,7 @@ export type MenuActionId =
   | 'sequence.addAudioTrack'
   | 'sequence.addTextTrack'
   | 'sequence.createCompound'
+  | 'sequence.groupTracks'
   | 'sequence.settings'
   | 'marker.add'
   | 'marker.edit'
@@ -63,6 +64,8 @@ export type MenuActionId =
   | 'graphics.addShape.polygon'
   | 'graphics.addShape.heart'
   | 'graphics.stickers'
+  | 'graphics.brandKit'
+  | 'graphics.templates'
   | 'view.zoomIn'
   | 'view.zoomOut'
   | 'view.zoomFit'
@@ -122,6 +125,11 @@ export interface MenuContext {
   canFreezeFrame: boolean
   /** At least one clip is selected — "Create Compound Clip" would do something. */
   canCreateCompound: boolean
+  /**
+   * "Group Selected Tracks" is meaningful: the selection spans at least two
+   * distinct tracks in the active sequence.
+   */
+  canGroupTracks: boolean
   snapEnabled: boolean
   /** Proxies are enabled for preview (View > Use Proxies). */
   proxiesEnabled: boolean
@@ -411,6 +419,13 @@ export const MENU_SPECS: MenuSpec[] = [
         action: 'sequence.createCompound',
         enabled: (ctx) => ctx.canCreateCompound,
       },
+      {
+        id: 'sequence.groupTracks',
+        kind: 'item',
+        label: 'Group Selected Tracks',
+        action: 'sequence.groupTracks',
+        enabled: (ctx) => ctx.canGroupTracks,
+      },
       { id: 'sequence.sep2', kind: 'separator' },
       {
         id: 'sequence.settings',
@@ -519,6 +534,19 @@ export const MENU_SPECS: MenuSpec[] = [
         kind: 'item',
         label: 'Stickers…',
         action: 'graphics.stickers',
+      },
+      { id: 'graphics.sep3', kind: 'separator' },
+      {
+        id: 'graphics.brandKit',
+        kind: 'item',
+        label: 'Brand Kit…',
+        action: 'graphics.brandKit',
+      },
+      {
+        id: 'graphics.templates',
+        kind: 'item',
+        label: 'Templates…',
+        action: 'graphics.templates',
       },
     ],
   },

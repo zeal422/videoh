@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.26.0',
+    date: '2026-11-14',
+    highlights: [
+      'Group tracks to mute, solo, hide, lock, or select them together from one header control',
+      'Save brand colors and fonts once, then apply a color from every text and shape color control',
+      'Start from built-in or saved templates that create a fresh sequence without any media',
+      'Templates keep text and shapes only, validate every value, and apply as one undo step',
+      'Project files move to format version 8; older files still open',
+    ],
+  },
+  {
     version: '0.25.0',
     date: '2026-11-13',
     highlights: [

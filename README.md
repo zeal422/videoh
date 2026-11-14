@@ -35,6 +35,10 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/u
   presets, four animated text presets, six shape primitives, and a bundled local sticker set.
   Direct dragging in the monitor, SRT import, and an editable Captions panel with SRT/VTT download;
   captions burn into the MP4.
+- **Libraries.** Named track groups batch mute, solo, hide, lock, and select their member tracks. A
+  project brand kit saves strict hex colors beside every text and shape color control plus font
+  references, and local templates create a fresh sequence from built-in or user-saved text/shape
+  layouts. Templates never store media and are saved in IndexedDB.
 - **Effects, keyframes, and color.** Cross-dissolve, dip to black, wipe, slide, and push transitions;
   opacity, sixteen blend modes, crop, chroma key, track mattes, motion blur, per-segment bezier
   easing, color grading, monitor scopes, and a project-level 1D/3D `.cube` LUT library. Preview and
@@ -142,7 +146,7 @@ The full `Doc` shape, field ranges, and hydration rules are in
 
 ## Commands
 
-All mutations flow through 60 named commands in `src/lib/editor/commands.ts`, applied with
+All mutations flow through 81 named commands in `src/lib/editor/commands.ts`, applied with
 `applyCommand(doc, command)` or `applyCommands(doc, commands[])`. Each command validates its input
 and returns a new doc; the input is never mutated. Undo pushes a whole-`Doc` snapshot before each
 committed command, capped at `HISTORY_LIMIT = 100`; a drag commits one entry through the transient
@@ -161,7 +165,7 @@ when the browser has the matching encoder. Sequence Settings offers 16:9, 9:16, 
 21:9 canvas presets that do not move existing clips. Export needs WebCodecs; HEVC and ProRes are
 deliberately not offered, and `Download` buffers the file while `Export to file` streams it to disk.
 
-Project files use `.veproj.json` (version 7; versions 1 to 6 still load, and a v7 file needs this
+Project files use `.veproj.json` (version 8; versions 1 to 7 still load, and a v8 file needs this
 build). Object URLs are stripped. Imported bytes live in OPFS under `<project-id>/<content-hash>`, and
 custom font bytes live under `<project-id>/fonts/<content-hash>`; the project file stores metadata and
 content hashes, never the bytes. Each asset persists its own hash, so an open restores file handles
@@ -191,7 +195,7 @@ bun run battery:pair   # dev + artifact concurrently (needs a current build and 
 PAIR_SHARDS=1 bun run battery:pair # sequential rollback, one session per leg
 ```
 
-Current state: **2743 tests across 120 files, all passing**. Coverage is enforced at 70/60/75/70 over
+Current state: **2808 tests across 124 files, all passing**. Coverage is enforced at 70/60/75/70 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -220,7 +224,7 @@ src/lib/editor/            # state core (commands, store, serialization) + brows
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, landing sections, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 120 test files (2743 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 124 test files (2808 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations
@@ -236,6 +240,8 @@ src/lib/editor/__tests__/  # 120 test files (2743 tests) in src/lib/editor/__tes
 - **Some limits are deliberate.** Noise reduction is broadband only. Plain Delete leaves a gap;
   `Shift+Delete` closes it. Video and audio clips are bounded by their source; images and text are
   unbounded.
+- **Libraries stay local and flat.** Track groups do not nest or collapse, brand kit logos are
+  ordinary image clips, and templates hold text and shapes only, never media or a hosted gallery.
 - **Offline media is marked.** A frame that needs an offline asset paints an overlay, audio stays
   silent, and export refuses until the asset is relinked.
 - **Autosave depends on localStorage quota.** Large projects can exceed it.

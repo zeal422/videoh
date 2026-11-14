@@ -84,7 +84,7 @@ describe('serializeDoc', () => {
     // Pin the WIRE value, not the constant serializeDoc itself stamps: the
     // round-trip contract is "this text is version 7", and a literal here
     // notices a silent constant change instead of restating it.
-    expect(json.version).toBe(7)
+    expect(json.version).toBe(8)
     expect(json.project.tracks[0].clips[0].transitionOut).toEqual({
       type: 'crossfade',
       duration: 0.5,
@@ -857,7 +857,7 @@ describe('marker serialization (0.5.5)', () => {
       },
     ]
     const json = serializeDoc(doc)
-    expect(json.version).toBe(7)
+    expect(json.version).toBe(8)
     expect(json.project.textPresets).toEqual(doc.project.textPresets)
     const back = deserializeDoc(json)
     expect(back.doc.project.textPresets).toEqual(doc.project.textPresets)
@@ -932,7 +932,7 @@ describe('marker serialization (0.5.5)', () => {
     doc.project.luts = [lut]
     doc.project.tracks[0].clips[0].lutId = 'lut_fixed'
     const json = serializeDoc(doc)
-    expect(json.version).toBe(7)
+    expect(json.version).toBe(8)
     expect(json.project.luts).toEqual([lut])
     const back = deserializeDoc(json)
     expect(back.doc.project.luts).toEqual([lut])
@@ -1312,7 +1312,7 @@ describe('effects serialization (0.8.6)', () => {
     return doc
   }
 
-  it('round-trips effects, blend mode and visibility at v7', () => {
+  it('round-trips effects, blend mode and visibility at v8', () => {
     const doc = fxWireDoc()
     doc.project.tracks[1].clips[0].effects = [
       { id: 'fx_crop', type: 'crop', left: 10, feather: 5 },
@@ -1321,7 +1321,7 @@ describe('effects serialization (0.8.6)', () => {
     doc.project.tracks[1].clips[0].blendMode = 'multiply'
     doc.project.tracks[1].visible = false
     const json = serializeDoc(doc)
-    expect(json.version).toBe(7)
+    expect(json.version).toBe(8)
     const { doc: loaded } = deserializeDoc(JSON.parse(JSON.stringify(json)))
     expect(loaded.project.tracks[1].clips[0].effects).toEqual([
       { id: 'fx_crop', type: 'crop', left: 10, right: 0, top: 0, bottom: 0, feather: 5 },
@@ -1423,9 +1423,9 @@ describe('track solo and lock serialization (0.14.0)', () => {
     return doc
   }
 
-  it('round-trips solo and locked at v7 without a schema bump', () => {
+  it('round-trips solo and locked at v8 without a schema bump', () => {
     const json = serializeDoc(flagsDoc())
-    expect(json.version).toBe(7)
+    expect(json.version).toBe(8)
     const { doc } = deserializeDoc(JSON.parse(JSON.stringify(json)))
     expect(doc.project.tracks[0].locked).toBe(true)
     expect(doc.project.tracks[0].solo).toBeUndefined()
@@ -1481,11 +1481,11 @@ describe('track solo and lock serialization (0.14.0)', () => {
 describe('media content hash serialization (0.23.0)', () => {
   const HASH = 'a'.repeat(64)
 
-  it('round-trips a valid content hash and writes schema version 7', () => {
+  it('round-trips a valid content hash and writes schema version 8', () => {
     const doc = makeDoc()
     doc.media[0].contentHash = HASH
     const wire = serializeDoc(doc)
-    expect(wire.version).toBe(7)
+    expect(wire.version).toBe(8)
     expect(wire.media[0].contentHash).toBe(HASH)
     const { doc: restored } = deserializeDoc(JSON.parse(JSON.stringify(wire)))
     expect(restored.media[0].contentHash).toBe(HASH)
@@ -1571,10 +1571,10 @@ describe('fonts and shapes at schema v7 (0.25.0)', () => {
     return doc
   }
 
-  it('writes version 7 and round-trips a project font and a shape clip', () => {
+  it('writes version 8 and round-trips a project font and a shape clip', () => {
     const doc = docWithFontAndShape()
     const wire = serializeDoc(doc)
-    expect(wire.version).toBe(7)
+    expect(wire.version).toBe(8)
     expect(wire.project.fonts).toEqual([font()])
     const { doc: loaded } = deserializeDoc(JSON.parse(JSON.stringify(wire)))
     expect(loaded.project.fonts).toEqual([font()])
@@ -1724,5 +1724,137 @@ describe('fonts and shapes at schema v7 (0.25.0)', () => {
     const wire = serializeDoc(makeDoc()) as unknown as { version: number }
     wire.version = SERIALIZATION_VERSION + 1
     expect(() => deserializeDoc(wire)).toThrow(/Unsupported project version/)
+  })
+})
+
+describe('track groups and brand kit at schema v8 (0.26.0)', () => {
+  function v8Doc() {
+    const doc = createDoc()
+    doc.project.tracks[0].groupId = 'grp_pair'
+    doc.project.tracks[1].groupId = 'grp_pair'
+    doc.project.trackGroups = [{ id: 'grp_pair', name: 'Pair' }]
+    doc.project.brandKit = {
+      colors: [
+        { id: 'brand_ink', name: 'Ink', value: '#112233' },
+        { id: 'brand_paper', name: 'Paper', value: '#fefefe' },
+      ],
+      fontFamilies: ['Arial, sans-serif'],
+    }
+    return doc
+  }
+
+  it('round-trips a two-track group and a brand kit at v8', () => {
+    const wire = serializeDoc(v8Doc())
+    expect(wire.version).toBe(8)
+    const { doc } = deserializeDoc(JSON.parse(JSON.stringify(wire)))
+    expect(doc.project.trackGroups).toEqual([{ id: 'grp_pair', name: 'Pair' }])
+    expect(doc.project.tracks.map((track) => track.groupId)).toEqual(['grp_pair', 'grp_pair'])
+    expect(doc.project.brandKit).toEqual({
+      colors: [
+        { id: 'brand_ink', name: 'Ink', value: '#112233' },
+        { id: 'brand_paper', name: 'Paper', value: '#fefefe' },
+      ],
+      fontFamilies: ['Arial, sans-serif'],
+    })
+  })
+
+  it('loads a v7 file with neither surface', () => {
+    const wire = JSON.parse(JSON.stringify(serializeDoc(v8Doc()))) as {
+      version: number
+      project: Record<string, unknown>
+    }
+    wire.version = 7
+    delete wire.project.trackGroups
+    delete wire.project.brandKit
+    for (const track of wire.project.tracks as Record<string, unknown>[]) delete track.groupId
+    const { doc } = deserializeDoc(wire)
+    expect(doc.project.trackGroups).toBeUndefined()
+    expect(doc.project.brandKit).toBeUndefined()
+    expect(doc.project.tracks.every((track) => track.groupId === undefined)).toBe(true)
+  })
+
+  it('refuses duplicate group ids', () => {
+    const wire = JSON.parse(JSON.stringify(serializeDoc(v8Doc())))
+    wire.project.trackGroups = [
+      { id: 'grp_pair', name: 'Pair' },
+      { id: 'grp_pair', name: 'Other' },
+    ]
+    expect(() => deserializeDoc(wire)).toThrow(/Duplicate track group id/)
+  })
+
+  it('clears a dangling group id and drops an empty group', () => {
+    const doc = createDoc()
+    doc.project.tracks[0].groupId = 'grp_missing'
+    doc.project.trackGroups = [{ id: 'grp_empty', name: 'Empty' }]
+    const wire = JSON.parse(JSON.stringify(serializeDoc(doc)))
+    const { doc: loaded } = deserializeDoc(wire)
+    expect(loaded.project.tracks[0].groupId).toBeUndefined()
+    expect(loaded.project.trackGroups).toBeUndefined()
+  })
+
+  it('keeps the first owner of a group spanning sequences and clears the foreign members', () => {
+    const doc = createDoc()
+    doc.project.tracks[0].groupId = 'grp_span'
+    doc.project.trackGroups = [{ id: 'grp_span', name: 'Span' }]
+    doc.project.sequences = [
+      {
+        id: 'seq_child',
+        name: 'Child',
+        tracks: [createTrack('video', 2, { id: 'track_child', groupId: 'grp_span' })],
+      },
+    ]
+    const wire = JSON.parse(JSON.stringify(serializeDoc(doc)))
+    const { doc: loaded } = deserializeDoc(wire)
+    expect(loaded.project.tracks[0].groupId).toBe('grp_span')
+    expect(loaded.project.sequences![0].tracks[0].groupId).toBeUndefined()
+    expect(loaded.project.trackGroups).toHaveLength(1)
+  })
+
+  it('drops a group whose name carries control characters', () => {
+    const doc = createDoc()
+    doc.project.tracks[0].groupId = 'grp_bad'
+    doc.project.trackGroups = [{ id: 'grp_bad', name: 'bad\u0000name' }]
+    const wire = JSON.parse(JSON.stringify(serializeDoc(doc)))
+    const { doc: loaded } = deserializeDoc(wire)
+    expect(loaded.project.trackGroups).toBeUndefined()
+    expect(loaded.project.tracks[0].groupId).toBeUndefined()
+  })
+
+  it('sanitizes hostile brand colors and font references without failing the load', () => {
+    const doc = createDoc()
+    doc.project.brandKit = {
+      colors: [
+        { id: 'brand_ok', name: 'Ok', value: '#ABCDEF' },
+        { id: 'brand_ok', name: 'Duplicate id', value: '#111111' },
+        { id: 'brand_dup', name: 'Duplicate value', value: '#abcdef' },
+        { id: 'brand_css', name: 'Css', value: 'javascript:alert(1)' },
+        { id: 'brand_rgb', name: 'Rgb', value: 'rgb(1,2,3)' },
+      ],
+      fontFamilies: ['Arial, sans-serif', 'bad;family'],
+    }
+    const wire = JSON.parse(JSON.stringify(serializeDoc(doc)))
+    const { doc: loaded } = deserializeDoc(wire)
+    expect(loaded.project.brandKit!.colors).toEqual([
+      { id: 'brand_ok', name: 'Ok', value: '#abcdef' },
+    ])
+    expect(loaded.project.brandKit!.fontFamilies).toEqual(['Arial, sans-serif'])
+  })
+
+  it('caps an oversized palette and keeps a missing font reference', () => {
+    const doc = createDoc()
+    doc.project.brandKit = {
+      colors: Array.from({ length: 30 }, (_, i) => ({
+        id: `brand_${i}`,
+        name: `Color ${i}`,
+        value: `#0000${String(i).padStart(2, '0')}`,
+      })),
+      fontFamilies: ['videoh-font-missing, Arial, sans-serif'],
+    }
+    const wire = JSON.parse(JSON.stringify(serializeDoc(doc)))
+    const { doc: loaded } = deserializeDoc(wire)
+    expect(loaded.project.brandKit!.colors).toHaveLength(24)
+    expect(loaded.project.brandKit!.fontFamilies).toEqual([
+      'videoh-font-missing, Arial, sans-serif',
+    ])
   })
 })

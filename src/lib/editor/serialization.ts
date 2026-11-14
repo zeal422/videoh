@@ -33,6 +33,7 @@ import {
   TEMPERATURE_MIN,
   TINT_MAX,
   TINT_MIN,
+  TRACK_GROUPS_MAX,
 } from './constants'
 import { parseKeyColor } from './chroma-key'
 import {
@@ -72,9 +73,12 @@ import {
 } from './factories'
 import { sanitizeFontFamily, sanitizeProjectFont } from './fonts'
 import { sanitizeShape } from './shapes'
+import { sanitizeBrandKit } from './brand-kit'
+import { normalizeProjectTrackGroups, sanitizeTrackGroup } from './track-groups'
 import { clamp } from './time'
 import type {
   AnimStaticProperty,
+  BrandKit,
   Clip,
   Doc,
   EffectEntry,
@@ -91,6 +95,7 @@ import type {
   Sequence,
   TextPreset,
   Track,
+  TrackGroup,
   TrackKind,
 } from './types'
 
@@ -106,11 +111,12 @@ import type {
  * v2 added markers (0.5.5); v3 added the LUT library (0.7.0); v4 added
  * compound-clip sequences (0.8.1); v5 added the per-asset media content hash
  * (0.23.0); v6 added clip rotation and the flip pair (0.24.0); v7 added the
- * project font library and shape clips (0.25.0). The loader accepts every
- * version from 1 up to the current one, so older files load with the newer
- * features absent; only files from a NEWER app version are refused.
+ * project font library and shape clips (0.25.0); v8 added track groups and the
+ * brand kit (0.26.0). The loader accepts every version from 1 up to the current
+ * one, so older files load with the newer features absent; only files from a
+ * NEWER app version are refused.
  */
-export const SERIALIZATION_VERSION = 7
+export const SERIALIZATION_VERSION = 8
 export const PROJECT_FILE_EXTENSION = '.veproj.json'
 
 export interface SerializedMedia {
@@ -263,6 +269,8 @@ export function deserializeDoc(data: unknown): {
   const projectSequences = hydrateSequences(projectRaw.sequences, media, stats)
   const projectPresets = hydrateTextPresets(projectRaw.textPresets)
   const projectFonts = hydrateProjectFonts(projectRaw.fonts)
+  const projectGroups = hydrateTrackGroups(projectRaw.trackGroups)
+  const projectBrandKit = hydrateBrandKit(projectRaw.brandKit)
   const project: Project = {
     id: typeof projectRaw.id === 'string' ? projectRaw.id : 'proj_loaded',
     name: typeof projectRaw.name === 'string' ? projectRaw.name : 'Imported Project',
@@ -279,8 +287,15 @@ export function deserializeDoc(data: unknown): {
     ...(projectSequences ? { sequences: projectSequences } : {}),
     ...(projectPresets ? { textPresets: projectPresets } : {}),
     ...(projectFonts ? { fonts: projectFonts } : {}),
+    ...(projectGroups ? { trackGroups: projectGroups } : {}),
+    ...(projectBrandKit ? { brandKit: projectBrandKit } : {}),
     tracks: hydrateTracks(projectRaw.tracks, media, stats),
   }
+
+  // Group membership is resolved only once every owner track list exists:
+  // dangling ids clear, a group spanning sequences keeps its first owner's
+  // members, and a group left empty disappears.
+  normalizeProjectTrackGroups(project)
 
   // Identity is the invariant the recursive lookups rest on: a repeated track,
   // clip or sequence id would resolve the wrong object, so the file is refused
@@ -377,6 +392,7 @@ function hydrateTracks(rawTracks: unknown, media: MediaAsset[], stats: Hydration
       // command layer applies.
       ...(t.solo === true && kind === 'audio' ? { solo: true as const } : {}),
       ...(t.locked === true ? { locked: true as const } : {}),
+      ...(typeof t.groupId === 'string' && t.groupId ? { groupId: t.groupId } : {}),
       clips: (Array.isArray(t.clips) ? (t.clips as Record<string, unknown>[]) : []).flatMap((c) => {
         const clip = hydrateClip(c, media, stats)
         // Shapes render picture and live on video lanes only, the same rule
@@ -1170,6 +1186,53 @@ function hydrateProjectFonts(raw: unknown): ProjectFont[] | undefined {
     console.warn('[serialization] dropped a broken project font entry')
   }
   return fonts.length > 0 ? fonts : undefined
+}
+
+/**
+ * Hydrates the project's track groups (0.26.0). A malformed entry is dropped
+ * with one warning. A duplicate id is refused because the id is the identity a
+ * track's `groupId` resolves through; a duplicate name is dropped because it is
+ * only a label and the command layer already refuses new collisions.
+ */
+function hydrateTrackGroups(raw: unknown): TrackGroup[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const groups: TrackGroup[] = []
+  const ids = new Set<string>()
+  const names = new Set<string>()
+  let dropped = false
+  for (const entry of raw) {
+    const group = sanitizeTrackGroup(entry)
+    if (!group) {
+      dropped = true
+      continue
+    }
+    if (ids.has(group.id)) throw new SerializationError(`Duplicate track group id: ${group.id}`)
+    ids.add(group.id)
+    if (names.has(group.name.toLowerCase()) || groups.length >= TRACK_GROUPS_MAX) {
+      dropped = true
+      continue
+    }
+    names.add(group.name.toLowerCase())
+    groups.push(group)
+  }
+  if (dropped) console.warn('[serialization] dropped a broken track group entry')
+  return groups.length > 0 ? groups : undefined
+}
+
+/**
+ * Hydrates the brand kit (0.26.0) leniently: invalid colors, duplicate ids or
+ * values, oversized palettes, and malformed font references drop instead of
+ * failing the project load. A missing project font reference is allowed; the
+ * picker shows it as unavailable.
+ */
+function hydrateBrandKit(raw: unknown): BrandKit | undefined {
+  const { kit, dropped } = sanitizeBrandKit(raw)
+  if (dropped > 0) {
+    console.warn(
+      `[serialization] dropped ${dropped} brand kit ${dropped === 1 ? 'entry' : 'entries'} while loading`,
+    )
+  }
+  return kit
 }
 
 /** Builds a downloadable filename from the project name. */

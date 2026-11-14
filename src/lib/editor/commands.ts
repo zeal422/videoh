@@ -7,6 +7,8 @@ import {
   CHROMA_DESPILL_MIN,
   CHROMA_SIMILARITY_MAX,
   CHROMA_SIMILARITY_MIN,
+  BRAND_COLORS_MAX,
+  BRAND_FONT_FAMILIES_MAX,
   GAIN_MAX,
   GAIN_MIN,
   KEYFRAME_PROPERTY_BOUNDS,
@@ -32,6 +34,7 @@ import {
   TEMPERATURE_MIN,
   TINT_MAX,
   TINT_MIN,
+  TRACK_GROUPS_MAX,
   TRANSITION_MAX,
   TRANSITION_MIN,
 } from './constants'
@@ -85,8 +88,29 @@ import { parseKeyColor } from './chroma-key'
 import { isValidContentHash, isValidWaveformPeaks, sanitizeThumbnail } from './project-validation'
 import { MAX_SRT_TIME_SECONDS } from './srt'
 import { maxTransitionDuration, TRANSITION_FEATHER_DEFAULT } from './transition'
-import { fontFaceFamily, sanitizeFontFamily, sanitizeFontName, sanitizeProjectFont } from './fonts'
+import {
+  fontFaceFamily,
+  fontFamilyTokens,
+  primaryFontFamily,
+  sanitizeFontFamily,
+  sanitizeFontName,
+  sanitizeProjectFont,
+} from './fonts'
 import { sanitizeShape } from './shapes'
+import { sanitizeBrandColor, sanitizeBrandColorName } from './brand-kit'
+import {
+  groupFlagParticipants,
+  isValidTrackGroupId,
+  normalizeProjectTrackGroups,
+  sanitizeTrackGroupName,
+  trackGroupById,
+  trackGroupMembership,
+  tracksShareSequence,
+  TRACK_GROUP_FLAGS,
+  type TrackGroupFlag,
+} from './track-groups'
+import { mintTemplateSequence, parseTemplate, validateTemplateForDoc } from './templates'
+import type { ProjectTemplate } from './templates'
 import {
   buildTextAnimation,
   textAnimationPropertyLabel,
@@ -101,6 +125,7 @@ import {
 import type {
   AnimStaticProperty,
   BlendMode,
+  BrandColor,
   Clip,
   Doc,
   EffectEntry,
@@ -209,6 +234,23 @@ export type EditorCommand =
   | { type: 'toggleTrackMute'; trackId: string }
   | { type: 'setTrackSolo'; trackId: string; solo: boolean }
   | { type: 'setTrackLocked'; trackId: string; locked: boolean }
+  // track groups (0.26.0): one batch command owns each group action
+  | { type: 'createTrackGroup'; name: string; trackIds: string[]; groupId?: string }
+  | { type: 'renameTrackGroup'; groupId: string; name: string }
+  | { type: 'addTrackToGroup'; groupId: string; trackId: string }
+  | { type: 'removeTrackFromGroup'; trackId: string }
+  | { type: 'removeTrackGroup'; groupId: string }
+  | { type: 'setTrackGroupFlag'; groupId: string; flag: TrackGroupFlag; value: boolean }
+  // local templates (0.26.0): one command installs a fresh sequence
+  | {
+      type: 'applyTemplate'
+      template: ProjectTemplate
+      start: number
+      /** Owning sequence of the destination lane; undefined = the project root. */
+      sequenceId?: string
+      /** Existing destination video lane. Absent creates one when none exists. */
+      trackId?: string
+    }
   // clips
   | { type: 'addClip'; clip: Clip; trackId: string }
   | { type: 'moveClip'; clipId: string; trackId: string; start: number }
@@ -279,6 +321,12 @@ export type EditorCommand =
   | { type: 'addProjectFont'; font: ProjectFont }
   | { type: 'removeProjectFont'; fontId: string }
   | { type: 'renameProjectFont'; fontId: string; name: string }
+  // brand kit (0.26.0)
+  | { type: 'addBrandColor'; color: BrandColor }
+  | { type: 'renameBrandColor'; colorId: string; name: string }
+  | { type: 'removeBrandColor'; colorId: string }
+  | { type: 'addBrandFont'; family: string }
+  | { type: 'removeBrandFont'; family: string }
   // shape clips (0.25.0)
   | { type: 'setClipShape'; clipId: string; shape: ShapeStyle }
   // animated text presets (0.25.0)
@@ -461,6 +509,17 @@ const LOCK_RULES: LockRuleMap = {
   // Sequences. A sequence definition holds no clips until a compound container
   // is created, which checks its sources and destination below.
   addSequence: { exempt: true },
+  // A template installs a NEW sequence, but its container lands on a
+  // destination lane: a locked lane refuses before the clone is written.
+  applyTemplate: {
+    tracks: (doc, command) => {
+      if (command.trackId) return trackRef(doc, command.trackId)
+      const destination = sequenceTracks(doc, command.sequenceId).find(
+        (track) => track.kind === 'video',
+      )
+      return destination ? [destination] : []
+    },
+  },
   createCompoundClip: {
     tracks: (doc, command) => [
       ...clipGroupTracks(doc, command.clipIds),
@@ -477,6 +536,16 @@ const LOCK_RULES: LockRuleMap = {
   setTrackSolo: { exempt: true },
   setTrackLocked: { exempt: true },
   setTrackVisible: { exempt: true },
+  // Track groups are metadata controls: creating, naming, moving membership,
+  // and writing member flags never move or trim a clip, and the user must be
+  // able to unlock a group. Clip edits made after a group action still pay the
+  // normal per-track lock gate.
+  createTrackGroup: { exempt: true },
+  renameTrackGroup: { exempt: true },
+  addTrackToGroup: { exempt: true },
+  removeTrackFromGroup: { exempt: true },
+  removeTrackGroup: { exempt: true },
+  setTrackGroupFlag: { exempt: true },
 
   // Clip geometry. Move/trim/split/delete/unlink act on a whole link group, and
   // move also touches its destination lane. Paste/drop/insert/overwrite arrive
@@ -547,6 +616,12 @@ const LOCK_RULES: LockRuleMap = {
   addProjectFont: { exempt: true },
   removeProjectFont: { exempt: true },
   renameProjectFont: { exempt: true },
+  // The brand kit is project metadata; no clip lane is edited.
+  addBrandColor: { exempt: true },
+  renameBrandColor: { exempt: true },
+  removeBrandColor: { exempt: true },
+  addBrandFont: { exempt: true },
+  removeBrandFont: { exempt: true },
 
   // Text and captions. Property edits hit the clip's lane; a new cue hits the
   // text lane it names. `importCaptions` always creates a NEW text track, so it
@@ -620,6 +695,13 @@ const RELINK_REQUIRED_KEYS = new Set<RelinkPatchKey>(['url', 'duration', 'width'
 
 function invalidRelinkFile(): EditorCommandError {
   return new EditorCommandError('Invalid relink file')
+}
+
+/** Drops a brand kit once it holds neither colors nor font references. */
+function pruneEmptyBrandKit(project: Project): void {
+  const kit = project.brandKit
+  if (!kit) return
+  if (kit.colors.length === 0 && (kit.fontFamilies?.length ?? 0) === 0) delete project.brandKit
 }
 
 /** Refuses an edit whose clip end the timeline cap cannot represent. */
@@ -946,6 +1028,10 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
           if (clip.effects.length === 0) clip.effects = undefined
         }
       }
+      // Dropping the lane can leave its group empty: remove the ghost in the
+      // same undo step so its name is reusable and it stops counting toward
+      // the group limit.
+      normalizeProjectTrackGroups(doc.project)
       return
     }
 
@@ -984,6 +1070,186 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
         throw new EditorCommandError('Track lock must be a boolean')
       }
       track.locked = command.locked
+      return
+    }
+
+    case 'createTrackGroup': {
+      if (!Array.isArray(command.trackIds) || command.trackIds.length === 0) {
+        throw new EditorCommandError('Select at least one track to group')
+      }
+      const name = sanitizeTrackGroupName(command.name)
+      if (!name) throw new EditorCommandError('Group name is invalid')
+      const groups = doc.project.trackGroups ?? (doc.project.trackGroups = [])
+      if (groups.length >= TRACK_GROUPS_MAX) {
+        throw new EditorCommandError(`A project can have at most ${TRACK_GROUPS_MAX} track groups`)
+      }
+      if (groups.some((group) => group.name.toLowerCase() === name.toLowerCase())) {
+        throw new EditorCommandError(`A group named "${name}" already exists`)
+      }
+      const groupId = command.groupId ?? uid('grp')
+      if (!isValidTrackGroupId(groupId)) throw new EditorCommandError('Invalid group id')
+      if (groups.some((group) => group.id === groupId)) {
+        throw new EditorCommandError(`Group ${groupId} already exists`)
+      }
+      const ids = [...new Set(command.trackIds)]
+      const tracks = ids.map((trackId) => {
+        const found = findTrackIn(doc, trackId)
+        if (!found) throw new EditorCommandError('Unknown track')
+        return found.track
+      })
+      // A group's members live in one sequence: independent local time origins
+      // make a cross-sequence group meaningless, and the UI scopes creation to
+      // the open sequence.
+      if (!tracksShareSequence(doc, tracks)) {
+        throw new EditorCommandError('A group cannot span sequences')
+      }
+      for (const track of tracks) track.groupId = groupId
+      groups.push({ id: groupId, name })
+      // Rehoming members can leave a previous group empty: drop it in the same
+      // undo step instead of leaving a nameless ghost in the library.
+      normalizeProjectTrackGroups(doc.project)
+      return
+    }
+
+    case 'renameTrackGroup': {
+      const group = trackGroupById(doc.project, command.groupId)
+      if (!group) throw new EditorCommandError(`Unknown group ${command.groupId}`)
+      const name = sanitizeTrackGroupName(command.name)
+      if (!name) throw new EditorCommandError('Group name is invalid')
+      if (
+        (doc.project.trackGroups ?? []).some(
+          (entry) => entry.id !== group.id && entry.name.toLowerCase() === name.toLowerCase(),
+        )
+      ) {
+        throw new EditorCommandError(`A group named "${name}" already exists`)
+      }
+      group.name = name
+      return
+    }
+
+    case 'addTrackToGroup': {
+      const membership = trackGroupMembership(doc, command.groupId)
+      if (!membership) throw new EditorCommandError(`Unknown group ${command.groupId}`)
+      const found = findTrackIn(doc, command.trackId)
+      if (!found) throw new EditorCommandError('Unknown track')
+      if (found.sequenceId !== membership.sequenceId) {
+        throw new EditorCommandError('A group cannot span sequences')
+      }
+      found.track.groupId = command.groupId
+      normalizeProjectTrackGroups(doc.project)
+      return
+    }
+
+    case 'removeTrackFromGroup': {
+      const found = findTrackIn(doc, command.trackId)
+      if (!found) throw new EditorCommandError('Unknown track')
+      if (!found.track.groupId) return
+      delete found.track.groupId
+      normalizeProjectTrackGroups(doc.project)
+      return
+    }
+
+    case 'removeTrackGroup': {
+      const group = trackGroupById(doc.project, command.groupId)
+      if (!group) throw new EditorCommandError(`Unknown group ${command.groupId}`)
+      for (const track of doc.project.tracks) {
+        if (track.groupId === command.groupId) delete track.groupId
+      }
+      for (const sequence of doc.project.sequences ?? []) {
+        for (const track of sequence.tracks) {
+          if (track.groupId === command.groupId) delete track.groupId
+        }
+      }
+      doc.project.trackGroups = (doc.project.trackGroups ?? []).filter(
+        (entry) => entry.id !== command.groupId,
+      )
+      if (doc.project.trackGroups.length === 0) delete doc.project.trackGroups
+      return
+    }
+
+    case 'setTrackGroupFlag': {
+      if (!(TRACK_GROUP_FLAGS as readonly string[]).includes(command.flag)) {
+        throw new EditorCommandError('Unknown group flag')
+      }
+      if (typeof command.value !== 'boolean') {
+        throw new EditorCommandError('Group flag value must be a boolean')
+      }
+      const membership = trackGroupMembership(doc, command.groupId)
+      if (!membership) throw new EditorCommandError(`Unknown group ${command.groupId}`)
+      const participants = groupFlagParticipants(membership.tracks, command.flag)
+      if (participants.length === 0) {
+        throw new EditorCommandError(
+          command.flag === 'hidden'
+            ? 'Hide applies to video and text tracks only'
+            : 'Solo applies to audio tracks only',
+        )
+      }
+      for (const track of participants) {
+        if (command.flag === 'hidden') {
+          // `visible` is absent when true: hydration and saves keep the file clean.
+          if (command.value) track.visible = false
+          else delete track.visible
+        } else if (command.flag === 'muted') {
+          track.muted = command.value
+        } else if (command.flag === 'solo') {
+          if (command.value) track.solo = true
+          else delete track.solo
+        } else {
+          track.locked = command.value
+        }
+      }
+      return
+    }
+
+    case 'applyTemplate': {
+      // The template is external data: re-validate it at this boundary even
+      // when the caller parsed it for the gallery.
+      const template = parseTemplate(command.template)
+      validateTemplateForDoc(template, doc)
+      if (!Number.isFinite(command.start)) {
+        throw new EditorCommandError('Invalid template position')
+      }
+      const start = Math.max(0, command.start)
+      const { sequence, duration } = mintTemplateSequence(template)
+      if (!Number.isFinite(duration) || duration < MIN_CLIP_DURATION) {
+        throw new EditorCommandError('Template is too short to place')
+      }
+      assertClipEndWithinTimeline(start, duration)
+      const owner = command.sequenceId ? findSequence(doc, command.sequenceId) : undefined
+      if (command.sequenceId && !owner) throw new EditorCommandError('Unknown sequence')
+      const tracks = owner ? owner.tracks : doc.project.tracks
+      let destination: Track | undefined
+      if (command.trackId) {
+        destination = tracks.find((track) => track.id === command.trackId)
+        if (!destination) throw new EditorCommandError('Unknown template destination track')
+      } else {
+        destination = tracks.find((track) => track.kind === 'video')
+      }
+      if (destination && destination.kind !== 'video') {
+        throw new EditorCommandError('Templates install on a video track')
+      }
+      if (!destination) {
+        destination = newTrackForKind(doc, 'video', command.sequenceId)
+        insertTrack(tracks, destination)
+        reorderTracksConvention(tracks)
+        renumberAutoTracks(tracks, 'video')
+      }
+      const sequences = doc.project.sequences ?? (doc.project.sequences = [])
+      sequences.push(sequence)
+      const container: Clip = {
+        id: uid('clip'),
+        sequenceId: sequence.id,
+        start,
+        duration,
+        inPoint: 0,
+      }
+      destination.clips.push(container)
+      if (maxSequenceDepth(doc) > MAX_SEQUENCE_DEPTH) {
+        sequences.pop()
+        destination.clips = destination.clips.filter((clip) => clip.id !== container.id)
+        throw new EditorCommandError('Template sequence nesting is too deep')
+      }
+      destination.clips.sort((a, b) => a.start - b.start)
       return
     }
 
@@ -1914,6 +2180,77 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       return
     }
 
+    case 'addBrandColor': {
+      const color = sanitizeBrandColor(command.color)
+      if (!color) throw new EditorCommandError('Invalid brand color')
+      const kit = doc.project.brandKit ?? (doc.project.brandKit = { colors: [] })
+      if (kit.colors.length >= BRAND_COLORS_MAX) {
+        throw new EditorCommandError(`A brand kit can hold at most ${BRAND_COLORS_MAX} colors`)
+      }
+      if (kit.colors.some((entry) => entry.id === color.id)) {
+        throw new EditorCommandError(`Brand color ${color.id} already exists`)
+      }
+      if (kit.colors.some((entry) => entry.value === color.value)) {
+        throw new EditorCommandError('That color is already in the brand kit')
+      }
+      kit.colors.push(color)
+      return
+    }
+
+    case 'renameBrandColor': {
+      const name = sanitizeBrandColorName(command.name)
+      if (!name) throw new EditorCommandError('Brand color name is invalid')
+      const color = doc.project.brandKit?.colors.find((entry) => entry.id === command.colorId)
+      if (!color) throw new EditorCommandError(`Unknown brand color ${command.colorId}`)
+      color.name = name
+      return
+    }
+
+    case 'removeBrandColor': {
+      const kit = doc.project.brandKit
+      const index = kit?.colors.findIndex((entry) => entry.id === command.colorId) ?? -1
+      if (!kit || index === -1) {
+        throw new EditorCommandError(`Unknown brand color ${command.colorId}`)
+      }
+      kit.colors.splice(index, 1)
+      pruneEmptyBrandKit(doc.project)
+      return
+    }
+
+    case 'addBrandFont': {
+      const family = sanitizeFontFamily(command.family)
+      if (!family) throw new EditorCommandError('Invalid brand font family')
+      const kit = doc.project.brandKit ?? (doc.project.brandKit = { colors: [] })
+      const families = kit.fontFamilies ?? (kit.fontFamilies = [])
+      if (families.length >= BRAND_FONT_FAMILIES_MAX) {
+        throw new EditorCommandError(
+          `A brand kit can hold at most ${BRAND_FONT_FAMILIES_MAX} font families`,
+        )
+      }
+      if (families.some((entry) => entry.toLowerCase() === family.toLowerCase())) {
+        throw new EditorCommandError('That font family is already in the brand kit')
+      }
+      families.push(family)
+      return
+    }
+
+    case 'removeBrandFont': {
+      if (typeof command.family !== 'string') {
+        throw new EditorCommandError('Unknown brand font')
+      }
+      const kit = doc.project.brandKit
+      const families = kit?.fontFamilies ?? []
+      if (!kit) throw new EditorCommandError('This project has no brand kit')
+      const index = families.findIndex(
+        (entry) => entry.toLowerCase() === command.family.trim().toLowerCase(),
+      )
+      if (index === -1) throw new EditorCommandError(`Unknown brand font ${command.family}`)
+      families.splice(index, 1)
+      if (families.length === 0) delete kit.fontFamilies
+      pruneEmptyBrandKit(doc.project)
+      return
+    }
+
     case 'setClipShape': {
       const { clip } = requireClip(doc, command.clipId)
       if (!clip.shape) throw new EditorCommandError('Not a shape clip')
@@ -2454,26 +2791,10 @@ function presetNameTaken(doc: Doc, name: string, exceptId?: string): boolean {
  * Only the generated token is compared, so a clip on plain `Arial` does not
  * block removing an unrelated project font whose stack also lists Arial.
  */
-function fontFamilyTokens(value: string): string[] {
-  return value
-    .split(',')
-    .map((token) =>
-      token
-        .trim()
-        .replace(/^["'](.*)["']$/, '$1')
-        .trim()
-        .toLowerCase(),
-    )
-    .filter(Boolean)
-}
-
 function fontFamilyReferences(value: string | undefined, token: string): boolean {
   if (!value) return false
-  const target = token
-    .trim()
-    .replace(/^["'](.*)["']$/, '$1')
-    .trim()
-    .toLowerCase()
+  const target = primaryFontFamily(token)
+  if (!target) return false
   return fontFamilyTokens(value).includes(target)
 }
 

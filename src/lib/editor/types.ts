@@ -82,6 +82,33 @@ export interface ProjectFont {
   style?: 'normal' | 'italic'
 }
 
+/**
+ * A named track group (0.26.0). A group is a selection and control shortcut
+ * over its member tracks: mute, solo, visibility, and lock write the members'
+ * own flags, so member state stays the single source of truth.
+ */
+export interface TrackGroup {
+  id: string
+  name: string
+}
+
+/** One saved brand color (0.26.0). `value` is a strict `#rrggbb` string. */
+export interface BrandColor {
+  id: string
+  name: string
+  value: string
+}
+
+/**
+ * The project brand kit (0.26.0): a small palette plus font family references.
+ * A font reference may name a family this project no longer has; the UI shows
+ * it as unavailable instead of failing the load.
+ */
+export interface BrandKit {
+  colors: BrandColor[]
+  fontFamilies?: string[]
+}
+
 /** Parameterized shape primitives (0.25.0). No arbitrary paths or morphing. */
 export type ShapeKind = 'rectangle' | 'ellipse' | 'triangle' | 'star' | 'polygon' | 'heart'
 
@@ -464,6 +491,11 @@ export interface Track {
    * Enforced by the command layer (`LOCK_RULES`), not only by the UI.
    */
   locked?: boolean
+  /**
+   * Track group membership (0.26.0). A track belongs to at most one group, and
+   * a group's members all live in one sequence. Absent means ungrouped.
+   */
+  groupId?: string
   clips: Clip[]
 }
 
@@ -516,6 +548,14 @@ export interface Project {
    * for a project with no uploaded fonts.
    */
   fonts?: ProjectFont[]
+  /**
+   * Track groups (0.26.0), referenced by `Track.groupId`. Members of one group
+   * live in one sequence. The group stores only its name: controls write the
+   * member tracks' own flags, never a second source of truth.
+   */
+  trackGroups?: TrackGroup[]
+  /** The project brand kit (0.26.0): saved hex colors and font references. */
+  brandKit?: BrandKit
   /** Index 0 = topmost layer. Conventional order: text tracks, video tracks, audio tracks. */
   tracks: Track[]
 }

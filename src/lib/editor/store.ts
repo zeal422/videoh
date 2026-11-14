@@ -8,6 +8,7 @@ import { isNativeFile } from './media/relink'
 import { markerSelectionExists, type MarkerSelection } from './markers'
 import type { PlacementMode } from './sequence-ops'
 import { pruneEmptiedTracks, pruneOrphanSequences } from './tracks'
+import { groupTracks } from './track-groups'
 import type { ProxyEntry } from './proxy'
 import type { Doc, PendingRestore, Track } from './types'
 
@@ -254,6 +255,11 @@ export interface EditorState {
    * primary; the marker selection clears.
    */
   selectTrackClips: (trackId: string) => void
+  /**
+   * Select every clip on every track in a group, expanding link groups like
+   * `selectTrackClips`. Scoped to the active sequence.
+   */
+  selectTrackGroup: (groupId: string) => void
   setAutosaveStatus: (status: AutosaveStatus) => void
   markAutosaved: () => void
   setPendingRestore: (restore: PendingRestore | null) => void
@@ -778,6 +784,24 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         ? { selectedMarker: selection, selections: [], selection: null }
         : { selectedMarker: null },
     ),
+
+  selectTrackGroup: (groupId) => {
+    const { doc, activeSequencePath } = get()
+    const ids: string[] = []
+    for (const track of groupTracks(activeTracks(doc, activeSequencePath), groupId)) {
+      for (const clip of track.clips) {
+        if (ids.includes(clip.id)) continue
+        ids.push(clip.id)
+        for (const member of linkedClips(doc, clip.id)) {
+          if (!ids.includes(member.id)) ids.push(member.id)
+        }
+      }
+    }
+    set({
+      ...normalizeSelections(doc, ids, activeSequencePath),
+      selectedMarker: null,
+    })
+  },
 
   addSelection: (clipId) => {
     const { doc, selections, activeSequencePath } = get()

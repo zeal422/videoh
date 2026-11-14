@@ -57,6 +57,7 @@ import {
   TRANSITION_MIN,
 } from '@/lib/editor/constants'
 import { isTransientActive, useEditorStore } from '@/lib/editor/store'
+import { BrandColorSwatches } from '@/components/editor/BrandColorSwatches'
 import type {
   BlendMode,
   Clip,
@@ -1033,6 +1034,11 @@ function ShapeFields({ clip }: { clip: Clip }) {
                 onBlur={() => commitTransient()}
                 className="mt-1 h-8 w-full cursor-pointer p-0.5"
               />
+              <BrandColorSwatches
+                label="shape fill"
+                value={shape.fill}
+                onPick={(hex) => setShape({ fill: hex })}
+              />
             </div>
           </div>
 
@@ -1073,6 +1079,11 @@ function ShapeFields({ clip }: { clip: Clip }) {
                   onChange={(e) => setShapeTransient({ stroke: e.target.value })}
                   onBlur={() => commitTransient()}
                   className="mt-1 h-8 w-full cursor-pointer p-0.5"
+                />
+                <BrandColorSwatches
+                  label="shape stroke"
+                  value={shape.stroke}
+                  onPick={(hex) => setShape({ stroke: hex })}
                 />
               </div>
             )}
@@ -1193,6 +1204,11 @@ function TextFields({ clip }: { clip: Clip }) {
                 onChange={(e) => setStyleTransient({ color: e.target.value })}
                 onBlur={() => commitTransient()}
                 className="mt-1 h-8 w-full cursor-pointer p-0.5"
+              />
+              <BrandColorSwatches
+                label="text"
+                value={style.color}
+                onPick={(hex) => setStyle({ color: hex })}
               />
             </div>
           </div>

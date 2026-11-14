@@ -69,6 +69,7 @@ function baseCtx(overrides: Partial<MenuContext> = {}): MenuContext {
     canJoinClips: false,
     canFreezeFrame: false,
     canCreateCompound: false,
+    canGroupTracks: false,
     hasMarkers: false,
     hasSelectedMarker: false,
     // The base context is the project root, where Add Marker is always possible.

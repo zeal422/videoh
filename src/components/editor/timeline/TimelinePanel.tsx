@@ -12,13 +12,24 @@ import {
   EyeOff,
   Lock,
   LockOpen,
+  Layers,
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
@@ -27,6 +38,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { Input } from '@/components/ui/input'
@@ -64,15 +78,23 @@ import {
   activeTracks,
   docDuration,
   findSequence,
+  findTrackIn,
   sequenceDuration,
   uid,
 } from '@/lib/editor/factories'
+import {
+  groupFlagDisplay,
+  groupTracks,
+  planGroupFlag,
+  trackGroupById,
+  trackGroupMembership,
+} from '@/lib/editor/track-groups'
 import { markersEnd } from '@/lib/editor/markers'
 import { applySnap, computeSnapPoints } from '@/lib/editor/snap'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { useEditorStore } from '@/lib/editor/store'
-import { SNAP_THRESHOLD_PX, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
-import type { Track, TrackKind } from '@/lib/editor/types'
+import { SNAP_THRESHOLD_PX, TRACK_GROUP_NAME_MAX, TRACK_HEADER_WIDTH } from '@/lib/editor/constants'
+import type { Track, TrackGroup, TrackKind } from '@/lib/editor/types'
 import { cn } from '@/lib/utils'
 
 /** Sticky header column width (moved to constants for cross-module reuse). */
@@ -146,6 +168,10 @@ export function TimelinePanel() {
   const contentRef = useRef<HTMLDivElement>(null)
   const scrubbingRef = useRef(false)
   const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null)
+  /** Group rename dialog target and draft (0.26.0). */
+  const [groupEdit, setGroupEdit] = useState<TrackGroup | null>(null)
+  const [groupNameDraft, setGroupNameDraft] = useState('')
+  const [groupRenameError, setGroupRenameError] = useState<string | null>(null)
   /** Visible lane width (scroll viewport minus the sticky header). A short
    *  sequence must still paint its rows and ruler to the panel edge instead of
    *  ending in a black strip. */
@@ -697,6 +723,22 @@ export function TimelinePanel() {
     scrollEl.scrollTop += rowEl.getBoundingClientRect().height
   }, [tracks])
 
+  /** Commit a group rename, keeping the dialog and draft open on refusal. */
+  const submitGroupRename = () => {
+    if (!groupEdit) return
+    try {
+      useEditorStore.getState().apply({
+        type: 'renameTrackGroup',
+        groupId: groupEdit.id,
+        name: groupNameDraft,
+      })
+      setGroupEdit(null)
+      setGroupRenameError(null)
+    } catch (error) {
+      setGroupRenameError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   return (
     <section
       aria-label="Timeline"
@@ -848,7 +890,15 @@ export function TimelinePanel() {
               className="flex"
               style={{ height: TRACK_HEIGHT[track.kind] }}
             >
-              <TrackHeader track={track} canDelete={tracks.length > 1} />
+              <TrackHeader
+                track={track}
+                canDelete={tracks.length > 1}
+                onRenameGroup={(group) => {
+                  setGroupEdit(group)
+                  setGroupNameDraft(group.name)
+                  setGroupRenameError(null)
+                }}
+              />
               <div
                 data-lane-id={track.id}
                 data-lane-kind={track.kind}
@@ -987,6 +1037,54 @@ export function TimelinePanel() {
           )}
         </div>
       </div>
+
+      <Dialog
+        open={groupEdit !== null}
+        onOpenChange={(next) => {
+          if (next) return
+          setGroupEdit(null)
+          setGroupRenameError(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-sm" data-testid="track-group-rename-dialog">
+          <DialogHeader>
+            <DialogTitle>Rename group</DialogTitle>
+            <DialogDescription>Group controls write every member track.</DialogDescription>
+          </DialogHeader>
+          <Input
+            aria-label="Group name"
+            value={groupNameDraft}
+            maxLength={TRACK_GROUP_NAME_MAX}
+            onChange={(event) => {
+              setGroupNameDraft(event.target.value)
+              if (groupRenameError) setGroupRenameError(null)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                submitGroupRename()
+              }
+            }}
+          />
+          {groupRenameError && (
+            <p
+              role="alert"
+              data-testid="track-group-rename-error"
+              className="text-xs text-destructive"
+            >
+              {groupRenameError}
+            </p>
+          )}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setGroupEdit(null)}>
+              Cancel
+            </Button>
+            <Button data-testid="track-group-rename-save" onClick={submitGroupRename}>
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   )
 }
@@ -1043,10 +1141,135 @@ function TimelineFilmstripProgress() {
   )
 }
 
-function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean }) {
+/**
+ * A grouped track's compact chip and shared controls (0.26.0). The chip fits
+ * the crowded header; the dropdown owns the batch controls. Each control plans
+ * the mixed-state next value from the current member flags, so the command
+ * writes one value to every participant and one undo entry covers the action.
+ */
+function GroupChip({
+  group,
+  trackId,
+  members,
+  onRename,
+}: {
+  group: TrackGroup
+  trackId: string
+  members: Track[]
+  onRename: (group: TrackGroup) => void
+}) {
+  const apply = useEditorStore((s) => s.apply)
+  const setFlag = (flag: 'muted' | 'solo' | 'hidden' | 'locked') => {
+    const value = planGroupFlag(members, flag)
+    if (value === undefined) return
+    apply({ type: 'setTrackGroupFlag', groupId: group.id, flag, value })
+  }
+  const mutedNext = planGroupFlag(members, 'muted')
+  const hiddenNext = planGroupFlag(members, 'hidden')
+  const lockedNext = planGroupFlag(members, 'locked')
+  const soloNext = planGroupFlag(members, 'solo')
+  const mutedState = groupFlagDisplay(members, 'muted')
+  const hiddenState = groupFlagDisplay(members, 'hidden')
+  const lockedState = groupFlagDisplay(members, 'locked')
+  const soloState = groupFlagDisplay(members, 'solo')
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          data-testid={`track-group-${trackId}`}
+          className="size-5 shrink-0 text-sky-400"
+          aria-label={`${group.name} group controls`}
+          title={`Group: ${group.name}`}
+        >
+          <Layers className="size-3" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-52">
+        <DropdownMenuLabel className="truncate">{group.name}</DropdownMenuLabel>
+        <DropdownMenuItem onSelect={() => useEditorStore.getState().selectTrackGroup(group.id)}>
+          Select group
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          data-testid="group-toggle-mute"
+          onSelect={() => setFlag('muted')}
+          disabled={mutedNext === undefined}
+        >
+          {mutedNext ? 'Mute group' : 'Unmute group'}
+          {mutedState === 'mixed' && (
+            <span className="ml-auto text-[10px] text-muted-foreground">mixed</span>
+          )}
+        </DropdownMenuItem>
+        {soloNext !== undefined && (
+          <DropdownMenuItem data-testid="group-toggle-solo" onSelect={() => setFlag('solo')}>
+            {soloNext ? 'Solo group' : 'Unsolo group'}
+            {soloState === 'mixed' && (
+              <span className="ml-auto text-[10px] text-muted-foreground">mixed</span>
+            )}
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem
+          data-testid="group-toggle-hidden"
+          onSelect={() => setFlag('hidden')}
+          disabled={hiddenNext === undefined}
+        >
+          {hiddenNext ? 'Hide group' : 'Show group'}
+          {hiddenState === 'mixed' && (
+            <span className="ml-auto text-[10px] text-muted-foreground">mixed</span>
+          )}
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          data-testid="group-toggle-lock"
+          onSelect={() => setFlag('locked')}
+          disabled={lockedNext === undefined}
+        >
+          {lockedNext ? 'Lock group' : 'Unlock group'}
+          {lockedState === 'mixed' && (
+            <span className="ml-auto text-[10px] text-muted-foreground">mixed</span>
+          )}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem data-testid="group-rename" onSelect={() => onRename(group)}>
+          Rename group…
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          data-testid="group-remove-track"
+          onSelect={() => apply({ type: 'removeTrackFromGroup', trackId })}
+        >
+          Remove track from group
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          data-testid="group-delete"
+          onSelect={() => apply({ type: 'removeTrackGroup', groupId: group.id })}
+        >
+          Delete group
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+function TrackHeader({
+  track,
+  canDelete,
+  onRenameGroup,
+}: {
+  track: Track
+  canDelete: boolean
+  onRenameGroup: (group: TrackGroup) => void
+}) {
   const KindIcon = track.kind === 'video' ? Video : track.kind === 'audio' ? AudioLines : TypeIcon
   const untargeted = useEditorStore((s) => s.untargetedTracks.includes(track.id))
   const doc = useEditorStore((s) => s.doc)
+  const activeSequencePath = useEditorStore((s) => s.activeSequencePath)
+  const owner = findTrackIn(doc, track.id)?.sequenceId
+  const group = trackGroupById(doc.project, track.groupId)
+  const groupMembers = group ? groupTracks(activeTracks(doc, activeSequencePath), group.id) : []
+  const availableGroups = (doc.project.trackGroups ?? []).filter(
+    (entry) => trackGroupMembership(doc, entry.id)?.sequenceId === owner,
+  )
   const [renaming, setRenaming] = useState(false)
   const [draft, setDraft] = useState(track.name)
   const renameInputRef = useRef<HTMLInputElement>(null)
@@ -1160,6 +1383,14 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
               {track.name}
             </span>
           )}
+          {group && (
+            <GroupChip
+              group={group}
+              trackId={track.id}
+              members={groupMembers}
+              onRename={onRenameGroup}
+            />
+          )}
           {track.kind !== 'audio' && (
             <Button
               variant="ghost"
@@ -1263,6 +1494,46 @@ function TrackHeader({ track, canDelete }: { track: Track; canDelete: boolean })
         >
           Target Track
         </ContextMenuCheckboxItem>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger data-testid="track-menu-group">Group</ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            {availableGroups.length === 0 && (
+              <ContextMenuItem disabled>No groups in this sequence</ContextMenuItem>
+            )}
+            {availableGroups.map((entry) => (
+              <ContextMenuCheckboxItem
+                key={entry.id}
+                data-testid={`track-menu-group-${entry.id}`}
+                checked={track.groupId === entry.id}
+                onCheckedChange={(next) => {
+                  const store = useEditorStore.getState()
+                  if (next) {
+                    store.apply({ type: 'addTrackToGroup', groupId: entry.id, trackId: track.id })
+                  } else if (track.groupId === entry.id) {
+                    store.apply({ type: 'removeTrackFromGroup', trackId: track.id })
+                  }
+                }}
+              >
+                {entry.name}
+              </ContextMenuCheckboxItem>
+            ))}
+            {track.groupId && (
+              <>
+                <ContextMenuSeparator />
+                <ContextMenuItem
+                  data-testid="track-menu-group-remove"
+                  onSelect={() =>
+                    useEditorStore
+                      .getState()
+                      .apply({ type: 'removeTrackFromGroup', trackId: track.id })
+                  }
+                >
+                  Remove from Group
+                </ContextMenuItem>
+              </>
+            )}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
         {track.kind === 'audio' && (
           <ContextMenuCheckboxItem
             data-testid="track-menu-solo"

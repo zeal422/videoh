@@ -7,6 +7,8 @@ import { useIsMobile } from '@/hooks/use-mobile'
 import { NamedSlider } from '@/components/editor/NamedSlider'
 import { AppearanceDialog } from '@/components/editor/AppearanceDialog'
 import { StickerPicker } from '@/components/editor/StickerPicker'
+import { BrandKitPanel } from '@/components/editor/BrandKitPanel'
+import { TemplateGallery } from '@/components/editor/TemplateGallery'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -121,6 +123,8 @@ export function MenuBar({
   const [aboutOpen, setAboutOpen] = useState(false)
   const [gainOpen, setGainOpen] = useState(false)
   const [stickersOpen, setStickersOpen] = useState(false)
+  const [brandKitOpen, setBrandKitOpen] = useState(false)
+  const [templatesOpen, setTemplatesOpen] = useState(false)
   const [gainValue, setGainValue] = useState(1)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
@@ -145,6 +149,14 @@ export function MenuBar({
     () => (selections[0] ? findClip(doc, selections[0])?.track.id : undefined),
     [doc, selections],
   )
+  const selectedTrackIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const id of selections) {
+      const trackId = findClip(doc, id)?.track.id
+      if (trackId) ids.add(trackId)
+    }
+    return ids
+  }, [doc, selections])
   const closeGapsAvailable = useMemo(
     () => !!selectedTrackId && canCloseGaps(doc, selectedTrackId),
     [doc, selectedTrackId],
@@ -195,6 +207,7 @@ export function MenuBar({
     canJoinClips: joinClipsAvailable,
     canFreezeFrame: freezeFrameAvailable,
     canCreateCompound: selections.length > 0,
+    canGroupTracks: selectedTrackIds.size >= 2,
     hasMarkers,
     hasSelectedMarker: !!selectedMarker && markerSelectionExists(doc, selectedMarker),
     canAddMarker: selections.length > 0 || activeSequencePath.length === 0,
@@ -323,6 +336,12 @@ export function MenuBar({
             break
           case 'graphics.stickers':
             setStickersOpen(true)
+            break
+          case 'graphics.brandKit':
+            setBrandKitOpen(true)
+            break
+          case 'graphics.templates':
+            setTemplatesOpen(true)
             break
 
           case 'window.toggleMedia':
@@ -508,6 +527,8 @@ export function MenuBar({
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
       <StickerPicker open={stickersOpen} onOpenChange={setStickersOpen} />
+      <BrandKitPanel open={brandKitOpen} onOpenChange={setBrandKitOpen} />
+      <TemplateGallery open={templatesOpen} onOpenChange={setTemplatesOpen} />
       {appearanceOpen && <AppearanceDialog open onOpenChange={setAppearanceOpen} />}
     </>
   )

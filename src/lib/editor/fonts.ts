@@ -98,6 +98,30 @@ export function sanitizeFontFamily(value: unknown): string | undefined {
 }
 
 /**
+ * Parses a CSS font-family stack into unquoted, lowercased family tokens.
+ * Canvas resolves family names case-insensitively, and a reference may change
+ * its fallbacks while keeping the same primary family, so comparisons use the
+ * tokens rather than the whole stack string.
+ */
+export function fontFamilyTokens(value: string): string[] {
+  return value
+    .split(',')
+    .map((token) =>
+      token
+        .trim()
+        .replace(/^["'](.*)["']$/, '$1')
+        .trim()
+        .toLowerCase(),
+    )
+    .filter(Boolean)
+}
+
+/** The primary family token of a stack, or undefined for an empty string. */
+export function primaryFontFamily(value: string): string | undefined {
+  return fontFamilyTokens(value)[0]
+}
+
+/**
  * Display names are trimmed, control characters removed, and capped. React
  * renders them as text, but a clean stored value still matters for the picker
  * and for project files copied between builds.

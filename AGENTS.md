@@ -79,13 +79,14 @@ Running the suite (these are the steps agents get wrong):
 
 ## Map
 
-- `src/lib/editor/`: the state core. Types, constants, factories, commands, snap, transition, links,
+- `src/lib/editor/`: the state core. Types, constants, factories, commands, track-groups, brand-kit,
+  templates, snap, transition, links,
   clipboard, actions, placement, action-executor, keyframe-graph-gesture, tracks, timeline-scroll,
   store, serialization, persistence, workspace, menus. Pure TypeScript (no React, except the zustand
   stores); this is what unit tests target. See [docs/architecture.md](docs/architecture.md).
 - `src/lib/editor/media|playback|export/`: browser APIs live here (media elements, Web Audio, canvas,
   WebCodecs), plus the explicitly browser-bound `persistence.ts`, `project-io.ts`, `workspace-store.ts`,
-  and `src/lib/analytics.ts` helpers.
+  `template-store.ts`, and `src/lib/analytics.ts` helpers.
 - `src/components/editor/`: the UI. `src/components/editor/timeline/` holds the timeline.
 - `src/components/ui/`: preinstalled shadcn/ui: use them, never modify by hand.
 - `src/hooks/editor/`: the verified Premiere keyboard map (`useEditorKeyboard.ts`), the browser-bound
@@ -118,7 +119,8 @@ Running the suite (these are the steps agents get wrong):
    it lives inside `Doc`.
 2. **Keep the pure state core browser-free** so it runs in Vitest's Node environment. Browser APIs
    belong in `media/`, `playback/`, and `export/`; in the explicitly browser-bound `persistence.ts`,
-   `project-io.ts`, `workspace-store.ts`, and `analytics.ts` helpers; or in the browser-bound hooks
+   `project-io.ts`, `workspace-store.ts`, `template-store.ts`, and `analytics.ts` helpers; or in the
+   browser-bound hooks
    under `src/hooks/editor/` (`action-context.ts`, `useKeyframeGraphDrag.ts`).
 3. **Style through design tokens** (`bg-background`, `text-muted-foreground`, `border-border`, …) with
    [docs/design-system.md](docs/design-system.md). The fixed chrome it documents (clip kind colours,

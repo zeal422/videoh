@@ -102,6 +102,9 @@ src/components/
 │   ├── PreviewPanel.tsx          #   program monitor + transport + text drag + gizmo + offline/decode overlays
 │   ├── TransformGizmo.tsx        #   monitor gizmo overlay: box, corner scale, rotation handle
 │   ├── FontPicker.tsx            #   built-in/project font select + upload dialog
+│   ├── BrandKitPanel.tsx         #   saved colors and font references editor
+│   ├── BrandColorSwatches.tsx    #   saved swatches beside every text/shape color control
+│   ├── TemplateGallery.tsx       #   built-in and IndexedDB-saved template cards, apply/save/rename/delete
 │   ├── StickerPicker.tsx         #   bundled sticker grid, imports through the image path
 │   ├── ColorFilterDefs.tsx       #   hidden SVG grade/LUT filter host
 │   ├── ScopesPanel.tsx           #   histogram, RGB balance, waveform, vectorscope
@@ -209,6 +212,10 @@ src/lib/editor/
 ├── transform.ts          # the ONE clip Motion trigonometry: rotation/flip matrix, gizmo geometry
 ├── fonts.ts              # pure project-font metadata: generated family, validation, file magic/size checks
 ├── shapes.ts             # pure shape primitives: six path kinds, bounds, hit testing, hostile-value sanitize
+├── track-groups.ts       # pure group membership, mixed-state flag planning, hydration normalization
+├── brand-kit.ts          # pure brand color/font validation and lenient kit hydration
+├── templates.ts          # local template schema, strict parser, fresh-id sequence planning
+├── template-store.ts     # browser-bound IndexedDB library for user-saved templates
 ├── text-animations.ts    # four built-in text animation curves, keyframe generation, property labels (pure)
 ├── media-cleanup-plan.ts # pure cleanup reference set: doc, both history stacks, autosave slot, claim gate
 ├── media/
@@ -241,7 +248,7 @@ src/lib/editor/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   ├── options.ts        # pure container matrix, output bounds/bitrate, contain fit (Node-testable)
 │   └── mp4.ts            # WebCodecs export pipeline: MP4/MOV/MKV/WAV/MP3/M4A + downloadBlob
-└── __tests__/            # 120 test files (2743 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 124 test files (2808 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

@@ -421,6 +421,53 @@ Stable hooks used across flows and tests:
   OPFS write), and adds an image clip at the playhead as one undo step. There is no remote request,
   no sticker marketplace, and no new schema.
 
+## Track groups (0.26.0)
+
+- `Sequence > Group Selected Tracks` groups the distinct tracks the selection touches when it spans at
+  least two tracks in the open sequence; the group is auto-named ("Group 1") and the group command
+  refuses a mixed-sequence selection. A track can also join an existing group from its context menu.
+- A grouped header shows a compact layers chip. Its menu selects every member's clips, toggles mute,
+  solo, hide, and lock across the members, renames the group, removes the track, or deletes the group.
+  The solo row appears only when the group has an audio member; hide targets video and text lanes only.
+- Group controls write the members' own `muted`/`solo`/`visible`/`locked` flags: solo targets audio
+  members only and hide targets video and text members only. The mixed-state rule
+  is: if every participant already has the flag on, the next action turns all off; otherwise it turns
+  all on. A member edited after a group action shows a mixed label, never an override.
+- Group membership is metadata, so grouping or unlocking a locked lane is allowed; clip edits on a
+  locked member still refuse through `LOCK_RULES`. Removing a group clears membership and leaves every
+  track and clip intact. Removing a lane or pruning its emptied lane drops a group left empty, so the
+  name is reusable and the group stops counting toward the limit. Compound creation and template application leave their new tracks ungrouped.
+
+## Brand kit (0.26.0)
+
+- Graphics > Brand Kit opens the palette manager. Colors are strict `#rrggbb` values with trimmed
+  names (24 max, unique hex values and ids); font references are safe family strings (16 max) and may
+  name a font this project no longer has.
+- A saved color appears as a swatch beside the text color, shape fill, and shape stroke controls.
+  Clicking a swatch writes the existing field through `setTextStyle`/`setClipShape`; the plus button
+  saves the current value. Saving and applying are ordinary undoable commands.
+- The Font picker lists saved families in a Brand kit group. An unavailable reference renders
+  disabled with an "(unavailable)" label; the project still loads and the rest of the palette works.
+- Hydration is lenient: invalid colors, duplicate ids or values, oversized palettes, and malformed
+  font references drop with one warning. A missing font reference is preserved.
+
+## Local templates (0.26.0)
+
+- Graphics > Templates opens the gallery: three built-in cards (Title card, Lower third, Rolling
+  credits) and the user's saved templates from IndexedDB. Applying one installs a fresh compound
+  sequence at the playhead on the open sequence's top video lane (creating a video lane when none
+  exists), opens the new sequence, and records one undo entry.
+- Templates hold text and shape clips only. Saving the current sequence keeps those clips and drops
+  media, audio, compound containers, and track group membership. Clip opacity, rotation, the flip
+  pair, static position/scale values, and visual keyframe curves survive the round trip; effects and
+  transitions do not. A sequence with neither text nor a shape refuses to save. The template version
+  is its own field; older builds refuse a newer version.
+- The parser validates before any id is minted: version, unknown fields, duplicate track/clip ids,
+  path-like names, strict colors, shape kinds, lane-kind fit, track/clip/text/duration limits. Repeated
+  `linkId` values are one group. Applying mints fresh sequence, track, and clip ids plus one fresh link
+  id per group, so two applications never share identity. A template naming a font this project does
+  not have refuses whole.
+
 ## Captions
 
 - **SRT import.** The Captions panel's Import SRT reads a `.srt` file, parses
@@ -741,8 +788,9 @@ Stable hooks used across flows and tests:
 
 ## Save, load, autosave, restore
 
-- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 7; versions 1 to 6 still load, and a v7
-  file needs this build), including the media content hashes, the project font library, and shape
+- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 8; versions 1 to 7 still load, and a v8
+  file needs this build), including the media content hashes, the project font library, track groups,
+  the brand kit, and shape
   clips, writes a claim shard for every hash the snapshot references, and downloads the file. A
   refused claim downloads nothing: a copy is never written with unclaimed media. Object URLs are
   stripped and never persisted.
