@@ -1,6 +1,7 @@
 import { WAVEFORM_BUCKETS } from '../constants'
 import { uid } from '../factories'
 import type { MediaAsset, MediaKind } from '../types'
+import { readRecordingDuration } from './recorder'
 import { hashFile } from './media-store'
 
 /**
@@ -59,8 +60,18 @@ export function detectKind(file: File): MediaKind | null {
   return IMAGE_EXTENSIONS[ext] ?? null
 }
 
+/** Optional probe settings. A recording's header can omit its duration. */
+export interface ImportFileOptions {
+  /**
+   * A verified duration for a file whose container has none (MediaRecorder
+   * WebM reports `Infinity`). Used only when the element's own duration is not
+   * finite and positive, then still run through `sanitizeDuration`.
+   */
+  durationHint?: number
+}
+
 /** Imports a File into a MediaAsset. Throws MediaImportError when unusable. */
-export async function importFile(file: File): Promise<MediaAsset> {
+export async function importFile(file: File, options: ImportFileOptions = {}): Promise<MediaAsset> {
   const kind = detectKind(file)
   if (!kind) throw new MediaImportError(`Unsupported file type: ${file.name}`)
 
@@ -70,8 +81,8 @@ export async function importFile(file: File): Promise<MediaAsset> {
       kind === 'image'
         ? await importImage(file, url)
         : kind === 'video'
-          ? await importVideo(file, url)
-          : await importAudio(file, url)
+          ? await importVideo(file, url, options.durationHint)
+          : await importAudio(file, url, options.durationHint)
     // The content hash keys the durable store (0.23.0). Hashing is best-effort:
     // a runtime without `crypto.subtle` still gets a working session-only asset.
     return tryHashFile(file).then((contentHash) =>
@@ -100,56 +111,69 @@ async function importImage(file: File, url: string): Promise<MediaAsset> {
   }
 }
 
-async function importVideo(file: File, url: string): Promise<MediaAsset> {
+async function importVideo(file: File, url: string, durationHint?: number): Promise<MediaAsset> {
   const el = document.createElement('video')
   el.preload = 'auto'
   el.muted = true
   el.src = url
 
   await waitForEvent(el, 'loadedmetadata', 15000)
-  const duration = sanitizeDuration(el.duration)
+  const probed = await probeDuration(file, el.duration, durationHint)
   const width = el.videoWidth || 0
   const height = el.videoHeight || 0
+  // A MediaRecorder voiceover is an audio-only WebM. Browsers can report the
+  // downloaded file as video/webm, so the missing video dimensions decide the
+  // kind instead of the MIME type.
+  const audioOnly = width === 0 && height === 0
+  // Firefox writes audio-only WebM without a duration and cannot seek it, so
+  // the generic repair returns nothing on a re-import. The waveform pass below
+  // decodes the audio anyway, and that buffer knows its exact length.
+  const audio = await tryDecodeAudio(file)
+  const duration = probed > 0 ? probed : audioOnly ? (audio?.duration ?? 0) : 0
 
   let thumbnail: string | undefined
-  try {
-    await seekTo(el, Math.min(1, duration / 3))
-    thumbnail = makeThumbnail(el, width, height)
-  } catch {
-    // thumbnail is optional
+  if (!audioOnly) {
+    try {
+      await seekTo(el, Math.min(1, duration / 3))
+      thumbnail = makeThumbnail(el, width, height)
+    } catch {
+      // thumbnail is optional
+    }
   }
 
-  const waveformPeaks = await tryDecodePeaks(file)
   el.src = ''
   el.load()
 
   return {
     id: uid('media'),
     name: file.name,
-    kind: 'video',
+    kind: audioOnly ? 'audio' : 'video',
     duration,
     width,
     height,
     url,
     file,
     ...(thumbnail ? { thumbnail } : {}),
-    ...(waveformPeaks ? { waveformPeaks } : {}),
+    ...(audio?.peaks ? { waveformPeaks: audio.peaks } : {}),
     // decodeAudioData succeeds exactly when the container has a decodable
     // audio track — that is the authoritative A/V split signal.
-    hasAudio: waveformPeaks !== undefined,
+    hasAudio: audioOnly || audio !== undefined,
   }
 }
 
-async function importAudio(file: File, url: string): Promise<MediaAsset> {
+async function importAudio(file: File, url: string, durationHint?: number): Promise<MediaAsset> {
   const el = document.createElement('audio')
   el.preload = 'metadata'
   el.src = url
   await waitForEvent(el, 'loadedmetadata', 15000)
-  const duration = sanitizeDuration(el.duration)
+  const probed = await probeDuration(file, el.duration, durationHint)
+  // The same Firefox gap as the audio-only video path: no container duration
+  // and no seek, but a decodable audio track with a known length.
+  const audio = await tryDecodeAudio(file)
+  const duration = probed > 0 ? probed : (audio?.duration ?? 0)
   el.src = ''
   el.load()
 
-  const waveformPeaks = await tryDecodePeaks(file)
   return {
     id: uid('media'),
     name: file.name,
@@ -159,7 +183,7 @@ async function importAudio(file: File, url: string): Promise<MediaAsset> {
     height: 0,
     url,
     file,
-    ...(waveformPeaks ? { waveformPeaks } : {}),
+    ...(audio?.peaks ? { waveformPeaks: audio.peaks } : {}),
     hasAudio: true,
   }
 }
@@ -177,6 +201,34 @@ async function tryHashFile(file: File): Promise<string | undefined> {
 
 function sanitizeDuration(d: number): number {
   return Number.isFinite(d) && d > 0 ? d : 0
+}
+
+/**
+ * The element's own duration wins when it is finite and positive. A
+ * MediaRecorder WebM reports `Infinity`, so the caller's verified hint fills the
+ * gap; a zero, negative, or non-finite hint still sanitizes to zero.
+ */
+export function resolveDuration(raw: number, hint?: number): number {
+  if (Number.isFinite(raw) && raw > 0) return raw
+  return sanitizeDuration(hint ?? 0)
+}
+
+/** True for a WebM container, which can omit its duration header. */
+function isWebmFile(file: File): boolean {
+  return file.type.includes('webm') || file.name.toLowerCase().endsWith('.webm')
+}
+
+/**
+ * The element's duration, with the MediaRecorder WebM repair applied when the
+ * container has none and no verified hint was supplied. A downloaded recording
+ * is re-imported through this path, so it must get the same duration repair as
+ * the original take.
+ */
+async function probeDuration(file: File, raw: number, hint?: number): Promise<number> {
+  const duration = resolveDuration(raw, hint)
+  if (duration > 0 || !isWebmFile(file)) return duration
+  const repaired = await readRecordingDuration(file)
+  return repaired === null ? duration : sanitizeDuration(repaired)
 }
 
 function waitForEvent(el: HTMLMediaElement, event: string, timeoutMs: number): Promise<void> {
@@ -254,10 +306,14 @@ function makeThumbnail(
 }
 
 /**
- * Decodes the file's audio track and computes normalized peaks.
- * Returns undefined when the browser cannot decode (e.g. some containers).
+ * Decodes the file's audio track, returning normalized peaks and the decoded
+ * length. The length is the only duration a Firefox audio-only WebM exposes:
+ * its container has none and the element cannot seek it. Returns undefined when
+ * the browser cannot decode (e.g. some containers).
  */
-async function tryDecodePeaks(file: File): Promise<number[] | undefined> {
+async function tryDecodeAudio(
+  file: File,
+): Promise<{ peaks: number[]; duration: number } | undefined> {
   try {
     const AudioCtx: typeof AudioContext | undefined =
       typeof AudioContext !== 'undefined'
@@ -266,10 +322,12 @@ async function tryDecodePeaks(file: File): Promise<number[] | undefined> {
           undefined)
     if (!AudioCtx) return undefined
     const ctx = new AudioCtx()
-    const buffer = await ctx.decodeAudioData(await file.arrayBuffer())
-    const peaks = computePeaks(buffer, WAVEFORM_BUCKETS)
-    void ctx.close()
-    return peaks
+    try {
+      const buffer = await ctx.decodeAudioData(await file.arrayBuffer())
+      return { peaks: computePeaks(buffer, WAVEFORM_BUCKETS), duration: buffer.duration }
+    } finally {
+      void ctx.close()
+    }
   } catch {
     return undefined
   }

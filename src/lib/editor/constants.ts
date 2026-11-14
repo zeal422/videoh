@@ -232,3 +232,19 @@ export const KEYFRAME_PROPERTY_BOUNDS: Record<
 
 /** Keyboard nudge for one easing handle, in normalized curve coordinates. */
 export const EASE_HANDLE_KEYBOARD_STEP = 0.02
+
+/**
+ * Recording limits (0.27.0). MediaRecorder buffers every chunk in memory until
+ * stop, so a cap is what keeps a long take from crashing the tab and losing the
+ * recording. At the explicit bitrates below, ten minutes stays under the byte
+ * cap and the time cap binds first.
+ */
+export const RECORDING_MAX_SECONDS = 600
+/** The hard ceiling: a chunk that would cross it is dropped from the take. */
+export const RECORDING_MAX_BYTES = 512 * 1024 * 1024
+/** The stop trigger leaves room for the last buffered chunks under the ceiling. */
+export const RECORDING_CAP_HEADROOM_BYTES = 32 * 1024 * 1024
+export const RECORDING_SOFT_MAX_BYTES = RECORDING_MAX_BYTES - RECORDING_CAP_HEADROOM_BYTES
+export const RECORDING_WARN_RATIO = 0.8
+export const RECORDING_VIDEO_BITS_PER_SECOND = 6_000_000
+export const RECORDING_AUDIO_BITS_PER_SECOND = 128_000

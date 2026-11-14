@@ -15,6 +15,11 @@ Build, run, and verify. Sibling docs: [docs index](README.md) · [architecture.m
   editor shell, the sitemap, and the static verification file.
 - Optional GoatCounter analytics through `NEXT_PUBLIC_GOATCOUNTER_URL`. Leave it empty to disable
   analytics, including in Preview and Development.
+- Recording uses the browser permission prompts for the microphone, the camera, and screen
+  capture, and needs `MediaRecorder`. A denied permission is reported inside the recording dialog.
+  System audio is platform and picker dependent: when the picker shares no audio track, the take is
+  video only and the dialog says so. Nothing is uploaded; the take is imported and stored like any
+  other media file.
 
 ## Media storage
 
@@ -195,6 +200,8 @@ At 0.25.0 the same day the four-shard pair measured 178s, with the same server s
 both legs with `PAIR_EXIT=0`. At 0.26.0 on 2026-11-14 the four-shard pair measured 182s, with the
 dev leg starting its own server, the artifact leg reusing the standalone server, and 74/74 on both
 legs with `PAIR_EXIT=0`.
+At 0.27.0 on 2026-11-14 the four-shard pair measured 181s on the final
+tree, with the same server split and 74/74 on both legs with `PAIR_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 

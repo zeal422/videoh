@@ -49,6 +49,13 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/u
 - **Speed, remapping, and audio.** 0.25x to 4x, Alt-drag rate stretch, reverse, and a `timeScale`
   curve that ramps speed without changing timeline length. Per-clip gain, mute, pan, 3-band EQ,
   compressor, broadband denoise, volume automation, auto-ducking, and track solo/mute.
+- **Recording.** The media bin records a voiceover from a microphone, a screen or window with
+  system audio or microphone audio (one source, never mixed), and a camera with optional microphone.
+  Every take imports through the normal media path and is stored in OPFS where the browser accepts
+  the write; a quota, private-mode, or unsupported-storage failure stays session-only, with a
+  Download a copy action in the media bin before reload. A take stops and saves itself at 10 minutes
+  or 512 MB. It stops at 480 MB, and a chunk that would cross the 512 MB ceiling is dropped, so the
+  buffer stays bounded; the take may end slightly early and the dialog says so.
 - **Playback and export.** An audio-clock-driven preview with a per-clip media pool and drift
   correction. Paused scrubbing uses WebCodecs and keeps the last good frame, falling back to the
   `<video>` element when a source has no usable sink. Offline MP4 export is frame-accurate H.264 with
@@ -79,7 +86,8 @@ button (or drag them onto the media bin), then quick-add them with the `+` butto
 
 Use a current Chromium-based browser for the full feature set. Export also needs WebCodecs:
 Chromium, Edge, Firefox 130+, or Safari 26+. The WebCodecs scrub preview targets Chrome and modern
-Firefox 130+; older browsers keep the `<video>` fallback.
+Firefox 130+; older browsers keep the `<video>` fallback. Recording needs `getUserMedia`,
+`getDisplayMedia`, and `MediaRecorder`; system audio depends on the platform and the picker.
 
 ### Keyboard shortcuts
 
@@ -195,7 +203,7 @@ bun run battery:pair   # dev + artifact concurrently (needs a current build and 
 PAIR_SHARDS=1 bun run battery:pair # sequential rollback, one session per leg
 ```
 
-Current state: **2808 tests across 124 files, all passing**. Coverage is enforced at 70/60/75/70 over
+Current state: **2867 tests across 127 files, all passing**. Coverage is enforced at 70/60/75/70 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -224,7 +232,7 @@ src/lib/editor/            # state core (commands, store, serialization) + brows
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, landing sections, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 124 test files (2808 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 127 test files (2867 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations

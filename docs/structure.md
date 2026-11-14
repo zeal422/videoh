@@ -105,6 +105,7 @@ src/components/
 │   ├── BrandKitPanel.tsx         #   saved colors and font references editor
 │   ├── BrandColorSwatches.tsx    #   saved swatches beside every text/shape color control
 │   ├── TemplateGallery.tsx       #   built-in and IndexedDB-saved template cards, apply/save/rename/delete
+│   ├── RecordingDialog.tsx       #   voiceover, screen, and camera capture with one audio source
 │   ├── StickerPicker.tsx         #   bundled sticker grid, imports through the image path
 │   ├── ColorFilterDefs.tsx       #   hidden SVG grade/LUT filter host
 │   ├── ScopesPanel.tsx           #   histogram, RGB balance, waveform, vectorscope
@@ -220,6 +221,7 @@ src/lib/editor/
 ├── media-cleanup-plan.ts # pure cleanup reference set: doc, both history stacks, autosave slot, claim gate
 ├── media/
 │   ├── probe.ts          # importFile: probe duration/size, thumbnail, waveform peaks, hasAudio
+│   ├── recorder.ts       # capture capabilities, MIME selection, duration repair, caps, stream cleanup
 │   ├── filmstrip-cache.ts # runtime-only strip cache: one job, LRU budget, hidden video per asset, progress events
 │   ├── thumbnail-cache.ts # per-asset source-time cache: split reuse, bounded runs, Input ownership
 │   ├── relink.ts         # isNativeFile guard + relinkPatchFrom: patch fields a relink carries (file handle included)
@@ -230,6 +232,7 @@ src/lib/editor/
 │   ├── persist.ts        # asset-to-store bridge, claim writes, clean orchestration, in-flight counter
 │   ├── font-store.ts     # font bytes in OPFS, FontFace registry per project, staged upload, export wait
 │   ├── stickers.ts       # bundled local sticker manifest + same-origin fetch into an image File
+│   ├── recorder.ts       # capture capabilities, MIME selection, duration repair, caps, stream cleanup
 │   ├── rehydrate.ts      # rebuild File + object URL from stored bytes before install
 │   ├── project-lock.ts   # shared Web Lock per open project; exclusive clean refuses a second tab
 │   └── freeze-frame.ts   # two-pass compositor render to an opaque PNG still
@@ -248,7 +251,7 @@ src/lib/editor/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   ├── options.ts        # pure container matrix, output bounds/bitrate, contain fit (Node-testable)
 │   └── mp4.ts            # WebCodecs export pipeline: MP4/MOV/MKV/WAV/MP3/M4A + downloadBlob
-└── __tests__/            # 124 test files (2808 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 127 test files (2867 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

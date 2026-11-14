@@ -5,6 +5,7 @@ import {
   downloadProjectJSON,
   ensureProjectLock,
   importMediaFiles,
+  importRecordedFile,
   installProject,
   openProjectFile,
   ProjectClaimError,
@@ -648,6 +649,69 @@ describe('importMediaFiles wiring', () => {
     expect(asset.missing).toBe(false)
     expect(asset.contentHash).toBe(hash)
     expect(await readMediaFile(doc.project.id, hash)).not.toBeNull()
+  })
+
+  it('returns the relinked entry id when a recorded take matches a missing asset', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    const hash = await hashOf()
+    const doc = createDoc()
+    doc.media = [
+      createMediaAsset({ id: 'missing', kind: 'audio', name: 'take.webm', missing: true, url: '' }),
+    ]
+    useEditorStore.setState({ doc })
+    probeMock.importFile.mockResolvedValue(
+      createMediaAsset({
+        id: 'fresh',
+        kind: 'audio',
+        name: 'take.webm',
+        contentHash: hash,
+        file: sourceFile('take.webm', 'audio/webm'),
+        url: 'blob:fresh',
+      }),
+    )
+    const asset = await importRecordedFile(sourceFile('take.webm', 'audio/webm'), 12.5)
+    // The reducer keeps the offline entry's id, so placement must use that id.
+    expect(asset?.id).toBe('missing')
+    expect(useEditorStore.getState().doc.media[0].missing).toBe(false)
+  })
+
+  it('stops a multi-file batch when the project changes between files', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    const hash = await hashOf()
+    useEditorStore.setState({ doc: createDoc() })
+    probeMock.importFile.mockImplementation(async (file: File) =>
+      createMediaAsset({
+        kind: 'video',
+        name: file.name,
+        contentHash: hash,
+        file,
+        url: `blob:${file.name}`,
+      }),
+    )
+    let replaced = false
+    const unsubscribe = useEditorStore.subscribe((state, previous) => {
+      if (replaced) return
+      if (state.doc.media.length > previous.doc.media.length) {
+        replaced = true
+        useEditorStore.getState().replaceDoc(createDoc())
+      }
+    })
+    try {
+      const imported = await importMediaFiles([
+        new File(['a'], 'a.mp4', { type: 'video/mp4' }),
+        new File(['b'], 'b.mp4', { type: 'video/mp4' }),
+      ])
+      expect(replaced).toBe(true)
+      // The replaced project owns none of the batch; the second file is never
+      // probed, and the first attachment is gone with the old project.
+      expect(imported).toBe(0)
+      expect(probeMock.importFile).toHaveBeenCalledTimes(1)
+    } finally {
+      unsubscribe()
+      probeMock.importFile.mockReset()
+    }
   })
 
   it('drops a probe whose project was replaced while it ran', async () => {

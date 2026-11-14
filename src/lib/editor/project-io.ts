@@ -147,71 +147,113 @@ export function relinkPatchFor(fresh: MediaAsset, stored: boolean): Partial<Medi
 export async function importMediaFiles(files: FileList | File[]): Promise<number> {
   let imported = 0
   const heavy: MediaAsset[] = []
+  // One token for the whole batch. A project replacement between files must
+  // stop the remaining imports instead of attaching them to the new project.
+  const token = currentProjectToken()
   for (const file of Array.from(files)) {
-    // The project can be replaced while a probe or a store write is in flight.
-    // A completion from the old project must not attach its bytes to the new
-    // one, so every await is followed by a token check.
-    const token = currentProjectToken()
-    let fresh: MediaAsset | null = null
-    /** True only once the doc takes the probed asset. */
-    let attached = false
-    try {
-      fresh = await importFile(file)
-      if (!isProjectTokenCurrent(token)) return imported
-      const { asset, stored, warning } = await storeMediaAsset(token.projectId, fresh)
-      if (!isProjectTokenCurrent(token)) return imported
-      if (warning) {
-        toast({
-          title: 'Media is session-only',
-          description: warning,
-          variant: 'destructive',
-        })
-      }
-      // Re-read after the awaits: the doc may have changed while the bytes wrote.
-      const store = useEditorStore.getState()
-      const missing = store.doc.media.find((m) => m.missing && m.name === asset.name)
-      if (missing) {
-        if (
-          !store.apply({
-            type: 'relinkMedia',
-            mediaId: missing.id,
-            patch: relinkPatchFor(asset, stored),
-          })
-        )
-          continue
-        attached = true
-        toast({ title: 'Media relinked', description: asset.name })
-      } else {
-        if (!store.apply({ type: 'addMediaAsset', asset })) continue
-        attached = true
-        if (shouldProxy(asset)) heavy.push(asset)
-      }
-      imported += 1
-    } catch (error) {
-      if (!isProjectTokenCurrent(token)) return imported
+    if (!isProjectTokenCurrent(token)) return imported
+    const { asset, stopped } = await importOneMediaFile(file, {}, heavy, token)
+    if (stopped || !isProjectTokenCurrent(token)) return imported
+    if (asset) imported += 1
+  }
+  if (!isProjectTokenCurrent(token)) return imported
+  handleHeavySources(heavy)
+  return imported
+}
+
+/**
+ * Imports one recorded file through the same probe, store, and add-media path
+ * as a picked file. `durationHint` fills a container duration the browser
+ * cannot read (MediaRecorder WebM). Returns the attached asset, or null when
+ * the import failed or the project changed.
+ */
+export async function importRecordedFile(
+  file: File,
+  durationHint?: number,
+): Promise<MediaAsset | null> {
+  const heavy: MediaAsset[] = []
+  const token = currentProjectToken()
+  const { asset } = await importOneMediaFile(file, { durationHint }, heavy, token)
+  // A replacement after the attach still owns none of this take's follow-up.
+  if (!isProjectTokenCurrent(token)) return null
+  handleHeavySources(heavy)
+  return asset
+}
+
+/** One file through probe, store, relink-or-add. `stopped` means the project changed. */
+async function importOneMediaFile(
+  file: File,
+  options: { durationHint?: number },
+  heavy: MediaAsset[],
+  token: ProjectToken = currentProjectToken(),
+): Promise<{ asset: MediaAsset | null; stopped: boolean }> {
+  // The project can be replaced while a probe or a store write is in flight.
+  // A completion from the old project must not attach its bytes to the new
+  // one, so every await is followed by a token check.
+  let fresh: MediaAsset | null = null
+  /** True only once the doc takes the probed asset. */
+  let attached = false
+  try {
+    fresh = await importFile(file, options)
+    if (!isProjectTokenCurrent(token)) return { asset: null, stopped: true }
+    const { asset, stored, warning } = await storeMediaAsset(token.projectId, fresh)
+    if (!isProjectTokenCurrent(token)) return { asset: null, stopped: true }
+    if (warning) {
       toast({
-        title: `Could not import ${file.name}`,
-        description: error instanceof Error ? error.message : String(error),
+        title: 'Media is session-only',
+        description: warning,
         variant: 'destructive',
       })
-    } finally {
-      // A refused relink (a locked track) or a replaced project leaves the
-      // probed bytes owned by nobody; release their object URL with them.
-      if (fresh && !attached) discardFreshMedia(fresh)
     }
-  }
-  // Heavy sources: build a proxy now when proxies are on, else prompt once.
-  if (heavy.length > 0) {
-    if (useEditorStore.getState().proxiesEnabled) {
-      for (const asset of heavy) void buildProxy(asset)
-    } else {
-      toast({
-        title: 'Heavy source imported',
-        description: `${heavy.map((a) => a.name).join(', ')} exceeds 1920 px. Enable View > Use Proxies for smoother preview.`,
-      })
+    // Re-read after the awaits: the doc may have changed while the bytes wrote.
+    const store = useEditorStore.getState()
+    const missing = store.doc.media.find((m) => m.missing && m.name === asset.name)
+    if (missing) {
+      if (
+        !store.apply({
+          type: 'relinkMedia',
+          mediaId: missing.id,
+          patch: relinkPatchFor(asset, stored),
+        })
+      )
+        return { asset: null, stopped: false }
+      attached = true
+      toast({ title: 'Media relinked', description: asset.name })
+      // The reducer keeps the offline entry's id, so callers that place a clip
+      // must receive that entry, not the freshly probed asset.
+      const linked = useEditorStore.getState().doc.media.find((m) => m.id === missing.id)
+      return { asset: linked ?? asset, stopped: false }
     }
+    if (!store.apply({ type: 'addMediaAsset', asset })) return { asset: null, stopped: false }
+    attached = true
+    if (shouldProxy(asset)) heavy.push(asset)
+    return { asset, stopped: false }
+  } catch (error) {
+    if (!isProjectTokenCurrent(token)) return { asset: null, stopped: true }
+    toast({
+      title: `Could not import ${file.name}`,
+      description: error instanceof Error ? error.message : String(error),
+      variant: 'destructive',
+    })
+    return { asset: null, stopped: false }
+  } finally {
+    // A refused relink (a locked track) or a replaced project leaves the
+    // probed bytes owned by nobody; release their object URL with them.
+    if (fresh && !attached) discardFreshMedia(fresh)
   }
-  return imported
+}
+
+/** Heavy sources: build a proxy now when proxies are on, else prompt once. */
+function handleHeavySources(heavy: MediaAsset[]): void {
+  if (heavy.length === 0) return
+  if (useEditorStore.getState().proxiesEnabled) {
+    for (const asset of heavy) void buildProxy(asset)
+    return
+  }
+  toast({
+    title: 'Heavy source imported',
+    description: `${heavy.map((a) => a.name).join(', ')} exceeds 1920 px. Enable View > Use Proxies for smoother preview.`,
+  })
 }
 
 /** Trigger the browser file picker and resolve with the selected files. */

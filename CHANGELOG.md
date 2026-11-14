@@ -5,6 +5,58 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.27.0] - 2026-11-14
+
+### Added
+
+- Record a voiceover from a selected microphone, with a level meter, a timer, and an optional placement at the playhead on an audio lane. The take imports through the normal media path and is stored in OPFS where the browser accepts the write; a quota or unsupported-storage failure stays session-only like any other import.
+- Record a screen, window, or tab with exactly one audio source: system audio, the microphone, or none. The microphone is added to the display video stream as its own track, so system audio and microphone are never mixed and the recording has one audio track.
+- Record a camera with an optional microphone. With the microphone off, the take is a video-only asset.
+- Add a Record menu to the media bin with voiceover, screen, and camera entries. Device labels refresh after permission, and unsupported modes disable Start with a reason.
+- Repair the duration of a MediaRecorder WebM whose header reports infinity by seeking past the end before import, and pass the verified value to `importFile` as a duration hint. A container with no readable duration falls back to the recorder's measured take length, and the stored bytes are left unchanged.
+- Cap every take at 10 minutes or 512 MiB, with an 80 percent warning, and stop and save it at either limit. The 512 MiB ceiling is enforced by dropping a chunk that would cross it, so the buffered take stays bounded. Video records at 6 Mbps and audio at 128 kbps, which keeps ten minutes under the byte trigger.
+
+### Changed
+
+- Recording is an ordinary media import: it uses the same `importFile`, content hash, OPFS store, relink, proxy, thumbnail, and waveform path as a picked file. No schema change and no new media kind.
+- A session-only import, including a recording the browser could not store, offers Download a copy in the media bin, so the original bytes can be kept before a reload.
+- The recorder stops every stream track and the MediaRecorder exactly once on stop, cancel, cap, track end, permission failure, import failure, and unmount. Closing the dialog during a take discards it; no recording continues in the background.
+- Screen system audio is offered only when the platform and picker provide an audio track; a take that shares none records video with a visible note.
+- The docs, test inventory, structure map, roadmap, and release record move with the release.
+
+### Fixed
+
+- A microphone, camera, or screen permission request that resolves after the dialog closes now stops its stream immediately and never constructs a recorder, so capture cannot continue in the background.
+- A take the browser stopped on its own (for example when the microphone track ends) now resolves with its file, imports it, and cannot leave a later Stop click waiting forever.
+- A take that reaches the 10 minute or 512 MiB cap now imports itself instead of staying in the recording state until Stop, so closing the dialog no longer discards the saved take.
+- Start is disabled when the browser reports no supported recording MIME type, instead of asking for permission and failing after the stream is acquired.
+- A default device entry with an empty id no longer crashes the recording dialog: the select renders only named devices and the placeholder stays the default.
+- A take no longer stops its tracks twice during dialog teardown: the recorder owns the stream cleanup, and the dialog only stops a stream directly when no recorder was constructed.
+- A screen take whose shared display ends while the microphone prompt is open now aborts and stops both streams instead of recording from an ended source, and a cancellation that lands after the microphone arrives rejects instead of falling back to video only.
+- A take that finishes after its project was replaced is discarded instead of importing into the new project.
+- A recorded take that relinks a missing asset now returns the relinked document entry, so placing it at the playhead uses an id that exists.
+- A recording no longer imports with duration 0 when the browser cannot read the container duration, and the stored bytes are left unchanged.
+- A take stops at the 480 MiB byte trigger and keeps the crossing and final chunks, so the saved stream stays decodable; a chunk that arrives after finalize is ignored. A chunk that would cross the 512 MiB ceiling is dropped, the take is saved from the chunks already recorded, and the dialog reports that its end may be missing.
+- A failing or cancelled take still ignores the trailing chunk its stop emits, so a failed take cannot be resurrected.
+- The recording limit uses a monotonic clock, so a wall-clock adjustment cannot stop a short take or delay the cap.
+- A multi-file import keeps one project token for the whole batch, so a project replacement between files cannot redirect the rest of the selection.
+- A denied microphone request still honors a dialog close and a shared display that ended during the prompt, instead of returning an ended video stream.
+- Start ignores repeated clicks while a permission request is pending, so one take cannot construct two recorders.
+- A denied permission or a recorder startup failure re-enables Start, so the dialog is usable without closing and reopening it.
+- A denied device enumeration falls back to the default microphone and camera instead of raising an unhandled rejection.
+- Closing the dialog while the screen microphone prompt is pending now stops the shared display immediately instead of leaving it capturing until the prompt resolves.
+- A failed level-meter setup now closes its AudioContext instead of leaking it.
+- The screen Microphone audio source is disabled with a reason when the browser has no getUserMedia, instead of letting the take fall back to video only after selection.
+- A recording downloaded with Download a copy now re-imports with its verified duration, and an audio-only WebM is classified as audio even when the browser reports it as video.
+- A video-only take records with a video-only MIME type. Firefox accepted the muxed `vp8,opus` request for a stream with no audio track, then emitted no data and never fired stop, which left the dialog saving forever. Camera takes with the microphone off and screen takes with no audio track were affected.
+- A stop whose browser event never arrives finalizes with the bytes already buffered after 20 seconds, and a recorder that throws from stop still saves its chunks, so the dialog cannot sit in Saving with the take lost.
+- An audio-only take whose container reports no readable duration now imports at its measured length. Firefox writes audio-only WebM without a duration and cannot seek it, so voiceover takes were refused before.
+- A downloaded or relinked audio-only recording keeps its length on re-import. Firefox writes audio-only WebM without a container duration and cannot seek it, so the generic import used to attach it at 0.0 s; the decoded audio track now supplies the exact length when the container cannot be read.
+- A take whose first chunk was already larger than the 512 MiB ceiling now explains that nothing could be saved, instead of leaving the dialog looking like it is still recording. A take the browser ends with no bytes also resets the dialog now.
+- A session-only warning now names Download a copy as the recovery path instead of implying a recording can always be relinked.
+- A screen take refuses an already-ended display before starting, for every audio source, not only when the microphone is selected.
+- A voiceover placement that the timeline declines now reports Recording saved but not placed instead of Recording added.
+
 ## [0.26.0] - 2026-11-14
 
 ### Added

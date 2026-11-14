@@ -9,6 +9,8 @@ const probeMock = vi.hoisted(() => ({ importFile: vi.fn() }))
 vi.mock('@/lib/editor/media/probe', () => probeMock)
 const storeMock = vi.hoisted(() => ({ storeMediaAsset: vi.fn() }))
 vi.mock('@/lib/editor/media/persist', () => storeMock)
+const exportMock = vi.hoisted(() => ({ downloadBlob: vi.fn() }))
+vi.mock('@/lib/editor/export/mp4', () => exportMock)
 
 import { MediaBin } from '@/components/editor/MediaBin'
 import { PreviewPanel } from '@/components/editor/PreviewPanel'
@@ -32,6 +34,7 @@ beforeEach(() => {
   h = installBrowserMocks()
   document.body.innerHTML = ''
   useEditorStore.setState(useEditorStore.getInitialState())
+  exportMock.downloadBlob.mockClear()
 })
 
 afterEach(() => {
@@ -148,10 +151,40 @@ describe('media bin cards', () => {
     expect(useEditorStore.getState().doc.media[0].url).toBe(asset.url)
   })
 
+  it('offers a copy of an asset the browser could not store', () => {
+    const sessionFile = new File(['take'], 'take.webm', { type: 'video/webm' })
+    const session = mediaAsset({
+      id: 'media_session',
+      kind: 'video',
+      name: 'take.webm',
+      duration: 2,
+      file: sessionFile,
+    })
+    const stored = mediaAsset({
+      id: 'media_stored',
+      kind: 'video',
+      name: 'stored.webm',
+      duration: 2,
+      file: sessionFile,
+      contentHash: 'a'.repeat(64),
+    })
+    useEditorStore.setState({ doc: docWithMedia([session, stored]) })
+    render(<MediaBin heading={false} />)
+
+    const card = screen.getByTestId('media-item-media_session')
+    fireEvent.click(within(card).getByLabelText('Download a copy'))
+    expect(exportMock.downloadBlob).toHaveBeenCalledWith(sessionFile, 'take.webm')
+    // Persisted bytes already have their own copy in OPFS.
+    const storedCard = screen.getByTestId('media-item-media_stored')
+    expect(within(storedCard).queryByLabelText('Download a copy')).not.toBeInTheDocument()
+  })
+
   it('locks the thumbnail size class in source', () => {
     const src = read('src/components/editor/MediaBin.tsx')
     expect(src).toContain('h-10 w-16')
     expect(src).not.toContain('flex size-10 shrink-0')
+    // The hover-only action stack must also reveal itself for keyboard focus.
+    expect(src).toContain('group-focus-within:opacity-100')
   })
 })
 

@@ -875,6 +875,47 @@ Stable hooks used across flows and tests:
   still. Undo removes the clip and the asset entry but keeps the stored bytes, so redo restores a
   working still; clean reclaims those bytes only once history no longer reaches them.
 
+## Capture (0.27.0)
+
+- The media bin's Record menu starts a voiceover, screen, or camera take. Permission is requested only
+  when Start is pressed, and a denied permission is a normal path that shows the browser's message.
+- Screen recording carries exactly one audio source: system audio, the microphone, or none. System
+  audio and microphone are never mixed, because a microphone hears the speakers and the mix would
+  contain the system sound twice. Choosing the microphone adds its track to the display video stream,
+  so MediaRecorder encodes one audio track. The microphone choice is disabled with a reason when the
+  browser cannot capture it.
+- A browser stop-sharing event ends the take once, through the same path as Stop. Closing the dialog
+  during a take cancels it and stops every track, and a permission request that resolves after close is
+  stopped before a recorder exists; no recording survives the dialog. A screen take whose shared
+  display ends while the microphone prompt is open aborts and stops both streams instead of recording
+  from an ended source.
+- A take belongs to the project it started in. A project replacement while the take is saving discards
+  the completion instead of importing it into the new project.
+- Every take is repaired before import. A MediaRecorder WebM can report an infinite duration, so the
+  recorder seeks past the end to read the real value. Firefox writes audio-only WebM with no duration
+  and cannot seek it at all, so a take with no readable container duration falls back to the
+  recorder's own measured length instead of being refused. The verified duration reaches
+  `importFile` as a hint, and the stored header is left unchanged.
+- The codec string follows the stream. A video-only stream records with a video-only MIME type, because
+  Firefox accepts `video/webm;codecs=vp8,opus` for a stream with no audio track and then emits no data
+  and never fires stop. A stop that never lands finalizes with the bytes already buffered after 20
+  seconds, so the dialog cannot sit in Saving forever.
+- A take stops and saves itself at 10 minutes or 512 MiB, with a warning at 80 percent of either. The
+  byte trigger fires at 480 MiB and keeps the crossing and final chunks, because a completed
+  MediaRecorder stream is what the browser guarantees is playable. The 512 MiB ceiling is enforced:
+  a chunk that would cross it is dropped, the take is saved from the chunks already recorded, and the
+  dialog says its end may be missing. If one chunk is larger than the whole ceiling, there is nothing
+  to save, and the dialog says the limit was reached before a chunk could be saved instead of
+  returning silently. A final chunk is normally far smaller than the 32 MiB headroom; the drop is the
+  backstop for a browser that flushes late. The caps exist because MediaRecorder
+  buffers chunks in memory until stop. A cap stop, or the browser stopping the recorder, still
+  imports the take without waiting for a Stop click.
+- A voiceover can be placed at the playhead on an audio lane after import; otherwise it stays in the
+  bin. Screen and camera takes stay in the bin.
+- Recordings are ordinary assets: the same import path, OPFS persistence, thumbnail and waveform
+  probing, relink, and export as any picked file. A recording the store could not keep stays
+  session-only and offers Download a copy in the media bin before a reload drops it.
+
 ## Workspace and menus
 
 - Every panel is resizable and closable. Each desktop panel header offers a `Close Panel` menu, and

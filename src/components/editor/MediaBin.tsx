@@ -2,6 +2,8 @@
 
 import { useCallback, useRef, useState } from 'react'
 import {
+  ChevronDown,
+  Download,
   FileAudio,
   FileImage,
   FileVideo,
@@ -10,17 +12,29 @@ import {
   Import,
   Link2,
   Loader2,
+  Mic,
+  Monitor,
   Plus,
   Trash2,
+  Video,
 } from 'lucide-react'
 
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { RecordingDialog } from '@/components/editor/RecordingDialog'
 import { Button } from '@/components/ui/button'
 import { StorageDialog } from '@/components/editor/StorageDialog'
 import { toast } from '@/hooks/use-toast'
 
 import { importFile } from '@/lib/editor/media/probe'
+import { downloadBlob } from '@/lib/editor/export/mp4'
 import { storeMediaAsset } from '@/lib/editor/media/persist'
 import { buildProxy, dropProxy } from '@/lib/editor/media/proxies'
+import type { RecordingKind } from '@/lib/editor/media/recorder'
 import { shouldProxy } from '@/lib/editor/proxy'
 import { commandsToAddMedia } from '@/lib/editor/actions'
 import { activeSequenceDuration } from '@/lib/editor/factories'
@@ -41,6 +55,7 @@ export function MediaBin({ className, heading = true }: { className?: string; he
   const setSourceAsset = useEditorStore((s) => s.setSourceAsset)
   const [importing, setImporting] = useState(0)
   const [storageOpen, setStorageOpen] = useState(false)
+  const [recordKind, setRecordKind] = useState<RecordingKind | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const importFiles = useCallback(async (files: FileList | File[]) => {
@@ -152,6 +167,44 @@ export function MediaBin({ className, heading = true }: { className?: string; he
           >
             <HardDrive className="size-3.5" />
           </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1"
+                aria-label="Record"
+                title="Record"
+                data-testid="media-record"
+              >
+                <Mic className="size-3.5" />
+                <ChevronDown className="size-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem
+                data-testid="record-voiceover"
+                onSelect={() => setRecordKind('voiceover')}
+              >
+                <Mic className="size-3.5" />
+                Voiceover
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid="record-screen"
+                onSelect={() => setRecordKind('screen')}
+              >
+                <Monitor className="size-3.5" />
+                Screen
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid="record-camera"
+                onSelect={() => setRecordKind('camera')}
+              >
+                <Video className="size-3.5" />
+                Camera
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             size="sm"
             variant="secondary"
@@ -181,6 +234,13 @@ export function MediaBin({ className, heading = true }: { className?: string; he
       </div>
 
       <StorageDialog open={storageOpen} onOpenChange={setStorageOpen} />
+      <RecordingDialog
+        open={recordKind !== null}
+        kind={recordKind}
+        onOpenChange={(next) => {
+          if (!next) setRecordKind(null)
+        }}
+      />
 
       <div className="editor-scroll mt-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3 pb-3">
         {media.length === 0 && (
@@ -230,6 +290,10 @@ function MediaItem({
   // A proxy can only be built from a live source file: an offline (restored)
   // heavy asset qualifies by size but has nothing to transcode.
   const canProxy = shouldProxy(asset) && !!asset.file
+  // Bytes the browser could not store exist only in this session. Offer a copy
+  // before a reload drops them, since a recording has no on-disk original.
+  const sourceFile = asset.file
+  const canDownload = !!sourceFile && !asset.contentHash
 
   return (
     <div
@@ -281,7 +345,7 @@ function MediaItem({
           {proxy?.status === 'failed' && <span className="text-destructive">proxy failed</span>}
         </div>
       </div>
-      <div className="flex shrink-0 flex-col gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+      <div className="flex shrink-0 flex-col gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         {asset.missing ? (
           <IconMiniButton label="Relink media file" onClick={() => relinkInputRef.current?.click()}>
             <Link2 className="size-3.5" />
@@ -294,6 +358,14 @@ function MediaItem({
         <IconMiniButton label="Remove from bin" onClick={onRemove}>
           <Trash2 className="size-3.5" />
         </IconMiniButton>
+        {canDownload && sourceFile && (
+          <IconMiniButton
+            label="Download a copy"
+            onClick={() => downloadBlob(sourceFile, asset.name)}
+          >
+            <Download className="size-3.5" />
+          </IconMiniButton>
+        )}
         {canProxy && proxy?.status !== 'building' && proxy?.status !== 'ready' && (
           <IconMiniButton label="Build proxy" onClick={() => void buildProxy(asset)}>
             <Gauge className="size-3.5" />

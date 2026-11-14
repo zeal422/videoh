@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.27.0',
+    date: '2026-11-14',
+    highlights: [
+      'Record a voiceover from the microphone and drop it at the playhead',
+      'Record a screen or window with system audio or microphone audio, one source at a time',
+      'Record a camera with optional microphone audio',
+      'Recordings save with the project and survive a reload when the browser stores them',
+      'A take stops and saves itself at ten minutes or 512 MB, whichever comes first',
+    ],
+  },
+  {
     version: '0.26.0',
     date: '2026-11-14',
     highlights: [

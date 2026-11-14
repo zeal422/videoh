@@ -123,7 +123,7 @@ export async function storeMediaAsset(
     return {
       asset: sessionOnly(asset),
       stored: false,
-      warning: `Could not store ${asset.name} for reload. Relink it after reopening the project.`,
+      warning: `Could not store ${asset.name} for reload. Download a copy before reload, or relink it after reopening the project.`,
     }
   }
   // Wait for a same-tab clean instead of interleaving with it: a clean that
@@ -142,7 +142,7 @@ export async function storeMediaAsset(
     return {
       asset: sessionOnly(asset),
       stored: false,
-      warning: `Could not store ${asset.name} for reload. Relink it after reopening the project.`,
+      warning: `Could not store ${asset.name} for reload. Download a copy before reload, or relink it after reopening the project.`,
     }
   } finally {
     endMediaActivity()

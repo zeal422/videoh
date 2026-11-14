@@ -217,6 +217,9 @@ them:
   grid with name, one-line description, and one outline Apply; saved templates in full-width rows
   with an editable name, Apply, and a trash action; then the save-current form. Keeping the cards
   text-only avoids a thumbnail pipeline and any remote asset.
+- **Recording dialog (0.27.0).** A `sm:max-w-md` dialog with device selects, a one-source audio
+  select for screen capture, a rose recording dot, a tabular timer, a thin sky level bar, and a
+  destructive Stop. No new token.
 - **Automation envelopes.** Audio-bearing clips paint volume as a 1.5px white line with
   `stroke-white/90` and 6px white dots inside 12px hit targets; picture clips use the same component
   for opacity, mapped 0..100% instead of the dB domain. The curve is deliberately not the selection

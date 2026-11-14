@@ -5,7 +5,7 @@
 **Effort:** L
 **Schema:** 8, no bump
 **Depends on:** 0.23.0 for media; sequenced after 0.26.0
-**Status:** planned
+**Status:** implemented, real-browser pass recorded in docs/testing.md, awaiting the manual hardware pass
 
 ## 1. Goal
 
@@ -105,9 +105,9 @@ Flow:
 1. Open a dialog with screen, microphone, and system-audio options. If every audio option is off,
    request video only and record without audio.
 2. Call `getDisplayMedia` with video and, when supported, audio.
-3. If the user selected a microphone, request it separately and mix it into the recording. If mixing
-   is not supported simply, record system audio only and disable the microphone option with a clear
-   note. Do not ship a fake mix.
+3. The user picks exactly one audio source: system audio, the microphone, or none. Microphone mode
+   requests display video without audio and adds the microphone track to the same MediaStream.
+   MediaRecorder then encodes one audio track, with no Web Audio mix and no echo.
 4. Show a recording indicator and timer, and a stop control.
 5. Stop when the user stops or when the shared track ends.
 6. Import the result and add it to the bin.
@@ -119,7 +119,7 @@ finish the import once, not twice.
 
 Flow:
 
-1. Open a dialog with camera and microphone selects, an audio toggle, and a preview.
+1. Open a dialog with camera and microphone selects and an audio toggle.
 2. Request the camera always. When audio is on, request the microphone too; when off, request a
    video-only stream.
 3. Record the selected tracks. With audio off, the result is a video-only asset with no audio track.
@@ -206,9 +206,9 @@ existing add-media action.
 
 ### Phase 4: camera recording
 
-- Add the camera and microphone flow with preview.
+- Add the camera and microphone flow.
 - Verify camera denial, microphone denial, and combined recording.
-- Verify the preview is stopped and released on close.
+- Verify every camera and microphone track is stopped and released on close.
 
 ### Phase 5: docs, manual proof, release cut
 
@@ -266,19 +266,35 @@ The recorder is an additive UI surface, so hiding its menu entries is a safe tem
 - **WebM duration.** MediaRecorder output can report `Infinity`, and the probe turns that into 0.
   Repair the duration before import and test a real fixture. Do not special-case the editor's clip
   validation to accept a zero-length recording.
-- **System audio support.** Browser and platform dependent. Disable what is unavailable instead of
-  pretending to record it.
-- **Microphone mixing.** If mixing system and microphone audio is not simple, ship system audio only
-  and disable the microphone option for screen recording.
-- **Memory.** MediaRecorder buffers until stop. Show duration and size, and decide whether a cap is
-  needed before release.
+- **System audio support.** Browser and platform dependent. When the picker shares no audio track,
+  the take records video only and the dialog says so. The option is never silently ignored.
+- **Microphone mixing.** Decided: never mix. Screen capture carries one audio source, chosen in the
+  dialog. A microphone hears the speakers, so a system-plus-mic mix would contain the system sound
+  twice; without gain and monitoring it ships bad audio. The microphone track is added to the display
+  stream directly, which needs no Web Audio and encodes one track.
+- **Memory.** Decided: stop at 10 minutes or 512 MiB, warning at 80 percent. MediaRecorder buffers
+  every chunk until stop, and building the File can roughly double peak memory, so 512 MiB already
+  approaches 1 GiB transiently. Explicit bitrates of 6 Mbps video and 128 kbps audio keep ten minutes
+  under the byte cap, which makes the time cap the normal stop. The trigger fires at 480 MiB so the
+  final chunks normally fit, and a chunk that would still cross 512 MiB is dropped: the take keeps
+  the chunks recorded before it and the dialog says its end may be missing. That keeps the buffer
+  bounded even when a browser flushes one large final chunk.
+- **Device proof.** Decided: the release verdict includes one real voiceover, screen, and camera take
+  on the release machine. The OS pickers and hardware cannot be automated, so mocks prove the
+  lifecycle but not the integration. A fake-device pass in Chromium 157 and Firefox 160 covered the
+  dialogs, import, OPFS restore, playback, and one Chromium export; results are recorded in
+  `docs/testing.md`. That pass found the Firefox muxed-codec failure, which is fixed by choosing the
+  video-only MIME type for a video-only stream, and the audio-only duration gap, which falls back to
+  the recorder clock.
 - **Permissions.** A denied permission is a normal path with a clear message, not a crash.
 
 ## 11. Definition of done
 
 - Voiceover, screen, and camera recordings import through the normal media path.
-- Recordings persist in OPFS and survive reload.
+- Recordings are stored in OPFS and survive reload where the browser accepts the write; a session-only
+  take offers Download a copy before reload.
 - Every cancel, denial, ended track, and unmount cleans up completely.
 - Unsupported audio and device options are disabled with a clear reason.
-- `bun run check`, the manual browser proof, and `bun run battery:pair` are green.
+- `bun run check` and `bun run battery:pair` are green; the manual browser proof is recorded before
+  the release commit.
 - The 0.27.0 version bump is atomic in one commit.
