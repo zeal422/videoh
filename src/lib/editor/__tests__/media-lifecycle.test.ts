@@ -294,6 +294,56 @@ describe('rehydrateMedia', () => {
     }
   })
 
+  it('refuses a clean while an install record is still pending', async () => {
+    const fake = createFakeOpfs()
+    const locks = new FakeLockManager()
+    stubStore(fake, locks)
+    const hash = await hashOf()
+    await ensureProjectMedia('proj_clean')
+    await writeMediaFile('proj_clean', hash, sourceFile())
+    const lock = await ProjectLock.acquire('proj_clean')
+    try {
+      const outcome = await cleanUnusedMedia({
+        projectId: 'proj_clean',
+        lock,
+        cleanBlocked: false,
+        referenced: () => new Set<string>(),
+        pendingInstall: () => true,
+      })
+      expect(outcome).toEqual({ status: 'pending' })
+      expect(await readMediaFile('proj_clean', hash)).not.toBeNull()
+    } finally {
+      lock.dispose()
+    }
+  })
+
+  it('refuses a clean whose install record becomes pending during the preview', async () => {
+    const fake = createFakeOpfs()
+    const locks = new FakeLockManager()
+    stubStore(fake, locks)
+    const hash = await hashOf()
+    await ensureProjectMedia('proj_clean')
+    await writeMediaFile('proj_clean', hash, sourceFile())
+    const lock = await ProjectLock.acquire('proj_clean')
+    try {
+      // The entry check passes, then the install lands while the preview
+      // yields. The inner recheck must refuse before recovery can retire it.
+      let pending = false
+      const outcomePromise = cleanUnusedMedia({
+        projectId: 'proj_clean',
+        lock,
+        cleanBlocked: false,
+        referenced: () => new Set<string>(),
+        pendingInstall: () => pending,
+      })
+      pending = true
+      expect(await outcomePromise).toEqual({ status: 'pending' })
+      expect(await readMediaFile('proj_clean', hash)).not.toBeNull()
+    } finally {
+      lock.dispose()
+    }
+  })
+
   it('holds an independent lock on the saved project through its claim', async () => {
     const fake = createFakeOpfs()
     const locks = new FakeLockManager()

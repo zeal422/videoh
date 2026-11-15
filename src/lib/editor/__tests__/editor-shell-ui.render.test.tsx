@@ -80,6 +80,24 @@ describe('EditorShell dangling-gesture safety net', () => {
     unmount()
   })
 
+  it('warns before an unload while autosave is paused', () => {
+    render(<EditorShell />)
+    // Set the pause after mount: coordination initialization clears a stale
+    // store flag when no owner exists.
+    act(() => useEditorStore.getState().setAutosavePaused(true))
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('warns before an unload when autosave failed', () => {
+    render(<EditorShell />)
+    act(() => useEditorStore.getState().setAutosaveStatus('error'))
+    const event = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+  })
+
   it('a window blur commits the live gesture (pointerless event)', () => {
     render(<EditorShell />)
     useEditorStore.getState().beginTransient(5)

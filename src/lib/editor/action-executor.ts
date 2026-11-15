@@ -87,7 +87,9 @@ export interface ActionContext {
   saveProject: () => void
   newProject: () => void
   openProject: () => void
+  openBundle: () => void
   importMedia: () => void
+  exportBundle: () => void
   openExport: () => void
   openGain: () => void
   /** Freeze Frame: capture the composited frame and add the still (0.23.0). */
@@ -161,11 +163,17 @@ export function executeAction(action: ExecutorActionId, ctx: ActionContext): Act
     case 'file.openProject':
       ctx.openProject()
       return handled()
+    case 'file.openBundle':
+      ctx.openBundle()
+      return handled()
     case 'file.importMedia':
       ctx.importMedia()
       return handled()
     case 'file.saveProject':
       ctx.saveProject()
+      return handled()
+    case 'file.exportBundle':
+      ctx.exportBundle()
       return handled()
     case 'file.exportMedia':
       ctx.openExport()

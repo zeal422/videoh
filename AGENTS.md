@@ -172,6 +172,9 @@ Running the suite (these are the steps agents get wrong):
 15. **Never assume or assert an unstated detail.** If a requirement is ambiguous, missing, or unstated,
     ask before acting. Do not present an assumption as a fact or as the user's requirement. When in
     doubt, ask.
+16. **A question is not an order.** Answer questions; never change, delete, move, restore, or rename
+    a file because the user asked whether it was possible or advisable. Do it only after a clear
+    instruction, and only for what that instruction or the approved task actually requires.
 
 ## Workflow
 

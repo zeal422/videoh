@@ -782,3 +782,47 @@ Would-have-caught: grep the test tree for the old schema literals in the same
 pass as the version edit, and treat every inventory row and headline total as
 part of the bump rather than a follow-up.
 Action: kept as a note; rule 6 already makes count locks part of the change.
+
+## 2026-11-15 - review verdict from a sampled large file
+
+What happened: the first MyRabbit pass on the 0.28.0 tree sampled
+`persistence.ts` and `project-io.ts` and returned `safe to merge`; a full read
+then found `queuePendingInstallRetry` serializing the live boot doc and
+overwriting the autosave slot in `persistence.ts`.
+Would-have-caught: trigger 2 (read before you climb) applied to review
+coverage: a verdict on a changed file over ~500 lines needs every changed
+function opened, or the report must name the uncovered region and withhold the
+verdict.
+Action: kept as a note; a `safe` verdict names its coverage, and a sampled file
+never yields `safe`.
+
+## 2026-11-15 - a fix scoped to one retry path left its siblings unscoped
+
+What happened: the fix for the pending-install retry overwriting another
+session's slot guarded `queuePendingInstallRetry`, but the direct bundle slot
+write in `openBundleFile` and `queueAutosaveRetry` still wrote a captured
+snapshot after a project switch; a later review reproduced both.
+Would-have-caught: trigger 4 (grep every caller and sweep the siblings): the
+same "captured JSON written after the project changed" pattern lived in three
+paths, and only the one named by the first finding was fixed.
+Action: kept as a note; when a finding is about a captured payload, fix the
+whole family (direct write, every retry queue) and lock each with its own test.
+
+## 2026-11-15 - the captured-state family spans five callbacks
+
+What happened: after scoping bundle retries, a later review round found the
+same "decide from state read before an await" family in the direct bundle
+write, the retry queue, the same-session claim probe, the coordination restart
+branch, and the autosave completion callback; each was verified and fixed with
+its own failing test.
+Would-have-caught: trigger 4's sibling sweep applied to captured state: grep
+every completion callback, restart branch, and queue timer that acts on a
+snapshot taken before an await.
+Action: kept as a note; a fix about captured state sweeps every consumer of
+that state, not only the function named by the finding.
+
+## 2026-11-15 - a content guard compared serialized text with a fresh timestamp
+
+What happened: the stale-retry guard compared `JSON.stringify(serializeDoc(doc))` with the captured JSON, but `serializeDoc` stamps a new `savedAt` on every call, so every targeted retry was dropped and a pending install could never finish after its first failed attempt. The same text comparison also made the import report `pending` after a successful write.
+Would-have-caught: trigger 5 applied to time-dependent values: a comparison of serialized output must exclude generated fields (or compare doc identity), and the lock must exercise the second attempt, not only the first.
+Action: kept as a note; freshness checks compare content without generated timestamps, and retries are tested across a failed attempt.

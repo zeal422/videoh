@@ -5,6 +5,72 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.28.0] - 2026-11-14
+
+### Added
+
+- Add File > Export Project Bundle, which writes `<project-name>.vebundle.zip` with `manifest.json`, the unchanged `project.veproj.json`, every `Doc.media` entry, and every `Project.fonts` entry. Unused bin items and brand-kit-only fonts travel too, because the project JSON lists them.
+- Add File > Open Project Bundle, which validates the archive and manifest, verifies every entry's CRC and SHA-256, probes the media, restores the fonts, and installs the project once through the existing open path.
+- Add a store-only ZIP writer and reader with no new dependency. The writer streams each entry through a CRC pass and a write pass into a File System Access sink when one is available; the reader rejects encrypted, compressed, Zip64, duplicate-path, truncated, and over-count archives before reading their bytes.
+- Add a cross-tab autosave ownership record with an epoch and a heartbeat. A bundle import claims it, pauses every other editor tab, and holds it until the page unloads, so an older tab cannot write its pre-import document over the imported project.
+- Add the durable install registry and orphaned-claim recovery: a claim shard can carry the id of the bundle install that wrote it, and Clean Unused Media retires a shard whose install never completed without deleting promoted bytes.
+
+### Changed
+
+- A project bundle keeps the project's existing serialization version; there is no schema change. The bundle container has its own version, starting at 1.
+- Export refuses when any media asset has no stored or session copy, when the stored bytes disagree with the recorded hash, and when a font the project visibly uses is missing; the last one asks for confirmation and falls back to Arial. A missing unused font is a warning only.
+- Import refuses missing media, extra entries, wrong sizes, hash mismatches, unknown kinds, and a newer project version. A missing font is a warning. Imported media keeps the serialized duration when the probe reports zero or a non-finite value, so a WebM recording without a duration header survives a round trip.
+- A promoted content hash is reused when it already exists and never overwritten. The import writes its claim shard before installation, records the install id after it succeeds, and releases its media reservation only after the claim and the autosave slot are durable.
+- Every autosave writer now checks the ownership record and the slot under `videoh-autosave:v1` (Web Locks) or one IndexedDB transaction. A tab without ownership loads read-only and shows a reload prompt; a failed pre-install resumes the paused tabs.
+- Bundle limits are a memory budget, not a disk budget: 512 MiB per entry and 1 GiB total. Import rejects an oversized manifest entry before reading its bytes, and the no-picker export fallback refuses a bundle over 512 MiB before it builds the archive in memory.
+- Without Web Locks and IndexedDB, a bundle import and install-record writes refuse instead of racing another tab; normal editing still uses the autosave slot.
+- The bundle save picker opens before media is read, because it needs transient user activation, and the chosen handle is reused after a missing-font confirmation.
+- The docs, plan, structure map, testing inventory, coverage scope, changelog, roadmap, README, deployment notes, and release record move with the release.
+
+### Fixed
+
+- A media file the browser cannot store as a bundle entry now refuses the export with the file names instead of producing a bundle that silently loses footage.
+- A damaged or malicious bundle entry is rejected before it reaches the media store, so a malformed file becomes a refused import instead of an editor crash or a path escape.
+- An autosave write that lands after a bundle import is refused by the ownership check instead of replacing the imported project.
+- A bundle install that fails before `installProject` removes its claim shard and leaves no project installed; promoted bytes stay for the clean action.
+- Bundle slot writes and their retries are scoped to the imported project. A project switch during the install-record append, or before a failed-write retry fires, now finishes the registry record without writing the imported snapshot over the newer project's slot or reporting that project saved.
+- A retry also drops a captured snapshot once the live doc no longer matches it, and a font-confirmation save handle is bound to the project that chose it, so another project gets its own destination.
+- A same-session ownership takeover requires the record the session probe found unanswered; a record that appears or changes while the claim waits is refused instead of replaced.
+- A coordination restart keeps an existing read-only tab read-only when the slot changed with no owner, and a completed autosave marks saved only while the live doc is still the one it wrote.
+- A failed install record no longer sets autosave error on a different project that became live, while that install's registry retry stays queued.
+- Targeted autosave retries compare document content without the serialization timestamp, so an unchanged document is retried after a failed attempt instead of being dropped as stale. The imported project's saved status uses the written doc reference for the same reason.
+- Abandoned-pause recovery treats a slot this tab never observed as unsafe and stays read-only, and the bundle reader verifies an entry's CRC in chunks so a large entry is never materialized only for the check.
+- A bundle whose font bytes match the manifest but are not a valid font warns and falls back instead of breaking the import.
+- A lost install registry key is treated as unknown rather than empty, so Clean Unused Media keeps the claim shard and the promoted bytes of an install whose record disappeared instead of deleting media another saved copy may need.
+- Two bundle imports that ask other tabs to pause autosave at the same time now each settle; the newer request no longer orphans the older promise.
+- A file name with more than one control character is fully sanitized, the manifest display name is sanitized too, and the generated manifest is validated before export, so the bundle can always be reopened.
+- Overlapping bundle imports in one tab no longer release each other's ownership or resume tabs another import still holds. An import releases only the epoch it claimed, a failed import resumes only its own pause requests, and a stale newer epoch still fences a former owner.
+- A provisional read-only tab rechecks ownership when the failed importer releases its claim, and a resumed tab writes its pending document instead of leaving the cancelled debounce unsaved. An older autosave retry cannot replace a newer committed document.
+- A tab releases its presence lock when coordination stops, so an in-page unmount cannot leave another tab waiting forever for a pause acknowledgement.
+- An append that finds install-tagged claims but no registry entry marks the install history unknown, and later appends preserve that marker, so a recreated registry never lets cleanup delete an older completed install's media. Registry lookups use a null-prototype dictionary, so `constructor` and `__proto__` project ids cannot read inherited values or mutate the prototype.
+- Re-importing identical bytes keeps the first stored sidecar MIME type, so a bundle cannot change how an existing project resolves a shared hash.
+- A paused tab warns before an unload can discard edits that autosave cannot write.
+- IndexedDB being present but unable to open or start its transaction no longer counts as coordination: ownership claims and install-record appends fail closed instead of running outside a lock.
+- Bundle export checks stored entry sizes and session file sizes against the 512 MiB and 1 GiB budgets before hashing anything, so an oversized asset is refused without materializing it. If the store is available but its sizes cannot be listed, the export refuses instead of reading blind.
+- Coordination teardown drops the transient pause state and a remount re-evaluates ownership, so a resume missed while the channel was closed cannot leave the editor paused until a full reload.
+- A save handle kept for a missing-font confirmation is cleared when the menu unmounts, so a later export cannot reuse a destination chosen before navigation. An export still preparing when the menu unmounts no longer publishes its handle afterward, because the discard bumps an export generation the preparation checks before storing it.
+- Discarding an autosave restore now clears only the slot text its banner was built from and refuses while a live owner record names another tab. A stale banner in a tab without `BroadcastChannel` can no longer delete a project another tab imported.
+- Coordination teardown invalidates an ownership initialization still awaiting its session probe, so a torn-down tab cannot reclaim the owner record or start a heartbeat after unmount.
+- The export size preflight keeps the largest stored size for a hash present in both the media and font namespaces, so a damaged oversized media copy is refused at the size check instead of being read and hashed.
+- The in-memory fallback budget now counts the ZIP local headers, central-directory records, paths, and end record, so a bundle just under 512 MiB cannot build an archive over the stated limit.
+- A post-install bookkeeping failure no longer revokes the installed project's live media URLs or reports the open as failed. The project stays live, the install record is retried by autosave, and the open returns with a warning.
+- A provisional read-only tab now rechecks the owner record through the `storage` event, so it resumes and saves its pending document when the importer releases ownership without a `BroadcastChannel`.
+- A missing install registry is no longer recreated from one import or saved copy when another project holds an install-tagged claim. The append marks the install history unknown first, so recovery keeps that project's shards. An append refused for the registry bounds or a failed write marks the history unknown for the same reason.
+- Claim recovery reports a proven result when no shard carries an install id, instead of calling a missing registry ambiguous.
+- A bundle name now strips only the known `.veproj.json`, `.json`, and `.zip` suffixes, so a project named "Demo v1.2" keeps its version in the archive name.
+- Bundle import validates font bytes by header and size instead of the display name, so a font uploaded as "Inter" (the dialog's default stem) survives an export and re-open instead of being reported as damaged.
+- A text-only project with stored font bytes and a missing claims record is no longer repaired with an empty record: clean stays blocked and a bundle import refuses, so closed copies keep their font claims.
+- Coordination teardown clears the in-memory ownership flag. A remount may reclaim a fresh same-session record, but a stale record is not refreshed or recreated without a heartbeat, so another tab is not fenced by a phantom owner.
+- Clean refuses while an imported project's install record is still pending, so recovery cannot retire the import's claim before the registry append lands.
+- Bundle name truncation no longer splits a surrogate pair, which left the manifest path and the UTF-8 ZIP path disagreeing and made the bundle reject itself on open.
+- The import checks the project generation inside the media and font loops, so a newer open stops a hostile bundle before the next probe instead of after every entry.
+- A failed post-install registry or slot write marks autosave error, and a successful retry clears it. The unload warning now covers a failed autosave as well as a paused one.
+
 ## [0.27.0] - 2026-11-14
 
 ### Added

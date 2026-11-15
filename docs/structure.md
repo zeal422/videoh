@@ -204,7 +204,9 @@ src/lib/editor/
 ├── workspace-store.ts    # zustand wrapper over workspace.ts (layout + graph heights)
 ├── theme.ts              # appearance palette ids/labels + preference read/write (pure)
 ├── menus.ts              # menu bar model (pure)
-├── project-io.ts         # save claim, open/rehydrate, import-media, and the one install path; holds the project lock
+├── project-io.ts         # save claim, open/rehydrate, import-media, bundle export/import, and the one install path; holds the project lock
+├── project-bundle.ts     # bundle manifest, path rules, limits, entry planning, and media/font matching (pure)
+├── bundle-zip.ts         # dependency-free store-only ZIP writer/reader with CRC-32 and hostile-archive checks
 ├── timeline-drop.ts      # drop-target geometry for drop-between-tracks
 ├── tracks.ts             # solo audibility + lock checks, removes the tracks an edit leaves empty (prune)
 ├── timeline-scroll.ts    # drag edge auto-scroll geometry + the shared zoom step (pure)
@@ -228,7 +230,8 @@ src/lib/editor/
 │   ├── elements.ts       # ClipMediaPool: per-clip media elements, source nodes, the parked blend partner
 │   ├── keyframes.ts      # verified video keyframe lookup for decode recovery (mediabunny)
 │   ├── proxies.ts        # session proxy build/revoke and effective media URL
-│   ├── media-store.ts    # OPFS store keyed by SHA-256: media + font namespaces, promote, quarantine, sidecar, claims, clean, clear
+│   ├── media-store.ts    # OPFS store keyed by SHA-256: media + font namespaces, promote, quarantine, sidecar, claims, recovery, clean, clear
+│   ├── installed-registry.ts # durable install-id registry that tells a crashed bundle claim from a completed install
 │   ├── persist.ts        # asset-to-store bridge, claim writes, clean orchestration, in-flight counter
 │   ├── font-store.ts     # font bytes in OPFS, FontFace registry per project, staged upload, export wait
 │   ├── stickers.ts       # bundled local sticker manifest + same-origin fetch into an image File
@@ -251,7 +254,7 @@ src/lib/editor/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   ├── options.ts        # pure container matrix, output bounds/bitrate, contain fit (Node-testable)
 │   └── mp4.ts            # WebCodecs export pipeline: MP4/MOV/MKV/WAV/MP3/M4A + downloadBlob
-└── __tests__/            # 127 test files (2867 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 132 test files (3018 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

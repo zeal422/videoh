@@ -2,11 +2,72 @@
 
 import { toast } from '@/hooks/use-toast'
 
+import {
+  readZipDirectory,
+  readZipEntry,
+  writeZip,
+  zipBlob,
+  zipStoreOverhead,
+  type ZipInputEntry,
+} from './bundle-zip'
+import { fontMimeForFormat, isValidFontId, validateFontBytes } from './fonts'
 import { relinkPatchFrom } from './media/relink'
 import { importFile } from './media/probe'
 import { buildProxy, revokeAllProxies } from './media/proxies'
 import { collectMediaHashes } from './media-cleanup-plan'
-import { prepareProjectStore, storeMediaAsset, writeProjectClaim } from './media/persist'
+import {
+  beginMediaActivityWhenIdle,
+  endMediaActivity,
+  prepareProjectStore,
+  storeMediaAsset,
+  writeProjectClaim,
+} from './media/persist'
+import {
+  deleteMediaClaim,
+  hasAnyInstallClaims,
+  hashFile,
+  isMediaStoreSupported,
+  listMediaFiles,
+  readMediaClaimShards,
+  readMediaFile,
+  sha256Hex,
+  writeMediaClaim,
+  writeMediaFile,
+} from './media/media-store'
+import { mimeTypeForName } from './media/rehydrate'
+import { newInstallId, readInstalledRegistryState } from './media/installed-registry'
+import {
+  claimAutosaveOwnership,
+  markAutosaveImported,
+  markInstallPending,
+  pauseOtherAutosaveTabs,
+  queueAutosaveRetry,
+  queuePendingInstallRetry,
+  recordInstallUnderLock,
+  releaseAutosaveOwnership,
+  resumeAutosaveTabs,
+  writeAutosaveCooperatively,
+} from './persistence'
+import {
+  BUNDLE_MANIFEST_PATH,
+  BUNDLE_MAX_BLOB_BYTES,
+  BUNDLE_MAX_ENTRIES,
+  BUNDLE_MAX_ENTRY_BYTES,
+  BUNDLE_MAX_MANIFEST_BYTES,
+  BUNDLE_MAX_PROJECT_BYTES,
+  BUNDLE_MAX_TOTAL_BYTES,
+  buildBundleManifest,
+  bundleFileName,
+  isFontReferenced,
+  isValidBundleMediaId,
+  matchBundleFonts,
+  matchBundleMedia,
+  planBundleEntries,
+  validateBundleManifest,
+  type BundleManifestAsset,
+  type BundleManifestFont,
+} from './project-bundle'
+import { isValidContentHash } from './project-validation'
 import {
   activateProjectFonts,
   activateStagedProjectFonts,
@@ -95,7 +156,34 @@ export async function downloadProjectJSON(): Promise<string> {
       claimLock = null
     }
     try {
-      const claimed = await writeProjectClaim(snapshot)
+      // A saved copy records the install id of its claim, so an orphan-shard
+      // recovery can tell a completed save from a crashed bundle import. If
+      // the registry write fails, the shard is written without an id and is
+      // kept forever, which is the safe direction.
+      // A lost registry must not be replaced by an incomplete one. Read the
+      // shards before this save appends its record; a missing or unreadable
+      // claims record is unknown history, so treat it as such.
+      let hadInstallClaims = true
+      try {
+        const existing = await readMediaClaimShards(snapshot.project.id)
+        hadInstallClaims =
+          existing === null || existing.shards.some((shard) => shard.installId !== null)
+      } catch {
+        hadInstallClaims = true
+      }
+      // A missing registry must not be recreated from this copy alone:
+      // another project's install-tagged shards would then look orphaned.
+      if (!hadInstallClaims && readInstalledRegistryState().status === 'missing') {
+        hadInstallClaims = await hasAnyInstallClaims()
+      }
+      const installId = newInstallId()
+      let recorded = false
+      try {
+        recorded = await recordInstallUnderLock(snapshot.project.id, installId, hadInstallClaims)
+      } catch {
+        recorded = false
+      }
+      const claimed = await writeProjectClaim(snapshot, recorded ? installId : undefined)
       if (!claimed) throw new ProjectClaimError()
     } finally {
       if (claimLock && claimLock !== currentProjectLock()) claimLock.dispose()
@@ -600,4 +688,832 @@ export async function openProjectFromPicker(accept = '.json,application/json'): 
   const file = files[0]
   if (!file) return // canceled picker: an in-flight load stays current
   return openProjectFile(file)
+}
+
+// project bundles (0.28.0)
+
+/** An export was refused before any archive was written. */
+export class BundleExportError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'BundleExportError'
+  }
+}
+
+/** An import was refused; nothing was installed. */
+export class BundleImportError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'BundleImportError'
+  }
+}
+
+export interface PreparedBundle {
+  filename: string
+  entries: ZipInputEntry[]
+  /** Estimated archive bytes including ZIP metadata, used for the Blob-fallback budget. */
+  bytes: number
+  warnings: string[]
+}
+
+export type BundlePrepareResult =
+  | { status: 'prepared'; bundle: PreparedBundle }
+  | { status: 'needs-font-confirmation'; fonts: string[] }
+
+interface BundleAssetFile {
+  entry: BundleManifestAsset
+  file: File
+}
+
+interface BundleFontFile {
+  entry: BundleManifestFont
+  file: File
+}
+
+function quotedList(names: readonly string[], limit = 6): string {
+  const shown = names.slice(0, limit)
+  const rest = names.length - shown.length
+  return `${shown.map((name) => `"${name}"`).join(', ')}${rest > 0 ? ` and ${rest} more` : ''}`
+}
+
+/**
+ * Gathers the project snapshot's media and font bytes and builds the two JSON
+ * entries plus the manifest. Every `Doc.media` entry and every `Project.fonts`
+ * entry is required: unused bin items and brand-kit-only fonts travel too,
+ * because the project JSON lists them.
+ *
+ * Missing media and a stored hash that disagrees with the bytes refuse the
+ * export. A missing font is a warning; a missing font the project visibly uses
+ * needs confirmation first.
+ */
+export async function prepareProjectBundle(
+  doc: Doc,
+  options: { confirmMissingFonts?: boolean } = {},
+): Promise<BundlePrepareResult> {
+  const projectId = doc.project.id
+  const plan = planBundleEntries(doc)
+  for (const item of plan.media) {
+    if (!isValidBundleMediaId(item.asset.id)) {
+      throw new BundleExportError(
+        `Cannot bundle this project: media "${item.asset.name}" has an id that is not path-safe.`,
+      )
+    }
+  }
+  for (const item of plan.fonts) {
+    if (!isValidFontId(item.font.id)) {
+      throw new BundleExportError(
+        `Cannot bundle this project: font "${item.font.name}" has an id that is not path-safe.`,
+      )
+    }
+  }
+  if (plan.media.length + plan.fonts.length + 2 > BUNDLE_MAX_ENTRIES) {
+    throw new BundleExportError(
+      `Cannot bundle this project: it has more than ${BUNDLE_MAX_ENTRIES} media and font entries.`,
+    )
+  }
+  // Refuse an oversized entry before any stored bytes are hashed:
+  // `readMediaFile` verifies by reading the whole file, so the post-read cap is
+  // too late to protect the tab.
+  const storedSizes = new Map<string, number>()
+  const recordStoredSize = (hash: string, size: number): void => {
+    // Media and font namespaces can hold the same hash. Keep the largest size:
+    // a damaged, oversized media copy must not be hidden by a small font copy.
+    if (size > (storedSizes.get(hash) ?? 0)) storedSizes.set(hash, size)
+  }
+  if (isMediaStoreSupported()) {
+    try {
+      for (const entry of await listMediaFiles(projectId, 'media')) {
+        recordStoredSize(entry.hash, entry.size)
+      }
+      for (const entry of await listMediaFiles(projectId, 'fonts')) {
+        recordStoredSize(entry.hash, entry.size)
+      }
+    } catch {
+      // Storage is available but its sizes cannot be read. Do not hash blind:
+      // the whole point of this pass is to refuse before a full read.
+      throw new BundleExportError(
+        "Cannot inspect this project's stored media sizes, so the bundle was not written. Try again.",
+      )
+    }
+  }
+  const plannedSizes: number[] = []
+  const entryTooLarge = (): never => {
+    throw new BundleExportError(
+      `Cannot bundle this project: one entry is larger than the ${Math.round(
+        BUNDLE_MAX_ENTRY_BYTES / (1024 * 1024),
+      )} MB per-entry limit.`,
+    )
+  }
+  for (const { asset } of plan.media) {
+    const storedSize = isValidContentHash(asset.contentHash)
+      ? storedSizes.get(asset.contentHash)
+      : undefined
+    const sessionSize = asset.file?.size
+    if ((storedSize ?? 0) > BUNDLE_MAX_ENTRY_BYTES) entryTooLarge()
+    if ((sessionSize ?? 0) > BUNDLE_MAX_ENTRY_BYTES) entryTooLarge()
+    // The read path uses the stored copy first, else the session file. Budget
+    // for the larger of the two so either path stays within the limit.
+    const planned = Math.max(storedSize ?? 0, sessionSize ?? 0)
+    if (planned > 0) plannedSizes.push(planned)
+  }
+  for (const { font } of plan.fonts) {
+    const storedSize = isValidContentHash(font.contentHash)
+      ? storedSizes.get(font.contentHash)
+      : undefined
+    if ((storedSize ?? 0) > BUNDLE_MAX_ENTRY_BYTES) entryTooLarge()
+    if (storedSize !== undefined) plannedSizes.push(storedSize)
+  }
+  if (plannedSizes.reduce((sum, size) => sum + size, 0) > BUNDLE_MAX_TOTAL_BYTES) {
+    throw new BundleExportError(
+      `Cannot bundle this project: its media and fonts exceed the ${Math.round(
+        BUNDLE_MAX_TOTAL_BYTES / (1024 * 1024 * 1024),
+      )} GB bundle limit.`,
+    )
+  }
+  const assetFiles: BundleAssetFile[] = []
+  const missingMedia: string[] = []
+  const mismatched: string[] = []
+  for (const { asset, path } of plan.media) {
+    let file: File | null = null
+    let sha256: string | null = null
+    if (isValidContentHash(asset.contentHash)) {
+      const stored = await readMediaFile(projectId, asset.contentHash)
+      if (stored) {
+        file = new File([stored.file], asset.name, {
+          type: stored.type || mimeTypeForName(asset.name),
+        })
+        // `readMediaFile` verifies the bytes against the hash before returning.
+        sha256 = asset.contentHash
+      }
+    }
+    if (!file && asset.file) {
+      const computed = await hashFile(asset.file)
+      if (isValidContentHash(asset.contentHash) && computed !== asset.contentHash) {
+        mismatched.push(asset.name)
+        continue
+      }
+      file = new File([asset.file], asset.name, {
+        type: asset.file.type || mimeTypeForName(asset.name),
+      })
+      sha256 = computed
+    }
+    if (!file || !sha256) {
+      missingMedia.push(asset.name)
+      continue
+    }
+    assetFiles.push({
+      entry: {
+        id: asset.id,
+        path,
+        name: asset.name,
+        type: file.type || mimeTypeForName(asset.name),
+        size: file.size,
+        sha256,
+      },
+      file,
+    })
+  }
+  if (missingMedia.length > 0) {
+    throw new BundleExportError(
+      `Cannot bundle this project: ${quotedList(missingMedia)} ${missingMedia.length === 1 ? 'has' : 'have'} no stored or session copy. Relink or remove ${missingMedia.length === 1 ? 'it' : 'them'} first.`,
+    )
+  }
+  if (mismatched.length > 0) {
+    throw new BundleExportError(
+      `Cannot bundle this project: the stored bytes do not match the recorded hash for ${quotedList(mismatched)}. Relink the file first.`,
+    )
+  }
+  const fontFiles: BundleFontFile[] = []
+  const missingReferenced: string[] = []
+  const warnings: string[] = []
+  for (const { font, path } of plan.fonts) {
+    const stored = isValidContentHash(font.contentHash)
+      ? await readMediaFile(projectId, font.contentHash, 'fonts')
+      : null
+    if (!stored) {
+      if (isFontReferenced(doc, font)) missingReferenced.push(font.name)
+      else warnings.push(`Font "${font.name}" is missing from this browser and was left out.`)
+      continue
+    }
+    fontFiles.push({
+      entry: {
+        id: font.id,
+        path,
+        name: font.name,
+        size: stored.file.size,
+        sha256: font.contentHash,
+      },
+      file: stored.file,
+    })
+  }
+  if (missingReferenced.length > 0 && !options.confirmMissingFonts) {
+    return { status: 'needs-font-confirmation', fonts: missingReferenced }
+  }
+  const totalBytes = [
+    ...assetFiles.map((item) => item.file.size),
+    ...fontFiles.map((item) => item.file.size),
+  ]
+  for (const size of totalBytes) {
+    if (size > BUNDLE_MAX_ENTRY_BYTES) {
+      throw new BundleExportError(
+        `Cannot bundle this project: one entry is larger than the ${Math.round(
+          BUNDLE_MAX_ENTRY_BYTES / (1024 * 1024),
+        )} MB per-entry limit.`,
+      )
+    }
+  }
+  if (totalBytes.reduce((sum, size) => sum + size, 0) > BUNDLE_MAX_TOTAL_BYTES) {
+    throw new BundleExportError(
+      `Cannot bundle this project: its media and fonts exceed the ${Math.round(
+        BUNDLE_MAX_TOTAL_BYTES / (1024 * 1024 * 1024),
+      )} GB bundle limit.`,
+    )
+  }
+  for (const name of missingReferenced) {
+    warnings.push(`Font "${name}" is missing from this browser; the bundle falls back to Arial.`)
+  }
+  const manifest = buildBundleManifest({
+    createdAt: new Date().toISOString(),
+    assets: assetFiles.map((item) => item.entry),
+    fonts: fontFiles.map((item) => item.entry),
+  })
+  // Never write a manifest this app would refuse to open: a sanitizer change
+  // or an unusual id must fail the export, not produce a dead bundle.
+  const manifestCheck = validateBundleManifest(manifest)
+  if ('error' in manifestCheck) {
+    throw new BundleExportError(`Cannot bundle this project: ${manifestCheck.error}`)
+  }
+  const projectJSON = JSON.stringify(serializeDoc(doc), null, 2)
+  const manifestJSON = JSON.stringify(manifest, null, 2)
+  const manifestBlob = new Blob([manifestJSON], { type: 'application/json' })
+  const projectBlob = new Blob([projectJSON], { type: 'application/json' })
+  if (projectBlob.size > BUNDLE_MAX_PROJECT_BYTES) {
+    throw new BundleExportError(
+      `Cannot bundle this project: its project file is larger than the ${Math.round(
+        BUNDLE_MAX_PROJECT_BYTES / (1024 * 1024),
+      )} MB limit.`,
+    )
+  }
+  if (manifestBlob.size > BUNDLE_MAX_MANIFEST_BYTES) {
+    throw new BundleExportError('Cannot bundle this project: its manifest is too large.')
+  }
+  const entries: ZipInputEntry[] = [
+    { path: BUNDLE_MANIFEST_PATH, data: manifestBlob },
+    { path: manifest.project, data: projectBlob },
+    ...assetFiles.map((item) => ({ path: item.entry.path, data: item.file })),
+    ...fontFiles.map((item) => ({ path: item.entry.path, data: item.file })),
+  ]
+  const bytes =
+    zipStoreOverhead(entries.map((entry) => entry.path)) +
+    manifestBlob.size +
+    projectBlob.size +
+    assetFiles.reduce((sum, item) => sum + item.file.size, 0) +
+    fontFiles.reduce((sum, item) => sum + item.file.size, 0)
+  return {
+    status: 'prepared',
+    bundle: { filename: bundleFileName(doc.project.name), entries, bytes, warnings },
+  }
+}
+
+export type BundleExportOutcome =
+  | { status: 'saved'; filename: string; bytes: number; warning?: string }
+  | { status: 'cancelled' }
+  | { status: 'needs-font-confirmation'; fonts: string[] }
+
+interface SaveFilePickerWindow extends Window {
+  showSaveFilePicker?: (options?: {
+    suggestedName?: string
+    types?: { description?: string; accept: Record<string, string[]> }[]
+  }) => Promise<FileSystemFileHandle>
+}
+
+function isPickerAbort(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: unknown }).name === 'AbortError'
+  )
+}
+
+function downloadBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  setTimeout(() => URL.revokeObjectURL(url), 2000)
+}
+
+/**
+ * Refuses a no-picker export that would build an oversized archive in memory.
+ * The check runs before `zipBlob`, so the refusal happens before the allocation
+ * rather than after it.
+ */
+export function assertBundleFitsBlob(bytes: number): void {
+  if (bytes <= BUNDLE_MAX_BLOB_BYTES) return
+  throw new BundleExportError(
+    `Cannot bundle this project in this browser: the bundle is about ${Math.ceil(
+      bytes / (1024 * 1024),
+    )} MB and this browser cannot stream the save. Use a browser with the File System Access API, or reduce the project's media.`,
+  )
+}
+
+interface PendingBundleHandle {
+  handle: FileSystemFileHandle
+  suggestedName: string
+  /** The project whose bundle was being prepared when the handle was chosen. */
+  projectId: string
+}
+
+/**
+ * A save handle chosen before the heavy preparation. It is kept only across a
+ * missing-font confirmation, so the confirmed retry can write without asking
+ * for transient user activation a second time.
+ */
+let pendingBundleHandle: PendingBundleHandle | null = null
+/**
+ * Bumped when the owning menu goes away. An export still preparing captures
+ * this value and must not publish its handle afterward, or a later export
+ * would reuse a destination chosen before navigation.
+ */
+let bundleExportGeneration = 0
+
+/** Drops a handle kept for a font confirmation the user abandoned. */
+export function discardPendingBundleExport(): void {
+  bundleExportGeneration += 1
+  pendingBundleHandle = null
+}
+
+async function writeBundleToHandle(
+  handle: FileSystemFileHandle,
+  entries: ZipInputEntry[],
+): Promise<void> {
+  let writable: FileSystemWritableFileStream | null = null
+  try {
+    writable = await handle.createWritable()
+    const sink = writable
+    await writeZip(entries, {
+      write: async (chunk) => {
+        await sink.write(chunk as unknown as BufferSource)
+      },
+    })
+    await writable.close()
+  } catch (error) {
+    await writable?.abort().catch(() => undefined)
+    throw error
+  }
+}
+
+/**
+ * Exports the live project as a bundle. The snapshot is captured once, so edits
+ * during the write cannot mix project states. A File System Access sink streams
+ * the archive; without it the bundle is built in memory, and a bundle over the
+ * in-memory budget is refused before the build.
+ *
+ * The save picker is requested before any media is read: `showSaveFilePicker`
+ * needs transient user activation, and hashing a large project can outlast it.
+ */
+export async function exportProjectBundle(
+  options: { confirmMissingFonts?: boolean } = {},
+): Promise<BundleExportOutcome> {
+  const snapshot = useEditorStore.getState().doc
+  const exportGeneration = bundleExportGeneration
+  const suggestedName = bundleFileName(snapshot.project.name)
+  const picker = (window as SaveFilePickerWindow).showSaveFilePicker
+  let handle: FileSystemFileHandle | null = null
+  if (typeof picker === 'function') {
+    const pending = pendingBundleHandle
+    pendingBundleHandle = null
+    if (pending && pending.projectId === snapshot.project.id) {
+      handle = pending.handle
+    } else {
+      try {
+        handle = await picker.call(window, {
+          suggestedName,
+          types: [
+            {
+              description: 'Video editor project bundle',
+              accept: { 'application/zip': ['.vebundle.zip'] },
+            },
+          ],
+        })
+      } catch (error) {
+        if (isPickerAbort(error)) return { status: 'cancelled' }
+        throw error
+      }
+    }
+  }
+  try {
+    const prepared = await prepareProjectBundle(snapshot, options)
+    if (prepared.status === 'needs-font-confirmation') {
+      if (handle && exportGeneration === bundleExportGeneration) {
+        pendingBundleHandle = { handle, suggestedName, projectId: snapshot.project.id }
+      }
+      return { status: 'needs-font-confirmation', fonts: prepared.fonts }
+    }
+    const { filename, entries, bytes, warnings } = prepared.bundle
+    if (handle) {
+      await writeBundleToHandle(handle, entries)
+      return {
+        status: 'saved',
+        filename,
+        bytes,
+        ...(warnings.length > 0 ? { warning: warnings.join(' ') } : {}),
+      }
+    }
+    assertBundleFitsBlob(bytes)
+    const blob = await zipBlob(entries)
+    downloadBlob(blob, filename)
+    return {
+      status: 'saved',
+      filename,
+      bytes: blob.size,
+      ...(warnings.length > 0 ? { warning: warnings.join(' ') } : {}),
+    }
+  } catch (error) {
+    pendingBundleHandle = null
+    throw error
+  }
+}
+
+export interface BundleOpenOutcome {
+  status: 'opened' | 'cancelled'
+  warnings: string[]
+}
+
+function durationForImport(probed: number, serialized: number): number {
+  if (Number.isFinite(probed) && probed > 0) return probed
+  if (Number.isFinite(serialized)) return serialized
+  return 0
+}
+
+/**
+ * Opens a bundle as a project: validate the archive and manifest, verify every
+ * entry, probe the media, promote the bytes, claim them, install once, then
+ * update the shared autosave slot under this tab's ownership.
+ *
+ * Nothing is written before every entry validates, and a failed install leaves
+ * no project installed. Promoted hashes stay for the clean action.
+ */
+export async function openBundleFile(file: File): Promise<BundleOpenOutcome> {
+  const loadId = bumpProjectGeneration()
+  const probedUrls: string[] = []
+  let activityStarted = false
+  let claimId: string | null = null
+  let claimProjectId: string | null = null
+  let ownershipEpoch: number | null = null
+  let pauseRequestId: string | null = null
+  let installAttempted = false
+  let installed = false
+  // Bookkeeping values the post-install catch needs: they live inside the try
+  // block, but a failure after the install must still report a successful open.
+  let installedContext: { projectId: string; installId: string; warnings: string[] } | null = null
+  let hadInstallClaims = true
+  let preparedLock: ProjectLock | null = null
+  let aborted = false
+
+  const abortPreInstall = async (): Promise<void> => {
+    if (aborted) return
+    aborted = true
+    if (claimId && claimProjectId) {
+      await deleteMediaClaim(claimProjectId, claimId).catch(() => undefined)
+    }
+    if (preparedLock) discardProjectLock(preparedLock)
+    preparedLock = null
+    // Release ownership first: a resumed tab rechecks the record, so it must
+    // see this import's claim gone (unless a newer import still holds it).
+    if (ownershipEpoch !== null) releaseAutosaveOwnership(ownershipEpoch)
+    if (pauseRequestId) resumeAutosaveTabs(pauseRequestId)
+  }
+
+  // A cancelled probe loop has not taken ownership or written anything yet, so
+  // it can return without the pre-install abort path.
+  const cancelBeforeOwnership = (): BundleOpenOutcome => {
+    for (const url of probedUrls) URL.revokeObjectURL(url)
+    return { status: 'cancelled', warnings: [] }
+  }
+
+  try {
+    const entries = await readZipDirectory(file, { maxEntries: BUNDLE_MAX_ENTRIES })
+    const byPath = new Map(entries.map((entry) => [entry.path, entry]))
+    const manifestEntry = byPath.get(BUNDLE_MANIFEST_PATH)
+    if (!manifestEntry) throw new BundleImportError('The bundle has no manifest.')
+    if (
+      manifestEntry.uncompressedSize > BUNDLE_MAX_MANIFEST_BYTES ||
+      manifestEntry.compressedSize > BUNDLE_MAX_MANIFEST_BYTES
+    ) {
+      throw new BundleImportError('The bundle manifest is too large.')
+    }
+    let manifestValue: unknown
+    try {
+      manifestValue = JSON.parse(await (await readZipEntry(file, manifestEntry)).text())
+    } catch (error) {
+      if (error instanceof BundleImportError) throw error
+      throw new BundleImportError('The bundle manifest is not valid JSON.')
+    }
+    const validated = validateBundleManifest(manifestValue)
+    if ('error' in validated) throw new BundleImportError(validated.error)
+    const manifest = validated.manifest
+    const projectEntry = byPath.get(manifest.project)
+    if (!projectEntry) throw new BundleImportError('The bundle has no project file.')
+    if (
+      projectEntry.uncompressedSize > BUNDLE_MAX_PROJECT_BYTES ||
+      projectEntry.compressedSize > BUNDLE_MAX_PROJECT_BYTES
+    ) {
+      throw new BundleImportError('The bundle project file is too large.')
+    }
+    const projectText = await (await readZipEntry(file, projectEntry)).text()
+    const parsed = parseSerializedDoc(projectText)
+    const doc = parsed.doc
+    const allowedPaths = new Set<string>([
+      BUNDLE_MANIFEST_PATH,
+      manifest.project,
+      ...manifest.assets.map((entry) => entry.path),
+      ...manifest.fonts.map((entry) => entry.path),
+    ])
+    for (const entry of entries) {
+      if (!allowedPaths.has(entry.path)) {
+        throw new BundleImportError(`The bundle contains an unexpected entry: ${entry.path}`)
+      }
+    }
+    const mediaMatch = matchBundleMedia(doc, manifest)
+    if (mediaMatch.errors.length > 0) {
+      throw new BundleImportError(mediaMatch.errors.join(' '))
+    }
+    const fontMatch = matchBundleFonts(doc, manifest)
+    if (fontMatch.errors.length > 0) {
+      throw new BundleImportError(fontMatch.errors.join(' '))
+    }
+    const warnings = [
+      ...parsed.warnings,
+      ...fontMatch.missing.map(
+        (font) => `Font "${font.name}" is not in this bundle, so its text falls back to Arial.`,
+      ),
+    ]
+
+    const media: { asset: MediaAsset; entry: BundleManifestAsset }[] = []
+    for (const pair of mediaMatch.assets) {
+      if (!isCurrentProjectLoad(loadId)) return cancelBeforeOwnership()
+      const zipEntry = byPath.get(pair.entry.path)
+      if (!zipEntry || zipEntry.uncompressedSize !== pair.entry.size) {
+        throw new BundleImportError(`The bundle entry for "${pair.asset.name}" has the wrong size.`)
+      }
+      const blob = await readZipEntry(file, zipEntry)
+      if (blob.size !== pair.entry.size) {
+        throw new BundleImportError(`The bundle entry for "${pair.asset.name}" has the wrong size.`)
+      }
+      if ((await sha256Hex(await blob.arrayBuffer())) !== pair.entry.sha256) {
+        throw new BundleImportError(`The bundle's copy of "${pair.asset.name}" is damaged.`)
+      }
+      const mediaFile = new File([blob], pair.asset.name, {
+        type: pair.entry.type || mimeTypeForName(pair.asset.name),
+      })
+      let probed: MediaAsset
+      try {
+        probed = await importFile(mediaFile, {
+          durationHint: Number.isFinite(pair.asset.duration) ? pair.asset.duration : undefined,
+        })
+      } catch {
+        throw new BundleImportError(`The bundle's copy of "${pair.asset.name}" could not be read.`)
+      }
+      probedUrls.push(probed.url)
+      media.push({
+        asset: {
+          ...pair.asset,
+          kind: probed.kind,
+          duration: durationForImport(probed.duration, pair.asset.duration),
+          width: probed.width,
+          height: probed.height,
+          hasAudio: probed.hasAudio,
+          thumbnail: pair.asset.thumbnail ?? probed.thumbnail,
+          waveformPeaks: pair.asset.waveformPeaks ?? probed.waveformPeaks,
+          contentHash: pair.entry.sha256,
+          file: probed.file ?? mediaFile,
+          url: probed.url,
+          missing: false,
+        },
+        entry: pair.entry,
+      })
+    }
+
+    const fonts: BundleFontFile[] = []
+    for (const pair of fontMatch.fonts) {
+      if (!isCurrentProjectLoad(loadId)) return cancelBeforeOwnership()
+      const zipEntry = byPath.get(pair.entry.path)
+      if (!zipEntry || zipEntry.uncompressedSize !== pair.entry.size) {
+        throw new BundleImportError(`The bundle entry for font "${pair.font.name}" is missing.`)
+      }
+      const blob = await readZipEntry(file, zipEntry)
+      const bytes = new Uint8Array(await blob.arrayBuffer())
+      if (bytes.length !== pair.entry.size || (await sha256Hex(bytes)) !== pair.entry.sha256) {
+        throw new BundleImportError(`The bundle's copy of font "${pair.font.name}" is damaged.`)
+      }
+      const format = validateFontBytes(bytes)
+      if (!format) {
+        warnings.push(
+          `Font "${pair.font.name}" is damaged, so its text falls back to Arial. Re-upload it to restore the look.`,
+        )
+        continue
+      }
+      fonts.push({
+        entry: pair.entry,
+        file: new File([bytes], pair.entry.name, { type: fontMimeForFormat(format) }),
+      })
+    }
+
+    if (!isCurrentProjectLoad(loadId)) {
+      for (const url of probedUrls) URL.revokeObjectURL(url)
+      return { status: 'cancelled', warnings: [] }
+    }
+
+    const claim = await claimAutosaveOwnership()
+    if (!claim.ok) throw new BundleImportError(claim.reason)
+    ownershipEpoch = claim.epoch
+    const pause = await pauseOtherAutosaveTabs()
+    // Record the request before checking the result: tabs that acknowledged
+    // must be resumed even when another tab timed out.
+    pauseRequestId = pause.requestId
+    if (!pause.ok) throw new BundleImportError(pause.reason)
+
+    preparedLock = await ensureProjectLock(doc, { forInstall: true })
+    if (!preparedLock || !isCurrentProjectLoad(loadId)) {
+      await abortPreInstall()
+      for (const url of probedUrls) URL.revokeObjectURL(url)
+      return { status: 'cancelled', warnings: [] }
+    }
+
+    await beginMediaActivityWhenIdle()
+    activityStarted = true
+    if (!isCurrentProjectLoad(loadId)) {
+      await abortPreInstall()
+      for (const url of probedUrls) URL.revokeObjectURL(url)
+      return { status: 'cancelled', warnings: [] }
+    }
+    // The claims directory must exist before the first hash lands: an
+    // existing project with stored bytes and no claims record is ambiguous and
+    // must never be recreated as "no claims".
+    if (!(await prepareProjectStore(doc.project.id))) {
+      throw new BundleImportError(
+        "This project's stored media records are missing or unreadable, so the bundle was not installed.",
+      )
+    }
+    // Read the pre-import shards before this import adds its own, so a lost
+    // registry is marked unknown instead of publishing an incomplete one.
+    try {
+      const existing = await readMediaClaimShards(doc.project.id)
+      hadInstallClaims =
+        existing === null || existing.shards.some((shard) => shard.installId !== null)
+    } catch {
+      hadInstallClaims = true
+    }
+    // A missing registry must not be recreated from this import alone:
+    // another project's install-tagged shards would then look orphaned.
+    if (!hadInstallClaims && readInstalledRegistryState().status === 'missing') {
+      hadInstallClaims = await hasAnyInstallClaims()
+    }
+    for (const pair of media) {
+      await writeMediaFile(doc.project.id, pair.entry.sha256, pair.asset.file!, 'media')
+    }
+    for (const font of fonts) {
+      await writeMediaFile(doc.project.id, font.entry.sha256, font.file, 'fonts')
+    }
+    if (!isCurrentProjectLoad(loadId)) {
+      await abortPreInstall()
+      for (const url of probedUrls) URL.revokeObjectURL(url)
+      return { status: 'cancelled', warnings: [] }
+    }
+    // Adopt the manifest hash for a project that predates content hashes, and
+    // for a font whose bytes match the bundle.
+    const fontHashById = new Map(fonts.map((font) => [font.entry.id, font.entry.sha256]))
+    const hydrated: Doc = {
+      ...doc,
+      project: {
+        ...doc.project,
+        fonts: (doc.project.fonts ?? []).map((font) => {
+          const hash = fontHashById.get(font.id)
+          return hash ? { ...font, contentHash: hash } : font
+        }),
+      },
+      media: media.map((pair) => pair.asset),
+    }
+    const installId = newInstallId()
+    claimProjectId = doc.project.id
+    claimId = await writeMediaClaim(doc.project.id, collectMediaHashes(hydrated), installId)
+    const stagedFonts = await stageProjectFontFaces(hydrated)
+    warnings.push(...stagedFonts.warnings)
+    if (!isCurrentProjectLoad(loadId)) {
+      await abortPreInstall()
+      for (const url of probedUrls) URL.revokeObjectURL(url)
+      return { status: 'cancelled', warnings: [] }
+    }
+    installAttempted = true
+    installProject(hydrated, stagedFonts)
+    installed = true
+    installedContext = { projectId: doc.project.id, installId, warnings }
+    let recorded = false
+    try {
+      recorded = await recordInstallUnderLock(doc.project.id, installId, hadInstallClaims)
+    } catch {
+      recorded = false
+    }
+    if (!recorded) {
+      if (useEditorStore.getState().doc.project.id === doc.project.id) {
+        useEditorStore.getState().setAutosaveStatus('error')
+      }
+      markInstallPending(doc.project.id, installId, hadInstallClaims)
+      // One retry covers both paths: it serializes at fire time, writes the
+      // slot only while the imported project is still live, and otherwise
+      // finishes the registry append without touching another project's slot.
+      queuePendingInstallRetry(doc.project.id)
+      warnings.push(
+        'The project was imported, but its install record could not be saved yet. Autosave will retry; keep this tab open.',
+      )
+      return { status: 'opened', warnings }
+    }
+    markAutosaveImported()
+    // Another project may have become live while the record was appended. Its
+    // slot belongs to that project, so the imported snapshot must not replace
+    // it. The install record is already durable at this point.
+    if (useEditorStore.getState().doc.project.id !== doc.project.id) {
+      return { status: 'opened', warnings }
+    }
+    let slot: 'saved' | 'read-only' | 'error' | 'superseded' = 'error'
+    let writtenDoc: Doc | null = null
+    try {
+      // Compare the doc reference after the write, not its text: every
+      // serialization stamps a fresh `savedAt`, which would read as an edit.
+      writtenDoc = useEditorStore.getState().doc
+      slot = await writeAutosaveCooperatively(
+        JSON.stringify(serializeDoc(writtenDoc)),
+        undefined,
+        doc.project.id,
+      )
+    } catch {
+      slot = 'error'
+    }
+    if (slot !== 'saved' && slot !== 'superseded') {
+      // Retry from the live doc, not the captured JSON: an edit made while the
+      // write was blocked must not be replaced by this older snapshot.
+      useEditorStore.getState().setAutosaveStatus('error')
+      queuePendingInstallRetry(doc.project.id)
+      warnings.push(
+        'The project was imported, but the shared autosave copy could not be updated yet. Autosave will retry; keep this tab open.',
+      )
+    } else if (slot === 'superseded') {
+      // A newer write for this project won, or another project became live
+      // while this write was queued. Only the former means this doc is saved.
+      if (useEditorStore.getState().doc.project.id === doc.project.id) {
+        const store = useEditorStore.getState()
+        store.setAutosaveStatus('saved')
+        store.markAutosaved()
+      }
+    } else {
+      // This write won, but an edit may have landed while it was in flight.
+      // Reporting saved while the live doc differs would mark a newer unsaved
+      // document as safe, so report pending and let the scheduled save finish.
+      const store = useEditorStore.getState()
+      if (writtenDoc !== null && store.doc !== writtenDoc) {
+        store.setAutosaveStatus('pending')
+      } else {
+        store.setAutosaveStatus('saved')
+        store.markAutosaved()
+      }
+    }
+    return { status: 'opened', warnings }
+  } catch (error) {
+    if (installed && installedContext) {
+      // The project already replaced the live doc and the probed URLs are its
+      // media now. A bookkeeping failure must not revoke them or report the
+      // open as failed: keep the installed project and ask for a save retry.
+      // Other tabs still hold the pre-import doc, so tell them to reload.
+      if (useEditorStore.getState().doc.project.id === installedContext.projectId) {
+        useEditorStore.getState().setAutosaveStatus('error')
+      }
+      markAutosaveImported()
+      markInstallPending(installedContext.projectId, installedContext.installId, hadInstallClaims)
+      // The payload may never have been serialized (or the write never ran):
+      // retry from the live doc so clearing the failure completes the registry
+      // append and the slot write with no further edit.
+      queuePendingInstallRetry()
+      installedContext.warnings.push(
+        'The project was opened, but its save record could not be completed. Autosave will retry; keep this tab open.',
+      )
+      return { status: 'opened', warnings: installedContext.warnings }
+    }
+    const superseded = !installAttempted && !isCurrentProjectLoad(loadId)
+    await abortPreInstall()
+    for (const url of probedUrls) URL.revokeObjectURL(url)
+    if (superseded) return { status: 'cancelled', warnings: [] }
+    throw error
+  } finally {
+    if (activityStarted) endMediaActivity()
+  }
+}
+
+/** File > Open Bundle: pick one archive, then open it. Null when cancelled. */
+export async function openBundleFromPicker(): Promise<BundleOpenOutcome | null> {
+  const files = await pickFiles('.vebundle.zip,application/zip')
+  const file = files[0]
+  if (!file) return null
+  return openBundleFile(file)
 }

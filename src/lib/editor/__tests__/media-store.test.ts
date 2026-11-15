@@ -69,6 +69,15 @@ describe('media store detection and keys', () => {
     expect(isValidProjectId('x'.repeat(129))).toBe(false)
   })
 
+  it('keeps the first type when the same bytes are stored again', async () => {
+    const fake = createFakeOpfs()
+    stubStorage(fake)
+    const hash = await hashOf('same bytes')
+    await writeMediaFile(PROJECT, hash, mediaFile('same bytes', 'video/mp4', 'clip.mp4'))
+    await writeMediaFile(PROJECT, hash, mediaFile('same bytes', 'video/quicktime', 'clip.mov'))
+    expect((await readMediaFile(PROJECT, hash))?.type).toBe('video/mp4')
+  })
+
   it('rejects a hash that is not 64 lowercase hex characters', async () => {
     const fake = createFakeOpfs()
     stubStorage(fake)
@@ -320,6 +329,17 @@ describe('media claims', () => {
     expect(fake.directories.has(`/${PROJECT}/claims`)).toBe(false)
     expect(await readMediaClaims(PROJECT)).toBeNull()
     expect((await cleanProjectMedia(PROJECT, [])).claimsUnreadable).toBe(true)
+  })
+
+  it('does not recreate lost claims when only the font namespace has hashes', async () => {
+    const fake = createFakeOpfs()
+    stubStorage(fake)
+    const font = new File([bytes('font bytes')], 'brand.woff2', { type: 'font/woff2' })
+    const hash = await hashFile(font)
+    await writeMediaFile(PROJECT, hash, font, 'fonts')
+    expect(await ensureProjectMedia(PROJECT)).toBe('claims-missing')
+    expect(fake.directories.has(`/${PROJECT}/claims`)).toBe(false)
+    expect(await readMediaClaims(PROJECT)).toBeNull()
   })
 
   it('creates a complete empty record for a project with no stored hashes', async () => {

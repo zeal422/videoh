@@ -29,7 +29,7 @@ import {
   projectMediaUsage,
   requestPersistentStorage,
 } from '@/lib/editor/media/media-store'
-import { readAutosave } from '@/lib/editor/persistence'
+import { hasPendingInstall, readAutosave } from '@/lib/editor/persistence'
 import { currentProjectLock } from '@/lib/editor/project-io'
 import { useEditorStore } from '@/lib/editor/store'
 
@@ -46,6 +46,8 @@ type Phase = 'ready' | 'confirm-clean' | 'confirm-clear' | 'working'
 const REFUSALS: Record<MediaCleanRefusal, string> = {
   unsupported: 'Stored media is unavailable in this browser.',
   activity: 'Wait for the current import to finish, then try again.',
+  pending:
+    'The imported project is still saving its install record. Wait a moment, then try again.',
   unclaimed:
     'This project opened without a saved-copy record. Save the project once, then clean again.',
   claims:
@@ -175,6 +177,7 @@ export function StorageDialog({
         projectId,
         lock: currentProjectLock(),
         cleanBlocked: useEditorStore.getState().mediaCleanBlocked,
+        pendingInstall: hasPendingInstall,
         referenced,
         isProjectCurrent: () => useEditorStore.getState().doc.project.id === projectId,
       })
@@ -185,8 +188,8 @@ export function StorageDialog({
             count > 0 ? `Reclaimed ${formatBytes(outcome.report.reclaimed)}` : 'Nothing to clean',
           description:
             count > 0
-              ? `${count} unused stored file${count === 1 ? '' : 's'} removed from this project's storage.`
-              : 'Every stored media or font file is still referenced.',
+              ? `${count} unused stored file${count === 1 ? '' : 's'} removed from this project's storage.${outcome.report.warning ? ` ${outcome.report.warning}` : ''}`
+              : `Every stored media or font file is still referenced.${outcome.report.warning ? ` ${outcome.report.warning}` : ''}`,
         })
       } else {
         toast({

@@ -36,6 +36,17 @@ Build, run, and verify. Sibling docs: [docs index](README.md) · [architecture.m
   Media resets that project. Clear All Stored Media runs behind a second confirmation and refuses while
   another tab has the project open; without Web Locks there is no cross-tab coordination, so it refuses
   rather than report a partial clear as complete.
+- Project bundles (`.vebundle.zip`) carry the project, every stored media entry, and every project
+  font. Export streams through `showSaveFilePicker` when the browser offers it; otherwise the bundle
+  is built in memory and a bundle over 512 MiB is refused before the build. Open needs OPFS for the
+  promoted bytes, localStorage for the install registry and autosave ownership, and BroadcastChannel
+  for the cross-tab pause. Web Locks serializes ownership and the slot; without it one IndexedDB
+  transaction does, and the pause falls back to a short acknowledgement window. Without either
+  primitive, or when an IndexedDB open or transaction fails, bundle import and install-record writes
+  refuse instead of racing another tab; normal editing still uses the slot. Import refuses a
+  newer project version, missing media, a hash mismatch, or an extra entry, and warns when a font is
+  missing. The store-only reader caps an archive at 4096 entries, 512 MiB per entry, and 1 GiB
+  total as a memory budget, and rejects an oversized manifest entry before reading its bytes.
 - A `.veproj.json` file references media by hash; it is not a media backup, and a timeline export
   is a rendered file that preserves neither the original sources nor the media references. Keep
   separate copies of the original media and of any generated file before clearing site data.
@@ -201,6 +212,8 @@ both legs with `PAIR_EXIT=0`. At 0.26.0 on 2026-11-14 the four-shard pair measur
 dev leg starting its own server, the artifact leg reusing the standalone server, and 74/74 on both
 legs with `PAIR_EXIT=0`.
 At 0.27.0 on 2026-11-14 the four-shard pair measured 181s on the final
+tree, with the same server split and 74/74 on both legs with `PAIR_EXIT=0`.
+At 0.28.0 on 2026-11-15 the four-shard pair measured 179s on the final
 tree, with the same server split and 74/74 on both legs with `PAIR_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).

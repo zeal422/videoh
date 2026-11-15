@@ -822,11 +822,151 @@ Stable hooks used across flows and tests:
   that from reading as a broken preview.
 - **Autosave** writes to `localStorage` (`web-video-editor:autosave:v1`, 800 ms debounce) after each
   settled change; transient drag frames are skipped. The snapshot carries the project font library
-  (names and hashes, never bytes), so a restore relinks the same stored faces.
+  (names and hashes, never bytes), so a restore relinks the same stored faces. Every writer serializes
+  its ownership check and the slot write under the Web Lock `videoh-autosave:v1` (or one IndexedDB
+  transaction when Web Locks is missing). A fresh ownership record from another tab makes this tab
+  read-only: it loads the slot, shows a reload prompt, and never writes over the imported project. A
+  stale record is taken over with a new epoch, and a former owner that resumes sees the epoch and
+  stops writing. An import releases only the epoch it claimed, so an older overlapping import cannot
+  stop a newer one's heartbeat or delete its record. A pause request carries its import id: a tab
+  stays paused while any request is live, a failed import resumes only the tabs it paused, and a
+  provisional read-only tab rechecks ownership when that import releases its claim. A pause whose
+  importer crashed is recovered after the owner lease expires: with no live owner and an unchanged
+  slot the tab resumes, with a replaced or never-observed slot it stays paused and read-only instead
+  of overwriting the import, and with a live owner the check is rescheduled. The owner
+  record's `storage` event triggers the same recheck, so a tab that went read-only resumes even
+  when `BroadcastChannel` is unavailable, and the same event carries acquisitions too, so an idle
+  tab that sees a fresh foreign record becomes read-only before its next write. A same-session
+  takeover keeps the record the probe found unanswered: one that appears or changes while the claim
+  waits is refused instead of replaced. A restart keeps an existing read-only tab read-only when the
+  slot changed with no live owner, and a completed write marks saved only while the live doc is
+  still the one it serialized. The recheck also requires the slot to still match the text
+  this tab last saw or wrote; if an import replaced it, the tab stays read-only instead of resuming
+  over the imported project. A resume also leaves a pending restore banner alone, so the saved
+  session stays until the user chooses Restore or Discard. A resumed tab writes its pending
+  document, and each retry
+  carries a write sequence so an older snapshot cannot replace a newer save. A retry keeps the
+  sequence of the write it repeats: allocating a fresh sequence per attempt would let an old
+  document overwrite a newer edit that committed between attempts. The pause and resume
+  messages themselves travel over `BroadcastChannel`: without it, a tab learns about an import only
+  if its own slot write meets the fresh owner record, and that lease is the protection. A tab that
+  never writes during the import window can still save its pre-import document after the lease
+  expires; the slot carries no durable fence, so this limitation is explicit rather than implied. Coordination teardown releases the tab's presence lock, so a remount or an
+  in-page unmount cannot leave another tab waiting for an acknowledgement that never comes, and it
+  invalidates an initialization still awaiting its session probe so a torn-down tab cannot reclaim
+  ownership or start a heartbeat. It also clears the in-memory ownership flag: a remount may
+  reclaim a fresh same-session record, but it cannot refresh or recreate a stale one. Discarding a restore clears only the slot text its banner was built
+  from, and never while a live record names another tab, so a stale banner cannot delete a project
+  that tab imported.
+- Without Web Locks and IndexedDB, bundle import and install-record writes refuse: two tabs cannot
+  serialize an ownership check or a registry append, and guessing is worse than asking for a reload.
+  They also fail closed when IndexedDB is present but cannot open or start a transaction; a broken
+  transaction store is not treated as coordination. Normal editing still uses the slot. Coordination
+  teardown drops the transient pause state and a remount re-evaluates the ownership record, so a
+  missed pause resume cannot leave the editor paused until a full page reload.
 - On startup a valid autosave raises a banner: **Restore** rehydrates and installs the doc (undoable)
   or **Discard** clears it. Discarding a restore that is still rehydrating prevents it from installing.
   A restore writes no claim; the autosave slot is a live reference, so Clean Unused Media keeps its
   hashes until the slot stops referencing them.
+
+## Project bundle (0.28.0)
+
+- **Export Project Bundle** writes `<project-name>.vebundle.zip`: `manifest.json`, the unchanged
+  `project.veproj.json`, every `Doc.media` entry under `media/<asset-id>/<name>`, and every
+  `Project.fonts` entry under `fonts/<font-id>/<name>`. The manifest has a bundle version separate
+  from the project schema, a creation date, and each entry's id, path, display name, MIME type, byte
+  size, and SHA-256.
+- The snapshot is captured once, before any bytes are read, so an edit during the write cannot mix
+  project states. Before it hashes anything, the export compares each stored entry size (from the
+  store listing) and each session `File` size with the 512 MiB entry and 1 GiB total budgets, so an
+  oversized asset is refused without materializing it. If the store is supported but its listing
+  fails, the export refuses rather than hash without a size check. A hash that exists in both the
+  media and font namespaces keeps the larger stored size, so a damaged oversized copy is not hidden
+  by a small one. Media bytes come from the project's OPFS
+  namespace; an asset with no stored copy falls back to its session `File`, and a hash that cannot be
+  verified refuses the export. Every
+  `Doc.media` entry is required, including unused bin items, because the project JSON lists them. A
+  referenced font with no stored bytes warns and asks for confirmation; an unused missing font is
+  left out with a warning only. Sanitized names cap their length without splitting a surrogate pair,
+  so the manifest path and the ZIP entry path stay identical. The bundle writer stores entries without compression, because media
+  and fonts are already compressed.
+- The writer uses the File System Access picker when available and streams the archive to the file,
+  one chunk per read; otherwise it builds one Blob, and refuses above 512 MiB before the build because the whole archive would live in memory. That estimate includes the local headers, central-directory records, paths, and end record the ZIP adds around the payload. The picker is requested before any media is read,
+  because `showSaveFilePicker` needs transient user activation and hashing a large project can
+  outlast it. A handle chosen before a missing-font confirmation is kept for the confirmed retry, so
+  the user does not have to pick the file twice; unmounting the menu bumps an export generation, so a
+  preparation still running cannot publish that handle for a later export. No server is involved.
+- **Open Project Bundle** reads the central directory, rejects encrypted, compressed, Zip64,
+  duplicate-path, truncated, and over-count archives, validates the manifest and every path
+  (`..`, absolute paths, backslashes, NUL, control characters, and duplicate ids refuse), parses the
+  project through the normal validator (a newer project version refuses), and matches every
+  `Doc.media` id and every `Project.fonts` id. Missing media, extra entries, wrong sizes, and hash
+  mismatches refuse the whole bundle; a missing font is a warning because the project can fall back
+  to Arial.
+- Each entry's bytes are verified against the manifest SHA-256 and CRC before anything is written.
+  Media then goes through the normal `importFile` probe, so a malformed file is refused as a media
+  error instead of crashing the editor; the media and font loops check the project generation, so a
+  newer open stops a hostile bundle before the next probe; a serialized duration survives when the
+  probe reports zero or
+  a non-finite value, which keeps a WebM recording without a duration header intact. Fonts are
+  re-validated by header and size, independent of the display name, before they are stored. The
+  project's `contentHash` values are checked
+  against the manifest; a project that predates content hashes adopts the manifest hash after the
+  bytes verify.
+- Import writes into the project's existing content-addressed store, using the same temp-write,
+  verify, quarantine, and promote rules as any import, so a valid hash is reused and never
+  overwritten. The claims directory must already be a complete record; a missing or unreadable one
+  aborts before installation. The import holds the incoming project's shared `ProjectLock` from
+  before its claim shard through the registry append, so a clean in another tab cannot take the
+  exclusive lock during that window. Before `installProject` the import writes one claim shard
+  carrying its install id. After the install succeeds it records that id durably, then writes the
+  imported doc to the shared autosave slot while holding ownership. The payload is serialized
+  from the live doc after the registry append lands, so an edit made during the append reaches the
+  slot instead of being overwritten by older JSON; if the slot write then loses a race with a newer
+  edit, the tab reports pending rather than saved. A bundle slot write and every retry of it are
+  scoped to the imported project: if another project becomes live during the append, the import
+  records the install and leaves that project's slot alone, and a retry is dropped once its project
+  is no longer live, so neither can report the newer project saved. If a bookkeeping step after
+  `installProject` fails, the import keeps the installed project and its live media URLs and returns
+  opened with a warning, because the project already replaced the live doc. A failure before any
+  payload exists retries from a fresh serialization of the live doc, so clearing the failure
+  completes the registry append and the slot write with no further edit. A failed registry or
+  slot write marks autosave error, so the unload warning stays active until a retry saves. A failed install removes
+  only the claim shard and leaves promoted bytes for Clean Unused Media; a failed registry or slot
+  write keeps the ownership, the claim, and the paused tabs, and retries on the next autosave. The
+  imported doc keeps its project id, so a project with the same id keeps resolving its own hashes.
+- A missing install registry is not recreated from one import or saved copy alone. If any project
+  holds an install-tagged claim shard, history is marked unknown first, so recovery keeps those
+  shards instead of treating another project's completed install as an orphan. An append that would
+  exceed the registry bounds, or whose write fails, marks history unknown for the same reason. A
+  pending install is also mirrored durably, so recovery keeps its claim across a reload until the
+  append lands; startup restores the pending install and retries it automatically. A restored retry
+  whose live doc is another project only appends the install record and leaves that session's slot
+  alone, so finishing the bookkeeping cannot overwrite the saved session it booted beside. Retry
+  freshness compares document content without the serialization timestamp, so an unchanged document
+  is still retried after a failed attempt instead of being dropped as stale.
+- Before installation, the import holds the shared media lock and the same-tab media reservation,
+  so a clean cannot run between promotion and install. Other editor tabs
+  receive `autosave-pause`, cancel their pending timer, wait for any in-flight write, and
+  acknowledge. A known tab that does not acknowledge within two seconds refuses the import. After a
+  successful install every other tab stays paused with a reload prompt; after a failed pre-install it
+  resumes. The install writes once, with the same history reset as any project open.
+- A crash can leave a shard written before the install. Recovery runs inside the clean action under
+  the media lock: it reads the durable installed registry and retires a shard whose install id was
+  never recorded, without deleting the promoted bytes; a shard with no install id (a normal save) is
+  always kept, and a missing or unreadable registry keeps every shard and warns. If an append finds
+  install-tagged claims but no registry entry for the project, it marks the install history unknown
+  first; the marker survives later appends, so a recreated registry never makes recovery treat the
+  older claims as orphans. The registry is append-only and keyed by project id, so a saved copy's
+  claim survives a later project switch. Project ids are user-controlled strings, so registry lookups
+  use a null-prototype dictionary: `constructor` and `__proto__` cannot read inherited values or
+  mutate the prototype.
+- Hostile-archive and memory limits: 4096 entries, 512 MiB per entry, 1 GiB total, an 8 MiB
+  manifest, a 64 MiB project file, and 512-character paths. These are a memory budget rather than
+  a disk budget: import reads one entry into a full buffer several times (CRC, SHA-256, probe, and
+  store write), and the no-picker export fallback holds the entire archive in memory. The manifest
+  validator rejects an oversized entry or total before any entry bytes are read, so a bundle cannot
+  force an allocation beyond the budget.
 
 ## Durable media storage and cleanup
 
@@ -841,13 +981,19 @@ Stable hooks used across flows and tests:
   missing or unreadable claims directory disables content-hash deletion; clean may only remove temp and
   quarantine files. A project that already stores hashes but has lost its claims directory is not
   repaired with an empty record: clean stays blocked and an explicit save refuses until Clear All
-  Stored Media resets the project. An unreadable shard also refuses a new claim, so a save fails
-  instead of publishing beside records it cannot read.
+  Stored Media resets the project. Stored hashes count in both the media root and the `fonts/`
+  namespace, so a text-only project with lost claims is not mistaken for an empty one either. An
+  unreadable shard also refuses a new claim, so a save fails instead of publishing beside records it
+  cannot read.
 - Clean Unused Media lists candidates with their sizes and requires confirmation. It keeps every hash
   reachable from the live doc, both history stacks, the autosave slot for this project, and every claim
   shard, and it reports the reclaimed size. Same-tab imports, relinks, Freeze Frame writes, and
   rehydration wait for a running clean, so a candidate hash cannot be rewritten between the reference
-  snapshot and the delete. Clear All Stored Media is the only action that removes claims; it names that
+  snapshot and the delete. Clean also refuses while an imported project's install record is still
+  pending, so recovery cannot retire the import's claim before the registry append lands. The
+  pending check runs again inside the exclusion, after the preview yield, so an install that landed
+  while the preview was read cannot have its claim retired by recovery. Clear All
+  Stored Media is the only action that removes claims; it names that
   saved copies lose their media, needs a second confirmation, and the confirmation is bound to the
   project it named. It holds the same-tab clean flag, waits for an in-flight media write before it
   snapshots the directory, and runs the deletes under the exclusive project lock, so another open tab

@@ -61,6 +61,11 @@ import { useEditorStore, useStableDoc } from '@/lib/editor/store'
 import { executeAction } from '@/lib/editor/action-executor'
 import { createActionContext } from '@/hooks/editor/action-context'
 import { hasClipboardContent } from '@/lib/editor/clipboard'
+import {
+  discardPendingBundleExport,
+  exportProjectBundle,
+  type BundleExportOutcome,
+} from '@/lib/editor/project-io'
 
 /**
  * Application menu bar (Premiere Pro–style): File · Edit · Clip · Sequence ·
@@ -128,6 +133,7 @@ export function MenuBar({
   const [gainValue, setGainValue] = useState(1)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
+  const [bundleFonts, setBundleFonts] = useState<string[] | null>(null)
   const [settingsDraft, setSettingsDraft] = useState({ name: '', width: '', height: '', fps: '' })
 
   const isFullscreen = useSyncExternalStore(
@@ -232,6 +238,29 @@ export function MenuBar({
     })
   }, [])
 
+  const handleBundleOutcome = useCallback((outcome: BundleExportOutcome) => {
+    if (outcome.status === 'cancelled') return
+    if (outcome.status === 'needs-font-confirmation') {
+      setBundleFonts(outcome.fonts)
+      return
+    }
+    toast({
+      title: 'Project bundle saved',
+      description: [outcome.filename, outcome.warning].filter(Boolean).join(' '),
+    })
+  }, [])
+
+  const exportBundle = useCallback(() => {
+    void exportProjectBundle().then(handleBundleOutcome).catch(showError)
+  }, [handleBundleOutcome, showError])
+
+  const confirmBundleExport = useCallback(() => {
+    setBundleFonts(null)
+    void exportProjectBundle({ confirmMissingFonts: true })
+      .then(handleBundleOutcome)
+      .catch(showError)
+  }, [handleBundleOutcome, showError])
+
   const toggleFullscreen = async () => {
     if (pendingRef.current) return
     pendingRef.current = true
@@ -264,6 +293,10 @@ export function MenuBar({
     setGainValue(audible?.gain ?? clip?.gain ?? 1)
     setGainOpen(true)
   }, [])
+
+  // A save destination chosen for a font confirmation belongs to this mounted
+  // menu. Navigating away must not let a later export reuse that stale handle.
+  useEffect(() => () => discardPendingBundleExport(), [])
 
   // Premiere G: Audio Gain. The keyboard hook dispatches an app event so the
   // dialog (owned here) can be opened without coupling the hook to React.
@@ -317,7 +350,11 @@ export function MenuBar({
         // toggles, and help rows stay in this component.
         const outcome = executeAction(
           action,
-          createActionContext({ openExport: onOpenExport, openGain: openGainDialog }),
+          createActionContext({
+            openExport: onOpenExport,
+            openGain: openGainDialog,
+            exportBundle,
+          }),
         )
         if (outcome.handled) {
           if (outcome.commands) {
@@ -399,6 +436,7 @@ export function MenuBar({
       onResetLayout,
       openGainDialog,
       openSettingsDialog,
+      exportBundle,
       showError,
       toggleHidden,
     ],
@@ -526,6 +564,38 @@ export function MenuBar({
       />
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <AboutDialog open={aboutOpen} onOpenChange={setAboutOpen} />
+      <Dialog
+        open={bundleFonts !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setBundleFonts(null)
+            discardPendingBundleExport()
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Some fonts are missing</DialogTitle>
+            <DialogDescription>
+              {bundleFonts?.join(', ')} {bundleFonts?.length === 1 ? 'is' : 'are'} not stored in
+              this browser. The bundle will fall back to Arial for any text that uses{' '}
+              {bundleFonts?.length === 1 ? 'it' : 'them'}.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setBundleFonts(null)
+                discardPendingBundleExport()
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={confirmBundleExport}>Export anyway</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <StickerPicker open={stickersOpen} onOpenChange={setStickersOpen} />
       <BrandKitPanel open={brandKitOpen} onOpenChange={setBrandKitOpen} />
       <TemplateGallery open={templatesOpen} onOpenChange={setTemplatesOpen} />

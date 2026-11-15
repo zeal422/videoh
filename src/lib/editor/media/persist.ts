@@ -20,6 +20,7 @@ import {
   isMediaStoreSupported,
   listMediaFiles,
   readMediaClaims,
+  recoverOrphanedClaimShards,
   writeMediaClaim,
   writeMediaFile,
 } from './media-store'
@@ -154,7 +155,7 @@ export async function storeMediaAsset(
  * the store is unavailable or rejects the claim; callers open degraded rather
  * than block the project.
  */
-export async function writeProjectClaim(doc: Doc): Promise<boolean> {
+export async function writeProjectClaim(doc: Doc, installId?: string): Promise<boolean> {
   const hashes = collectMediaHashes(doc)
   if (hashes.length === 0) return true
   try {
@@ -163,7 +164,7 @@ export async function writeProjectClaim(doc: Doc): Promise<boolean> {
     // unknown. Refuse so clean stays blocked and the save reports the risk.
     const state = await ensureProjectMedia(doc.project.id)
     if (state !== 'ready') return false
-    await writeMediaClaim(doc.project.id, hashes)
+    await writeMediaClaim(doc.project.id, hashes, installId)
     return true
   } catch {
     return false
@@ -182,11 +183,13 @@ export async function prepareProjectStore(projectId: string): Promise<boolean> {
 // cleanup
 
 export type MediaCleanRefusal =
-  'unsupported' | 'activity' | 'unclaimed' | 'claims' | 'busy' | 'changed'
+  'unsupported' | 'activity' | 'pending' | 'unclaimed' | 'claims' | 'busy' | 'changed'
 
 export interface MediaCleanReport {
   deleted: string[]
   reclaimed: number
+  /** A recovery condition the user should know about, such as unreadable install state. */
+  warning?: string
 }
 
 /** Clear All's outcome: `busy` means another open tab holds the project. */
@@ -237,6 +240,8 @@ export async function cleanUnusedMedia(input: {
   lock: ProjectLock | null
   cleanBlocked: boolean
   referenced: () => ReadonlySet<string>
+  /** True while an imported project's install record still awaits its write. */
+  pendingInstall?: () => boolean
   /**
    * Checked inside the same-tab clean flag, immediately before the deletes. The
    * referenced set is read from the live doc, so a project installed while the
@@ -246,6 +251,7 @@ export async function cleanUnusedMedia(input: {
   isProjectCurrent?: () => boolean
 }): Promise<{ status: 'ran'; report: MediaCleanReport } | { status: MediaCleanRefusal }> {
   if (!isMediaStoreSupported()) return { status: 'unsupported' }
+  if (input.pendingInstall?.()) return { status: 'pending' }
   if (input.cleanBlocked) return { status: 'unclaimed' }
   if (isMediaActivityActive()) return { status: 'activity' }
   const { lock } = input
@@ -255,9 +261,8 @@ export async function cleanUnusedMedia(input: {
   if (!lock || lock.projectId !== input.projectId) return { status: 'unsupported' }
   const preview = await listUnusedMedia(input.projectId, input.referenced())
   if (preview.blocked) return { status: 'claims' }
-  if (preview.candidates.length === 0) {
-    return { status: 'ran', report: { deleted: [], reclaimed: 0 } }
-  }
+  // Even with no visible candidates, recovery still runs: an orphaned claim
+  // shard can hide an otherwise unreferenced entry from the preview.
   const outcome = await lock.exclusive(async () => {
     // The exclusive lock excludes other tabs, not this tab's own work: a
     // keyboard-started import can begin while the confirmation is open. Hold
@@ -266,17 +271,31 @@ export async function cleanUnusedMedia(input: {
     return runCleanExclusive(async () => {
       if (input.isProjectCurrent && !input.isProjectCurrent()) return 'changed'
       if (isMediaActivityActive()) return null
-      return cleanProjectMedia(input.projectId, [...input.referenced()])
+      // The entry check ran before `listUnusedMedia` yielded. An import that
+      // installed while the preview was read can leave its record pending
+      // now, so recheck before recovery can retire its claim.
+      if (input.pendingInstall?.()) return 'pending'
+      // A crashed bundle import can leave a claim shard for an install that
+      // never completed. Retire that shard (never its bytes) before the clean
+      // plan decides what is protected by a claim.
+      const recovery = await recoverOrphanedClaimShards(input.projectId)
+      const result = await cleanProjectMedia(input.projectId, [...input.referenced()])
+      return { result, recovery }
     })
   })
   if (outcome.status === 'busy') return { status: 'busy' }
   if (outcome.status === 'unsupported') return { status: 'unsupported' }
   if (outcome.value === null) return { status: 'activity' }
   if (outcome.value === 'changed') return { status: 'changed' }
-  if (outcome.value.claimsUnreadable) return { status: 'claims' }
+  if (outcome.value === 'pending') return { status: 'pending' }
+  if (outcome.value.result.claimsUnreadable) return { status: 'claims' }
   return {
     status: 'ran',
-    report: { deleted: outcome.value.deleted, reclaimed: outcome.value.reclaimed },
+    report: {
+      deleted: outcome.value.result.deleted,
+      reclaimed: outcome.value.result.reclaimed,
+      ...(outcome.value.recovery.warning ? { warning: outcome.value.recovery.warning } : {}),
+    },
   }
 }
 

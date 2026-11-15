@@ -16,6 +16,7 @@ import {
   importMediaFiles,
   installProject,
   isProjectTokenCurrent,
+  openBundleFromPicker,
   openProjectFromPicker,
   pickFiles,
 } from '@/lib/editor/project-io'
@@ -130,6 +131,8 @@ export async function freezeFrameAtPlayhead(): Promise<void> {
 export interface ActionContextOverrides {
   openExport?: () => void
   openGain?: () => void
+  /** The menu bar owns the missing-font confirmation dialog for bundles. */
+  exportBundle?: () => void
   /** The keyboard keeps EditorShell's existing save callback. */
   saveProject?: () => void
 }
@@ -174,6 +177,21 @@ export function createActionContext(overrides: ActionContextOverrides = {}): Act
         reportAsyncFailure('Open project failed', error),
       )
     },
+    openBundle: () => {
+      void openBundleFromPicker()
+        .then((outcome) => {
+          if (!outcome || outcome.status === 'cancelled') return
+          toast({
+            title: 'Project bundle opened',
+            description:
+              outcome.warnings.length > 0
+                ? outcome.warnings.join(' ')
+                : 'All media and fonts are back online.',
+          })
+        })
+        .catch((error) => reportAsyncFailure('Open bundle failed', error))
+    },
+    exportBundle: overrides.exportBundle ?? (() => undefined),
     importMedia: () => {
       void pickFiles('video/*,audio/*,image/*', true)
         .then(async (files) => {

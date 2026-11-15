@@ -219,3 +219,14 @@ export function validateFontFile(name: string, bytes: Uint8Array): FontFormat | 
   if (!named) return null
   return fontFormatFromBytes(bytes)
 }
+
+/**
+ * Validates font bytes by header and size only. A bundle carries a display
+ * name, not necessarily a file name, so the extension gate above would reject
+ * a valid upload whose name is "Inter". The header and cap are the trust
+ * checks that matter once the bytes are already inside the archive.
+ */
+export function validateFontBytes(bytes: Uint8Array): FontFormat | null {
+  if (bytes.length === 0 || bytes.length > FONT_FILE_MAX_BYTES) return null
+  return fontFormatFromBytes(bytes)
+}

@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.28.0',
+    date: '2026-11-14',
+    highlights: [
+      'Export a project bundle with the edit, every media file, and every custom font in one ZIP',
+      'Open a bundle on another machine and get the project back with its media and fonts',
+      'Bundles are validated before anything is installed, and a failed open leaves the current project untouched',
+      'An import in one tab pauses autosave in the others, so an older tab cannot overwrite it while the import holds the lease',
+      'Project files stay at format version 8',
+    ],
+  },
+  {
     version: '0.27.0',
     date: '2026-11-14',
     highlights: [

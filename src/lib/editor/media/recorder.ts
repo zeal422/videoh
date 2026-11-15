@@ -5,7 +5,7 @@
  * plain File that goes back through `importFile`, so it becomes an ordinary
  * media asset with the normal OPFS persistence and reload behavior.
  *
- * Decisions recorded in PLAN_0.27.0_CAPTURE.md:
+ * Design decisions:
  * - Screen recording carries exactly one audio source (system, microphone, or
  *   none). System and microphone are never mixed, because a microphone hears
  *   the speakers and the mix would contain the system audio twice.

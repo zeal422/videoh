@@ -668,3 +668,10 @@ describe('menubar fullscreen button', () => {
     expect(removeSpy).toHaveBeenCalledWith('fullscreenchange', expect.any(Function))
   })
 })
+
+describe('bundle save handle lifetime', () => {
+  it('clears a pending bundle handle when the menu unmounts', () => {
+    const src = read('src/components/editor/MenuBar.tsx')
+    expect(src).toMatch(/useEffect\(\(\) => \(\) => discardPendingBundleExport\(\), \[\]\)/)
+  })
+})

@@ -41,7 +41,12 @@ import {
   type ResetTracker,
 } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
-import { clearAutosave, initAutosave, readValidAutosave } from '@/lib/editor/persistence'
+import {
+  clearAutosave,
+  initAutosave,
+  initAutosaveCoordination,
+  readValidAutosave,
+} from '@/lib/editor/persistence'
 import { activateProjectFonts } from '@/lib/editor/media/font-store'
 import {
   downloadProjectJSON,
@@ -74,6 +79,8 @@ export function EditorShell() {
   const isMobile = useIsMobile()
   const doc = useStableDoc()
   const pendingRestore = useEditorStore((s) => s.pendingRestore)
+  const autosavePaused = useEditorStore((s) => s.autosavePaused)
+  const autosaveStatus = useEditorStore((s) => s.autosaveStatus)
   const lockNotice = useEditorStore((s) => s.lockNotice)
   const hidden = useWorkspaceStore((s) => s.hidden)
   const sizes = useWorkspaceStore((s) => s.sizes)
@@ -300,8 +307,21 @@ export function EditorShell() {
     })
   }, [])
 
+  // A paused tab cannot autosave, and a failed autosave has not reached the
+  // shared slot, so warn before an unload discards either state.
+  useEffect(() => {
+    if (!autosavePaused && autosaveStatus !== 'error') return
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [autosavePaused, autosaveStatus])
+
   // Autosave lifecycle: subscribe once; check for a restorable session on mount.
   useEffect(() => {
+    const stopCoordination = initAutosaveCoordination()
     const unsubscribe = initAutosave()
     const saved = readValidAutosave()
     if (saved) useEditorStore.getState().setPendingRestore(saved)
@@ -330,6 +350,7 @@ export function EditorShell() {
     window.addEventListener('pointerup', commitDangling)
     window.addEventListener('blur', onBlur)
     return () => {
+      stopCoordination()
       unsubscribe()
       window.removeEventListener('pointerup', commitDangling)
       window.removeEventListener('blur', onBlur)
@@ -424,11 +445,11 @@ export function EditorShell() {
   useEditorKeyboard(handleSave)
 
   const restoreAutosave = async () => {
+    // Read the current restore at click time: the banner's render closure
+    // can be stale if the store cleared or replaced it.
+    const restore = useEditorStore.getState().pendingRestore
+    if (!restore) return
     try {
-      // Read the current restore at click time: the banner's render closure
-      // can be stale if the store cleared or replaced it.
-      const restore = useEditorStore.getState().pendingRestore
-      if (!restore) return
       // Rehydrate stored media, then install once through the shared path. A
       // superseded restore (a project open landed first, or the user pressed
       // Discard while this ran) installs nothing.
@@ -455,16 +476,19 @@ export function EditorShell() {
       })
     } catch {
       toast({ title: 'Restore failed', variant: 'destructive' })
-      clearAutosave()
+      void clearAutosave(restore.raw)
       useEditorStore.getState().clearPendingRestore()
     }
   }
 
   const discardAutosave = () => {
+    // Read the banner's source before clearing it: the slot can be replaced by
+    // another tab's import between the click and the clear.
+    const restore = useEditorStore.getState().pendingRestore
     // Clear the request first: an in-flight Restore that is still rehydrating
     // sees it disappear and installs nothing.
     useEditorStore.getState().clearPendingRestore()
-    clearAutosave()
+    void clearAutosave(restore?.raw)
   }
 
   return (
@@ -481,7 +505,26 @@ export function EditorShell() {
       />
       <Toolbar onOpenExport={() => setExportOpen(true)} />
 
-      {pendingRestore && (
+      {autosavePaused && (
+        <div
+          role="status"
+          className="flex items-center justify-between gap-2 border-b bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200"
+        >
+          <span>
+            A project was imported in another tab. Reload to continue editing this project.
+          </span>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-6 gap-1 px-2 text-xs"
+            onClick={() => window.location.reload()}
+          >
+            Reload
+          </Button>
+        </div>
+      )}
+
+      {pendingRestore && !autosavePaused && (
         <div
           role="status"
           className="flex items-center justify-between gap-2 border-b bg-amber-500/10 px-3 py-1.5 text-xs text-amber-200"

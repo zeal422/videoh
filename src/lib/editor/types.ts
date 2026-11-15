@@ -617,6 +617,8 @@ export interface Doc {
 export interface PendingRestore {
   doc: Doc
   warnings: string[]
+  /** The raw slot text this banner was built from. Discard clears only this. */
+  raw?: string
 }
 
 /** Per-property keyframe arrays, time-sorted, clip-local times. */

@@ -25,7 +25,10 @@ vi.mock('@/lib/editor/media/media-store', () => ({
   requestPersistentStorage: persistMock,
 }))
 vi.mock('@/lib/editor/project-io', () => ({ currentProjectLock: () => ({}) }))
-vi.mock('@/lib/editor/persistence', () => ({ readAutosave: () => null }))
+vi.mock('@/lib/editor/persistence', () => ({
+  readAutosave: () => null,
+  hasPendingInstall: () => false,
+}))
 
 import { StorageDialog } from '@/components/editor/StorageDialog'
 import { createDoc, createMediaAsset } from '../factories'

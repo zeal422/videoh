@@ -24,8 +24,10 @@ export type MenuId =
 export type MenuActionId =
   | 'file.newProject'
   | 'file.openProject'
+  | 'file.openBundle'
   | 'file.importMedia'
   | 'file.saveProject'
+  | 'file.exportBundle'
   | 'file.exportMedia'
   | 'edit.undo'
   | 'edit.redo'
@@ -219,6 +221,12 @@ export const MENU_SPECS: MenuSpec[] = [
     items: [
       { id: 'file.new', kind: 'item', label: 'New Project', action: 'file.newProject' },
       { id: 'file.open', kind: 'item', label: 'Open Project…', action: 'file.openProject' },
+      {
+        id: 'file.openBundle',
+        kind: 'item',
+        label: 'Open Project Bundle…',
+        action: 'file.openBundle',
+      },
       { id: 'file.import', kind: 'item', label: 'Import Media…', action: 'file.importMedia' },
       { id: 'file.sep1', kind: 'separator' },
       {
@@ -227,6 +235,12 @@ export const MENU_SPECS: MenuSpec[] = [
         label: 'Save Project',
         action: 'file.saveProject',
         shortcut: 'Ctrl+S',
+      },
+      {
+        id: 'file.exportBundle',
+        kind: 'item',
+        label: 'Export Project Bundle…',
+        action: 'file.exportBundle',
       },
       { id: 'file.export', kind: 'item', label: 'Export Media…', action: 'file.exportMedia' },
     ],

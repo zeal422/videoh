@@ -50,7 +50,7 @@ describe('autosave', () => {
 
       // Not yet written (debounce pending)
       expect(storage.size).toBe(0)
-      vi.advanceTimersByTime(1000)
+      await vi.advanceTimersByTimeAsync(1000)
       expect(storage.size).toBe(1)
 
       const saved = readValidAutosave()
@@ -58,7 +58,7 @@ describe('autosave', () => {
       expect(JSON.stringify(saved!.doc)).not.toContain('blob:x')
       expect(saved!.doc.media[0].name).toBe('x.mp3')
 
-      clearAutosave()
+      await clearAutosave(saved!.raw)
       expect(readValidAutosave()).toBeNull()
     } finally {
       unsubscribe()
@@ -110,7 +110,7 @@ describe('autosave', () => {
         .find((c) => c.mediaId === asset.id)!.id
 
       // flush the save scheduled by the initial apply
-      vi.advanceTimersByTime(1000)
+      await vi.advanceTimersByTimeAsync(1000)
       const writesAfterSetup = writes
       expect(writesAfterSetup).toBe(1)
 
@@ -123,7 +123,7 @@ describe('autosave', () => {
       }
       expect(writes).toBe(writesAfterSetup)
       store.commitTransient()
-      vi.advanceTimersByTime(1000)
+      await vi.advanceTimersByTimeAsync(1000)
       expect(writes).toBe(writesAfterSetup + 1)
       const saved = JSON.parse(storage.get('web-video-editor:autosave:v1')!)
       expect(

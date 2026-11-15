@@ -18,6 +18,11 @@
  */
 
 import { isValidContentHash } from '../project-validation'
+import {
+  hasPendingInstallFor,
+  isInstallHistoryLost,
+  readInstalledRegistryState,
+} from './installed-registry'
 
 /** Largest project id the store accepts as a directory name. */
 const PROJECT_ID_MAX = 128
@@ -257,8 +262,17 @@ export async function ensureProjectMedia(projectId: string): Promise<ProjectMedi
   } catch (error) {
     if (!isNotFound(error)) throw new MediaStoreError('Media claims could not be read')
   }
-  const hasStoredHashes = (await directoryNames(dir)).some(isValidContentHash)
-  if (hasStoredHashes) return 'claims-missing'
+  const rootHashes = (await directoryNames(dir)).some(isValidContentHash)
+  let fontHashes = false
+  try {
+    const fontDir = await dir.getDirectoryHandle(FONT_NAMESPACE)
+    fontHashes = (await directoryNames(fontDir)).some(isValidContentHash)
+  } catch (error) {
+    if (!isNotFound(error)) throw new MediaStoreError('Media claims could not be read')
+  }
+  // Font bytes live under `fonts/`; a text-only project must not be mistaken
+  // for an empty one because the root has no hashes.
+  if (rootHashes || fontHashes) return 'claims-missing'
   // The directory was emptied (for example by clear-all) or never had media.
   // There is nothing a lost claim could still protect, so an empty record is
   // complete and clean can stay available.
@@ -449,7 +463,12 @@ export async function writeMediaFile(
     throw new MediaStoreError('Media hash does not match its contents')
   }
   if (await hasVerifiedEntry(dir, contentHash)) {
-    await writeSidecar(dir, contentHash, file.type, bytes.byteLength)
+    // The hash proves the bytes are identical. Keep the first writer's sidecar
+    // instead of letting a bundle's declared MIME rewrite a shared entry that
+    // another project already resolves.
+    if (!(await readSidecar(dir, contentHash))) {
+      await writeSidecar(dir, contentHash, file.type, bytes.byteLength)
+    }
     return
   }
   // A damaged entry is moved aside so the replacement can take the real name.
@@ -591,8 +610,12 @@ export async function deleteMediaFile(
 export async function writeMediaClaim(
   projectId: string,
   hashes: readonly string[],
+  installId?: string,
 ): Promise<string> {
   assertProjectId(projectId)
+  if (installId !== undefined && !/^install-[A-Za-z0-9-]{1,80}$/.test(installId)) {
+    throw new MediaStoreError('Invalid bundle install id')
+  }
   const dir = await projectDirectory(projectId, true)
   if (!dir) throw new MediaStoreError('Media storage could not create the project')
   // Fail closed on lost or unreadable records. Creating the directory here
@@ -611,10 +634,16 @@ export async function writeMediaClaim(
   }
   const claimId = `claim-${randomSuffix()}`
   const unique = [...new Set(hashes.filter(isValidContentHash))].sort()
+  // The install id ties a bundle's pre-install shard to the registry record
+  // written after the install. A normal save leaves it out, so its shard is
+  // kept forever.
+  const payload = installId
+    ? { version: 1, hashes: unique, installId }
+    : { version: 1, hashes: unique }
   // Temp then promote, so a reader never sees a half-written shard.
   const tempName = temporaryName('tmp')
   try {
-    await writeJson(claims, tempName, { version: 1, hashes: unique })
+    await writeJson(claims, tempName, payload)
     const temp = await claims.getFileHandle(tempName)
     const name = `${claimId}${SIDECAR_SUFFIX}`
     if (typeof temp.move === 'function') {
@@ -625,7 +654,7 @@ export async function writeMediaClaim(
       // claim is at risk); otherwise a corrupt final entry would read as
       // unreadable claims and block cleanup permanently.
       try {
-        await writeJson(claims, name, { version: 1, hashes: unique })
+        await writeJson(claims, name, payload)
       } catch (error) {
         await removeEntryQuiet(claims, name)
         throw error
@@ -638,11 +667,24 @@ export async function writeMediaClaim(
   return claimId
 }
 
+export interface ClaimShard {
+  /** The shard file name, including `.json`. */
+  name: string
+  /** The bundle import that wrote the shard, or null for a normal save. */
+  installId: string | null
+}
+
+export interface ClaimShardRecords {
+  hashes: string[]
+  shards: ClaimShard[]
+}
+
 /**
- * Unions every claim shard. Returns null when the claims directory is missing
- * or any shard is unreadable, which callers must treat as "deletion disabled".
+ * Reads every claim shard with its install id. Returns null when the claims
+ * directory is missing or any shard is unreadable, which callers must treat as
+ * "deletion disabled".
  */
-export async function readMediaClaims(projectId: string): Promise<string[] | null> {
+export async function readMediaClaimShards(projectId: string): Promise<ClaimShardRecords | null> {
   assertProjectId(projectId)
   const dir = await projectDirectory(projectId, false)
   if (!dir) return null
@@ -654,24 +696,153 @@ export async function readMediaClaims(projectId: string): Promise<string[] | nul
     throw new MediaStoreError('Media claims could not be read')
   }
   const hashes = new Set<string>()
+  const shards: ClaimShard[] = []
   for (const name of await directoryNames(claims)) {
     if (!name.endsWith(SIDECAR_SUFFIX) || name.startsWith(TEMPORARY_PREFIX)) continue
+    // Only a shard this module could have written is a claim. A stray file
+    // with a `.json` suffix must not be deletable by the recovery pass.
+    if (!/^claim-[A-Za-z0-9-]{1,80}\.json$/.test(name)) return null
     const file = await readFileHandle(claims, name)
     if (!file) return null
     try {
       const parsed: unknown = JSON.parse(await file.text())
       if (typeof parsed !== 'object' || parsed === null) return null
-      const record = parsed as { version?: unknown; hashes?: unknown }
+      const record = parsed as { version?: unknown; hashes?: unknown; installId?: unknown }
       if (record.version !== 1 || !Array.isArray(record.hashes)) return null
+      if (
+        record.installId !== undefined &&
+        (typeof record.installId !== 'string' ||
+          !/^install-[A-Za-z0-9-]{1,80}$/.test(record.installId))
+      ) {
+        return null
+      }
       for (const hash of record.hashes) {
         if (!isValidContentHash(hash)) return null
         hashes.add(hash)
       }
+      shards.push({ name, installId: (record.installId as string | undefined) ?? null })
     } catch {
       return null
     }
   }
-  return [...hashes].sort()
+  return { hashes: [...hashes].sort(), shards: shards.sort((a, b) => a.name.localeCompare(b.name)) }
+}
+
+/**
+ * True when any project holds an install-tagged claim shard, or a claim record
+ * cannot be read. Called before the first append into a missing registry: that
+ * append must not publish a history that omits another project's completed
+ * installs, or recovery would treat those shards as orphans. A missing claims
+ * directory is treated as unknown here because the API cannot distinguish it
+ * from an unreadable one, and the safe direction is to keep shards.
+ */
+export async function hasAnyInstallClaims(): Promise<boolean> {
+  if (!isMediaStoreSupported()) return false
+  let root: MediaStoreDirectory
+  try {
+    root = await rootDirectory()
+  } catch {
+    return true
+  }
+  try {
+    for await (const name of root.keys()) {
+      if (!isValidProjectId(name)) continue
+      const records = await readMediaClaimShards(name)
+      if (records === null) return true
+      if (records.shards.some((shard) => shard.installId !== null)) return true
+    }
+  } catch {
+    return true
+  }
+  return false
+}
+
+/**
+ * Unions every claim shard. Null means the claims record is missing or unreadable. */
+export async function readMediaClaims(projectId: string): Promise<string[] | null> {
+  const records = await readMediaClaimShards(projectId)
+  return records ? records.hashes : null
+}
+
+export interface ClaimRecoveryResult {
+  removed: number
+  kept: number
+  /** True when the installation state could not be read, so every shard stayed. */
+  ambiguous: boolean
+  warning?: string
+}
+
+/**
+ * Retires claim shards whose bundle install never completed. Runs before the
+ * clean action, under its exclusive lock. It removes only the shard, never the
+ * bytes: promoted hashes are left for the clean action, and a shard from a
+ * normal save (no install id) is always kept.
+ */
+export async function recoverOrphanedClaimShards(projectId: string): Promise<ClaimRecoveryResult> {
+  const records = await readMediaClaimShards(projectId)
+  if (!records) {
+    return {
+      removed: 0,
+      kept: 0,
+      ambiguous: true,
+      warning: 'Saved-copy records could not be read, so no recovery was attempted.',
+    }
+  }
+  // A pending install has not been registered yet: its shard is not an
+  // orphan, and recovery must not retire it before the append lands. The
+  // durable record survives a reload; the in-memory one is checked by the
+  // clean entry path before recovery runs.
+  if (hasPendingInstallFor(projectId)) {
+    return {
+      removed: 0,
+      kept: records.shards.length,
+      ambiguous: true,
+      warning: 'An install record is still pending, so saved-copy claims were kept.',
+    }
+  }
+  // Only an install-tagged shard can be an orphan. With none, the registry
+  // state cannot change the outcome, so this is a proven result, not an
+  // ambiguous one.
+  if (!records.shards.some((shard) => shard.installId !== null)) {
+    return { removed: 0, kept: records.shards.length, ambiguous: false }
+  }
+  if (isInstallHistoryLost()) {
+    return {
+      removed: 0,
+      kept: records.shards.length,
+      ambiguous: true,
+      warning: 'The install history was lost, so saved-copy claims were kept.',
+    }
+  }
+  const state = readInstalledRegistryState()
+  if (state.status === 'missing') {
+    return {
+      removed: 0,
+      kept: records.shards.length,
+      ambiguous: true,
+      warning: 'The installation record is missing, so saved-copy claims were kept.',
+    }
+  }
+  if (state.status === 'unreadable') {
+    return {
+      removed: 0,
+      kept: records.shards.length,
+      ambiguous: true,
+      warning: 'The installation record is unreadable, so saved-copy claims were kept.',
+    }
+  }
+  const installed = new Set(state.registry[projectId] ?? [])
+  let removed = 0
+  let kept = 0
+  for (const shard of records.shards) {
+    if (!shard.installId || installed.has(shard.installId)) {
+      kept += 1
+      continue
+    }
+    await deleteMediaClaim(projectId, shard.name.slice(0, -SIDECAR_SUFFIX.length))
+    removed += 1
+  }
+  return { removed, kept, ambiguous: false }
 }
 
 /** Deletes one claim shard. */

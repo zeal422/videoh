@@ -155,6 +155,12 @@ export interface EditorState {
   /** Parsed, validated autosave awaiting user confirmation (startup banner). */
   pendingRestore: PendingRestore | null
   /**
+   * True when another tab imported a project and this tab must not write the
+   * shared autosave slot until it reloads (0.28.0). The shell shows a reload
+   * prompt; the flag is session-only.
+   */
+  autosavePaused: boolean
+  /**
    * True when a project opened without a claim shard (0.23.0): the media store
    * was unavailable or rejected the write. The clean action stays unavailable
    * until an explicit save claims the bytes, because without a claim it cannot
@@ -263,6 +269,7 @@ export interface EditorState {
   setAutosaveStatus: (status: AutosaveStatus) => void
   markAutosaved: () => void
   setPendingRestore: (restore: PendingRestore | null) => void
+  setAutosavePaused: (paused: boolean) => void
   /** Session flag: clean is unavailable until a claim shard is written. */
   setMediaCleanBlocked: (blocked: boolean) => void
   /** Dismiss the restore banner (install, discard, or failed restore). */
@@ -510,6 +517,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   autosaveStatus: 'idle',
   autosavedAt: null,
   pendingRestore: null,
+  autosavePaused: false,
   mediaCleanBlocked: false,
   lockNotice: null,
 
@@ -889,6 +897,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setAutosaveStatus: (status) => set({ autosaveStatus: status }),
   markAutosaved: () => set({ autosavedAt: Date.now() }),
   setPendingRestore: (restore) => set({ pendingRestore: restore }),
+  setAutosavePaused: (paused) => set({ autosavePaused: paused }),
   clearPendingRestore: () => set({ pendingRestore: null }),
   setMediaCleanBlocked: (blocked) => set({ mediaCleanBlocked: blocked }),
 }))

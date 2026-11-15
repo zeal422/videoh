@@ -15,6 +15,8 @@ import type {
 interface FakeFile {
   bytes: Uint8Array
   type: string
+  /** Test-only size override, so a listing can report an entry without allocating it. */
+  size?: number
 }
 
 function notFound(): Error {
@@ -126,6 +128,18 @@ export function createFakeOpfs(options: { quotaBytes?: number } = {}): FakeOpfs 
       const record = files.get(this.directory.childPath(this.name))
       if (!record) throw notFound()
       const bytes = new Uint8Array(record.bytes)
+      if (record.size !== undefined) {
+        // A File-like record whose reported size is independent of its bytes.
+        // Reading its content still returns the tiny fixture, so a test can
+        // assert that the size check ran before any read.
+        return {
+          name: this.name,
+          type: record.type,
+          size: record.size,
+          arrayBuffer: async () => bytes.buffer,
+          text: async () => new TextDecoder().decode(bytes),
+        } as unknown as File
+      }
       return new File([bytes], this.name, { type: record.type })
     }
 
@@ -317,6 +331,11 @@ export class FakeLockManager {
 
   held(name: string): number {
     return (this.holders.get(name) ?? []).length
+  }
+
+  /** Names with at least one current holder, for presence-lock assertions. */
+  heldNames(): string[] {
+    return [...this.holders.entries()].filter(([, list]) => list.length > 0).map(([name]) => name)
   }
 
   request<T>(
