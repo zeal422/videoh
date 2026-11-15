@@ -836,9 +836,12 @@ Stable hooks used across flows and tests:
   of overwriting the import, and with a live owner the check is rescheduled. The owner
   record's `storage` event triggers the same recheck, so a tab that went read-only resumes even
   when `BroadcastChannel` is unavailable, and the same event carries acquisitions too, so an idle
-  tab that sees a fresh foreign record becomes read-only before its next write. A same-session
-  takeover keeps the record the probe found unanswered: one that appears or changes while the claim
-  waits is refused instead of replaced. A restart keeps an existing read-only tab read-only when the
+  tab that sees a foreign record becomes read-only before its next write. A record that arrives
+  after its lease expired is still treated as an acquisition, then rechecked against the slot, so a
+  suspended tab that wakes to queued events stops instead of saving over the import; it resumes
+  only when the slot is unchanged. A same-session takeover keeps the record the probe found
+  unanswered: one that appears or changes while the claim waits is refused instead of replaced. A
+  restart keeps an existing read-only tab read-only when the
   slot changed with no live owner, and a completed write marks saved only while the live doc is
   still the one it serialized. The recheck also requires the slot to still match the text
   this tab last saw or wrote; if an import replaced it, the tab stays read-only instead of resuming
@@ -848,10 +851,18 @@ Stable hooks used across flows and tests:
   carries a write sequence so an older snapshot cannot replace a newer save. A retry keeps the
   sequence of the write it repeats: allocating a fresh sequence per attempt would let an old
   document overwrite a newer edit that committed between attempts. The pause and resume
-  messages themselves travel over `BroadcastChannel`: without it, a tab learns about an import only
-  if its own slot write meets the fresh owner record, and that lease is the protection. A tab that
-  never writes during the import window can still save its pre-import document after the lease
-  expires; the slot carries no durable fence, so this limitation is explicit rather than implied. Coordination teardown releases the tab's presence lock, so a remount or an
+  messages themselves travel over `BroadcastChannel`, but the slot also carries a durable import
+  marker written by every project-scoped slot write (a bundle import and its retries). A tab that
+  observed an older marker and missed the pause refuses to write after the lease expires and asks
+  for a reload; a tab that mounted after the import accepts the current marker and keeps editing.
+  A failed marker write blocks the slot and leaves the requirement in memory, so the next ordinary
+  autosave for the imported project must land the marker before it can save. The import records the
+  requirement before its doc becomes live, so the debounced save that follows the install cannot
+  race it. A coordination remount
+  keeps the marker the live document already observed; only a fresh page adopts the current one. An
+  ordinary autosave writes the marker only to finish an unfinished import requirement and never
+  creates one, so multi-tab editing keeps last-write-wins.
+  Coordination teardown releases the tab's presence lock, so a remount or an
   in-page unmount cannot leave another tab waiting for an acknowledgement that never comes, and it
   invalidates an initialization still awaiting its session probe so a torn-down tab cannot reclaim
   ownership or start a heartbeat. It also clears the in-memory ownership flag: a remount may
@@ -939,12 +950,20 @@ Stable hooks used across flows and tests:
   holds an install-tagged claim shard, history is marked unknown first, so recovery keeps those
   shards instead of treating another project's completed install as an orphan. An append that would
   exceed the registry bounds, or whose write fails, marks history unknown for the same reason. A
-  pending install is also mirrored durably, so recovery keeps its claim across a reload until the
-  append lands; startup restores the pending install and retries it automatically. A restored retry
-  whose live doc is another project only appends the install record and leaves that session's slot
-  alone, so finishing the bookkeeping cannot overwrite the saved session it booted beside. Retry
-  freshness compares document content without the serialization timestamp, so an unchanged document
-  is still retried after a failed attempt instead of being dropped as stale.
+  pending install is also mirrored durably as a bounded per-project map, so recovery keeps every
+  claim across a reload until its append lands; startup restores every record and retries it, and a
+  slot write flushes only its own project's record. The map's read-modify-write runs inside the
+  autosave section, and an append clears only the install it captured, so a newer install for the
+  same project survives an older append's cleanup. A retry that finishes after a newer edit leaves
+  autosave pending instead of reporting the newer document saved. A restored retry whose live doc is another
+  project only appends the install record and leaves that session's slot alone, so finishing the
+  bookkeeping cannot overwrite the saved session it booted beside. The cost is explicit: if the
+  imported project's first slot write never landed, a reload that boots another project completes
+  the bookkeeping but cannot restore the imported project from autosave, which is why the failed
+  write says that closing the tab before the retry saves can lose the imported project. Retry
+  freshness compares document
+  content without the serialization timestamp, so an unchanged document is still retried after a
+  failed attempt instead of being dropped as stale.
 - Before installation, the import holds the shared media lock and the same-tab media reservation,
   so a clean cannot run between promotion and install. Other editor tabs
   receive `autosave-pause`, cancel their pending timer, wait for any in-flight write, and

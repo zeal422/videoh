@@ -5,9 +5,11 @@ import {
   AUTOSAVE_LOCK_NAME,
   claimAutosaveOwnership,
   clearAutosave,
+  hasPendingInstall,
   initAutosave,
   initAutosaveCoordination,
   isAutosavePaused,
+  markInstallPending,
   pauseOtherAutosaveTabs,
   queueAutosaveRetry,
   readAutosave,
@@ -18,12 +20,15 @@ import {
   resumeAutosaveTabs,
   writeAutosaveCooperatively,
 } from '../persistence'
+import { readPendingInstallRecords } from '../media/installed-registry'
 import { useEditorStore } from '../store'
+import { createDoc } from '../factories'
 import { parseSerializedDoc, serializeDoc } from '../serialization'
 import { FakeLockManager } from './mocks/opfs'
 
 const OWNER_KEY = 'web-video-editor:autosave-owner:v1'
 const AUTOSAVE_KEY = 'web-video-editor:autosave:v1'
+const IMPORT_KEY = 'web-video-editor:autosave-import:v1'
 const storage = new Map<string, string>()
 
 const localStorageMock = {
@@ -253,6 +258,196 @@ describe('autosave ownership (0.28.0)', () => {
     } finally {
       cleanup()
     }
+  })
+
+  it('stays read-only when an import event arrives after the owner lease expires', async () => {
+    vi.stubGlobal('BroadcastChannel', undefined)
+    const listeners = new Map<string, (event: StorageEvent) => void>()
+    vi.stubGlobal('window', {
+      addEventListener: (type: string, listener: (event: StorageEvent) => void) => {
+        listeners.set(type, listener)
+      },
+      removeEventListener: (type: string) => listeners.delete(type),
+    })
+    storage.set(AUTOSAVE_KEY, '{"old":true}')
+    // Seeds the slot this tab observed; the text itself is not a project.
+    readValidAutosave()
+    const cleanup = initAutosaveCoordination()
+    try {
+      const record = JSON.stringify({
+        tabId: 'other-tab',
+        sessionId: 'other-session',
+        tokenHash: 'deadbeef',
+        epoch: 1,
+        heartbeatAt: Date.now() - 60_000,
+      })
+      storage.set(OWNER_KEY, record)
+      storage.set(AUTOSAVE_KEY, '{"imported":true}')
+      storage.set(IMPORT_KEY, 'import-token')
+      // Both events were queued while this tab was suspended, so they arrive
+      // only after the owner lease has expired.
+      listeners.get('storage')?.({ key: OWNER_KEY, newValue: record } as StorageEvent)
+      listeners.get('storage')?.({ key: OWNER_KEY, newValue: null } as StorageEvent)
+      await vi.waitFor(() => expect(isAutosavePaused()).toBe(true))
+      expect(await writeAutosaveCooperatively('{"old":true}')).toBe('read-only')
+      expect(readAutosave()).toBe('{"imported":true}')
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('refuses a write when an import changed the fence this tab never saw', async () => {
+    storage.set(AUTOSAVE_KEY, '{"old":true}')
+    readValidAutosave()
+    const cleanup = initAutosaveCoordination()
+    try {
+      storage.set(AUTOSAVE_KEY, '{"imported":true}')
+      storage.set(IMPORT_KEY, 'import-token')
+      expect(await writeAutosaveCooperatively('{"old":true}')).toBe('read-only')
+      expect(readAutosave()).toBe('{"imported":true}')
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('lets a tab that mounted after an import write the slot', async () => {
+    storage.set(AUTOSAVE_KEY, '{"imported":true}')
+    storage.set(IMPORT_KEY, 'import-token')
+    readValidAutosave()
+    const cleanup = initAutosaveCoordination()
+    try {
+      expect(await writeAutosaveCooperatively('{"next":true}')).toBe('saved')
+      expect(readAutosave()).toBe('{"next":true}')
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('writes an import marker on a project-scoped slot write', async () => {
+    const live = createDoc()
+    useEditorStore.setState({
+      doc: { ...live, project: { ...live.project, id: 'proj_fence' } },
+      autosaveStatus: 'idle',
+    })
+    readValidAutosave()
+    const cleanup = initAutosaveCoordination()
+    try {
+      expect(storage.has(IMPORT_KEY)).toBe(false)
+      expect(await writeAutosaveCooperatively('{"imported":true}', undefined, 'proj_fence')).toBe(
+        'saved',
+      )
+      expect(storage.get(IMPORT_KEY)).toBeTruthy()
+      // The importing tab accepted its own marker and keeps writing normally.
+      expect(await writeAutosaveCooperatively('{"next":true}', undefined, 'proj_fence')).toBe(
+        'saved',
+      )
+      expect(readAutosave()).toBe('{"next":true}')
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('reports an error and leaves the slot when the import marker cannot be written', async () => {
+    const live = createDoc()
+    useEditorStore.setState({
+      doc: { ...live, project: { ...live.project, id: 'proj_fence' } },
+      autosaveStatus: 'idle',
+    })
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        if (key === IMPORT_KEY) throw new Error('quota')
+        storage.set(key, value)
+      },
+      removeItem: (key: string) => void storage.delete(key),
+      clear: () => void storage.clear(),
+    })
+    storage.set(AUTOSAVE_KEY, '{"old":true}')
+    readValidAutosave()
+    const cleanup = initAutosaveCoordination()
+    try {
+      expect(await writeAutosaveCooperatively('{"imported":true}', undefined, 'proj_fence')).toBe(
+        'error',
+      )
+      // No imported slot may land without the marker that protects it.
+      expect(readAutosave()).toBe('{"old":true}')
+      expect(storage.has(IMPORT_KEY)).toBe(false)
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('keeps the observed import marker across a coordination remount', async () => {
+    storage.set(AUTOSAVE_KEY, '{"old":true}')
+    readValidAutosave()
+    const first = initAutosaveCoordination()
+    first()
+    // Another tab imports while this editor is unmounted.
+    storage.set(AUTOSAVE_KEY, '{"imported":true}')
+    storage.set(IMPORT_KEY, 'import-token')
+    const second = initAutosaveCoordination()
+    try {
+      expect(await writeAutosaveCooperatively('{"old":true}')).toBe('read-only')
+      expect(readAutosave()).toBe('{"imported":true}')
+    } finally {
+      second()
+    }
+  })
+
+  it('finishes an unfinished import marker before an ordinary slot write', async () => {
+    const live = createDoc()
+    useEditorStore.setState({
+      doc: { ...live, project: { ...live.project, id: 'proj_fence' } },
+      autosaveStatus: 'idle',
+    })
+    storage.set(AUTOSAVE_KEY, '{"old":true}')
+    readValidAutosave()
+    let failFence = true
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        if (failFence && key === IMPORT_KEY) throw new Error('quota')
+        storage.set(key, value)
+      },
+      removeItem: (key: string) => void storage.delete(key),
+      clear: () => void storage.clear(),
+    })
+    const cleanup = initAutosaveCoordination()
+    try {
+      expect(await writeAutosaveCooperatively('{"imported":true}', undefined, 'proj_fence')).toBe(
+        'error',
+      )
+      expect(readAutosave()).toBe('{"old":true}')
+      failFence = false
+      // The failed project write left the marker requirement behind, so the
+      // ordinary save must finish it before it may write the slot.
+      expect(await writeAutosaveCooperatively('{"next":true}')).toBe('saved')
+      expect(storage.get(IMPORT_KEY)).toBeTruthy()
+      expect(readAutosave()).toBe('{"next":true}')
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('writes a pending install record only inside the autosave lock', async () => {
+    const locks = navigator.locks as unknown as FakeLockManager
+    let release!: () => void
+    const hold = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const held = locks.request(AUTOSAVE_LOCK_NAME, { mode: 'exclusive' }, () => hold)
+    const installId = 'install-lock-1'
+    const write = markInstallPending('proj_lock', installId, true)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(readPendingInstallRecords()).toEqual([])
+    expect(hasPendingInstall()).toBe(true)
+    release()
+    await held
+    await write
+    expect(readPendingInstallRecords()).toEqual([
+      { projectId: 'proj_lock', installId, hadInstallClaims: true },
+    ])
   })
 
   it('recovers an abandoned pause once the owner lease expires', async () => {

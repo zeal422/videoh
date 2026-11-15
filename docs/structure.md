@@ -254,7 +254,7 @@ src/lib/editor/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   ├── options.ts        # pure container matrix, output bounds/bitrate, contain fit (Node-testable)
 │   └── mp4.ts            # WebCodecs export pipeline: MP4/MOV/MKV/WAV/MP3/M4A + downloadBlob
-└── __tests__/            # 132 test files (3018 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 132 test files (3031 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

@@ -25,6 +25,7 @@ import {
 } from '../media/media-store'
 import {
   AUTOSAVE_LOCK_NAME,
+  hasPendingInstall,
   initAutosave,
   markInstallPending,
   queueAutosaveRetry,
@@ -36,7 +37,7 @@ import {
   isInstallHistoryLost,
   newInstallId,
   readInstalledRegistry,
-  readPendingInstallRecord,
+  readPendingInstallRecords,
   recordInstalledImport,
 } from '../media/installed-registry'
 import { fontFamilyForId } from '../fonts'
@@ -113,6 +114,10 @@ function localStorageMock() {
 }
 
 const sessionStorageMock = localStorageMock()
+
+function pendingFor(projectId: string) {
+  return readPendingInstallRecords().find((record) => record.projectId === projectId) ?? null
+}
 
 function bundleDoc(media: MediaAsset[], fonts: ProjectFont[] = []): Doc {
   const doc = createDoc()
@@ -916,7 +921,7 @@ describe('bundle import (0.28.0)', () => {
       expect(outcome.status).toBe('opened')
       // Project B owns the status now; A's registry retry stays queued.
       expect(useEditorStore.getState().autosaveStatus).not.toBe('error')
-      expect(readPendingInstallRecord()?.projectId).toBe(PROJECT)
+      expect(pendingFor(PROJECT)?.projectId).toBe(PROJECT)
     } finally {
       releaseAutosave = null
     }
@@ -947,8 +952,8 @@ describe('bundle import (0.28.0)', () => {
       expect(await ensureProjectMedia(PROJECT)).toBe('ready')
       const installId = newInstallId()
       await writeMediaClaim(PROJECT, [otherHash], installId)
-      markInstallPending(PROJECT, installId, true)
-      expect(readPendingInstallRecord()?.installId).toBe(installId)
+      await markInstallPending(PROJECT, installId, true)
+      expect(pendingFor(PROJECT)?.installId).toBe(installId)
       // The slot still holds the session that was open before the import: the
       // failed slot write is exactly what makes the pending install durable.
       storage.set('web-video-editor:autosave:v1', '{"prior":true}')
@@ -965,9 +970,126 @@ describe('bundle import (0.28.0)', () => {
       unsubscribe = initAutosave()
       await vi.advanceTimersByTimeAsync(3_000)
       expect(readInstalledRegistry()?.[PROJECT] ?? []).toContain(installId)
-      expect(readPendingInstallRecord()).toBeNull()
+      expect(pendingFor(PROJECT)).toBeNull()
       expect(readAutosave()).toBe('{"prior":true}')
       expect(useEditorStore.getState().autosaveStatus).not.toBe('saved')
+    } finally {
+      unsubscribe?.()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps two failed installs pending across a reload and records both', async () => {
+    vi.useFakeTimers()
+    let unsubscribe: (() => void) | null = null
+    const OTHER = 'proj_bundle_other'
+    try {
+      const hashA = await sha256Hex(new Uint8Array([7, 7, 7]))
+      const hashB = await sha256Hex(new Uint8Array([8, 8, 8]))
+      // A complete registry that omits both installs: only the pending
+      // records stand between recovery and the two claim shards.
+      expect(recordInstalledImport(PROJECT, newInstallId())).toBe(true)
+      expect(recordInstalledImport(OTHER, newInstallId())).toBe(true)
+      expect(await ensureProjectMedia(PROJECT)).toBe('ready')
+      expect(await ensureProjectMedia(OTHER)).toBe('ready')
+      const installA = newInstallId()
+      const installB = newInstallId()
+      await writeMediaClaim(PROJECT, [hashA], installA)
+      await writeMediaClaim(OTHER, [hashB], installB)
+      await markInstallPending(PROJECT, installA, true)
+      await markInstallPending(OTHER, installB, true)
+      expect(pendingFor(PROJECT)?.installId).toBe(installA)
+      expect(pendingFor(OTHER)?.installId).toBe(installB)
+      // A reload drops the in-memory records but keeps the durable map.
+      resetAutosaveCoordinationForTests()
+      expect(await recoverOrphanedClaimShards(PROJECT)).toMatchObject({
+        removed: 0,
+        kept: 1,
+        ambiguous: true,
+      })
+      expect(await recoverOrphanedClaimShards(OTHER)).toMatchObject({
+        removed: 0,
+        kept: 1,
+        ambiguous: true,
+      })
+      // Startup flushes every record, not just the last one, and touches no
+      // slot because neither project is live.
+      unsubscribe = initAutosave()
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(readInstalledRegistry()?.[PROJECT] ?? []).toContain(installA)
+      expect(readInstalledRegistry()?.[OTHER] ?? []).toContain(installB)
+      expect(readPendingInstallRecords()).toEqual([])
+      expect(readAutosave()).toBeNull()
+    } finally {
+      unsubscribe?.()
+      vi.useRealTimers()
+    }
+  })
+
+  it('reads a 0.28.0 pending install record after an upgrade', async () => {
+    vi.useFakeTimers()
+    let unsubscribe: (() => void) | null = null
+    try {
+      const hash = await sha256Hex(new Uint8Array([9, 9, 9]))
+      // A complete registry that omits this install: without the old record,
+      // recovery would retire the shard after an upgrade.
+      expect(recordInstalledImport(PROJECT, newInstallId())).toBe(true)
+      expect(await ensureProjectMedia(PROJECT)).toBe('ready')
+      const installId = newInstallId()
+      await writeMediaClaim(PROJECT, [hash], installId)
+      // 0.28.0 wrote one flat record under the same key.
+      storage.set(
+        'web-video-editor:pending-install:v1',
+        JSON.stringify({ projectId: PROJECT, installId, hadInstallClaims: true }),
+      )
+      expect(readPendingInstallRecords()).toEqual([
+        { projectId: PROJECT, installId, hadInstallClaims: true },
+      ])
+      resetAutosaveCoordinationForTests()
+      expect(await recoverOrphanedClaimShards(PROJECT)).toMatchObject({
+        removed: 0,
+        kept: 1,
+        ambiguous: true,
+      })
+      unsubscribe = initAutosave()
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(readInstalledRegistry()?.[PROJECT] ?? []).toContain(installId)
+      expect(readPendingInstallRecords()).toEqual([])
+      expect(readAutosave()).toBeNull()
+    } finally {
+      unsubscribe?.()
+      vi.useRealTimers()
+    }
+  })
+
+  it('writes the import marker when the debounced save wins the race', async () => {
+    vi.useFakeTimers()
+    let unsubscribe: (() => void) | null = null
+    let registryWrites = 0
+    try {
+      vi.stubGlobal('localStorage', {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          if (key === 'web-video-editor:installed-installs:v1') {
+            registryWrites += 1
+            if (registryWrites === 1) throw new Error('quota')
+          }
+          storage.set(key, value)
+        },
+        removeItem: (key: string) => void storage.delete(key),
+        clear: () => void storage.clear(),
+      })
+      const asset = await videoAsset()
+      const file = await bundleFile(bundleDoc([asset]))
+      unsubscribe = initAutosave()
+      const outcome = await openBundleFile(file)
+      expect(outcome.status).toBe('opened')
+      // The install record failed, so the project-scoped slot write never ran.
+      expect(pendingFor(PROJECT)?.projectId).toBe(PROJECT)
+      // The ordinary debounce fires before the 3 s pending retry.
+      await vi.advanceTimersByTimeAsync(800)
+      expect(storage.get('web-video-editor:autosave-import:v1')).toBeTruthy()
+      expect(parseSerializedDoc(readAutosave()!).doc.project.id).toBe(PROJECT)
     } finally {
       unsubscribe?.()
       vi.useRealTimers()
@@ -984,13 +1106,13 @@ describe('bundle import (0.28.0)', () => {
         autosaveStatus: 'idle',
       })
       const installId = newInstallId()
-      markInstallPending(PROJECT, installId, false)
+      await markInstallPending(PROJECT, installId, false)
       // A reload drops the in-memory pending install but keeps storage.
       resetAutosaveCoordinationForTests()
       unsubscribe = initAutosave()
       await vi.advanceTimersByTimeAsync(3_000)
       expect(readInstalledRegistry()?.[PROJECT] ?? []).toContain(installId)
-      expect(readPendingInstallRecord()).toBeNull()
+      expect(pendingFor(PROJECT)).toBeNull()
       expect(parseSerializedDoc(readAutosave()!).doc.project.id).toBe(PROJECT)
       expect(useEditorStore.getState().autosaveStatus).toBe('saved')
     } finally {
@@ -1016,7 +1138,7 @@ describe('bundle import (0.28.0)', () => {
       const live = bundleDoc([])
       useEditorStore.setState({ doc: live, autosaveStatus: 'idle' })
       const installId = newInstallId()
-      markInstallPending(PROJECT, installId, false)
+      await markInstallPending(PROJECT, installId, false)
       // A reload drops the in-memory pending install but keeps storage.
       resetAutosaveCoordinationForTests()
       unsubscribe = initAutosave()
@@ -1029,8 +1151,77 @@ describe('bundle import (0.28.0)', () => {
       // the second attempt must write it instead of dropping it as stale.
       expect(parseSerializedDoc(readAutosave()!).doc.project.id).toBe(PROJECT)
       expect(readInstalledRegistry()?.[PROJECT] ?? []).toContain(installId)
-      expect(readPendingInstallRecord()).toBeNull()
+      expect(pendingFor(PROJECT)).toBeNull()
       expect(useEditorStore.getState().autosaveStatus).toBe('saved')
+    } finally {
+      unsubscribe?.()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps pending when an edit lands during the pending slot write', async () => {
+    vi.useFakeTimers()
+    let unsubscribe: (() => void) | null = null
+    try {
+      const live = bundleDoc([])
+      useEditorStore.setState({ doc: live, autosaveStatus: 'idle' })
+      const installId = newInstallId()
+      await markInstallPending(PROJECT, installId, false)
+      // A reload drops the in-memory record but keeps the durable one.
+      resetAutosaveCoordinationForTests()
+      const edited = { ...live }
+      vi.stubGlobal('localStorage', {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          storage.set(key, value)
+          if (key === 'web-video-editor:autosave:v1') {
+            // The edit lands while the retry's slot write is in flight.
+            useEditorStore.setState({ doc: edited })
+          }
+        },
+        removeItem: (key: string) => void storage.delete(key),
+        clear: () => void storage.clear(),
+      })
+      unsubscribe = initAutosave()
+      await vi.advanceTimersByTimeAsync(3_000)
+      // The retry wrote the imported doc, but the newer edit owns its own save.
+      expect(useEditorStore.getState().autosaveStatus).toBe('pending')
+      expect(parseSerializedDoc(readAutosave()!).doc.project.id).toBe(PROJECT)
+    } finally {
+      unsubscribe?.()
+      vi.useRealTimers()
+    }
+  })
+
+  it('preserves a newer pending install that replaces one during its append', async () => {
+    vi.useFakeTimers()
+    let unsubscribe: (() => void) | null = null
+    try {
+      const hash = await sha256Hex(new Uint8Array([10, 10, 10]))
+      expect(recordInstalledImport(PROJECT, newInstallId())).toBe(true)
+      expect(await ensureProjectMedia(PROJECT)).toBe('ready')
+      const oldId = newInstallId()
+      await writeMediaClaim(PROJECT, [hash], oldId)
+      await markInstallPending(PROJECT, oldId, true)
+      resetAutosaveCoordinationForTests()
+      const locks = navigator.locks as unknown as FakeLockManager
+      let release!: () => void
+      const hold = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const held = locks.request(AUTOSAVE_LOCK_NAME, { mode: 'exclusive' }, () => hold)
+      unsubscribe = initAutosave()
+      await vi.advanceTimersByTimeAsync(3_000)
+      const newId = newInstallId()
+      const replacement = markInstallPending(PROJECT, newId, true)
+      release()
+      await held
+      await replacement
+      await vi.advanceTimersByTimeAsync(0)
+      // The old append completes, but the newer record still owns the project.
+      expect(readInstalledRegistry()?.[PROJECT] ?? []).toContain(oldId)
+      expect(pendingFor(PROJECT)?.installId).toBe(newId)
+      expect(hasPendingInstall()).toBe(true)
     } finally {
       unsubscribe?.()
       vi.useRealTimers()

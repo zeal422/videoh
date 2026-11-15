@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.28.1',
+    date: '2026-11-15',
+    highlights: [
+      'An older tab that wakes after an import now asks for a reload instead of replacing the imported project',
+      'Pending bundle installs survive a reload, even when two imports fail to record their save',
+      'A tab that opens after an import keeps editing normally',
+      'The failed-save warning now explains that closing the tab before the retry can lose the imported project',
+      'Project files stay at format version 8',
+    ],
+  },
+  {
     version: '0.28.0',
     date: '2026-11-14',
     highlights: [

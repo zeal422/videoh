@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.28.1] - 2026-11-15
+
+### Fixed
+
+- Keep one pending install record per project in a bounded durable map instead of one global record, so two failed bundle appends both survive a reload and recovery keeps both claim shards. Startup flushes every record, and a slot write flushes only its own project's record. The read-modify-write runs under the same cross-tab section, and an append clears only the install it captured, so a newer install for the same project survives an older append's cleanup.
+- Fence project-scoped autosave writes with a durable import marker. A tab that missed the pause and wakes after the ownership lease expires now goes read-only instead of writing its pre-import document over the imported slot. The requirement is recorded before the imported doc becomes live, so the debounced save triggered by the install cannot bypass it. A failed marker write blocks the slot and survives the call, so an ordinary autosave for the imported project must land it before saving, and a coordination remount keeps the marker the live document already observed. A delayed foreign owner event is treated as an acquisition even when its heartbeat is stale, then rechecked against the slot, so a resumed tab stops instead of saving over the import.
+- Let a tab that mounted after an import accept the current marker and keep editing.
+- A pending install retry that finishes after a newer edit leaves autosave pending instead of reporting the newer document saved.
+
+### Changed
+
+- State that an imported project is not recoverable from autosave after a reload that boots another project when its first slot write never landed; the failed-write warning now says that closing the tab before the retry saves can lose the imported project.
+- Bump the version to 0.28.1; the project schema stays v8.
+
 ## [0.28.0] - 2026-11-14
 
 ### Added

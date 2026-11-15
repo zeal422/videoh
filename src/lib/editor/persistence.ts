@@ -2,10 +2,11 @@ import { isTransientActive, editorStore } from './store'
 import { parseSerializedDoc, serializeDoc } from './serialization'
 import {
   clearPendingInstallRecord,
-  readPendingInstallRecord,
+  readPendingInstallRecords,
   recordInstalledImport,
   writePendingInstallRecord,
 } from './media/installed-registry'
+import type { PendingInstallRecord } from './media/installed-registry'
 import type { Doc, PendingRestore } from './types'
 
 /**
@@ -30,6 +31,12 @@ import type { Doc, PendingRestore } from './types'
 
 const AUTOSAVE_KEY = 'web-video-editor:autosave:v1'
 const OWNER_KEY = 'web-video-editor:autosave-owner:v1'
+/**
+ * Generation marker written by a project-scoped slot write (a bundle import
+ * or its retry). A tab that observed an older marker must not overwrite the
+ * slot, even when it missed the pause and the owner record is gone.
+ */
+const IMPORT_KEY = 'web-video-editor:autosave-import:v1'
 const SESSION_KEY = 'web-video-editor:autosave-session:v1'
 const DEBOUNCE_MS = 800
 
@@ -51,6 +58,12 @@ const MAX_RETRIES = 5
  */
 let knownSlotRaw: string | null | undefined
 
+/**
+ * The import marker this tab observed at mount. `undefined` means this session
+ * has not observed one yet, so the first write adopts the current marker.
+ */
+let knownImportFence: string | null | undefined
+
 /** Writes the doc to localStorage. Returns false on quota/serialization errors. */
 export function writeAutosave(doc: Doc): boolean {
   try {
@@ -69,6 +82,23 @@ export function readAutosave(): string | null {
     return localStorage.getItem(AUTOSAVE_KEY)
   } catch {
     return null
+  }
+}
+
+function readImportFence(): string | null {
+  try {
+    return localStorage.getItem(IMPORT_KEY)
+  } catch {
+    return null
+  }
+}
+
+function writeImportFence(token: string): boolean {
+  try {
+    localStorage.setItem(IMPORT_KEY, token)
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -162,19 +192,27 @@ let pendingProbe: { requestId: string; resolve: (present: boolean) => void } | n
  * start a heartbeat after unmount.
  */
 let coordinationGeneration = 0
-let pendingInstall: {
-  projectId: string
-  installId: string
-  hadInstallClaims: boolean
-} | null = null
-let retry: {
+/**
+ * Pending install records keyed by project. Two imports in one tab can both
+ * fail their registry append; a single slot would drop the earlier project's
+ * record and let recovery retire its claim shard.
+ */
+const pendingInstalls = new Map<string, PendingInstallRecord>()
+/**
+ * A project-scoped slot write whose import marker has not landed yet. An
+ * ordinary autosave for the same project must finish the marker first, so a
+ * failed import marker cannot be bypassed by the next edit's save.
+ */
+let pendingImportFence: { projectId: string; token: string } | null = null
+interface AutosaveRetry {
   json: string
   attempts: number
   seq: number
   /** The project the retry belongs to, or null for a plain slot retry. */
   projectId: string | null
   timer: ReturnType<typeof setTimeout>
-} | null = null
+}
+let retry: AutosaveRetry | null = null
 /** Monotonic sequence for slot writes, so an older retry cannot win a race. */
 let writeSeq = 0
 let committedSeq = 0
@@ -832,6 +870,10 @@ async function initializeOwnership(generation: number): Promise<void> {
 export function initAutosaveCoordination(): () => void {
   if (initialized) return () => undefined
   initialized = true
+  // A fresh page adopts the marker it boots on. A coordination remount keeps
+  // the marker the live document already observed, so an import that landed
+  // while the editor was unmounted cannot make the old document writable.
+  if (knownImportFence === undefined) knownImportFence = readImportFence()
   const generation = (coordinationGeneration += 1)
   if (typeof BroadcastChannel !== 'undefined') {
     channel = new BroadcastChannel(AUTOSAVE_CHANNEL_NAME)
@@ -856,10 +898,16 @@ export function initAutosaveCoordination(): () => void {
           typeof parsed.tabId === 'string' &&
           parsed.tabId !== tabId &&
           typeof parsed.heartbeatAt === 'number' &&
-          Number.isFinite(parsed.heartbeatAt) &&
-          now() - parsed.heartbeatAt < LEASE_MS
+          Number.isFinite(parsed.heartbeatAt)
         ) {
           markReadOnly()
+          // A suspended tab receives queued storage events only after it
+          // wakes, so the heartbeat can be older than the lease by then. A
+          // stale record does not prove the import is gone: recheck once and
+          // resume only if the slot is still the one this tab observed.
+          if (now() - parsed.heartbeatAt >= LEASE_MS) {
+            void recheckOwnershipAfterResume()
+          }
         }
       } catch {
         // A malformed record proves nothing; the write path rechecks anyway.
@@ -1104,34 +1152,79 @@ export async function recordInstallUnderLock(
 }
 
 /**
+ * Appends one pending install inside the autosave section and clears only the
+ * record this call captured. A newer install for the same project may have
+ * replaced it while the append waited for the lock, and must survive.
+ */
+function recordPendingInstallInSection(pending: PendingInstallRecord): boolean {
+  if (
+    !recordInstalledImport(pending.projectId, pending.installId, {
+      hadInstallClaims: pending.hadInstallClaims,
+    })
+  ) {
+    return false
+  }
+  const current = pendingInstalls.get(pending.projectId)
+  if (current?.installId === pending.installId) pendingInstalls.delete(pending.projectId)
+  clearPendingInstallRecord(pending.projectId, pending.installId)
+  return true
+}
+
+async function recordAndClearPendingInstall(pending: PendingInstallRecord): Promise<boolean> {
+  if (!hasAutosaveSerialization()) return false
+  try {
+    return await withAutosaveSection(() => recordPendingInstallInSection(pending), {
+      requireSerialization: true,
+    })
+  } catch {
+    return false
+  }
+}
+
+/**
  * Queues the installed bundle in the durable registry for the next slot write.
  * A failed registry append must not leave the slot naming an install whose
  * claim shard recovery would retire.
  */
-export function markInstallPending(
+export async function markInstallPending(
   projectId: string,
   installId: string,
   hadInstallClaims = false,
-): void {
-  pendingInstall = { projectId, installId, hadInstallClaims }
-  // Mirror durably: an in-memory pending install is lost on reload, but the
-  // claim shard is not. Until the append lands, recovery must keep the shard.
-  // Best effort: when storage itself is broken the in-memory retry still
+): Promise<void> {
+  pendingInstalls.set(projectId, { projectId, installId, hadInstallClaims })
+  // Mirror durably inside the same cross-tab section as every other pending
+  // map write, so two tabs cannot read-modify-write the map past each other.
+  // Best effort: when the section is unavailable the in-memory retry still
   // protects this session, and an unreadable registry keeps every shard.
-  writePendingInstallRecord({ projectId, installId, hadInstallClaims })
+  try {
+    await withAutosaveSection(
+      () => writePendingInstallRecord({ projectId, installId, hadInstallClaims }),
+      { requireSerialization: true },
+    )
+  } catch {
+    // The in-memory retry still protects this session.
+  }
 }
 
-/** Restores a durable pending install from a previous page into memory. */
-function restorePendingInstall(): void {
-  if (pendingInstall) return
-  const durable = readPendingInstallRecord()
-  if (!durable) return
-  pendingInstall = durable
+/**
+ * Marks an import before its doc becomes live. The next cooperative write for
+ * that project, including the ordinary debounced save triggered by the
+ * install, must land this marker before it writes the slot.
+ */
+export function requireAutosaveImportFence(projectId: string): void {
+  pendingImportFence = { projectId, token: randomToken() }
+}
+
+/** Restores every durable pending install from a previous page into memory. */
+function restorePendingInstalls(): void {
+  for (const record of readPendingInstallRecords()) {
+    if (!pendingInstalls.has(record.projectId)) pendingInstalls.set(record.projectId, record)
+  }
 }
 
 /** True when an install record still awaits a durable write. */
 export function hasPendingInstall(): boolean {
-  return pendingInstall !== null
+  return pendingInstalls.size > 0
 }
 
 function nextWriteSeq(): number {
@@ -1159,7 +1252,7 @@ export function writeAutosaveCooperatively(
   projectId?: string,
 ): Promise<AutosaveWriteResult> {
   if (isAutosavePaused()) return Promise.resolve('read-only')
-  const requireSerialization = owns || pendingInstall !== null
+  const requireSerialization = owns || pendingInstalls.size > 0
   const run = localWrites
     .catch(() => undefined)
     .then(() =>
@@ -1183,16 +1276,20 @@ export function writeAutosaveCooperatively(
             markReadOnly()
             return 'read-only'
           }
-          if (pendingInstall) {
-            if (
-              !recordInstalledImport(pendingInstall.projectId, pendingInstall.installId, {
-                hadInstallClaims: pendingInstall.hadInstallClaims,
-              })
-            ) {
-              return 'error'
-            }
-            pendingInstall = null
-            clearPendingInstallRecord()
+          const writeProjectId = projectId ?? editorStore.getState().doc.project.id
+          const pending = pendingInstalls.get(writeProjectId)
+          if (pending && !recordPendingInstallInSection(pending)) return 'error'
+          // A project-scoped write is an import or its retry. A tab that
+          // observed an older import marker must not overwrite the slot even
+          // when it missed the pause and no owner record remains. The install
+          // record above is still completed: it is bookkeeping, not a slot
+          // write, and recovery must keep its claim.
+          const fence = readImportFence()
+          if (knownImportFence === undefined) {
+            knownImportFence = fence
+          } else if (fence !== knownImportFence) {
+            markReadOnly()
+            return 'read-only'
           }
           // A bundle import can finish after another project became live. Its
           // snapshot must not replace that project's slot or report it saved.
@@ -1200,6 +1297,24 @@ export function writeAutosaveCooperatively(
             return 'superseded'
           }
           if (seq < committedSeq) return 'superseded'
+          // The marker must be durable before the slot names the imported
+          // project: a project-scoped save without it leaves a tab that missed
+          // the pause free to replace the slot after the lease expires. The
+          // requirement outlives the call that started it, so an ordinary
+          // autosave for the same project cannot write the slot without it.
+          const fenceProjectId = projectId ?? editorStore.getState().doc.project.id
+          if (pendingImportFence !== null && pendingImportFence.projectId !== fenceProjectId) {
+            // The imported project no longer owns the live slot, so its
+            // unfinished marker cannot protect another project's write.
+            pendingImportFence = null
+          }
+          if (projectId !== undefined && pendingImportFence === null) {
+            pendingImportFence = { projectId, token: randomToken() }
+          }
+          if (pendingImportFence !== null) {
+            if (!writeImportFence(pendingImportFence.token)) return 'error'
+            knownImportFence = pendingImportFence.token
+          }
           try {
             localStorage.setItem(AUTOSAVE_KEY, json)
           } catch {
@@ -1207,6 +1322,10 @@ export function writeAutosaveCooperatively(
           }
           committedSeq = Math.max(committedSeq, seq)
           knownSlotRaw = json
+          // An ordinary save keeps the requirement so the import's own
+          // project-scoped write can reuse the same marker instead of fencing
+          // the slot a second time.
+          if (projectId !== undefined) pendingImportFence = null
           if (retry && retry.seq < seq) clearAutosaveRetry()
           if (owns) {
             const current = readOwnerRecord()
@@ -1355,71 +1474,90 @@ export function queuePendingInstallRetry(projectId?: string): void {
   }
   const useSeq = retry?.seq ?? nextWriteSeq()
   const target = projectId ?? retry?.projectId ?? null
-  retry = {
+  const scheduled: AutosaveRetry = {
     json: '',
     attempts: attempt,
     seq: useSeq,
     projectId: target,
     timer: setTimeout(() => {
-      const scheduled = retry
-      const pending = pendingInstall
-      const liveProjectId = editorStore.getState().doc.project.id
-      const retryProjectId = pending?.projectId ?? scheduled?.projectId ?? null
-      if (retryProjectId === null) {
-        if (retry === scheduled) retry = null
-        return
-      }
-      if (liveProjectId !== retryProjectId) {
-        // The slot belongs to another session now. With a pending install the
-        // registry append is still owed; without one there is nothing safe to
-        // write, because this project is no longer live.
-        if (!pending) {
-          if (retry === scheduled) retry = null
-          return
-        }
-        // A durable pending install outlives the page that imported it. On a
-        // later boot the live doc is a different project (the failed slot
-        // write is what made the record durable), so never replace the slot
-        // with a doc the install does not own.
-        void recordInstallUnderLock(pending.projectId, pending.installId, pending.hadInstallClaims)
-          .then((recorded) => {
-            if (retry !== scheduled) return
-            if (!recorded) {
-              queuePendingInstallRetry(retryProjectId)
-              return
-            }
-            if (pendingInstall === pending) {
-              pendingInstall = null
-              clearPendingInstallRecord()
-            }
-            retry = null
-          })
-          .catch(() => {
-            if (retry === scheduled) queuePendingInstallRetry(retryProjectId)
-          })
-        return
-      }
-      let json: string
-      try {
-        json = JSON.stringify(serializeDoc(editorStore.getState().doc))
-      } catch {
-        queuePendingInstallRetry(retryProjectId)
-        return
-      }
-      if (retry) retry.json = json
-      void writeAutosaveCooperatively(json, useSeq, retryProjectId).then((result) => {
-        if (result === 'saved' || result === 'superseded') {
-          retry = null
-          if (editorStore.getState().doc.project.id !== retryProjectId) return
-          const store = editorStore.getState()
-          store.setAutosaveStatus('saved')
-          store.markAutosaved()
-          return
-        }
-        queueAutosaveRetry(json, useSeq, retryProjectId)
-      })
+      void runPendingInstallRetry(scheduled)
     }, RETRY_MS),
   }
+  retry = scheduled
+}
+
+/**
+ * One retry pass for every pending install record and the live slot.
+ *
+ * Records for projects that are not live only need the registry append; their
+ * slot belongs to another session. The live project's record, or a plain slot
+ * retry, also serializes the live doc at fire time, so clearing the failure
+ * completes the append and the slot write with no further edit.
+ */
+async function runPendingInstallRetry(scheduled: AutosaveRetry): Promise<void> {
+  const liveProjectId = editorStore.getState().doc.project.id
+  // A durable pending install outlives the page that imported it. On a later
+  // boot the live doc can be a different project (the failed slot write is
+  // what made the record durable), so never replace the slot with a doc the
+  // install does not own.
+  for (const pending of [...pendingInstalls.values()]) {
+    if (pending.projectId === liveProjectId) continue
+    await recordAndClearPendingInstall(pending)
+    if (retry !== scheduled) return
+  }
+  if (retry !== scheduled) return
+  const livePending = pendingInstalls.has(liveProjectId)
+  const slotProjectId = livePending ? liveProjectId : scheduled.projectId
+  if (slotProjectId === null || (!livePending && slotProjectId !== liveProjectId)) {
+    if (pendingInstalls.size > 0) {
+      // Keep the attempt count, but stop carrying a slot project: the rest of
+      // this pass is registry appends only.
+      scheduled.projectId = null
+      queuePendingInstallRetry()
+    } else {
+      retry = null
+    }
+    return
+  }
+  let savedDoc: Doc
+  let json: string
+  try {
+    savedDoc = editorStore.getState().doc
+    json = JSON.stringify(serializeDoc(savedDoc))
+  } catch {
+    queuePendingInstallRetry(slotProjectId)
+    return
+  }
+  if (retry === scheduled) scheduled.json = json
+  const result = await writeAutosaveCooperatively(json, scheduled.seq, slotProjectId)
+  if (retry !== scheduled) return
+  if (result === 'saved' || result === 'superseded') {
+    const store = editorStore.getState()
+    if (store.doc.project.id === slotProjectId) {
+      // A newer edit that landed while the retry was queued owns its own save.
+      // Reporting it saved here would hide the unsaved document.
+      if (store.doc !== savedDoc) {
+        store.setAutosaveStatus('pending')
+      } else {
+        store.setAutosaveStatus('saved')
+        store.markAutosaved()
+      }
+    }
+    if (pendingInstalls.size > 0) {
+      // The live slot is saved. Only another project's append remains, so the
+      // next pass must not rewrite this slot or fence it again.
+      scheduled.projectId = null
+      queuePendingInstallRetry()
+    } else {
+      retry = null
+    }
+    return
+  }
+  if (pendingInstalls.size > 0) {
+    queuePendingInstallRetry(slotProjectId)
+    return
+  }
+  queueAutosaveRetry(json, scheduled.seq, slotProjectId)
 }
 
 /** Registers the callback a pause uses to cancel this tab's pending timer. */
@@ -1447,9 +1585,11 @@ export function resetAutosaveCoordinationForTests(): void {
   readOnly = false
   cancelPendingWrite = null
   localWrites = Promise.resolve()
-  pendingInstall = null
+  pendingInstalls.clear()
+  pendingImportFence = null
   clearActivePauses()
   knownSlotRaw = undefined
+  knownImportFence = undefined
   writeSeq = 0
   committedSeq = 0
   try {
@@ -1476,8 +1616,8 @@ export function initAutosave(): () => void {
   // A reload after a completed install with a failed append must finish the
   // registration with no further edit: restore the durable pending install
   // and retry it on the timer.
-  restorePendingInstall()
-  if (pendingInstall) queuePendingInstallRetry()
+  restorePendingInstalls()
+  if (pendingInstalls.size > 0) queuePendingInstallRetry()
 
   const unsubscribe = editorStore.subscribe((state, prevState) => {
     // Save when the doc changes (commands) OR when a transient gesture commits

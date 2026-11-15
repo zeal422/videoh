@@ -22,16 +22,19 @@ const REGISTRY_KEY = 'web-video-editor:installed-installs:v1'
  */
 const HISTORY_LOST_KEY = 'web-video-editor:installed-history-lost:v1'
 /**
- * An install that completed locally but whose registry append has not been
- * confirmed. Written alongside the in-memory pending install so a reload
- * before registration still protects the claim: recovery keeps the shard
- * until the append lands. Cleared when the append is confirmed.
+ * Installs that completed locally but whose registry append has not been
+ * confirmed, keyed by project. Written alongside the in-memory pending install
+ * so a reload before registration still protects the claim: recovery keeps the
+ * shard until the append lands. One project's entry is cleared when its append
+ * is confirmed.
  */
 const PENDING_INSTALL_KEY = 'web-video-editor:pending-install:v1'
 const INSTALL_ID_PATTERN = /^install-[A-Za-z0-9-]{1,80}$/
 const PROJECT_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/
 const MAX_PROJECTS = 2048
 const MAX_INSTALLS_PER_PROJECT = 2048
+/** Keep the pending mirror bounded; a full record refuses the append. */
+const MAX_PENDING_INSTALLS = 32
 /** Keep the localStorage record bounded; a full record refuses the append. */
 const MAX_REGISTRY_CHARS = 1_500_000
 
@@ -133,30 +136,21 @@ export interface PendingInstallRecord {
   hadInstallClaims: boolean
 }
 
-/** Best-effort durable mirror of the in-memory pending install. */
-export function writePendingInstallRecord(record: PendingInstallRecord): boolean {
-  if (!PROJECT_ID_PATTERN.test(record.projectId) || !INSTALL_ID_PATTERN.test(record.installId)) {
-    return false
-  }
-  const store = storage()
-  if (!store) return false
-  try {
-    store.setItem(
-      PENDING_INSTALL_KEY,
-      JSON.stringify({
-        projectId: record.projectId,
-        installId: record.installId,
-        hadInstallClaims: record.hadInstallClaims,
-      }),
-    )
-    return true
-  } catch {
-    return false
-  }
+interface PendingInstallEntry {
+  installId: string
+  hadInstallClaims: boolean
 }
 
-/** The durable pending install, or null when none was recorded or it is malformed. */
-export function readPendingInstallRecord(): PendingInstallRecord | null {
+interface PendingInstallMap {
+  [projectId: string]: PendingInstallEntry
+}
+
+function emptyPendingInstallMap(): PendingInstallMap {
+  return Object.create(null) as PendingInstallMap
+}
+
+/** Reads the per-project map, or null when the record is unreadable. */
+function readPendingInstallMap(): PendingInstallMap | null {
   const store = storage()
   if (!store) return null
   let raw: string | null
@@ -165,37 +159,102 @@ export function readPendingInstallRecord(): PendingInstallRecord | null {
   } catch {
     return null
   }
-  if (raw === null) return null
+  if (raw === null) return emptyPendingInstallMap()
   try {
-    const parsed = JSON.parse(raw) as Partial<PendingInstallRecord>
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
+    const record = parsed as Record<string, unknown>
+    // 0.28.0 stored one flat record under the same key. Accept it so an
+    // upgrade does not lose a pending install and let recovery retire its
+    // claim; the next write persists the project-keyed map.
+    const legacyProjectId = record.projectId
+    const legacyInstallId = record.installId
     if (
-      typeof parsed.projectId !== 'string' ||
-      !PROJECT_ID_PATTERN.test(parsed.projectId) ||
-      typeof parsed.installId !== 'string' ||
-      !INSTALL_ID_PATTERN.test(parsed.installId)
+      typeof legacyProjectId === 'string' &&
+      PROJECT_ID_PATTERN.test(legacyProjectId) &&
+      typeof legacyInstallId === 'string' &&
+      INSTALL_ID_PATTERN.test(legacyInstallId)
     ) {
-      return null
+      const legacy = emptyPendingInstallMap()
+      legacy[legacyProjectId] = {
+        installId: legacyInstallId,
+        hadInstallClaims: record.hadInstallClaims === true,
+      }
+      return legacy
     }
-    return {
-      projectId: parsed.projectId,
-      installId: parsed.installId,
-      hadInstallClaims: parsed.hadInstallClaims === true,
+    const map = emptyPendingInstallMap()
+    for (const [projectId, value] of Object.entries(record)) {
+      if (!PROJECT_ID_PATTERN.test(projectId)) continue
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
+      const entry = value as Partial<PendingInstallEntry>
+      if (typeof entry.installId !== 'string' || !INSTALL_ID_PATTERN.test(entry.installId)) continue
+      map[projectId] = {
+        installId: entry.installId,
+        hadInstallClaims: entry.hadInstallClaims === true,
+      }
     }
+    return map
   } catch {
     return null
   }
 }
 
-/** True when a durable pending install exists for this project. */
-export function hasPendingInstallFor(projectId: string): boolean {
-  const pending = readPendingInstallRecord()
-  return pending !== null && pending.projectId === projectId
+/** Every durable pending install. */
+export function readPendingInstallRecords(): PendingInstallRecord[] {
+  const map = readPendingInstallMap()
+  if (!map) return []
+  return Object.keys(map).map((projectId) => ({
+    projectId,
+    installId: map[projectId].installId,
+    hadInstallClaims: map[projectId].hadInstallClaims,
+  }))
 }
 
-/** Drops the durable pending install. A missing key is not an error. */
-export function clearPendingInstallRecord(): void {
+/** Best-effort durable mirror of the in-memory pending install. */
+export function writePendingInstallRecord(record: PendingInstallRecord): boolean {
+  if (!PROJECT_ID_PATTERN.test(record.projectId) || !INSTALL_ID_PATTERN.test(record.installId)) {
+    return false
+  }
+  const store = storage()
+  if (!store) return false
+  const map = readPendingInstallMap()
+  if (!map) return false
+  if (!Object.hasOwn(map, record.projectId) && Object.keys(map).length >= MAX_PENDING_INSTALLS) {
+    return false
+  }
+  map[record.projectId] = {
+    installId: record.installId,
+    hadInstallClaims: record.hadInstallClaims,
+  }
   try {
-    storage()?.removeItem(PENDING_INSTALL_KEY)
+    store.setItem(PENDING_INSTALL_KEY, JSON.stringify(map))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** True when a durable pending install exists for this project. */
+export function hasPendingInstallFor(projectId: string): boolean {
+  const map = readPendingInstallMap()
+  return map !== null && Object.hasOwn(map, projectId)
+}
+
+/**
+ * Drops one project's durable pending install. When `installId` is given, a
+ * newer install for the same project is preserved. A missing key is not an
+ * error.
+ */
+export function clearPendingInstallRecord(projectId: string, installId?: string): void {
+  const store = storage()
+  if (!store) return
+  const map = readPendingInstallMap()
+  if (!map || !Object.hasOwn(map, projectId)) return
+  if (installId !== undefined && map[projectId].installId !== installId) return
+  delete map[projectId]
+  try {
+    if (Object.keys(map).length === 0) store.removeItem(PENDING_INSTALL_KEY)
+    else store.setItem(PENDING_INSTALL_KEY, JSON.stringify(map))
   } catch {
     // A blocked storage is already the state this hook wants.
   }

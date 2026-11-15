@@ -45,6 +45,7 @@ import {
   queuePendingInstallRetry,
   recordInstallUnderLock,
   releaseAutosaveOwnership,
+  requireAutosaveImportFence,
   resumeAutosaveTabs,
   writeAutosaveCooperatively,
 } from './persistence'
@@ -1406,6 +1407,9 @@ export async function openBundleFile(file: File): Promise<BundleOpenOutcome> {
       for (const url of probedUrls) URL.revokeObjectURL(url)
       return { status: 'cancelled', warnings: [] }
     }
+    // The doc change triggers the ordinary debounced save. Record the marker
+    // requirement first, so that save cannot write the imported slot without it.
+    requireAutosaveImportFence(doc.project.id)
     installAttempted = true
     installProject(hydrated, stagedFonts)
     installed = true
@@ -1420,13 +1424,13 @@ export async function openBundleFile(file: File): Promise<BundleOpenOutcome> {
       if (useEditorStore.getState().doc.project.id === doc.project.id) {
         useEditorStore.getState().setAutosaveStatus('error')
       }
-      markInstallPending(doc.project.id, installId, hadInstallClaims)
+      await markInstallPending(doc.project.id, installId, hadInstallClaims)
       // One retry covers both paths: it serializes at fire time, writes the
       // slot only while the imported project is still live, and otherwise
       // finishes the registry append without touching another project's slot.
       queuePendingInstallRetry(doc.project.id)
       warnings.push(
-        'The project was imported, but its install record could not be saved yet. Autosave will retry; keep this tab open.',
+        'The project was imported, but its install record could not be saved yet. Autosave will retry; keep this tab open. Closing it before the retry saves can lose the imported project.',
       )
       return { status: 'opened', warnings }
     }
@@ -1457,7 +1461,7 @@ export async function openBundleFile(file: File): Promise<BundleOpenOutcome> {
       useEditorStore.getState().setAutosaveStatus('error')
       queuePendingInstallRetry(doc.project.id)
       warnings.push(
-        'The project was imported, but the shared autosave copy could not be updated yet. Autosave will retry; keep this tab open.',
+        'The project was imported, but the shared autosave copy could not be updated yet. Autosave will retry; keep this tab open. Closing it before the retry saves can lose the imported project.',
       )
     } else if (slot === 'superseded') {
       // A newer write for this project won, or another project became live
@@ -1490,13 +1494,17 @@ export async function openBundleFile(file: File): Promise<BundleOpenOutcome> {
         useEditorStore.getState().setAutosaveStatus('error')
       }
       markAutosaveImported()
-      markInstallPending(installedContext.projectId, installedContext.installId, hadInstallClaims)
+      await markInstallPending(
+        installedContext.projectId,
+        installedContext.installId,
+        hadInstallClaims,
+      )
       // The payload may never have been serialized (or the write never ran):
       // retry from the live doc so clearing the failure completes the registry
       // append and the slot write with no further edit.
       queuePendingInstallRetry()
       installedContext.warnings.push(
-        'The project was opened, but its save record could not be completed. Autosave will retry; keep this tab open.',
+        'The project was opened, but its save record could not be completed. Autosave will retry; keep this tab open. Closing it before the retry saves can lose the imported project.',
       )
       return { status: 'opened', warnings: installedContext.warnings }
     }

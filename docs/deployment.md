@@ -215,6 +215,8 @@ At 0.27.0 on 2026-11-14 the four-shard pair measured 181s on the final
 tree, with the same server split and 74/74 on both legs with `PAIR_EXIT=0`.
 At 0.28.0 on 2026-11-15 the four-shard pair measured 179s on the final
 tree, with the same server split and 74/74 on both legs with `PAIR_EXIT=0`.
+At 0.28.1 on 2026-11-15 the four-shard pair measured 183s on the final
+tree, with the same server split and 74/74 on both legs with `PAIR_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 
