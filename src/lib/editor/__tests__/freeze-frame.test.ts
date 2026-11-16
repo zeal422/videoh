@@ -22,10 +22,10 @@ import {
   hasVisibleFrame,
   planFreezeFrame,
 } from '../freeze-plan'
-import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
+import { createClip, createDoc, createMediaAsset, createShapeClip, createTrack } from '../factories'
 import { useEditorStore } from '../store'
 import { FREEZE_FRAME_DURATION } from '../constants'
-import type { Doc, MediaAsset } from '../types'
+import type { Clip, Doc, MediaAsset } from '../types'
 
 const HASH = 'a'.repeat(64)
 
@@ -60,7 +60,7 @@ function resetStore(doc: Doc) {
     selection: null,
     playhead: 1,
     activeSequencePath: [],
-    mediaCleanBlocked: false,
+    mediaCleanBlockReason: null,
   })
 }
 
@@ -401,5 +401,53 @@ describe('freeze action', () => {
     expect(toastMock).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Media is session-only' }),
     )
+  })
+})
+
+describe('shapes in the Freeze Frame offline scan (0.28.2)', () => {
+  function docWithShape(partial: Partial<Clip> = {}): Doc {
+    const doc = createDoc()
+    const video = doc.project.tracks.find((track) => track.kind === 'video')!
+    video.clips = [createShapeClip({ id: 'shape_top', start: 0, duration: 4, ...partial })]
+    return doc
+  }
+
+  it('a visible shape is not offline', () => {
+    const doc = docWithShape()
+    expect(hasOfflineVisibleFrame(doc, doc.project.tracks, 1)).toBe(false)
+    expect(planFreezeFrame(doc, [], 1)).toEqual({ ok: true })
+  })
+
+  it('a shape inside a compound is not offline', () => {
+    const doc = createDoc()
+    doc.project.sequences = [
+      {
+        id: 'seq_shape',
+        name: 'Shapes',
+        tracks: [
+          createTrack('video', 1, {
+            id: 'shape_track',
+            clips: [createShapeClip({ id: 'shape_child', start: 0, duration: 2 })],
+          }),
+        ],
+      },
+    ]
+    const root = doc.project.tracks.find((track) => track.kind === 'video')!
+    root.clips = [createClip({ id: 'compound', sequenceId: 'seq_shape', start: 0, duration: 4 })]
+    expect(hasOfflineVisibleFrame(doc, doc.project.tracks, 1)).toBe(false)
+    expect(planFreezeFrame(doc, [], 1)).toEqual({ ok: true })
+  })
+
+  it('a zero-opacity shape is not a visible frame', () => {
+    const doc = docWithShape({ opacity: 0 })
+    expect(hasVisibleFrame(doc, doc.project.tracks, 1)).toBe(false)
+    expect(planFreezeFrame(doc, [], 1)).toEqual({ ok: false, reason: 'empty' })
+  })
+
+  it('a missing-media clip is still offline', () => {
+    const doc = docWithImage()
+    doc.media[0].missing = true
+    expect(hasOfflineVisibleFrame(doc, doc.project.tracks, 1)).toBe(true)
+    expect(planFreezeFrame(doc, [], 1)).toEqual({ ok: false, reason: 'offline' })
   })
 })

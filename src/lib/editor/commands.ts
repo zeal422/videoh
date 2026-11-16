@@ -56,6 +56,7 @@ import {
   createBuiltinTextPresets,
   sanitizePresetStyle,
 } from './factories'
+import { compoundClipViolations, shapeClipViolations } from './clip-invariants'
 import { resolveInsertIndex, type InsertBoundary } from './clip-gesture'
 import { rehomeSegmentShapes } from './ease-segment'
 import {
@@ -856,13 +857,43 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
 
     case 'addSequence': {
       const sequences = doc.project.sequences ?? (doc.project.sequences = [])
-      if (sequences.some((s) => s.id === command.sequence.id)) {
-        throw new EditorCommandError(`Sequence ${command.sequence.id} already exists`)
-      }
-      if (sequences.some((s) => s.id === doc.project.id)) {
+      const sequence = structuredClone(command.sequence)
+      if (sequence.id === doc.project.id) {
         throw new EditorCommandError('Sequence id collides with the project id')
       }
-      sequences.push(structuredClone(command.sequence))
+      // One shared set, matching `assertUniqueIds`: a track or clip id may not
+      // repeat another id in the payload or equal the sequence id itself.
+      const seen = new Set<string>()
+      const claim = (id: string, label: string) => {
+        if (id.trim().length === 0) throw new EditorCommandError(`${label} id cannot be empty`)
+        if (seen.has(id)) throw new EditorCommandError(`Duplicate ${label} id in sequence: ${id}`)
+        seen.add(id)
+        assertStructuralIdFree(doc, id, label)
+      }
+      claim(sequence.id, 'Sequence')
+      for (const track of sequence.tracks) {
+        claim(track.id, 'Track')
+        for (const clip of track.clips) {
+          claim(clip.id, 'Clip')
+          // The payload crosses the same boundary `addClip` guards: a shape or
+          // compound clip carrying incompatible fields would make the installed
+          // project fail to serialize and reload.
+          assertShapeClipFields(clip)
+          if (compoundClipViolations(clip)) {
+            throw new EditorCommandError(
+              'Compound clips cannot carry media, text or retiming fields',
+            )
+          }
+          // A shape renders picture only, so it cannot enter the project on a
+          // text or audio lane. Mirrors `addClip`'s lane check.
+          if (clip.shape && !clipFitsTrack(doc, clip, track)) {
+            throw new EditorCommandError(
+              `${describeClip(doc, clip)} cannot be placed on a ${track.kind} track`,
+            )
+          }
+        }
+      }
+      sequences.push(sequence)
       return
     }
 
@@ -982,11 +1013,14 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
     }
 
     case 'addTrack': {
+      if (command.trackId !== undefined) {
+        assertStructuralIdFree(doc, command.trackId, 'Track')
+      }
       const owner = command.sequenceId ? findSequence(doc, command.sequenceId) : undefined
       if (command.sequenceId && !owner) throw new EditorCommandError('Unknown sequence')
       const tracks = owner ? owner.tracks : doc.project.tracks
       const track = newTrackForKind(doc, command.kind, command.sequenceId)
-      if (command.trackId) track.id = command.trackId
+      if (command.trackId !== undefined) track.id = command.trackId
       if (command.atIndex !== undefined) {
         // Explicit z-placement (drop-between-tracks): insert exactly where the
         // user pointed. The text→video→audio convention sort is intentionally
@@ -1256,6 +1290,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
     case 'addClip': {
       const track = requireTrack(doc, command.trackId)
       const clip = structuredClone(command.clip)
+      assertStructuralIdFree(doc, clip.id, 'Clip')
       if (!Number.isFinite(clip.duration) || clip.duration < MIN_CLIP_DURATION) {
         throw new EditorCommandError('Clip duration is too short')
       }
@@ -1264,6 +1299,9 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       // sort order and span math with NaN.
       if (!Number.isFinite(clip.start) || clip.start < 0) clip.start = 0
       assertShapeClipFields(clip)
+      if (compoundClipViolations(clip)) {
+        throw new EditorCommandError('Compound clips cannot carry media, text or retiming fields')
+      }
       if (clip.shape) {
         // Sanitize like `setClipShape`: a hostile payload (negative widths,
         // wild radii, unknown kinds) is clamped or refused here, never stored.
@@ -1292,16 +1330,22 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
 
     case 'moveClip': {
       const found = requireClip(doc, command.clipId)
-      const target = findTrack(doc, command.trackId)
-      if (!target) throw new EditorCommandError('Unknown track')
+      const targetInfo = findTrackIn(doc, command.trackId)
+      if (!targetInfo) throw new EditorCommandError('Unknown track')
+      const target = targetInfo.track
       if (!clipFitsTrack(doc, found.clip, target)) {
         throw new EditorCommandError(
           `${describeClip(doc, found.clip)} cannot be placed on a ${target.kind} track`,
         )
       }
       const clip = found.clip
+      // Link groups are sequence-local, so a cross-sequence move would create
+      // an id hydration refuses. Refuse before mutating the start.
+      if (clip.linkId !== undefined && found.sequenceId !== targetInfo.sequenceId) {
+        throw new EditorCommandError('A linked clip cannot be moved across sequences')
+      }
       if (clip.sequenceId) {
-        assertCompoundCycle(doc, clip, findTrackIn(doc, target.id)?.sequenceId)
+        assertCompoundCycle(doc, clip, targetInfo.sequenceId)
       }
       const oldStart = clip.start
       const movedTrack = target.id !== found.track.id
@@ -1685,6 +1729,9 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
           }
           return { ...e, keyframes: kept }
         })
+      if (command.rightId !== undefined) {
+        assertStructuralIdFree(doc, command.rightId, 'Clip')
+      }
       const right: Clip = {
         ...structuredClone(clip),
         id: command.rightId ?? `clip_${cryptoRandom()}`,
@@ -1788,6 +1835,9 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       if (clips.some((c) => c.text !== undefined)) {
         throw new EditorCommandError('Text clips cannot be linked')
       }
+      if (clips.some((c) => c.shape !== undefined)) {
+        throw new EditorCommandError('Shape clips cannot be linked')
+      }
       // Sequence-local: independent local time origins mean a cross-sequence
       // link could never be moved safely as a unit, so it is refused.
       const owners = new Set(found.map((f) => f.sequenceId))
@@ -1851,6 +1901,13 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
 
     case 'setClipKeyframes': {
       const { clip } = requireClip(doc, command.clipId)
+      // Checked before sanitizing so a refused payload leaves no curve behind.
+      if (
+        command.property === 'timeScale' &&
+        (clip.shape !== undefined || clip.sequenceId !== undefined)
+      ) {
+        throw new EditorCommandError('Shape and compound clips cannot be time remapped')
+      }
       if (!isAnimatableProperty(command.property)) {
         throw new EditorCommandError(`Unknown animatable property: ${command.property}`)
       }
@@ -2676,6 +2733,22 @@ function requireClip(doc: Doc, clipId: string) {
 }
 
 /**
+ * Refuses a structural id that hydration would refuse: empty or blank, or a
+ * track, clip, or sequence id that already exists anywhere in the project.
+ * Payload-supplied ids cross this boundary; generated ids never do.
+ */
+function assertStructuralIdFree(doc: Doc, id: string, label: string): void {
+  if (id.trim().length === 0) throw new EditorCommandError(`${label} id cannot be empty`)
+  if (
+    findTrackIn(doc, id) ||
+    findClip(doc, id) ||
+    (doc.project.sequences ?? []).some((sequence) => sequence.id === id)
+  ) {
+    throw new EditorCommandError(`${label} id is already in use: ${id}`)
+  }
+}
+
+/**
  * Validate + clamp an effect param patch (0.8.6). Known keys validate hard
  * (non-finite numbers and wrong types refuse, finite numbers clamp);
  * unknown keys are ignored, matching hydration's drop-unknown posture.
@@ -2878,20 +2951,7 @@ function describeClip(doc: Doc, clip: Clip): string {
  * payload is refused rather than stored.
  */
 function assertShapeClipFields(clip: Clip): void {
-  if (!clip.shape) return
-  if (
-    clip.mediaId !== undefined ||
-    clip.text !== undefined ||
-    clip.style !== undefined ||
-    clip.isCaption === true ||
-    clip.sequenceId !== undefined ||
-    clip.audioOnly === true ||
-    clip.linkId !== undefined ||
-    clip.speed !== undefined ||
-    clip.reverse ||
-    clip.lutId !== undefined ||
-    clip.keyframes?.timeScale !== undefined
-  ) {
+  if (shapeClipViolations(clip)) {
     throw new EditorCommandError(
       'Shape clips cannot carry media, text, compound, linked, LUT or retiming fields',
     )

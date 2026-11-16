@@ -212,7 +212,7 @@ export function EffectControlsPanel({ clip, trackKind }: { clip: Clip; trackKind
       )}
       {/* A compound clip cannot be retimed (0.8.1): the speed/reverse commands
           refuse it, so the controls are not offered. */}
-      {!isText && !clip.sequenceId && <SpeedSection clip={clip} />}
+      {!isText && !clip.sequenceId && !clip.shape && <SpeedSection clip={clip} />}
     </div>
   )
 }

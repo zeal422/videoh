@@ -49,7 +49,7 @@ const REFUSALS: Record<MediaCleanRefusal, string> = {
   pending:
     'The imported project is still saving its install record. Wait a moment, then try again.',
   unclaimed:
-    'This project opened without a saved-copy record. Save the project once, then clean again.',
+    'This project opened without a saved-copy record. A save clears this only when it references or claims every stored asset; otherwise use Clear All Stored Media.',
   claims:
     'The saved-copy records are missing or unreadable, so stored media and fonts cannot be deleted safely.',
   busy: 'Another tab has this project open. Close it, then try again.',
@@ -71,7 +71,14 @@ export function StorageDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const doc = useEditorStore((s) => s.doc)
-  const cleanBlocked = useEditorStore((s) => s.mediaCleanBlocked)
+  const cleanReason = useEditorStore((s) => s.mediaCleanBlockReason)
+  const cleanBlocked = cleanReason !== null
+  const blockedMessage =
+    cleanReason === 'claims-missing'
+      ? 'This project lost its saved-copy records. Use Clear All Stored Media, then save and clean again.'
+      : cleanReason === 'storage-unavailable'
+        ? REFUSALS.unsupported
+        : REFUSALS.unclaimed
   const [phase, setPhase] = useState<Phase>('ready')
   const [supported, setSupported] = useState(true)
   const [projectBytes, setProjectBytes] = useState(0)
@@ -176,7 +183,7 @@ export function StorageDialog({
       const outcome = await cleanUnusedMedia({
         projectId,
         lock: currentProjectLock(),
-        cleanBlocked: useEditorStore.getState().mediaCleanBlocked,
+        cleanBlocked: useEditorStore.getState().mediaCleanBlockReason !== null,
         pendingInstall: hasPendingInstall,
         referenced,
         isProjectCurrent: () => useEditorStore.getState().doc.project.id === projectId,
@@ -343,7 +350,7 @@ export function StorageDialog({
               <p className="text-sm font-medium">Clean Unused Media</p>
               <p className="text-xs text-muted-foreground">
                 {cleanBlocked
-                  ? REFUSALS.unclaimed
+                  ? blockedMessage
                   : notice
                     ? notice
                     : candidates > 0
@@ -390,9 +397,11 @@ export function StorageDialog({
             <div className="space-y-2 rounded-md border border-destructive/40 p-2">
               <p className="text-sm font-medium">Clear All Stored Media</p>
               <p className="text-xs text-muted-foreground">
-                Removes every stored file for this project, including the ones in use. Every asset
-                becomes offline on reload, and every saved copy of this project loses its media
-                until it is relinked.
+                Removes every stored file for this project, including stored media and fonts in use.
+                Every asset becomes offline on reload, and every saved copy of this project loses
+                its media and fonts until they are relinked. The current project bundle covers only
+                this document: export it first, and keep the original media and font files for any
+                other saved copies that use this project&apos;s storage.
               </p>
               {phase === 'confirm-clear' && confirmedProjectId === doc.project.id ? (
                 <div className="flex gap-2">

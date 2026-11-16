@@ -24,7 +24,7 @@ import {
   writeMediaClaim,
   writeMediaFile,
 } from './media-store'
-import type { MediaClearResult } from './media-store'
+import type { MediaClearResult, ProjectMediaState } from './media-store'
 import type { ProjectLock } from './project-lock'
 
 let activeWrites = 0
@@ -150,25 +150,47 @@ export async function storeMediaAsset(
   }
 }
 
+/** The classified result of a claim attempt (0.28.2). */
+export type ProjectClaimOutcome =
+  'claimed' | 'claims-missing' | 'storage-unavailable' | 'claim-write'
+
+/**
+ * Writes a claim shard for every hash the doc references, keeping the cause of
+ * a refusal. The store check and the shard write fail separately: a store that
+ * disappears between them is storage-unavailable, not a rejected write. An
+ * existing project that lost its claims cannot be repaired by writing a shard
+ * for the current hashes only: another saved copy's claims are still unknown,
+ * so it refuses and clean stays blocked.
+ */
+export async function writeProjectClaimOutcome(
+  doc: Doc,
+  installId?: string,
+): Promise<ProjectClaimOutcome> {
+  const hashes = collectMediaHashes(doc)
+  if (hashes.length === 0) return 'claimed'
+  let state: ProjectMediaState
+  try {
+    state = await ensureProjectMedia(doc.project.id)
+  } catch {
+    return 'storage-unavailable'
+  }
+  if (state !== 'ready') return 'claims-missing'
+  try {
+    await writeMediaClaim(doc.project.id, hashes, installId)
+  } catch {
+    return 'claim-write'
+  }
+  return 'claimed'
+}
+
 /**
  * Writes a claim shard for every hash the doc references. Returns false when
  * the store is unavailable or rejects the claim; callers open degraded rather
- * than block the project.
+ * than block the project. Callers that report a reason use
+ * `writeProjectClaimOutcome` directly.
  */
 export async function writeProjectClaim(doc: Doc, installId?: string): Promise<boolean> {
-  const hashes = collectMediaHashes(doc)
-  if (hashes.length === 0) return true
-  try {
-    // An existing project that lost its claims cannot be repaired by writing a
-    // shard for the current hashes only: another saved copy's claims are still
-    // unknown. Refuse so clean stays blocked and the save reports the risk.
-    const state = await ensureProjectMedia(doc.project.id)
-    if (state !== 'ready') return false
-    await writeMediaClaim(doc.project.id, hashes, installId)
-    return true
-  } catch {
-    return false
-  }
+  return (await writeProjectClaimOutcome(doc, installId)) === 'claimed'
 }
 
 /** Creates the project and claims directories before a doc is installed. */
@@ -177,6 +199,22 @@ export async function prepareProjectStore(projectId: string): Promise<boolean> {
     return (await ensureProjectMedia(projectId)) === 'ready'
   } catch {
     return false
+  }
+}
+
+/** The classified store state an install needs; a thrown error reads as unavailable. */
+export type InspectedProjectStore = 'ready' | 'claims-missing' | 'storage-unavailable'
+
+/**
+ * Classifies the project store without collapsing the causes: a missing claims
+ * directory and an unreadable store need different guidance, and only the
+ * former can be repaired by Clear All.
+ */
+export async function inspectProjectStore(projectId: string): Promise<InspectedProjectStore> {
+  try {
+    return await ensureProjectMedia(projectId)
+  } catch {
+    return 'storage-unavailable'
   }
 }
 

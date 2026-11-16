@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { applyCommand, EditorCommandError } from '../commands'
 import { computeDuckingKeyframes, overlappingAudioClips, sanitizeDuckingOptions } from '../ducking'
 import { animatedValue } from '../keyframes'
-import { createClip, createTrack } from '../factories'
+import { createClip, createShapeClip, createTrack } from '../factories'
 import { WAVEFORM_BUCKETS } from '../constants'
 import type { Clip, Doc, KeyframeInterpolation, KeyframeProperty, MediaAsset } from '../types'
 
@@ -661,5 +661,80 @@ describe('rotation curves (0.24.0)', () => {
         6,
       )
     }
+  })
+})
+
+describe('time remapping is refused for shapes and compounds (0.28.2)', () => {
+  function shapeDoc(): { doc: Doc; clipId: string } {
+    const shape = createShapeClip({ id: 'shape_1' })
+    const track = createTrack('video', 1, { id: 'track_v', clips: [shape] })
+    return {
+      doc: {
+        project: { id: 'p', name: 'n', width: 1920, height: 1080, fps: 30, tracks: [track] },
+        media: [],
+      },
+      clipId: shape.id,
+    }
+  }
+
+  function compoundDoc(): { doc: Doc; clipId: string } {
+    const clip = createClip({ id: 'compound_1', sequenceId: 'seq_child', start: 0, duration: 4 })
+    const track = createTrack('video', 1, { id: 'track_v', clips: [clip] })
+    return {
+      doc: {
+        project: {
+          id: 'p',
+          name: 'n',
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          tracks: [track],
+          sequences: [
+            { id: 'seq_child', name: 'Child', tracks: [createTrack('video', 1, { id: 'child' })] },
+          ],
+        },
+        media: [],
+      },
+      clipId: clip.id,
+    }
+  }
+
+  it('setClipKeyframes refuses timeScale on a shape', () => {
+    const { doc, clipId } = shapeDoc()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setClipKeyframes',
+        clipId,
+        property: 'timeScale',
+        keyframes: [{ time: 0, value: 1 }],
+      }),
+    ).toThrow(EditorCommandError)
+    expect(doc.project.tracks[0].clips[0].keyframes?.timeScale).toBeUndefined()
+  })
+
+  it('setClipKeyframes refuses timeScale on a compound', () => {
+    const { doc, clipId } = compoundDoc()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setClipKeyframes',
+        clipId,
+        property: 'timeScale',
+        keyframes: [{ time: 0, value: 1 }],
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('still writes opacity keyframes on a shape', () => {
+    const { doc, clipId } = shapeDoc()
+    const next = applyCommand(doc, {
+      type: 'setClipKeyframes',
+      clipId,
+      property: 'opacity',
+      keyframes: [
+        { time: 0, value: 0 },
+        { time: 2, value: 1 },
+      ],
+    })
+    expect(next.project.tracks[0].clips[0].keyframes?.opacity).toHaveLength(2)
   })
 })

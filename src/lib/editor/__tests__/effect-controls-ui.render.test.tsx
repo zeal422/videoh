@@ -16,6 +16,7 @@ import {
   clipFitsTrack,
   createClip,
   createMediaAsset,
+  createShapeClip,
   createTextClip,
   createTrack,
 } from '../factories'
@@ -2119,5 +2120,33 @@ describe('clip transform controls (0.24.0)', () => {
     expect(numbers[numbers.length - 1].value).toBe('0')
     expect(screen.getByLabelText('Flip horizontally')).toBeInTheDocument()
     expect(screen.getByLabelText('Flip vertically')).toBeInTheDocument()
+  })
+})
+
+describe('shape clip Effect Controls (0.28.2)', () => {
+  function docWithSelectedShapeClip(): { doc: Doc; clipId: string } {
+    const clip = createShapeClip({ id: 'clip_shape_ec', start: 0, duration: 4 })
+    const track = createTrack('video', 1, { clips: [clip] })
+    const doc: Doc = {
+      project: {
+        tracks: [track],
+        id: 'p_shape',
+        name: 'shape',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      },
+      media: [],
+    }
+    useEditorStore.setState({ doc, selection: clip.id, selections: [clip.id], playhead: 2 })
+    return { doc, clipId: clip.id }
+  }
+
+  it('hides the speed section for a shape clip', async () => {
+    docWithSelectedShapeClip()
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+    expect(screen.getByTestId('effect-controls')).toBeInTheDocument()
+    expect(screen.queryByTestId('speed-section')).not.toBeInTheDocument()
   })
 })

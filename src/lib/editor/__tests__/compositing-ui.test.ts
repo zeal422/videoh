@@ -535,7 +535,7 @@ describe('compound clips (0.8.1) static locks', () => {
 
   it('the speed and reverse controls are hidden for a compound clip', () => {
     const controls = read('src/components/editor/effect-controls/EffectControlsPanel.tsx')
-    expect(controls).toMatch(/!isText && !clip\.sequenceId && <SpeedSection/)
+    expect(controls).toMatch(/!isText && !clip\.sequenceId && !clip\.shape && <SpeedSection/)
   })
 
   it('add-track dispatches carry the active sequence field', () => {

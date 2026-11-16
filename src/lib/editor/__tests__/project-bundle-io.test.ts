@@ -48,6 +48,7 @@ import {
   BUNDLE_PROJECT_PATH,
   BUNDLE_VERSION,
 } from '../project-bundle'
+import { FONT_FILE_MAX_BYTES } from '../constants'
 import { zipBlob } from '../bundle-zip'
 import { useEditorStore } from '../store'
 import type { BundleManifest } from '../project-bundle'
@@ -73,6 +74,18 @@ vi.mock('../serialization', async (importOriginal) => {
           ? new Date(1_700_000_000_000 + serializeState.stamp++).toISOString()
           : undefined,
       )
+    },
+  }
+})
+
+const zipReads = vi.hoisted(() => ({ paths: [] as string[] }))
+vi.mock('../bundle-zip', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../bundle-zip')>()
+  return {
+    ...actual,
+    readZipEntry: (blob: Blob, entry: Parameters<typeof actual.readZipEntry>[1]) => {
+      zipReads.paths.push(entry.path)
+      return actual.readZipEntry(blob, entry)
     },
   }
 })
@@ -242,6 +255,7 @@ beforeEach(() => {
   serializeState.fail = false
   serializeState.unique = false
   serializeState.stamp = 0
+  zipReads.paths.length = 0
 })
 
 afterEach(() => {
@@ -397,6 +411,50 @@ describe('bundle export preparation (0.28.0)', () => {
     asset.file = new File([new Uint8Array([9, 9, 9])], 'clip.mp4', { type: 'video/mp4' })
     const doc = bundleDoc([asset])
     await expect(prepareProjectBundle(doc)).rejects.toThrow('do not match the recorded hash')
+  })
+
+  it('refuses a stored font above the 8 MiB font cap before reading it', async () => {
+    const bytes = new Uint8Array([0x77, 0x4f, 0x46, 0x32])
+    const hash = await sha256Hex(bytes)
+    expect(await ensureProjectMedia(PROJECT)).toBe('ready')
+    opfs.put(`/${PROJECT}/fonts/${hash}`, bytes, 'font/woff2')
+    opfs.files.get(`/${PROJECT}/fonts/${hash}`)!.size = FONT_FILE_MAX_BYTES + 1
+    const font: ProjectFont = {
+      id: FONT_ID,
+      name: 'Brand.woff2',
+      family: fontFamilyForId(FONT_ID),
+      contentHash: hash,
+    }
+    await expect(prepareProjectBundle(bundleDoc([], [font]))).rejects.toThrow(/font.*8 MB/i)
+  })
+
+  it('still exports a font at the cap and media above 8 MiB', async () => {
+    const fontBytes = new Uint8Array([0x77, 0x4f, 0x46, 0x32])
+    const fontHash = await sha256Hex(fontBytes)
+    expect(await ensureProjectMedia(PROJECT)).toBe('ready')
+    opfs.files.set(`/${PROJECT}/fonts/${fontHash}`, {
+      bytes: fontBytes,
+      type: 'font/woff2',
+      size: FONT_FILE_MAX_BYTES,
+    })
+    const font: ProjectFont = {
+      id: FONT_ID,
+      name: 'Brand.woff2',
+      family: fontFamilyForId(FONT_ID),
+      contentHash: fontHash,
+    }
+
+    const asset = await videoAsset()
+    const assetHash = asset.contentHash!
+    opfs.files.set(`/${PROJECT}/${assetHash}`, {
+      bytes: VIDEO_BYTES,
+      type: 'video/mp4',
+      size: 9 * 1024 * 1024,
+    })
+    asset.file = undefined
+
+    const prepared = await prepareProjectBundle(bundleDoc([asset], [font]))
+    expect(prepared.status).toBe('prepared')
   })
 
   it('asks before bundling a missing font the project uses, then warns', async () => {
@@ -1310,6 +1368,36 @@ describe('bundle import (0.28.0)', () => {
     await expect(openBundleFile(await handmadeBundle(manifest, doc))).rejects.toThrow(
       'invalid size',
     )
+  })
+
+  it('refuses a font entry above the 8 MiB font cap before reading its bytes', async () => {
+    const font = await fontFont()
+    const doc = bundleDoc([], [font])
+    const manifest = manifestFor(doc)
+    const oversized = new Uint8Array(FONT_FILE_MAX_BYTES + 1)
+    manifest.fonts[0] = { ...manifest.fonts[0]!, size: oversized.length }
+    const fontPath = manifest.fonts[0]!.path
+
+    await expect(
+      openBundleFile(await handmadeBundle(manifest, doc, [{ path: fontPath, bytes: oversized }])),
+    ).rejects.toThrow('invalid size')
+    expect(zipReads.paths).not.toContain(fontPath)
+  })
+
+  it('rejects a font entry whose central size disagrees with the manifest before reading it', async () => {
+    const font = await fontFont()
+    const doc = bundleDoc([], [font])
+    const manifest = manifestFor(doc)
+    const fontPath = manifest.fonts[0]!.path
+
+    await expect(
+      openBundleFile(
+        await handmadeBundle(manifest, doc, [
+          { path: fontPath, bytes: new Uint8Array(FONT_BYTES.length + 8) },
+        ]),
+      ),
+    ).rejects.toThrow(/wrong size|is missing/i)
+    expect(zipReads.paths).not.toContain(fontPath)
   })
 
   it('refuses a directory entry whose size disagrees with the manifest before reading it', async () => {

@@ -1858,3 +1858,62 @@ describe('track groups and brand kit at schema v8 (0.26.0)', () => {
     ])
   })
 })
+
+describe('structural and media id hydration trust boundary (0.28.2)', () => {
+  function wire(): Record<string, unknown> {
+    return JSON.parse(JSON.stringify(serializeDoc(makeDoc()))) as Record<string, unknown>
+  }
+
+  function tracksOf(raw: Record<string, unknown>): Record<string, unknown>[] {
+    const project = raw.project as Record<string, unknown>
+    return project.tracks as Record<string, unknown>[]
+  }
+
+  it('refuses duplicate media ids', () => {
+    const raw = wire()
+    const media = raw.media as Record<string, unknown>[]
+    media.push({ ...media[0] })
+    expect(() => deserializeDoc(raw)).toThrow(SerializationError)
+  })
+
+  it('refuses an empty media id', () => {
+    const raw = wire()
+    ;(raw.media as Record<string, unknown>[])[0].id = ''
+    expect(() => deserializeDoc(raw)).toThrow(SerializationError)
+  })
+
+  it('clears an empty clip mediaId', () => {
+    const raw = wire()
+    const clip = tracksOf(raw)[0].clips as Record<string, unknown>[]
+    clip[0].mediaId = ''
+    const { doc } = deserializeDoc(raw)
+    expect(doc.project.tracks[0].clips[0].mediaId).toBeUndefined()
+  })
+
+  it('refuses empty or blank track, clip, and sequence ids', () => {
+    const emptyTrack = wire()
+    tracksOf(emptyTrack)[0].id = ''
+    expect(() => deserializeDoc(emptyTrack)).toThrow(SerializationError)
+
+    const emptyClip = wire()
+    const clip = tracksOf(emptyClip)[0].clips as Record<string, unknown>[]
+    clip[0].id = ''
+    expect(() => deserializeDoc(emptyClip)).toThrow(SerializationError)
+
+    const blankTrack = wire()
+    tracksOf(blankTrack)[0].id = '   '
+    expect(() => deserializeDoc(blankTrack)).toThrow(SerializationError)
+
+    const emptySequence = wire()
+    ;(emptySequence.project as Record<string, unknown>).sequences = [
+      { id: '', name: 'Empty', tracks: [] },
+    ]
+    expect(() => deserializeDoc(emptySequence)).toThrow(SerializationError)
+  })
+
+  it('still parses a valid project', () => {
+    const { doc } = deserializeDoc(wire())
+    expect(doc.project.tracks[0].clips).toHaveLength(1)
+    expect(doc.media[0].id).toBe('media_fixed')
+  })
+})

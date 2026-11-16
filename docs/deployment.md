@@ -33,7 +33,11 @@ Build, run, and verify. Sibling docs: [docs index](README.md) · [architecture.m
 - Clean Unused Media uses the Web Locks API to refuse while another tab has the project open. Without
   Web Locks it refuses outright. If a project still has stored bytes but its claims directory is gone,
   saved-copy records are treated as lost: clean stays blocked and saves refuse until Clear All Stored
-  Media resets that project. Clear All Stored Media runs behind a second confirmation and refuses while
+  Media resets that project. The open distinguishes lost records (`claims-missing`), a failed claim
+  write (`unclaimed`), and unavailable storage (`storage-unavailable`), and the dialog explains which
+  one applies. A save clears the block only when the saved snapshot plus the claims cover every stored
+  hash; a no-hash save clears it only when existing claims already cover every stored hash. Clear All
+  Stored Media runs behind a second confirmation and refuses while
   another tab has the project open; without Web Locks there is no cross-tab coordination, so it refuses
   rather than report a partial clear as complete.
 - Project bundles (`.vebundle.zip`) carry the project, every stored media entry, and every project
@@ -45,8 +49,9 @@ Build, run, and verify. Sibling docs: [docs index](README.md) · [architecture.m
   primitive, or when an IndexedDB open or transaction fails, bundle import and install-record writes
   refuse instead of racing another tab; normal editing still uses the slot. Import refuses a
   newer project version, missing media, a hash mismatch, or an extra entry, and warns when a font is
-  missing. The store-only reader caps an archive at 4096 entries, 512 MiB per entry, and 1 GiB
-  total as a memory budget, and rejects an oversized manifest entry before reading its bytes.
+  missing. The store-only reader caps an archive at 4096 entries, 512 MiB per media entry,
+  8 MiB per font entry, and 1 GiB total as a memory budget, and rejects an oversized manifest
+  entry before reading its bytes.
 - A `.veproj.json` file references media by hash; it is not a media backup, and a timeline export
   is a rendered file that preserves neither the original sources nor the media references. Keep
   separate copies of the original media and of any generated file before clearing site data.

@@ -35,7 +35,7 @@ import { createDoc, createMediaAsset } from '../factories'
 import { useEditorStore } from '../store'
 
 beforeEach(() => {
-  useEditorStore.setState({ doc: createDoc(), mediaCleanBlocked: false })
+  useEditorStore.setState({ doc: createDoc(), mediaCleanBlockReason: null })
   supportedMock.mockReturnValue(true)
   listUnusedMock.mockResolvedValue({
     candidates: [{ hash: 'a'.repeat(64), size: 2_000_000 }],
@@ -177,10 +177,29 @@ describe('StorageDialog', () => {
   })
 
   it('disables cleaning when the project opened without a claim', async () => {
-    useEditorStore.setState({ mediaCleanBlocked: true })
+    useEditorStore.setState({ mediaCleanBlockReason: 'unclaimed' })
     renderDialog()
     await waitFor(() => expect(screen.getByTestId('storage-clean')).toBeDisabled())
     expect(screen.getByTestId('storage-dialog')).toHaveTextContent(/without a saved-copy record/i)
+  })
+
+  it('shows the claims-missing guidance when the records were lost', async () => {
+    useEditorStore.setState({ mediaCleanBlockReason: 'claims-missing' })
+    renderDialog()
+    await waitFor(() => expect(screen.getByTestId('storage-clean')).toBeDisabled())
+    const dialog = screen.getByTestId('storage-dialog')
+    expect(dialog).toHaveTextContent(/lost its saved-copy records/i)
+    expect(dialog).toHaveTextContent(/Clear All Stored Media/i)
+    expect(dialog).not.toHaveTextContent(/opened without a saved-copy record/i)
+  })
+
+  it('shows the unsupported-storage message when storage is unavailable', async () => {
+    useEditorStore.setState({ mediaCleanBlockReason: 'storage-unavailable' })
+    renderDialog()
+    await waitFor(() => expect(screen.getByTestId('storage-clean')).toBeDisabled())
+    const dialog = screen.getByTestId('storage-dialog')
+    expect(dialog).toHaveTextContent(/unavailable in this browser/i)
+    expect(dialog).not.toHaveTextContent(/lost its saved-copy records/i)
   })
 
   it('requires a second confirmation before clearing all media', async () => {
@@ -188,9 +207,11 @@ describe('StorageDialog', () => {
     await waitFor(() => expect(screen.getByTestId('storage-clear')).toBeEnabled())
     fireEvent.click(screen.getByTestId('storage-clear'))
     expect(clearMock).not.toHaveBeenCalled()
-    expect(screen.getByTestId('storage-dialog')).toHaveTextContent(
-      /every saved copy of this project/i,
-    )
+    const dialog = screen.getByTestId('storage-dialog')
+    expect(dialog).toHaveTextContent(/every saved copy of this project/i)
+    expect(dialog).toHaveTextContent(/stored media and fonts/i)
+    expect(dialog).toHaveTextContent(/covers only this document/i)
+    expect(dialog).toHaveTextContent(/keep the original media and font files/i)
     fireEvent.click(screen.getByTestId('storage-clear-confirm'))
     await waitFor(() => expect(clearMock).toHaveBeenCalledTimes(1))
     expect(toastMock).toHaveBeenCalledWith(expect.objectContaining({ title: 'Cleared 4.0 MB' }))

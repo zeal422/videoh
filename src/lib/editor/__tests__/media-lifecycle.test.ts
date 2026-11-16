@@ -21,6 +21,7 @@ import {
   readMediaClaims,
   readMediaFile,
   sha256Hex,
+  writeMediaClaim,
   writeMediaFile,
 } from '../media/media-store'
 import {
@@ -37,7 +38,7 @@ import { collectMediaHashes } from '../media-cleanup-plan'
 import { mimeTypeForName, rehydrateMedia, revokeRehydratedUrls } from '../media/rehydrate'
 import { ProjectLock, projectLockName } from '../media/project-lock'
 import { createFakeOpfs, FakeLockManager, type FakeOpfs } from './mocks/opfs'
-import type { MediaAsset } from '../types'
+import type { Doc, MediaAsset } from '../types'
 
 const toastMock = vi.hoisted(() => vi.fn())
 vi.mock('@/hooks/use-toast', () => ({ toast: toastMock }))
@@ -48,7 +49,7 @@ vi.mock('../media/probe', () => probeMock)
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.clearAllMocks()
-  useEditorStore.setState({ mediaCleanBlocked: false })
+  useEditorStore.setState({ mediaCleanBlockReason: null })
 })
 
 const TEXT = 'the source bytes'
@@ -833,9 +834,11 @@ describe('claims on open and save', () => {
 
     expect(fake.failWrites).toBe(0)
     expect(useEditorStore.getState().doc.media[0].missing).toBe(false)
-    expect(useEditorStore.getState().mediaCleanBlocked).toBe(true)
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBe('unclaimed')
     expect(toastMock).toHaveBeenCalledWith(
-      expect.objectContaining({ description: expect.stringContaining('Clean Unused Media') }),
+      expect.objectContaining({
+        description: expect.stringContaining('A save repairs this'),
+      }),
     )
   })
 
@@ -964,5 +967,319 @@ describe('claims on open and save', () => {
     await pending
     expect(useEditorStore.getState().doc).toBe(newer)
     expect(useEditorStore.getState().doc).not.toBe(before)
+  })
+})
+
+describe('clean-block reasons and the save coverage rule (0.28.2)', () => {
+  function docWithProject(projectId: string): Doc {
+    const doc = createDoc()
+    doc.project.id = projectId
+    return doc
+  }
+
+  function stubDownload(): void {
+    vi.stubGlobal('document', {
+      createElement: () => ({ click: () => undefined, href: '', download: '' }),
+    })
+  }
+
+  it('classifies a lost claims directory as claims-missing', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    const hash = await hashOf()
+    const doc = docWithHash(hash)
+    // Stored bytes without a claims directory: the records were lost.
+    await writeMediaFile(doc.project.id, hash, sourceFile())
+    await openProjectFile(new File([JSON.stringify(serializeDoc(doc))], 'p.veproj.json'))
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBe('claims-missing')
+    expect(toastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: expect.stringContaining('Clear All Stored Media'),
+      }),
+    )
+    expect(toastMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: expect.stringContaining('A save repairs this'),
+      }),
+    )
+    // installProject's background prepare must not recreate the lost records:
+    // an empty claims directory would hide them from every later open.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(await ensureProjectMedia(doc.project.id)).toBe('claims-missing')
+  })
+
+  it('classifies an unreadable store as storage-unavailable', async () => {
+    vi.stubGlobal('navigator', {
+      storage: {
+        getDirectory: async () => {
+          throw new Error('denied')
+        },
+      },
+    })
+    await openProjectFile(new File([JSON.stringify(serializeDoc(createDoc()))], 'p.veproj.json'))
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBe('storage-unavailable')
+    expect(toastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: expect.stringContaining('storage is unavailable'),
+      }),
+    )
+    expect(toastMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: expect.stringContaining('A save repairs this'),
+      }),
+    )
+  })
+
+  it('classifies a store that disappears during the claim write as storage-unavailable', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    const hash = await hashOf()
+    const doc = docWithHash(hash)
+    await ensureProjectMedia(doc.project.id)
+    await writeMediaFile(doc.project.id, hash, sourceFile())
+
+    // The pre-claim inspection reads the claims directory once. The claim
+    // path checks it again; fail that second read to simulate a store that
+    // becomes unavailable after inspection.
+    const proto = Object.getPrototypeOf(fake.root) as {
+      getDirectoryHandle(
+        this: { path: string },
+        name: string,
+        options?: { create?: boolean },
+      ): Promise<unknown>
+    }
+    const original = proto.getDirectoryHandle
+    let claimReads = 0
+    const spy = vi.spyOn(proto, 'getDirectoryHandle').mockImplementation(async function (
+      this: { path: string },
+      name,
+      options,
+    ) {
+      if (name === 'claims' && this.path === `/${doc.project.id}`) {
+        claimReads += 1
+        if (claimReads > 1) throw new Error('storage went away')
+      }
+      return original.call(this, name, options)
+    })
+    try {
+      await openProjectFile(new File([JSON.stringify(serializeDoc(doc))], 'p.veproj.json'))
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(claimReads).toBeGreaterThanOrEqual(2)
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBe('storage-unavailable')
+    expect(toastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: expect.stringContaining('storage is unavailable'),
+      }),
+    )
+    expect(toastMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: expect.stringContaining('A save repairs this'),
+      }),
+    )
+  })
+
+  it('keeps the reason when a hash is stored while the coverage claims are read', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    stubDownload()
+    const projectId = 'proj_coverage_race'
+    const referencedHash = await hashOf('referenced')
+    const lateHash = await hashOf('late')
+    const doc = docWithHash(referencedHash)
+    doc.project.id = projectId
+    await ensureProjectMedia(projectId)
+    await writeMediaFile(
+      projectId,
+      referencedHash,
+      sourceFile('referenced.mp4', 'video/mp4', 'referenced'),
+    )
+    // An install-tagged shard keeps the save's pre-check from scanning other
+    // projects, so the claims-file open count stays deterministic.
+    await writeMediaClaim(projectId, [referencedHash], 'install-race')
+    useEditorStore.setState({ doc, mediaCleanBlockReason: 'unclaimed' })
+
+    const proto = Object.getPrototypeOf(fake.root) as {
+      getFileHandle(
+        this: { path: string },
+        name: string,
+        options?: { create?: boolean },
+      ): Promise<unknown>
+    }
+    const original = proto.getFileHandle
+    let claimReads = 0
+    const spy = vi.spyOn(proto, 'getFileHandle').mockImplementation(async function (
+      this: { path: string },
+      name,
+      options,
+    ) {
+      if (
+        !options?.create &&
+        this.path === `/${projectId}/claims` &&
+        /^claim-.+\.json$/.test(name)
+      ) {
+        claimReads += 1
+        // The coverage read is the third claims-file open: the save reads
+        // the existing shards once, then writeMediaClaim reads them again.
+        if (claimReads === 3) {
+          fake.put(`/${projectId}/${lateHash}`, new TextEncoder().encode('late'))
+        }
+      }
+      return original.call(this, name, options)
+    })
+    try {
+      await downloadProjectJSON()
+    } finally {
+      spy.mockRestore()
+    }
+
+    // The late hash was neither referenced nor claimed. The coverage answer
+    // must be false, so the block survives instead of exposing it to clean.
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBe('unclaimed')
+    expect(claimReads).toBeGreaterThanOrEqual(3)
+  })
+
+  it('keeps the reason when font enumeration fails during coverage', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    stubDownload()
+    const projectId = 'proj_font_enum'
+    const referencedHash = await hashOf('referenced')
+    const fontHash = await hashOf('font bytes')
+    const doc = docWithHash(referencedHash)
+    doc.project.id = projectId
+    await ensureProjectMedia(projectId)
+    await writeMediaFile(
+      projectId,
+      referencedHash,
+      sourceFile('referenced.mp4', 'video/mp4', 'referenced'),
+    )
+    await writeMediaFile(
+      projectId,
+      fontHash,
+      new File([new TextEncoder().encode('font bytes')], 'brand.woff2', {
+        type: 'font/woff2',
+      }),
+      'fonts',
+    )
+    await writeMediaClaim(projectId, [referencedHash, fontHash])
+    useEditorStore.setState({ doc, mediaCleanBlockReason: 'unclaimed' })
+
+    const proto = Object.getPrototypeOf(fake.root) as {
+      keys(this: { path: string }): AsyncIterableIterator<string>
+    }
+    const original = proto.keys
+    let failFonts = true
+    const spy = vi.spyOn(proto, 'keys').mockImplementation(function (this: { path: string }) {
+      if (failFonts && this.path === `/${projectId}/fonts`) {
+        throw new Error('font enumeration failed')
+      }
+      return original.call(this)
+    })
+    try {
+      // An unreadable font list is not an empty font list: the block stays
+      // even though every stored hash is claimed.
+      await downloadProjectJSON()
+      expect(useEditorStore.getState().mediaCleanBlockReason).toBe('unclaimed')
+
+      // Once enumeration recovers, the same setup proves complete coverage.
+      failFonts = false
+      await downloadProjectJSON()
+      expect(useEditorStore.getState().mediaCleanBlockReason).toBeNull()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('clears the reason on a no-hash save after Clear All', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    stubDownload()
+    useEditorStore.setState({
+      doc: docWithProject('proj_cleared'),
+      mediaCleanBlockReason: 'claims-missing',
+    })
+    await downloadProjectJSON()
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBeNull()
+  })
+
+  it('keeps the reason on a no-hash save when stored bytes are unclaimed', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    const projectId = 'proj_unclaimed'
+    const hash = await hashOf()
+    await ensureProjectMedia(projectId)
+    await writeMediaFile(projectId, hash, sourceFile())
+    const doc = docWithHash(hash)
+    doc.project.id = projectId
+    // A failed claim write marks the open as unclaimed while the bytes stay.
+    fake.failWrites = 1
+    await openProjectFile(new File([JSON.stringify(serializeDoc(doc))], 'p.veproj.json'))
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBe('unclaimed')
+
+    stubDownload()
+    useEditorStore.setState({ doc: docWithProject(projectId) })
+    await downloadProjectJSON()
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBe('unclaimed')
+  })
+
+  it('clears the reason on a no-hash save when every stored hash is claimed', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    stubDownload()
+    const projectId = 'proj_claimed'
+    const hash = await hashOf()
+    await ensureProjectMedia(projectId)
+    await writeMediaFile(projectId, hash, sourceFile())
+    await writeMediaClaim(projectId, [hash])
+    useEditorStore.setState({
+      doc: docWithProject(projectId),
+      mediaCleanBlockReason: 'unclaimed',
+    })
+    await downloadProjectJSON()
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBeNull()
+  })
+
+  it('keeps the reason on a hashed save when another stored hash is unclaimed', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    const projectId = 'proj_partial'
+    const claimedHash = await hashOf('claimed')
+    const unclaimedHash = await hashOf('unclaimed')
+    const doc = docWithHash(claimedHash)
+    doc.project.id = projectId
+    await ensureProjectMedia(projectId)
+    await writeMediaFile(projectId, claimedHash, sourceFile('claimed.mp4', 'video/mp4', 'claimed'))
+    await writeMediaFile(
+      projectId,
+      unclaimedHash,
+      sourceFile('unclaimed.mp4', 'video/mp4', 'unclaimed'),
+    )
+    // One failed claim write on open leaves the reason set; the later save
+    // succeeds but must not expose the unclaimed stored hash to Clean.
+    fake.failWrites = 1
+    await openProjectFile(new File([JSON.stringify(serializeDoc(doc))], 'p.veproj.json'))
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBe('unclaimed')
+
+    stubDownload()
+    await downloadProjectJSON()
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBe('unclaimed')
+  })
+
+  it('clears the reason on a hashed save when the snapshot covers every stored hash', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    stubDownload()
+    const projectId = 'proj_covered'
+    const hash = await hashOf()
+    const doc = docWithHash(hash)
+    doc.project.id = projectId
+    await ensureProjectMedia(projectId)
+    await writeMediaFile(projectId, hash, sourceFile())
+    useEditorStore.setState({ doc, mediaCleanBlockReason: 'unclaimed' })
+    await downloadProjectJSON()
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBeNull()
   })
 })

@@ -29,7 +29,7 @@ import {
   type FontFormat,
 } from '../fonts'
 import type { Doc, ProjectFont } from '../types'
-import { readMediaFile, sha256Hex, writeMediaFile } from './media-store'
+import { ensureProjectMedia, readMediaFile, sha256Hex, writeMediaFile } from './media-store'
 import { beginMediaActivityWhenIdle, endMediaActivity } from './persist'
 
 /** The active project's faces, keyed by generated family. */
@@ -418,6 +418,21 @@ export async function stageProjectFont(input: {
       await face.load()
     } catch {
       throw new FontUploadError('The font file could not be parsed')
+    }
+    // A fresh session's project may not exist yet, and an established project
+    // may have lost its claims records. Prepare or refuse BEFORE writing bytes:
+    // bytes written without a claims directory make the next explicit save
+    // fail its claim write.
+    try {
+      const state = await ensureProjectMedia(input.projectId)
+      if (state === 'claims-missing') {
+        throw new FontUploadError(
+          'This project lost its stored-media records, so the font was not saved. Use Clear All Stored Media, then upload the font again.',
+        )
+      }
+    } catch (error) {
+      if (error instanceof FontUploadError) throw error
+      throw new FontUploadError('Font storage is unavailable in this browser')
     }
     try {
       await writeMediaFile(

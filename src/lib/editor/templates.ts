@@ -399,9 +399,10 @@ function parseClip(raw: unknown, kind: 'video' | 'text', seenClipIds: Set<string
   }
 
   if (kind !== 'video') throw new TemplateError('Template shape clips live on video tracks')
+  if (linkId !== undefined) throw new TemplateError('Template shape clips cannot be linked')
   const shape = sanitizeShape(entry.shape)
   if (!shape) throw new TemplateError('Template shape clip is invalid')
-  return { id, start, duration, ...(linkId ? { linkId } : {}), ...visual, shape }
+  return { id, start, duration, ...visual, shape }
 }
 
 /**
@@ -621,7 +622,6 @@ export function templateFromSequence(
           id: clip.id,
           start: clip.start,
           duration: clip.duration,
-          ...(clip.linkId ? { linkId: clip.linkId } : {}),
           ...templateClipVisuals(clip),
           shape: structuredClone(clip.shape),
         })

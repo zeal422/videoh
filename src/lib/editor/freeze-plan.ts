@@ -75,8 +75,9 @@ export function hasOfflineVisibleFrame(
         }
         continue
       }
-      // Text draws from its own style, not from a media asset.
-      if (clip.text !== undefined) continue
+      // Text draws from its own style and a shape from its own geometry, not
+      // from a media asset.
+      if (clip.text !== undefined || clip.shape !== undefined) continue
       const asset = doc.media.find((candidate) => candidate.id === clip.mediaId)
       if (!asset || asset.missing || !asset.url || !asset.file) return true
     }

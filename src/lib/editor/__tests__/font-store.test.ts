@@ -15,7 +15,7 @@ import {
   unregisterProjectFonts,
 } from '../media/font-store'
 import { isMediaActivityActive } from '../media/persist'
-import { sha256Hex, writeMediaFile } from '../media/media-store'
+import { ensureProjectMedia, sha256Hex, writeMediaFile } from '../media/media-store'
 import { FONT_FILE_MAX_BYTES } from '../constants'
 import { fontFaceFamily, fontFamilyForId } from '../fonts'
 import { createFakeOpfs, type FakeOpfs } from './mocks/opfs'
@@ -373,6 +373,7 @@ describe('font upload staging (0.25.0)', () => {
   })
 
   it('commits the staged face only for the still-active project', async () => {
+    await ensureProjectMedia(PROJECT)
     const stored = await storeFont(PROJECT, fontBytes())
     await loadProjectFonts(docWith([stored]))
     const staged = await stageProjectFont({
@@ -392,6 +393,7 @@ describe('font upload staging (0.25.0)', () => {
   })
 
   it('evicts the previous face when a new face commits for the same family', async () => {
+    await ensureProjectMedia(PROJECT)
     const stored = await storeFont(PROJECT, fontBytes())
     await loadProjectFonts(docWith([stored]))
     const previous = [...fontSet.faces][0]!
@@ -438,6 +440,7 @@ describe('font upload staging (0.25.0)', () => {
   })
 
   it('keeps the active face tracked when a same-family stage is discarded', async () => {
+    await ensureProjectMedia(PROJECT)
     const stored = await storeFont(PROJECT, fontBytes())
     await loadProjectFonts(docWith([stored]))
     const activeFace = [...fontSet.faces][0]!
@@ -527,5 +530,57 @@ describe('font upload staging (0.25.0)', () => {
         file: new File([fontBytes()], 'Inter.woff2', { type: 'font/woff2' }),
       }),
     ).rejects.toBeInstanceOf(FontUploadError)
+  })
+})
+
+describe('font upload claims preparation (0.28.2)', () => {
+  function upload(projectId = PROJECT): ReturnType<typeof stageProjectFont> {
+    return stageProjectFont({
+      projectId,
+      id: FONT_ID,
+      name: 'Inter',
+      file: new File([fontBytes()], 'Inter.woff2', { type: 'font/woff2' }),
+    })
+  }
+
+  it('prepares the project claims directory on a fresh project', async () => {
+    expect(fake.directories.has(`/${PROJECT}/claims`)).toBe(false)
+    await upload()
+    expect(fake.directories.has(`/${PROJECT}/claims`)).toBe(true)
+    expect(await ensureProjectMedia(PROJECT)).toBe('ready')
+  })
+
+  it('refuses an upload on a project whose claims are missing', async () => {
+    await storeFont(PROJECT, fontBytes())
+    expect(fake.directories.has(`/${PROJECT}/claims`)).toBe(false)
+    await expect(upload()).rejects.toThrow(/clear all/i)
+  })
+
+  it('refuses an upload when a saved-copy-only video hash has no claims', async () => {
+    // The video belongs to a closed copy, not this document. It still counts
+    // as stored bytes, so an empty claims record would hide its lost claims.
+    const bytes = new TextEncoder().encode('saved video')
+    const hash = await sha256Hex(bytes)
+    await writeMediaFile(PROJECT, hash, new File([bytes], 'saved.mp4', { type: 'video/mp4' }))
+    expect(fake.directories.has(`/${PROJECT}/claims`)).toBe(false)
+    await expect(upload()).rejects.toThrow(/clear all/i)
+    expect(fake.directories.has(`/${PROJECT}/claims`)).toBe(false)
+  })
+
+  it('maps an unavailable store to a storage FontUploadError', async () => {
+    vi.stubGlobal('navigator', {
+      storage: {
+        getDirectory: async () => {
+          throw new Error('denied')
+        },
+      },
+    })
+    await expect(upload()).rejects.toThrow(/storage is unavailable/i)
+  })
+
+  it('still stores a font on an already prepared project', async () => {
+    await ensureProjectMedia(PROJECT)
+    const staged = await upload()
+    expect(staged.font.id).toBe(FONT_ID)
   })
 })

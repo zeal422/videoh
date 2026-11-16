@@ -12,6 +12,9 @@ import { groupTracks } from './track-groups'
 import type { ProxyEntry } from './proxy'
 import type { Doc, PendingRestore, Track } from './types'
 
+/** Why Clean Unused Media is unavailable; null means it may run. */
+export type MediaCleanBlockReason = 'claims-missing' | 'unclaimed' | 'storage-unavailable'
+
 /**
  * Editor store (zustand).
  *
@@ -161,12 +164,13 @@ export interface EditorState {
    */
   autosavePaused: boolean
   /**
-   * True when a project opened without a claim shard (0.23.0): the media store
-   * was unavailable or rejected the write. The clean action stays unavailable
-   * until an explicit save claims the bytes, because without a claim it cannot
-   * prove that a closed copy does not reference them.
+   * Why Clean Unused Media is unavailable (0.28.2), or null when it is safe.
+   * `claims-missing` means the project lost its saved-copy records; `unclaimed`
+   * means the claim write failed; `storage-unavailable` means the store could
+   * not be opened at all. The reason picks the dialog guidance, and a save
+   * clears it only when the stored bytes are covered by the snapshot or a claim.
    */
-  mediaCleanBlocked: boolean
+  mediaCleanBlockReason: MediaCleanBlockReason | null
   /**
    * The latest command refused because a track was locked (0.14.0). Session
    * state, never in the Doc and never undoable: the shell watches it and shows
@@ -270,8 +274,8 @@ export interface EditorState {
   markAutosaved: () => void
   setPendingRestore: (restore: PendingRestore | null) => void
   setAutosavePaused: (paused: boolean) => void
-  /** Session flag: clean is unavailable until a claim shard is written. */
-  setMediaCleanBlocked: (blocked: boolean) => void
+  /** Session state: why clean is unavailable, or null when it may run. */
+  setMediaCleanBlockReason: (reason: MediaCleanBlockReason | null) => void
   /** Dismiss the restore banner (install, discard, or failed restore). */
   clearPendingRestore: () => void
 }
@@ -518,7 +522,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   autosavedAt: null,
   pendingRestore: null,
   autosavePaused: false,
-  mediaCleanBlocked: false,
+  mediaCleanBlockReason: null,
   lockNotice: null,
 
   apply: (command) => {
@@ -899,7 +903,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setPendingRestore: (restore) => set({ pendingRestore: restore }),
   setAutosavePaused: (paused) => set({ autosavePaused: paused }),
   clearPendingRestore: () => set({ pendingRestore: null }),
-  setMediaCleanBlocked: (blocked) => set({ mediaCleanBlocked: blocked }),
+  setMediaCleanBlockReason: (reason) => set({ mediaCleanBlockReason: reason }),
 }))
 
 /** Raw (non-hook) access for engine code and tests. */

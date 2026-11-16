@@ -12,7 +12,14 @@ import {
   commandsToUnlinkClips,
 } from '../actions'
 import { applyCommands, applyCommand, EditorCommandError } from '../commands'
-import { clipFitsTrack, createClip, createDoc, createMediaAsset, createTrack } from '../factories'
+import {
+  clipFitsTrack,
+  createClip,
+  createDoc,
+  createMediaAsset,
+  createShapeClip,
+  createTrack,
+} from '../factories'
 import {
   assetHasAudio,
   audibleClipId,
@@ -1058,5 +1065,105 @@ describe('canSplitAllAt — Add Edit with no selection', () => {
 
     expect(canSplitAllAt(doc, 1)).toBe(false)
     expect(commandsToSplitAllAt(doc, 1)).toBeNull()
+  })
+})
+
+describe('shape clips cannot be linked (0.28.2)', () => {
+  function shapeAndVideo(): { doc: Doc; videoId: string; shapeId: string } {
+    const asset = avAsset()
+    const video = createTrack('video', 1, { id: 'v1' })
+    video.clips = [createClip({ id: 'clip_v', mediaId: asset.id, start: 0, duration: 4 })]
+    const shapes = createTrack('video', 2, { id: 'v2' })
+    shapes.clips = [createShapeClip({ id: 'clip_shape', start: 0, duration: 4 })]
+    const doc = createDoc()
+    doc.project.tracks = [video, shapes]
+    doc.media = [asset]
+    return { doc, videoId: 'clip_v', shapeId: 'clip_shape' }
+  }
+
+  it('canLinkClips refuses a selection containing a shape', () => {
+    const { doc, videoId, shapeId } = shapeAndVideo()
+    expect(canLinkClips(doc, [videoId, shapeId])).toBe(false)
+  })
+
+  it('linkClips refuses a shape clip', () => {
+    const { doc, videoId, shapeId } = shapeAndVideo()
+    expect(() => applyCommand(doc, { type: 'linkClips', clipIds: [videoId, shapeId] })).toThrow(
+      EditorCommandError,
+    )
+  })
+
+  it('still links two plain video clips', () => {
+    const asset = avAsset()
+    const video = createTrack('video', 1, { id: 'v1' })
+    video.clips = [
+      createClip({ id: 'a', mediaId: asset.id, start: 0, duration: 2 }),
+      createClip({ id: 'b', mediaId: asset.id, start: 2, duration: 2 }),
+    ]
+    const doc = createDoc()
+    doc.project.tracks = [video]
+    doc.media = [asset]
+    expect(canLinkClips(doc, ['a', 'b'])).toBe(true)
+    const next = applyCommand(doc, { type: 'linkClips', clipIds: ['a', 'b'] })
+    expect(next.project.tracks[0].clips[0].linkId).toBeDefined()
+    expect(next.project.tracks[0].clips[0].linkId).toBe(next.project.tracks[0].clips[1].linkId)
+  })
+})
+
+describe('linked clip move scope (0.28.2)', () => {
+  function moveDoc(linked: boolean): { doc: Doc; target: string } {
+    const asset = avAsset()
+    const doc = createDoc()
+    doc.media = [asset]
+    const v1 = doc.project.tracks.find((track) => track.kind === 'video')!
+    const v2 = createTrack('video', 2, { id: 'v2' })
+    doc.project.tracks.push(v2)
+    v1.clips = [
+      createClip({
+        id: 'c1',
+        mediaId: asset.id,
+        start: 0,
+        duration: 2,
+        ...(linked ? { linkId: 'L1' } : {}),
+      }),
+    ]
+    v2.clips = [
+      createClip({
+        id: 'c2',
+        mediaId: asset.id,
+        start: 0,
+        duration: 2,
+        ...(linked ? { linkId: 'L1' } : {}),
+      }),
+    ]
+    doc.project.sequences = [
+      { id: 'seq_x', name: 'Other', tracks: [createTrack('video', 1, { id: 'seq_v1' })] },
+    ]
+    return { doc, target: 'seq_v1' }
+  }
+
+  it('refuses moving a linked clip into another sequence', () => {
+    const { doc, target } = moveDoc(true)
+    expect(() =>
+      applyCommand(doc, { type: 'moveClip', clipId: 'c1', trackId: target, start: 0 }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('still moves a linked clip to another track in the same sequence', () => {
+    const { doc } = moveDoc(true)
+    const next = applyCommand(doc, { type: 'moveClip', clipId: 'c1', trackId: 'v2', start: 1 })
+    const target = next.project.tracks.find((track) => track.id === 'v2')!
+    expect(target.clips.some((clip) => clip.id === 'c1')).toBe(true)
+    expect(
+      next.project.tracks
+        .find((track) => track.id !== 'v2')!
+        .clips.some((clip) => clip.id === 'c1'),
+    ).toBe(false)
+  })
+
+  it('still moves an unlinked clip into another sequence', () => {
+    const { doc, target } = moveDoc(false)
+    const next = applyCommand(doc, { type: 'moveClip', clipId: 'c1', trackId: target, start: 0 })
+    expect(next.project.sequences?.[0].tracks[0].clips.some((clip) => clip.id === 'c1')).toBe(true)
   })
 })

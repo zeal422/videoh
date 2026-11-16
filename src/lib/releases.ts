@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.28.2',
+    date: '2026-11-16',
+    highlights: [
+      'Shapes and compound clips can no longer enter states that make a project fail to reload',
+      'Freeze Frame now works on a frame with shapes, and shapes no longer offer time remapping',
+      'A first font upload saves without losing the project stored-media record',
+      'Clean Unused Media explains whether records are missing, a claim failed, or storage is unavailable',
+      'Bundle fonts are capped at 8 MB, and project files stay at format version 8',
+    ],
+  },
+  {
     version: '0.28.1',
     date: '2026-11-15',
     highlights: [

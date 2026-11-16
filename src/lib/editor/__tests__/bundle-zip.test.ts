@@ -213,4 +213,18 @@ describe('bundle zip (0.28.0)', () => {
     }
     await expect(readZipDirectory(new Blob([bytes as BlobPart]))).rejects.toThrow(ZipError)
   })
+
+  it('ignores a forged larger local-header size and reads the central-size bytes', async () => {
+    const archive = await zipBlob([{ path: 'a.txt', data: new Blob(['abcdef']) }])
+    const bytes = await bytesOf(archive)
+    const entries = await readZipDirectory(new Blob([bytes as BlobPart]))
+    const view = new DataView(bytes.buffer)
+    const local = entries[0]!.localHeaderOffset
+    // Local header: +18 compressed size, +22 uncompressed size.
+    view.setUint32(local + 18, 0x7fffffff, true)
+    view.setUint32(local + 22, 0x7fffffff, true)
+
+    const entry = await readZipEntry(new Blob([bytes as BlobPart]), entries[0]!)
+    expect(await entry.text()).toBe('abcdef')
+  })
 })

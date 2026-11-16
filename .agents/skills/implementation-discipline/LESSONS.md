@@ -826,3 +826,9 @@ that state, not only the function named by the finding.
 What happened: the stale-retry guard compared `JSON.stringify(serializeDoc(doc))` with the captured JSON, but `serializeDoc` stamps a new `savedAt` on every call, so every targeted retry was dropped and a pending install could never finish after its first failed attempt. The same text comparison also made the import report `pending` after a successful write.
 Would-have-caught: trigger 5 applied to time-dependent values: a comparison of serialized output must exclude generated fields (or compare doc identity), and the lock must exercise the second attempt, not only the first.
 Action: kept as a note; freshness checks compare content without generated timestamps, and retries are tested across a failed attempt.
+
+## 2026-11-16 - a keep-state claims lock seeded the state it was meant to observe
+
+What happened: the first "keeps the clean-block reason" tests set `mediaCleanBlockReason` directly with `useEditorStore.setState`, so they passed against the pre-change store: zustand merged the unknown key and the no-op save left it alone. The red run initially showed only the clear-state tests failing, which exposed the false locks.
+Would-have-caught: trigger 5 applied to keep-state assertions: drive the state through the real flow (the degraded open) and assert the test did not seed it, then assert the action preserves what the flow set.
+Action: kept as a note; keep-state locks establish the state through the production path, never through a direct store write.

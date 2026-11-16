@@ -233,7 +233,7 @@ export function canLinkClips(doc: Doc, clipIds: string[]): boolean {
   if (clipIds.length < 2) return false
   const clips = clipIds.map((id) => findClipLocally(doc, id)?.clip)
   if (clips.some((c) => !c)) return false
-  if (clips.some((c) => c!.text !== undefined)) return false
+  if (clips.some((c) => c!.text !== undefined || c!.shape !== undefined)) return false
   return distinctLinkGroupCount(doc, clipIds) >= 2
 }
 

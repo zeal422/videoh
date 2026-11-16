@@ -10,6 +10,7 @@ import {
   zipStoreOverhead,
   type ZipInputEntry,
 } from './bundle-zip'
+import { FONT_FILE_MAX_BYTES } from './constants'
 import { fontMimeForFormat, isValidFontId, validateFontBytes } from './fonts'
 import { relinkPatchFrom } from './media/relink'
 import { importFile } from './media/probe'
@@ -18,16 +19,20 @@ import { collectMediaHashes } from './media-cleanup-plan'
 import {
   beginMediaActivityWhenIdle,
   endMediaActivity,
+  inspectProjectStore,
   prepareProjectStore,
   storeMediaAsset,
   writeProjectClaim,
+  writeProjectClaimOutcome,
 } from './media/persist'
 import {
   deleteMediaClaim,
+  ensureProjectMedia,
   hasAnyInstallClaims,
   hashFile,
   isMediaStoreSupported,
   listMediaFiles,
+  readMediaClaims,
   readMediaClaimShards,
   readMediaFile,
   sha256Hex,
@@ -137,6 +142,32 @@ function discardFreshMedia(asset: MediaAsset): void {
 }
 
 /**
+ * True when every stored media and font hash is referenced by the saved
+ * snapshot or protected by a claim shard. A missing or unreadable store is
+ * "not covered": the clean block stays until the bytes can be proven safe.
+ *
+ * Read the claims BEFORE listing stored bytes. A write that lands while the
+ * claims are read is then visible to the listing, while a claim written after
+ * the read only makes the answer conservatively false. Listing first would let
+ * a hash stored between the listing and the claims read look covered.
+ */
+async function storedHashesCovered(
+  projectId: string,
+  referenced: ReadonlySet<string>,
+): Promise<boolean> {
+  const claims = await readMediaClaims(projectId)
+  if (claims === null) return false
+  const media = await listMediaFiles(projectId, 'media')
+  const fonts = await listMediaFiles(projectId, 'fonts')
+  const stored = [...media.map((entry) => entry.hash), ...fonts.map((entry) => entry.hash)]
+  const unprotected = stored.filter((hash) => !referenced.has(hash))
+  if (unprotected.length === 0) return true
+  // Only a stored hash that the snapshot does not reference needs a claim.
+  const claimed = new Set(claims)
+  return unprotected.every((hash) => claimed.has(hash))
+}
+
+/**
  * Serializes the current doc and triggers a browser download. The claim shard
  * is written from the SAME snapshot that is serialized, before the file is
  * produced, so a copy is never written with unclaimed bytes. Returns filename.
@@ -145,7 +176,8 @@ export async function downloadProjectJSON(): Promise<string> {
   const snapshot = useEditorStore.getState().doc
   const token = currentProjectToken()
   const json = JSON.stringify(serializeDoc(snapshot), null, 2)
-  if (collectMediaHashes(snapshot).length > 0) {
+  const hashes = collectMediaHashes(snapshot)
+  if (hashes.length > 0) {
     // Hold an independent shared lock on this copy through publication. The
     // active hold may switch to another project (or be released) while the
     // claim writes; without this, another tab's clean of this project would
@@ -189,10 +221,36 @@ export async function downloadProjectJSON(): Promise<string> {
     } finally {
       if (claimLock && claimLock !== currentProjectLock()) claimLock.dispose()
     }
-    // The claim succeeded: a previous degraded open can clean again. Only for
-    // the project this save belongs to; a newer install owns its own flag.
-    if (isProjectTokenCurrent(token)) {
-      useEditorStore.getState().setMediaCleanBlocked(false)
+    // The claim succeeded, but a previous degraded open can clean again only
+    // when the snapshot plus the claim set covers every stored hash: an
+    // earlier copy's unclaimed bytes must keep the guard. Only for the project
+    // this save belongs to; a newer install owns its own reason. No reason
+    // means there is nothing to clear, so a normal save skips the store walk.
+    if (useEditorStore.getState().mediaCleanBlockReason !== null) {
+      let covered = false
+      try {
+        covered = await storedHashesCovered(snapshot.project.id, new Set(hashes))
+      } catch {
+        covered = false
+      }
+      if (covered && isProjectTokenCurrent(token)) {
+        useEditorStore.getState().setMediaCleanBlockReason(null)
+      }
+    }
+  } else if (useEditorStore.getState().mediaCleanBlockReason !== null) {
+    // A no-hash save cannot repair an unclaimed stored asset, so it clears
+    // only when an existing claim already protects every stored hash. After
+    // Clear All there are no stored hashes, which is the repair path.
+    try {
+      const storeState = await ensureProjectMedia(snapshot.project.id)
+      if (storeState === 'ready') {
+        const covered = await storedHashesCovered(snapshot.project.id, new Set())
+        if (covered && isProjectTokenCurrent(token)) {
+          useEditorStore.getState().setMediaCleanBlockReason(null)
+        }
+      }
+    } catch {
+      // Leave the reason: the store could not prove the bytes are protected.
     }
   }
   const blob = new Blob([json], { type: 'application/json' })
@@ -539,13 +597,30 @@ export function installProject(doc: Doc, stagedFonts?: StagedProjectFonts): void
   store.replaceDoc(doc)
   store.clearPendingRestore()
   // A fresh install has no unclaimed stored bytes; a degraded open sets the
-  // flag again after this call.
-  store.setMediaCleanBlocked(false)
+  // reason again after this call.
+  store.setMediaCleanBlockReason(null)
   if (prepared) activateLock(prepared, doc.project.id)
   else void ensureProjectLock(doc)
   // Every installed project owns a project directory with an empty claims
   // directory, even before its first save.
   void prepareProjectStore(doc.project.id)
+}
+
+/**
+ * The warning shown after a degraded open, per cause. Only a failed claim
+ * write can be repaired by a save; lost records need Clear All first, and an
+ * unavailable store cannot be claimed at all.
+ */
+const CLAIM_FAILURE_WARNINGS: Record<
+  'claims-missing' | 'claim-write' | 'storage-unavailable',
+  string
+> = {
+  'claims-missing':
+    'This project lost its saved-copy records, so Clean Unused Media stays unavailable. Use Clear All Stored Media, then save this project again.',
+  'claim-write':
+    'Stored media could not be claimed, so Clean Unused Media stays unavailable. A save repairs this only when it references or claims every stored asset; otherwise use Clear All Stored Media.',
+  'storage-unavailable':
+    'Media storage is unavailable in this browser, so Clean Unused Media stays unavailable and stored media cannot be claimed.',
 }
 
 /** Rehydration + claim for a doc that is about to be installed, or null when superseded. */
@@ -555,7 +630,7 @@ async function prepareForInstall(
 ): Promise<{
   doc: Doc
   warnings: string[]
-  claimFailed: boolean
+  claimFailure: 'claims-missing' | 'claim-write' | 'storage-unavailable' | null
   stagedFonts: StagedProjectFonts
 } | null> {
   const lock = await ensureProjectLock(doc, { forInstall: true })
@@ -579,22 +654,27 @@ async function prepareForInstall(
   }
   // The claims directory exists for every installed project, empty or not, so
   // a missing directory always means lost records rather than "nothing saved".
-  const storeReady = await prepareProjectStore(rehydration.doc.project.id)
-  const hashes = collectMediaHashes(rehydration.doc)
-  const claimed = storeReady && (hashes.length === 0 || (await writeProjectClaim(rehydration.doc)))
+  // Classify instead of collapsing: only a claim-write failure is repairable
+  // by a later save that covers the stored bytes.
+  const storeState = await inspectProjectStore(rehydration.doc.project.id)
+  let claimFailure: 'claims-missing' | 'claim-write' | 'storage-unavailable' | null = null
+  if (storeState !== 'ready') {
+    claimFailure = storeState
+  } else if (collectMediaHashes(rehydration.doc).length > 0) {
+    // Classify the write itself: the store can disappear between the check
+    // above and this call, and that is not a rejected claim.
+    const outcome = await writeProjectClaimOutcome(rehydration.doc)
+    if (outcome !== 'claimed') claimFailure = outcome
+  }
   if (!isCurrentProjectLoad(loadId)) {
     revokeRehydratedUrls(rehydration.urls)
     discardProjectLock(lock)
     return null
   }
   const warnings = [...rehydration.warnings]
-  if (!claimed) {
-    warnings.push(
-      'Stored media could not be claimed, so Clean Unused Media stays unavailable until you save this project.',
-    )
-  }
+  if (claimFailure) warnings.push(CLAIM_FAILURE_WARNINGS[claimFailure])
   warnings.push(...stagedFonts.warnings)
-  return { doc: rehydration.doc, warnings, claimFailed: !claimed, stagedFonts }
+  return { doc: rehydration.doc, warnings, claimFailure, stagedFonts }
 }
 
 /**
@@ -621,7 +701,13 @@ export async function openProjectFile(file: File): Promise<void> {
     if (!prepared) return
     installStarted = true
     installProject(prepared.doc, prepared.stagedFonts)
-    if (prepared.claimFailed) useEditorStore.getState().setMediaCleanBlocked(true)
+    if (prepared.claimFailure) {
+      useEditorStore
+        .getState()
+        .setMediaCleanBlockReason(
+          prepared.claimFailure === 'claim-write' ? 'unclaimed' : prepared.claimFailure,
+        )
+    }
     const remaining = prepared.doc.media.filter((asset) => asset.missing).length
     const description = [
       remaining > 0 ? `${remaining} media file(s) need relinking.` : undefined,
@@ -805,6 +891,13 @@ export async function prepareProjectBundle(
       )} MB per-entry limit.`,
     )
   }
+  const fontTooLarge = (): never => {
+    throw new BundleExportError(
+      `Cannot bundle this project: one font is larger than the ${Math.round(
+        FONT_FILE_MAX_BYTES / (1024 * 1024),
+      )} MB font limit.`,
+    )
+  }
   for (const { asset } of plan.media) {
     const storedSize = isValidContentHash(asset.contentHash)
       ? storedSizes.get(asset.contentHash)
@@ -821,7 +914,7 @@ export async function prepareProjectBundle(
     const storedSize = isValidContentHash(font.contentHash)
       ? storedSizes.get(font.contentHash)
       : undefined
-    if ((storedSize ?? 0) > BUNDLE_MAX_ENTRY_BYTES) entryTooLarge()
+    if ((storedSize ?? 0) > FONT_FILE_MAX_BYTES) fontTooLarge()
     if (storedSize !== undefined) plannedSizes.push(storedSize)
   }
   if (plannedSizes.reduce((sum, size) => sum + size, 0) > BUNDLE_MAX_TOTAL_BYTES) {
@@ -910,19 +1003,16 @@ export async function prepareProjectBundle(
   if (missingReferenced.length > 0 && !options.confirmMissingFonts) {
     return { status: 'needs-font-confirmation', fonts: missingReferenced }
   }
+  for (const item of assetFiles) {
+    if (item.file.size > BUNDLE_MAX_ENTRY_BYTES) entryTooLarge()
+  }
+  for (const item of fontFiles) {
+    if (item.file.size > FONT_FILE_MAX_BYTES) fontTooLarge()
+  }
   const totalBytes = [
     ...assetFiles.map((item) => item.file.size),
     ...fontFiles.map((item) => item.file.size),
   ]
-  for (const size of totalBytes) {
-    if (size > BUNDLE_MAX_ENTRY_BYTES) {
-      throw new BundleExportError(
-        `Cannot bundle this project: one entry is larger than the ${Math.round(
-          BUNDLE_MAX_ENTRY_BYTES / (1024 * 1024),
-        )} MB per-entry limit.`,
-      )
-    }
-  }
   if (totalBytes.reduce((sum, size) => sum + size, 0) > BUNDLE_MAX_TOTAL_BYTES) {
     throw new BundleExportError(
       `Cannot bundle this project: its media and fonts exceed the ${Math.round(

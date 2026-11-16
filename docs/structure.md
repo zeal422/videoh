@@ -166,7 +166,8 @@ src/lib/editor/
 ├── constants.ts          # all tuning constants and limits
 ├── factories.ts          # uid + create* constructors, finders, compatibility checks, sourceTimeAt
 ├── time.ts               # clamp, formatTime/Timecode, frame stepping, rulerStep
-├── commands.ts           # the 60 EditorCommand variants + applyCommand(s, options), the relink patch boundary, direction-aware split spans, LOCK_RULES
+├── commands.ts           # the 60 EditorCommand variants + applyCommand(s, options), the relink patch boundary, direction-aware split spans, LOCK_RULES, assertStructuralIdFree
+├── clip-invariants.ts    # shared shape/compound field invariants used by the command layer and hydration
 ├── trim.ts               # pure trim/split math: source-fitting bisection, timeScale curve rebases
 ├── snap.ts               # snap-point computation and application
 ├── srt.ts                # SRT parse/serialize + the caption cue collector (pure)
@@ -198,7 +199,7 @@ src/lib/editor/
 ├── actions.ts            # multi-command UI actions (add media/text/shape, group ops, ripple delete)
 ├── action-executor.ts    # policy-free dispatch for the menu, toolbar, and keyboard (pure)
 ├── store.ts              # zustand store: doc, history, transients, selection, playhead, zoom
-├── serialization.ts      # .veproj.json v7 (v1 to v6 still load): serialize / parse / hydrate, fonts, shapes, media content hash
+├── serialization.ts      # .veproj.json v8 (v1 to v7 still load): serialize / parse / hydrate, fonts, shapes, media content hash
 ├── persistence.ts        # debounced localStorage autosave; readValidAutosave returns a typed PendingRestore
 ├── workspace.ts          # panel + keyframe-graph layout state (pure)
 ├── workspace-store.ts    # zustand wrapper over workspace.ts (layout + graph heights)
@@ -254,7 +255,7 @@ src/lib/editor/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   ├── options.ts        # pure container matrix, output bounds/bitrate, contain fit (Node-testable)
 │   └── mp4.ts            # WebCodecs export pipeline: MP4/MOV/MKV/WAV/MP3/M4A + downloadBlob
-└── __tests__/            # 132 test files (3031 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 133 test files (3128 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

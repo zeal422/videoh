@@ -36,6 +36,7 @@ import {
   TRACK_GROUPS_MAX,
 } from './constants'
 import { parseKeyColor } from './chroma-key'
+import { compoundClipViolations, shapeClipViolations } from './clip-invariants'
 import {
   isBlendMode,
   isEffectKeyframable,
@@ -301,6 +302,7 @@ export function deserializeDoc(data: unknown): {
   // clip or sequence id would resolve the wrong object, so the file is refused
   // (no regeneration, which would silently repoint references).
   assertUniqueIds(project)
+  assertUniqueMediaIds(media)
   // A compound clip's shape is mutually exclusive with media, text and
   // retiming: a file that carries both is malformed and refused.
   assertCompoundShapes(project)
@@ -327,7 +329,9 @@ export function deserializeDoc(data: unknown): {
   const sweep = (tracks: Track[]) => {
     for (const track of tracks) {
       track.clips = track.clips.filter((clip) => {
-        if (clip.mediaId && !mediaIds.has(clip.mediaId)) clip.mediaId = undefined
+        if (clip.mediaId !== undefined && !mediaIds.has(clip.mediaId)) {
+          clip.mediaId = undefined
+        }
         if (clip.lutId !== undefined && !lutIds.has(clip.lutId)) clip.lutId = undefined
         if (clip.sequenceId && !sequenceIds.has(clip.sequenceId)) {
           droppedCompound = true
@@ -421,7 +425,9 @@ function hydrateSequences(
     if (typeof entry !== 'object' || entry === null) continue
     const s = entry as Record<string, unknown>
     sequences.push({
-      id: typeof s.id === 'string' && s.id ? s.id : `seq_${Math.random().toString(36).slice(2)}`,
+      // An explicit string id is preserved so `assertUniqueIds` can refuse an
+      // empty or blank one; a missing id still regenerates.
+      id: typeof s.id === 'string' ? s.id : `seq_${Math.random().toString(36).slice(2)}`,
       name: typeof s.name === 'string' && s.name ? s.name : 'Compound Clip',
       tracks: hydrateTracks(s.tracks, media, stats),
     })
@@ -429,10 +435,11 @@ function hydrateSequences(
   return sequences.length > 0 ? sequences : undefined
 }
 
-/** Rejects a project where a track, clip or sequence id repeats anywhere. */
+/** Rejects a project where a track, clip or sequence id repeats or is empty. */
 function assertUniqueIds(project: Project): void {
   const seen = new Set<string>()
   const add = (id: string, what: string) => {
+    if (id.trim().length === 0) throw new SerializationError(`Empty ${what} id`)
     if (seen.has(id)) throw new SerializationError(`Duplicate ${what} id: ${id}`)
     seen.add(id)
   }
@@ -446,6 +453,16 @@ function assertUniqueIds(project: Project): void {
   for (const sequence of project.sequences ?? []) {
     add(sequence.id, 'sequence')
     visit(sequence.tracks)
+  }
+}
+
+/** Rejects a file with an empty or repeated media id. */
+function assertUniqueMediaIds(media: MediaAsset[]): void {
+  const seen = new Set<string>()
+  for (const asset of media) {
+    if (asset.id.trim().length === 0) throw new SerializationError('Empty media id')
+    if (seen.has(asset.id)) throw new SerializationError(`Duplicate media id: ${asset.id}`)
+    seen.add(asset.id)
   }
 }
 
@@ -478,15 +495,7 @@ function assertCompoundShapes(project: Project): void {
   const check = (tracks: Track[]) => {
     for (const track of tracks) {
       for (const clip of track.clips) {
-        if (!clip.sequenceId) continue
-        if (
-          clip.mediaId !== undefined ||
-          clip.text !== undefined ||
-          clip.audioOnly === true ||
-          clip.speed !== undefined ||
-          clip.reverse ||
-          clip.keyframes?.timeScale !== undefined
-        ) {
+        if (compoundClipViolations(clip)) {
           throw new SerializationError(
             'Compound clip carries incompatible media, text or retiming fields',
           )
@@ -503,20 +512,7 @@ function assertShapeClips(project: Project): void {
   const check = (tracks: Track[]) => {
     for (const track of tracks) {
       for (const clip of track.clips) {
-        if (!clip.shape) continue
-        if (
-          clip.mediaId !== undefined ||
-          clip.text !== undefined ||
-          clip.style !== undefined ||
-          clip.isCaption === true ||
-          clip.sequenceId !== undefined ||
-          clip.audioOnly === true ||
-          clip.linkId !== undefined ||
-          clip.speed !== undefined ||
-          clip.reverse ||
-          clip.lutId !== undefined ||
-          clip.keyframes?.timeScale !== undefined
-        ) {
+        if (shapeClipViolations(clip)) {
           throw new SerializationError(
             'Shape clip carries incompatible media, text, compound, LUT or retiming fields',
           )

@@ -41,6 +41,7 @@ import type {
   MediaAsset,
   ProjectFont,
   ProjectLut,
+  Sequence,
   ShapeStyle,
   Track,
 } from '../types'
@@ -4213,5 +4214,320 @@ describe('fonts, shapes, and text animations (0.25.0)', () => {
         presetId: 'anim_fade_in',
       }),
     ).toThrow(/too short/)
+  })
+})
+
+describe('structural id trust boundary (0.28.2)', () => {
+  function payload(id: string, trackId: string, clipId?: string): Sequence {
+    return {
+      id,
+      name: 'Payload',
+      tracks: [
+        createTrack('video', 1, {
+          id: trackId,
+          clips: clipId ? [createClip({ id: clipId, start: 0, duration: 1 })] : [],
+        }),
+      ],
+    }
+  }
+
+  function clipDoc() {
+    const { doc, videoAsset } = makeDoc()
+    const next = applyCommand(doc, {
+      type: 'addClip',
+      trackId: videoTrack(doc).id,
+      clip: createClip({
+        id: 'clip_existing',
+        mediaId: videoAsset.id,
+        start: 0,
+        duration: 4,
+      }),
+    })
+    return {
+      doc: next,
+      videoId: videoTrack(next).id,
+      audioId: audioTrack(next).id,
+      mediaId: next.media[0].id,
+    }
+  }
+
+  it('addTrack refuses a track id already used by a clip', () => {
+    const { doc } = clipDoc()
+    expect(() =>
+      applyCommand(doc, { type: 'addTrack', kind: 'video', trackId: 'clip_existing' }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('addClip refuses a clip id already used by a track', () => {
+    const { doc, videoId, audioId, mediaId } = clipDoc()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'addClip',
+        trackId: videoId,
+        clip: createClip({ id: audioId, mediaId, start: 0, duration: 2 }),
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('splitClip refuses a rightId already used in the document', () => {
+    const { doc, videoId, audioId } = clipDoc()
+    const clips = doc.project.tracks.find((track) => track.id === videoId)!.clips
+    expect(() =>
+      applyCommand(doc, {
+        type: 'splitClip',
+        clipId: clips[0].id,
+        atTime: 2,
+        rightId: audioId,
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('addSequence refuses a payload track id already in the document', () => {
+    const { doc, videoId } = clipDoc()
+    expect(() =>
+      applyCommand(doc, { type: 'addSequence', sequence: payload('seq_new', videoId) }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('addSequence refuses a sequence id equal to one of its own payload ids', () => {
+    const { doc } = clipDoc()
+    expect(() =>
+      applyCommand(doc, { type: 'addSequence', sequence: payload('seq_self', 'seq_self') }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('addSequence refuses duplicate ids inside the supplied payload', () => {
+    const { doc } = clipDoc()
+    const sequence: Sequence = {
+      id: 'seq_dup',
+      name: 'Dup',
+      tracks: [
+        createTrack('video', 1, { id: 'dup_track' }),
+        createTrack('video', 2, { id: 'dup_track' }),
+      ],
+    }
+    expect(() => applyCommand(doc, { type: 'addSequence', sequence })).toThrow(EditorCommandError)
+  })
+
+  it('refuses empty and blank structural ids', () => {
+    const { doc, videoId, mediaId } = clipDoc()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'addClip',
+        trackId: videoId,
+        clip: createClip({ id: '', mediaId, start: 0, duration: 2 }),
+      }),
+    ).toThrow(EditorCommandError)
+    const clips = doc.project.tracks.find((track) => track.id === videoId)!.clips
+    expect(() =>
+      applyCommand(doc, {
+        type: 'splitClip',
+        clipId: clips[0].id,
+        atTime: 2,
+        rightId: '',
+      }),
+    ).toThrow(EditorCommandError)
+    expect(() => applyCommand(doc, { type: 'addTrack', kind: 'video', trackId: '' })).toThrow(
+      EditorCommandError,
+    )
+    expect(() =>
+      applyCommand(doc, { type: 'addSequence', sequence: payload('', 'track_blank') }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
+      applyCommand(doc, { type: 'addSequence', sequence: payload('seq_blank', '   ') }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('still accepts fresh supplied ids and cross-namespace media ids', () => {
+    const { doc, videoId, mediaId } = clipDoc()
+    const withTrack = applyCommand(doc, {
+      type: 'addTrack',
+      kind: 'video',
+      trackId: 'track_fresh',
+    })
+    expect(withTrack.project.tracks.some((track) => track.id === 'track_fresh')).toBe(true)
+
+    const withClip = applyCommand(withTrack, {
+      type: 'addClip',
+      trackId: videoId,
+      clip: createClip({ id: 'clip_fresh', mediaId, start: 0, duration: 2 }),
+    })
+    const clips = withClip.project.tracks.find((track) => track.id === videoId)!.clips
+    expect(clips.some((clip) => clip.id === 'clip_fresh')).toBe(true)
+
+    const withSequence = applyCommand(withClip, {
+      type: 'addSequence',
+      sequence: payload('seq_fresh', 'seq_track_fresh', 'seq_clip_fresh'),
+    })
+    expect(withSequence.project.sequences?.some((seq) => seq.id === 'seq_fresh')).toBe(true)
+
+    const split = applyCommand(withSequence, {
+      type: 'splitClip',
+      clipId: 'clip_fresh',
+      atTime: 1,
+      rightId: 'clip_right_fresh',
+    })
+    expect(
+      split.project.tracks
+        .find((track) => track.id === videoId)!
+        .clips.some((clip) => clip.id === 'clip_right_fresh'),
+    ).toBe(true)
+
+    // A media id may equal a structural id: the namespaces stay separate.
+    const cross = structuredClone(withSequence)
+    cross.media[0].id = 'clip_same'
+    const withSame = applyCommand(cross, {
+      type: 'addClip',
+      trackId: videoId,
+      clip: createClip({ id: 'clip_same', mediaId: 'clip_same', start: 0, duration: 2 }),
+    })
+    expect(
+      withSame.project.tracks
+        .find((track) => track.id === videoId)!
+        .clips.some((clip) => clip.id === 'clip_same'),
+    ).toBe(true)
+  })
+
+  it('refuses cross-type id collisions inside an unreferenced stored sequence', () => {
+    const { doc, videoId, mediaId } = clipDoc()
+    const orphan: Sequence = {
+      id: 'seq_orphan',
+      name: 'Orphan',
+      tracks: [
+        createTrack('video', 1, {
+          id: 'orphan_track',
+          clips: [createClip({ id: 'orphan_clip', mediaId, start: 0, duration: 2 })],
+        }),
+      ],
+    }
+    const withOrphan = applyCommand(doc, { type: 'addSequence', sequence: orphan })
+    // Nothing references seq_orphan, and hydration still counts its ids.
+    expect(() =>
+      applyCommand(withOrphan, {
+        type: 'addTrack',
+        kind: 'video',
+        trackId: 'orphan_clip',
+      }),
+    ).toThrow(/already in use/)
+    expect(() =>
+      applyCommand(withOrphan, {
+        type: 'addClip',
+        trackId: videoId,
+        clip: createClip({ id: 'orphan_track', mediaId, start: 0, duration: 2 }),
+      }),
+    ).toThrow(/already in use/)
+  })
+})
+
+describe('compound clip command boundary (0.28.2)', () => {
+  function compoundDoc() {
+    const { doc } = makeDoc()
+    doc.project.sequences = [
+      { id: 'seq_child', name: 'Child', tracks: [createTrack('video', 1, { id: 'child_v' })] },
+    ]
+    return doc
+  }
+
+  it('addClip refuses a compound carrying media', () => {
+    const doc = compoundDoc()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'addClip',
+        trackId: videoTrack(doc).id,
+        clip: createClip({
+          id: 'compound_bad',
+          sequenceId: 'seq_child',
+          mediaId: doc.media[0].id,
+          start: 0,
+          duration: 2,
+        }),
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
+  it('still adds a valid compound clip', () => {
+    const doc = compoundDoc()
+    const next = applyCommand(doc, {
+      type: 'addClip',
+      trackId: videoTrack(doc).id,
+      clip: createClip({ id: 'compound_ok', sequenceId: 'seq_child', start: 0, duration: 2 }),
+    })
+    expect(
+      next.project.tracks
+        .find((track) => track.kind === 'video')!
+        .clips.some((clip) => clip.id === 'compound_ok'),
+    ).toBe(true)
+  })
+})
+
+describe('addSequence payload clip invariants (0.28.2)', () => {
+  function sequenceWith(clip: Clip, id = 'seq_payload'): Sequence {
+    return {
+      id,
+      name: 'Payload',
+      tracks: [createTrack('video', 1, { id: 'seq_track_payload', clips: [clip] })],
+    }
+  }
+
+  it('refuses a payload shape clip carrying media', () => {
+    const { doc } = makeDoc()
+    const shape = { ...createShapeClip({ id: 'shape_payload' }), mediaId: doc.media[0].id }
+    expect(() => applyCommand(doc, { type: 'addSequence', sequence: sequenceWith(shape) })).toThrow(
+      /Shape clips cannot carry/,
+    )
+  })
+
+  it('refuses a payload shape clip on a non-video lane', () => {
+    const { doc } = makeDoc()
+    const sequence: Sequence = {
+      id: 'seq_shape_text',
+      name: 'Bad lane',
+      tracks: [
+        createTrack('text', 1, {
+          id: 'seq_text_track',
+          clips: [createShapeClip({ id: 'shape_on_text' })],
+        }),
+      ],
+    }
+    expect(() => applyCommand(doc, { type: 'addSequence', sequence })).toThrow(
+      /cannot be placed on a text track/,
+    )
+  })
+
+  it('refuses a payload compound clip carrying media', () => {
+    const { doc } = makeDoc()
+    const compound = createClip({
+      id: 'compound_payload',
+      sequenceId: 'seq_child',
+      mediaId: doc.media[0].id,
+      start: 0,
+      duration: 2,
+    })
+    expect(() =>
+      applyCommand(doc, { type: 'addSequence', sequence: sequenceWith(compound) }),
+    ).toThrow(/Compound clips cannot carry/)
+  })
+
+  it('still accepts shape and compound clips without incompatible fields', () => {
+    const { doc } = makeDoc()
+    doc.project.sequences = [{ id: 'seq_child', name: 'Child', tracks: [] }]
+    const sequence: Sequence = {
+      id: 'seq_mixed',
+      name: 'Mixed',
+      tracks: [
+        createTrack('video', 1, {
+          id: 'seq_mixed_shape',
+          clips: [createShapeClip({ id: 'shape_ok' })],
+        }),
+        createTrack('video', 2, {
+          id: 'seq_mixed_compound',
+          clips: [
+            createClip({ id: 'compound_ok', sequenceId: 'seq_child', start: 0, duration: 2 }),
+          ],
+        }),
+      ],
+    }
+    const next = applyCommand(doc, { type: 'addSequence', sequence })
+    expect(next.project.sequences?.some((entry) => entry.id === 'seq_mixed')).toBe(true)
   })
 })

@@ -17,6 +17,7 @@
  * export and import flows rely on. It never touches the browser or the store.
  */
 
+import { FONT_FILE_MAX_BYTES } from './constants'
 import { isValidFontId, primaryFontFamily } from './fonts'
 import { isValidContentHash } from './project-validation'
 import type { Doc, MediaAsset, ProjectFont } from './types'
@@ -241,9 +242,9 @@ function readString(value: unknown, max: number): string | null {
   return value
 }
 
-function readSize(value: unknown): number | null {
+function readSize(value: unknown, max: number): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) return null
-  if (value < 0 || value > BUNDLE_MAX_ENTRY_BYTES) return null
+  if (value < 0 || value > max) return null
   return value
 }
 
@@ -298,7 +299,7 @@ export function validateBundleManifest(raw: unknown): BundleManifestResult {
     if (!name) return { error: 'The bundle has a media entry with no valid name.' }
     const type = typeof value.type === 'string' && value.type.length <= 255 ? value.type : null
     if (type === null) return { error: 'The bundle has a media entry with no valid type.' }
-    const size = readSize(value.size)
+    const size = readSize(value.size, BUNDLE_MAX_ENTRY_BYTES)
     if (size === null) return { error: 'The bundle has a media entry with an invalid size.' }
     if (!isValidContentHash(value.sha256)) {
       return { error: 'The bundle has a media entry with an invalid hash.' }
@@ -321,7 +322,7 @@ export function validateBundleManifest(raw: unknown): BundleManifestResult {
     paths.add(path)
     const name = readString(value.name, BUNDLE_MAX_NAME_LENGTH)
     if (!name) return { error: 'The bundle has a font entry with no valid name.' }
-    const size = readSize(value.size)
+    const size = readSize(value.size, FONT_FILE_MAX_BYTES)
     if (size === null) return { error: 'The bundle has a font entry with an invalid size.' }
     if (!isValidContentHash(value.sha256)) {
       return { error: 'The bundle has a font entry with an invalid hash.' }

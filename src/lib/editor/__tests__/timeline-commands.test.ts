@@ -14,7 +14,7 @@ import {
   planJoinGroup,
   planJoinSelection,
 } from '../timeline-edit-plan'
-import type { Clip, Doc, MediaAsset, Track, TrackKind } from '../types'
+import type { Clip, Doc, EffectEntry, MediaAsset, Track, TrackKind } from '../types'
 
 /**
  * 0.22.0 timeline commands: Close Gaps and Join Clips.
@@ -824,5 +824,134 @@ describe('timeline command UI locks (static)', () => {
     // The command layer owns the geometry; neither UI file may write starts.
     expect(bar).not.toMatch(/type: 'joinClips'/)
     expect(bar).not.toMatch(/clip\.start\s*=/)
+  })
+})
+
+describe('joinClips effect comparison (0.28.2)', () => {
+  function pairWith(leftEffects: EffectEntry[], rightEffects: EffectEntry[]): Doc {
+    return docOf([
+      lane('video', 'v1', [
+        clip('p', 0, 4, { mediaId: 'm1', effects: leftEffects }),
+        clip('n', 4, 4, { mediaId: 'm1', inPoint: 4, effects: rightEffects }),
+      ]),
+    ])
+  }
+
+  it('joins effects that differ only by their internal ids', () => {
+    const doc = pairWith(
+      [{ id: 'fx_left', type: 'crop', left: 10 }],
+      [{ id: 'fx_right', type: 'crop', left: 10 }],
+    )
+    const next = applyCommand(doc, { type: 'joinClips', clipId: 'p', nextId: 'n' })
+    expect(next.project.tracks[0].clips).toHaveLength(1)
+  })
+
+  it('joins absent enabled versus an explicit true', () => {
+    const doc = pairWith(
+      [{ id: 'fx', type: 'crop', left: 10 }],
+      [{ id: 'fx', type: 'crop', left: 10, enabled: true }],
+    )
+    const next = applyCommand(doc, { type: 'joinClips', clipId: 'p', nextId: 'n' })
+    expect(next.project.tracks[0].clips).toHaveLength(1)
+  })
+
+  it('still refuses a disabled effect against an absent one', () => {
+    const doc = pairWith(
+      [{ id: 'fx', type: 'crop', left: 10 }],
+      [{ id: 'fx', type: 'crop', left: 10, enabled: false }],
+    )
+    expect(() => applyCommand(doc, { type: 'joinClips', clipId: 'p', nextId: 'n' })).toThrow(
+      'Effects differs between the clips',
+    )
+  })
+
+  it('still refuses a real parameter difference', () => {
+    const doc = pairWith(
+      [{ id: 'fx', type: 'crop', left: 10 }],
+      [{ id: 'fx', type: 'crop', left: 20 }],
+    )
+    expect(() => applyCommand(doc, { type: 'joinClips', clipId: 'p', nextId: 'n' })).toThrow(
+      'Effects differs between the clips',
+    )
+  })
+
+  it('still refuses a different effect order', () => {
+    const doc = pairWith(
+      [
+        { id: 'a', type: 'crop', left: 10 },
+        { id: 'b', type: 'chromaKey', key: '#00ff00' },
+      ],
+      [
+        { id: 'b', type: 'chromaKey', key: '#00ff00' },
+        { id: 'a', type: 'crop', left: 10 },
+      ],
+    )
+    expect(() => applyCommand(doc, { type: 'joinClips', clipId: 'p', nextId: 'n' })).toThrow(
+      'Effects differs between the clips',
+    )
+  })
+
+  it('still refuses a different matte track reference', () => {
+    const doc = pairWith(
+      [{ id: 'fx', type: 'trackMatte', trackId: 't1' }],
+      [{ id: 'fx', type: 'trackMatte', trackId: 't2' }],
+    )
+    expect(() => applyCommand(doc, { type: 'joinClips', clipId: 'p', nextId: 'n' })).toThrow(
+      'Effects differs between the clips',
+    )
+  })
+
+  it('still refuses chroma, crop zoom, and matte setting differences', () => {
+    const cases: [EffectEntry, EffectEntry][] = [
+      [
+        { id: 'fx', type: 'chromaKey', key: '#00ff00', similarity: 0.2 },
+        { id: 'fx', type: 'chromaKey', key: '#00ff00', similarity: 0.6 },
+      ],
+      [
+        { id: 'fx', type: 'crop', left: 10, zoom: true },
+        { id: 'fx', type: 'crop', left: 10, zoom: false },
+      ],
+      [
+        { id: 'fx', type: 'trackMatte', trackId: 't1', mode: 'luma' },
+        { id: 'fx', type: 'trackMatte', trackId: 't1', mode: 'alpha' },
+      ],
+      [
+        { id: 'fx', type: 'trackMatte', trackId: 't1', reverse: true },
+        { id: 'fx', type: 'trackMatte', trackId: 't1', reverse: false },
+      ],
+    ]
+    for (const [left, right] of cases) {
+      const doc = pairWith([left], [right])
+      expect(() => applyCommand(doc, { type: 'joinClips', clipId: 'p', nextId: 'n' })).toThrow(
+        'Effects differs between the clips',
+      )
+    }
+  })
+
+  it('still refuses an explicit numeric or enum default versus an absent one', () => {
+    const cases: [EffectEntry, EffectEntry][] = [
+      [
+        { id: 'fx', type: 'chromaKey', key: '#00ff00', similarity: 0 },
+        { id: 'fx', type: 'chromaKey', key: '#00ff00' },
+      ],
+      [
+        { id: 'fx', type: 'crop', left: 10, zoom: false },
+        { id: 'fx', type: 'crop', left: 10 },
+      ],
+      [
+        { id: 'fx', type: 'trackMatte', trackId: 't1', mode: 'luma' },
+        { id: 'fx', type: 'trackMatte', trackId: 't1' },
+      ],
+      [
+        { id: 'fx', type: 'trackMatte', trackId: 't1', reverse: false },
+        { id: 'fx', type: 'trackMatte', trackId: 't1' },
+      ],
+    ]
+    for (const [left, right] of cases) {
+      const doc = pairWith([left], [right])
+      expect(() => applyCommand(doc, { type: 'joinClips', clipId: 'p', nextId: 'n' })).toThrow(
+        'Effects differs between the clips',
+      )
+    }
   })
 })

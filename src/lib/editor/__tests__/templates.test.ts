@@ -9,6 +9,7 @@ import {
   createBuiltinTemplates,
   mintTemplateSequence,
   parseTemplate,
+  TemplateError,
   templateFromSequence,
   validateTemplateForDoc,
   type ProjectTemplate,
@@ -414,5 +415,85 @@ describe('local templates (0.26.0)', () => {
     expect(useEditorStore.getState().doc.project.sequences).toHaveLength(1)
     useEditorStore.getState().undo()
     expect(useEditorStore.getState().doc.project.sequences).toBeUndefined()
+  })
+})
+
+describe('template shape links and shape-only fields (0.28.2)', () => {
+  function shapeRawClip(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: 'clip_shape',
+      start: 0,
+      duration: 2,
+      shape: { kind: 'rectangle', fill: '#ffffff' },
+      ...overrides,
+    }
+  }
+
+  function rawShapeTemplate(clipOverrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return rawTemplate({
+      sequence: {
+        id: 'seq_shape',
+        name: 'Shapes',
+        tracks: [
+          {
+            id: 'track_shape',
+            kind: 'video',
+            name: 'Shapes',
+            clips: [shapeRawClip(clipOverrides)],
+          },
+        ],
+      },
+    })
+  }
+
+  it('refuses a linkId on a shape clip', () => {
+    expect(() => parseTemplate(rawShapeTemplate({ linkId: 'link_shape' }))).toThrow(TemplateError)
+  })
+
+  it('stops capturing a shape linkId from a live sequence', () => {
+    const sequence: Sequence = {
+      id: 'seq_live',
+      name: 'Live',
+      tracks: [
+        createTrack('video', 1, {
+          id: 'track_live',
+          clips: [
+            createShapeClip({ id: 'shape_live', linkId: 'link_live', start: 0, duration: 2 }),
+          ],
+        }),
+      ],
+    }
+    const captured = templateFromSequence(sequence, { name: 'Live shape' })
+    const clip = captured.sequence.tracks[0].clips[0]
+    expect(clip.shape).toBeDefined()
+    expect(clip.linkId).toBeUndefined()
+  })
+
+  it('applies a shape template that carries style without keeping text or style', () => {
+    const parsed = parseTemplate(rawShapeTemplate({ style: { fontFamily: 'Arial, sans-serif' } }))
+    const minted = mintTemplateSequence(parsed)
+    const clip = minted.sequence.tracks[0].clips[0]
+    expect(clip.shape).toBeDefined()
+    expect(clip.text).toBeUndefined()
+    expect(clip.style).toBeUndefined()
+  })
+
+  it('refuses shape-hostile clip fields through the known-key check', () => {
+    for (const [field, value] of [
+      ['speed', 2],
+      ['audioOnly', true],
+      ['reverse', true],
+      ['lutId', 'lut_x'],
+    ] as const) {
+      expect(() => parseTemplate(rawShapeTemplate({ [field]: value }))).toThrow(/unknown field/i)
+    }
+  })
+
+  it('refuses a timeScale curve on a shape template and never retains one', () => {
+    expect(() =>
+      parseTemplate(rawShapeTemplate({ keyframes: { timeScale: [{ time: 0, value: 1 }] } })),
+    ).toThrow(/unsupported keyframe property/i)
+    const minted = mintTemplateSequence(parseTemplate(rawShapeTemplate()))
+    expect(minted.sequence.tracks[0].clips[0].keyframes?.timeScale).toBeUndefined()
   })
 })

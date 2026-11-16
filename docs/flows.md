@@ -463,10 +463,12 @@ Stable hooks used across flows and tests:
   transitions do not. A sequence with neither text nor a shape refuses to save. The template version
   is its own field; older builds refuse a newer version.
 - The parser validates before any id is minted: version, unknown fields, duplicate track/clip ids,
-  path-like names, strict colors, shape kinds, lane-kind fit, track/clip/text/duration limits. Repeated
-  `linkId` values are one group. Applying mints fresh sequence, track, and clip ids plus one fresh link
-  id per group, so two applications never share identity. A template naming a font this project does
-  not have refuses whole.
+  path-like names, strict colors, shape kinds, lane-kind fit, track/clip/text/duration limits, and a
+  `linkId` on a shape (shape clips cannot be linked). Repeated `linkId` values are one group. Applying
+  mints fresh sequence, track, and clip ids plus one fresh link id per group, so two applications never
+  share identity. A template naming a font this project does not have refuses whole. A saved record
+  that fails the parser is skipped by the gallery and is not shown; clearing site data is currently
+  the only user-facing way to remove it.
 
 ## Captions
 
@@ -889,8 +891,8 @@ Stable hooks used across flows and tests:
   size, and SHA-256.
 - The snapshot is captured once, before any bytes are read, so an edit during the write cannot mix
   project states. Before it hashes anything, the export compares each stored entry size (from the
-  store listing) and each session `File` size with the 512 MiB entry and 1 GiB total budgets, so an
-  oversized asset is refused without materializing it. If the store is supported but its listing
+  store listing) and each session `File` size with the 512 MiB media entry, 8 MiB font entry, and
+  1 GiB total budgets, so an oversized asset or font is refused without materializing it. If the store is supported but its listing
   fails, the export refuses rather than hash without a size check. A hash that exists in both the
   media and font namespaces keeps the larger stored size, so a damaged oversized copy is not hidden
   by a small one. Media bytes come from the project's OPFS
@@ -980,8 +982,8 @@ Stable hooks used across flows and tests:
   claim survives a later project switch. Project ids are user-controlled strings, so registry lookups
   use a null-prototype dictionary: `constructor` and `__proto__` cannot read inherited values or
   mutate the prototype.
-- Hostile-archive and memory limits: 4096 entries, 512 MiB per entry, 1 GiB total, an 8 MiB
-  manifest, a 64 MiB project file, and 512-character paths. These are a memory budget rather than
+- Hostile-archive and memory limits: 4096 entries, 512 MiB per media entry, 8 MiB per font
+  entry, 1 GiB total, an 8 MiB manifest, a 64 MiB project file, and 512-character paths. These are a memory budget rather than
   a disk budget: import reads one entry into a full buffer several times (CRC, SHA-256, probe, and
   store write), and the no-picker export fallback holds the entire archive in memory. The manifest
   validator rejects an oversized entry or total before any entry bytes are read, so a bundle cannot
@@ -1003,7 +1005,12 @@ Stable hooks used across flows and tests:
   Stored Media resets the project. Stored hashes count in both the media root and the `fonts/`
   namespace, so a text-only project with lost claims is not mistaken for an empty one either. An
   unreadable shard also refuses a new claim, so a save fails instead of publishing beside records it
-  cannot read.
+  cannot read. An open classifies the blocked state as `claims-missing`, `unclaimed`, or
+  `storage-unavailable`, and the Storage dialog renders guidance per cause instead of always pointing
+  to a save. The claim write keeps its own cause, so a store that becomes unreadable after the
+  inspection reads `storage-unavailable` rather than a rejected claim. A successful save, hashed or not, clears the block only when every stored media and font
+  hash is referenced by the saved snapshot or protected by a claim; a no-hash save clears only when
+  existing claims protect every stored hash, which is the path after Clear All.
 - Clean Unused Media lists candidates with their sizes and requires confirmation. It keeps every hash
   reachable from the live doc, both history stacks, the autosave slot for this project, and every claim
   shard, and it reports the reclaimed size. Same-tab imports, relinks, Freeze Frame writes, and
@@ -1013,8 +1020,8 @@ Stable hooks used across flows and tests:
   pending check runs again inside the exclusion, after the preview yield, so an install that landed
   while the preview was read cannot have its claim retired by recovery. Clear All
   Stored Media is the only action that removes claims; it names that
-  saved copies lose their media, needs a second confirmation, and the confirmation is bound to the
-  project it named. It holds the same-tab clean flag, waits for an in-flight media write before it
+  saved copies lose their media and fonts and that the current bundle covers only the current
+  document, needs a second confirmation, and the confirmation is bound to the project it named. It holds the same-tab clean flag, waits for an in-flight media write before it
   snapshots the directory, and runs the deletes under the exclusive project lock, so another open tab
   cannot write during or after the snapshot. Without a matching shared hold, or without Web Locks to
   coordinate with, it refuses instead of reporting a partial clear as complete. A failed delete is reported as a

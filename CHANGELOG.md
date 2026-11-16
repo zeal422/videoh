@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.28.2] - 2026-11-16
+
+### Fixed
+
+- Refuse shape links in `canLinkClips`, `linkClips`, and the template parser, and stop capturing a shape `linkId` when saving a template. A shape that was linked could not be reloaded.
+- Prepare the project claims directory in `stageProjectFont` before the first font byte is written. A first upload on a fresh project no longer leaves an unclaimable store, and a project with lost claims refuses the upload with Clear All guidance.
+- Carry the clean-block cause through `prepareForInstall` as `claims-missing`, `unclaimed`, or `storage-unavailable` instead of one boolean, and render reason-specific guidance in the Storage dialog. The claim write keeps its own cause, so a store that disappears after the inspection reads `storage-unavailable` rather than a rejected claim.
+- Clear the clean block only when every stored media and font hash is referenced by the saved snapshot or protected by a claim. A no-hash save clears only when existing claims cover every stored hash, which is the path after Clear All. The coverage check reads claims before listing stored bytes, so a write that lands during the check cannot be missed.
+- Skip shape clips in the Freeze Frame offline scan, so a visible shape no longer disables the action. Hide the Time remapping section for shapes, and refuse `timeScale` for shapes and compounds at the command boundary.
+- Compare Join Clips effects by a canonical shape that drops the effect id and treats absent `enabled` and `true` alike. Numeric defaults and effect order still refuse.
+- Refuse duplicate and empty media ids at hydration, clear an empty or dangling `clip.mediaId`, and refuse empty or blank track, clip, and sequence ids.
+- Refuse empty, blank, or colliding structural ids in `addTrack`, `addClip`, `addSequence`, and `splitClip` with a supplied `rightId`, including every track and clip id inside a supplied sequence. `moveClip` refuses a linked cross-sequence move, `addClip` and `addSequence` refuse shape or compound payload clips carrying incompatible media, text, or retiming fields, and a supplied sequence cannot place a shape on a non-video lane.
+- Cap bundle font entries at 8 MiB on import and export while media keeps the 512 MiB entry limit. A forged local-header size cannot enlarge a read.
+
+### Changed
+
+- Bump the version to 0.28.2; the project schema stays v8.
+
 ## [0.28.1] - 2026-11-15
 
 ### Fixed

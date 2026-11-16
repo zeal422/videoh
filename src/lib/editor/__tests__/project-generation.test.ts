@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const claimState = vi.hoisted(() => ({
   started: false,
@@ -21,7 +21,9 @@ vi.mock('../media/persist', () => ({
 
 import { downloadProjectJSON, installProject } from '../project-io'
 import { createDoc, createMediaAsset } from '../factories'
+import { ensureProjectMedia } from '../media/media-store'
 import { useEditorStore } from '../store'
+import { createFakeOpfs, type FakeOpfs } from './mocks/opfs'
 import type { Doc } from '../types'
 
 /**
@@ -43,11 +45,29 @@ function docWithHash(): Doc {
   return doc
 }
 
+let opfs: FakeOpfs
+
+/**
+ * The claim write is mocked here, so the coverage setup is the claims
+ * directory plus the stored copy of the hash doc A references.
+ */
+async function storeCoveredHash(doc: Doc): Promise<void> {
+  await ensureProjectMedia(doc.project.id)
+  opfs.put(`/${doc.project.id}/${'a'.repeat(64)}`, 'stored bytes')
+}
+
+beforeEach(() => {
+  opfs = createFakeOpfs()
+  vi.stubGlobal('navigator', {
+    storage: { getDirectory: async () => opfs.root },
+  })
+})
+
 afterEach(() => {
   claimState.started = false
   claimState.resolve = null
   vi.unstubAllGlobals()
-  useEditorStore.setState({ mediaCleanBlocked: false })
+  useEditorStore.setState({ mediaCleanBlockReason: null })
 })
 
 describe('save claim and project identity', () => {
@@ -56,28 +76,31 @@ describe('save claim and project identity', () => {
       createElement: () => ({ click: () => undefined, href: '', download: '' }),
     })
     const docA = docWithHash()
-    useEditorStore.setState({ doc: docA, projectEpoch: 5, mediaCleanBlocked: true })
+    await storeCoveredHash(docA)
+    useEditorStore.setState({ doc: docA, projectEpoch: 5, mediaCleanBlockReason: 'unclaimed' })
     const pending = downloadProjectJSON()
     await vi.waitFor(() => expect(claimState.started).toBe(true))
 
     // A newer, degraded open installs while A's claim is still in flight.
     installProject(createDoc())
-    useEditorStore.getState().setMediaCleanBlocked(true)
+    useEditorStore.getState().setMediaCleanBlockReason('unclaimed')
 
     claimState.resolve?.(true)
     await pending
-    expect(useEditorStore.getState().mediaCleanBlocked).toBe(true)
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBe('unclaimed')
   })
 
   it('unblocks clean when the same project is still live', async () => {
     vi.stubGlobal('document', {
       createElement: () => ({ click: () => undefined, href: '', download: '' }),
     })
-    useEditorStore.setState({ doc: docWithHash(), projectEpoch: 9, mediaCleanBlocked: true })
+    const doc = docWithHash()
+    await storeCoveredHash(doc)
+    useEditorStore.setState({ doc, projectEpoch: 9, mediaCleanBlockReason: 'unclaimed' })
     const pending = downloadProjectJSON()
     await vi.waitFor(() => expect(claimState.started).toBe(true))
     claimState.resolve?.(true)
     await pending
-    expect(useEditorStore.getState().mediaCleanBlocked).toBe(false)
+    expect(useEditorStore.getState().mediaCleanBlockReason).toBeNull()
   })
 })

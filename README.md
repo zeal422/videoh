@@ -183,17 +183,18 @@ references, not the media bytes: clearing site data, browser eviction, or openin
 device leaves assets missing until the original files are relinked, so keep the originals or a
 separate backup. An explicit save and open write an immutable claim shard for the hashes that copy may
 use, and a save refuses rather than publish a shard beside lost or unreadable records. Clean Unused
-Media refuses while another tab has the project open, when Web Locks is unavailable, or when a claim
-is missing, and it never deletes a hash the doc, both history slots, or a claim still reaches. Clear
-All Stored Media needs a second confirmation, removes
-every stored file for the project, waits for an in-flight write, and refuses while another tab has the
-project open or Web Locks are unavailable. Autosave writes to `localStorage` with an 800 ms debounce and
+Media refuses while another tab has the project open, when Web Locks is unavailable, or when the
+project's saved-copy records are missing, a claim write failed, or storage is unavailable, and it
+never deletes a hash the doc, both history slots, or a claim still reaches. Clear All Stored Media
+needs a second confirmation, removes every stored media and font file for the project, waits for an
+in-flight write, and refuses while another tab has the project open or Web Locks are unavailable. Autosave writes to `localStorage` with an 800 ms debounce and
 offers restore on the next visit; every writer checks a cross-tab ownership record under a Web Lock,
 or under one IndexedDB transaction when Web Locks is unavailable, so an older tab cannot overwrite a
 project another tab just imported while the import holds its lease. When neither mechanism is
 available, imports and ownership claims are refused and normal editing still writes the slot. File > Export Project Bundle
 writes `<project-name>.vebundle.zip` with a manifest, the project JSON, every media asset, and every
-project font; File > Open Project Bundle validates it and installs it as a project. The full contracts
+project font, with media entries capped at 512 MB and fonts at 8 MB; File > Open Project Bundle
+validates it and installs it as a project. The full contracts
 are in [docs/flows.md](docs/flows.md#export) and
 [docs/flows.md](docs/flows.md#save-load-autosave-restore).
 
@@ -209,7 +210,7 @@ bun run battery:pair   # dev + artifact concurrently (needs a current build and 
 PAIR_SHARDS=1 bun run battery:pair # sequential rollback, one session per leg
 ```
 
-Current state: **3031 tests across 132 files, all passing**. Coverage is enforced at 70/60/75/70 over
+Current state: **3128 tests across 133 files, all passing**. Coverage is enforced at 70/60/75/70 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -238,7 +239,7 @@ src/lib/editor/            # state core (commands, store, serialization) + brows
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, landing sections, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 132 test files (3031 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 133 test files (3128 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations

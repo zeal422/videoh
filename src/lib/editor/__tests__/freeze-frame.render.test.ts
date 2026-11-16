@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderFreezeFrame, FreezeFrameError } from '../media/freeze-frame'
-import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
+import { createClip, createDoc, createMediaAsset, createShapeClip, createTrack } from '../factories'
 import type { Doc } from '../types'
 
 /**
@@ -79,7 +79,7 @@ class FakeVideo extends EventTarget {
 }
 
 interface CanvasEvent {
-  kind: 'fillRect' | 'drawImage'
+  kind: 'fillRect' | 'drawImage' | 'fill'
   style?: string
   width?: number
   height?: number
@@ -114,6 +114,9 @@ function fakeCanvas(): HTMLCanvasElement {
     drawImage: () => {
       drawImageCalls += 1
       record.events.push({ kind: 'drawImage' })
+    },
+    fill: () => {
+      record.events.push({ kind: 'fill', style: String(target.fillStyle) })
     },
   }
   const context = new Proxy(target, {
@@ -264,6 +267,29 @@ describe('renderFreezeFrame', () => {
     const file = await renderFreezeFrame(doc, [], 1)
     expect(videos).toHaveLength(0)
     expect(file.type).toBe('image/png')
+  })
+
+  it('renders a shape-only frame without loading a media source', async () => {
+    const doc = createDoc()
+    doc.project.width = 320
+    doc.project.height = 180
+    doc.project.tracks = [
+      createTrack('video', 1, {
+        id: 'v1',
+        clips: [createShapeClip({ id: 'shape_1', start: 0, duration: 4 })],
+      }),
+    ]
+    const file = await renderFreezeFrame(doc, [], 1)
+    // A shape draws from its own geometry: the compositor never asks for a
+    // source frame, so the renderer must not refuse or load a decoder.
+    expect(videos).toHaveLength(0)
+    expect(drawImageCalls).toBe(0)
+    expect(toBlobCalls).toBe(1)
+    expect(file.type).toBe('image/png')
+    const main = canvasRecords[0]
+    expect(main.events.some((event) => event.kind === 'fill' && event.style === '#ffffff')).toBe(
+      true,
+    )
   })
 
   it('releases the decoder element when the source fails to load', async () => {

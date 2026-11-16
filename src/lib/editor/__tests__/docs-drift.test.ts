@@ -46,8 +46,17 @@ function realTestFiles(): string[] {
 
 /** Count the it/test declarations in one test file (line-anchored, comments excluded). */
 function countCases(file: string): number {
-  const src = readFileSync(file, 'utf8')
-  return (src.match(/^\s*(?:it|test)\s*\(/gm) ?? []).length + countEachRows(src)
+  return countCasesFromSource(readFileSync(file, 'utf8'), file)
+}
+
+/**
+ * Count the it/test declarations in one source. `it.each` with an inline table
+ * counts its rows; a variable-backed table resolves the const array in the
+ * same file. An unresolvable table throws, so the drift gate fails loudly in
+ * the undercount direction, never silently.
+ */
+function countCasesFromSource(src: string, file = 'source'): number {
+  return (src.match(/^\s*(?:it|test)\s*\(/gm) ?? []).length + countEachRows(src, file)
 }
 
 /**
@@ -56,16 +65,45 @@ function countCases(file: string): number {
  * not exist in this repo; if one appears it is missed and the drift gate
  * fails loudly in the undercount direction, never silently.
  */
-function countEachRows(src: string): number {
+function countEachRows(src: string, file: string): number {
   const lines = src.split('\n')
   let rows = 0
   for (let i = 0; i < lines.length; i++) {
-    if (!/^\s*(?:it|test)\.each\(\[\s*$/.test(lines[i] ?? '')) continue
-    for (let j = i + 1; j < lines.length; j++) {
-      const line = lines[j] ?? ''
-      if (/^\s*\]/.test(line)) break
-      if (/^\s*\[.*\],?\s*$/.test(line)) rows += 1
+    const inline = /^\s*(?:it|test)\.each\(\[\s*$/.test(lines[i] ?? '')
+    const variable = inline
+      ? null
+      : /^\s*(?:it|test)\.each\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(lines[i] ?? '')
+    if (!inline && !variable) continue
+    if (inline) {
+      rows += countRowsUntilClose(lines, i + 1)
+      continue
     }
+    const name = variable![1]!
+    const declaration = new RegExp(`^\\s*const\\s+${name}\\b[^=\\n]*=\\s*\\[\\s*$`)
+    const starts = lines.flatMap((line, index) => (declaration.test(line) ? [index] : []))
+    if (starts.length === 0) {
+      throw new Error(`${file}:${i + 1} it.each table "${name}" cannot be resolved`)
+    }
+    if (starts.length > 1) {
+      // Two same-named tables in different describe scopes are not
+      // distinguishable by this line scan. Fail instead of charging rows from
+      // the wrong declaration.
+      throw new Error(
+        `${file}:${i + 1} it.each table "${name}" is ambiguous (${starts.length} declarations)`,
+      )
+    }
+    rows += countRowsUntilClose(lines, starts[0]! + 1)
+  }
+  return rows
+}
+
+/** One single-line array row per case, up to the table's closing bracket. */
+function countRowsUntilClose(lines: string[], start: number): number {
+  let rows = 0
+  for (let j = start; j < lines.length; j++) {
+    const line = lines[j] ?? ''
+    if (/^\s*\]/.test(line)) break
+    if (/^\s*\[.*\],?\s*$/.test(line)) rows += 1
   }
   return rows
 }
@@ -286,6 +324,29 @@ describe('docs test-count claims match the real suite', () => {
     expect(checkScoped('README.md', total, withoutTree)).toContain(
       'expected one editor __tests__ tree line',
     )
+  })
+
+  it('expands variable-backed it.each tables instead of undercounting them', () => {
+    // clip-invariants.test.ts has 5 plain cases plus 17 table rows across two
+    // const-backed tables. The old counter saw only the 5 plain cases.
+    const clip = join(ROOT, 'src/lib/editor/__tests__/clip-invariants.test.ts')
+    expect(countCases(clip)).toBe(22)
+  })
+
+  it('rejects an ambiguous variable-backed it.each table instead of picking one', () => {
+    const source = [
+      'const CASES = [',
+      "  ['a'],",
+      ']',
+      'describe("one", () => {',
+      '  const CASES = [',
+      "    ['b'],",
+      "    ['c'],",
+      '  ]',
+      '  it.each(CASES)("case %s", () => {})',
+      '})',
+    ].join('\n')
+    expect(() => countCasesFromSource(source, 'synthetic')).toThrow(/ambiguous/)
   })
 
   it('every per-file row in the testing.md inventory matches its suite', () => {

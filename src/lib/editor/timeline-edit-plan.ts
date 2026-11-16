@@ -2,7 +2,7 @@ import { TIME_EPSILON } from './constants'
 import { findClip, findTrackIn, sourceTimeAt } from './factories'
 import { linkedClips } from './links'
 import { clipGroupTracks, findLockedTrack } from './tracks'
-import type { Clip, Doc, Marker } from './types'
+import type { Clip, Doc, EffectEntry, Marker } from './types'
 
 /**
  * Pure planners for the 0.22.0 timeline commands (Close Gaps and Join Clips).
@@ -324,6 +324,16 @@ function hasCurves(clip: Clip): boolean {
 }
 
 /**
+ * Canonical effect shape for a join comparison (0.28.2): an effect id is
+ * bookkeeping, and absent `enabled` reads as true. Everything else, including
+ * numeric defaults and effect order, stays exactly as authored.
+ */
+function normalizeEffectForCompare(effect: EffectEntry): Record<string, unknown> {
+  const { id: _id, enabled, ...rest } = effect
+  return enabled === false ? { ...rest, enabled: false } : rest
+}
+
+/**
  * Properties the joined clip keeps from the PREVIOUS clip. When the next clip
  * differs in any of them the join would silently discard one side's settings,
  * so it refuses instead. `sound` and keyframes have their own rules above.
@@ -346,7 +356,10 @@ const RETAINED_FIELDS: { label: string; read: (clip: Clip) => unknown }[] = [
   { label: 'Temperature', read: (clip) => clip.temperature ?? 0 },
   { label: 'Tint', read: (clip) => clip.tint ?? 0 },
   { label: 'LUT', read: (clip) => clip.lutId ?? null },
-  { label: 'Effects', read: (clip) => clip.effects ?? null },
+  {
+    label: 'Effects',
+    read: (clip) => clip.effects?.map(normalizeEffectForCompare) ?? null,
+  },
   { label: 'Animation', read: (clip) => clip.animStatics ?? null },
   { label: 'Markers', read: (clip) => markerShape(clip.markers) },
 ]

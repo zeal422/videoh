@@ -18,6 +18,7 @@ import {
   sanitizeBundleFileName,
   validateBundleManifest,
 } from '../project-bundle'
+import { FONT_FILE_MAX_BYTES } from '../constants'
 import type { Doc, MediaAsset, ProjectFont } from '../types'
 
 const HASH_A = 'a'.repeat(64)
@@ -373,5 +374,26 @@ describe('bundle matching (0.28.0)', () => {
     expect(isValidBundleMediaId('../media')).toBe(false)
     expect(isValidBundleMediaId('')).toBe(false)
     expect(isValidBundleMediaId(7)).toBe(false)
+  })
+})
+
+describe('bundle manifest font cap (0.28.2)', () => {
+  it('refuses a font entry above the 8 MiB font cap', () => {
+    const manifest = manifestFor([], [font('font_a', 'A.woff2')])
+    manifest.fonts[0] = { ...manifest.fonts[0]!, size: FONT_FILE_MAX_BYTES + 1 }
+    const result = validateBundleManifest(manifest)
+    expect('error' in result && /invalid size/i.test(result.error)).toBe(true)
+  })
+
+  it('accepts a font entry exactly at the cap', () => {
+    const manifest = manifestFor([], [font('font_b', 'B.woff2')])
+    manifest.fonts[0] = { ...manifest.fonts[0]!, size: FONT_FILE_MAX_BYTES }
+    expect('manifest' in validateBundleManifest(manifest)).toBe(true)
+  })
+
+  it('still accepts a media entry above 8 MiB', () => {
+    const manifest = manifestFor([asset('media_a', 'clip.mp4')], [])
+    manifest.assets[0] = { ...manifest.assets[0]!, size: 9 * 1024 * 1024 }
+    expect('manifest' in validateBundleManifest(manifest)).toBe(true)
   })
 })

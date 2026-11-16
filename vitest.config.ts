@@ -39,6 +39,7 @@ export default defineConfig({
         'src/lib/editor/playback/denoise.ts',
         'src/lib/editor/playback/audio-chain.ts',
         'src/lib/editor/commands.ts',
+        'src/lib/editor/clip-invariants.ts',
         'src/lib/editor/trim.ts',
         'src/lib/editor/ripple-trim.ts',
         'src/lib/editor/slip.ts',
