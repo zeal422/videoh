@@ -13,6 +13,7 @@ import {
   stageProjectFontFaces,
   stageProjectFont,
   unregisterProjectFonts,
+  type StagedFont,
 } from '../media/font-store'
 import { isMediaActivityActive } from '../media/persist'
 import { ensureProjectMedia, sha256Hex, writeMediaFile } from '../media/media-store'
@@ -248,6 +249,45 @@ describe('project font loading (0.25.0)', () => {
     await Promise.all([pendingA, pendingB])
     expect(fontSet.faces.size).toBe(1)
     expect(isFontFamilyActive(FAMILY)).toBe(true)
+  })
+
+  it('a same-family commit keeps its face when a load started earlier', async () => {
+    const a = await storeFont(PROJECT, fontBytes())
+    const b = await storeFont(PROJECT, fontBytes([0x77, 0x4f, 0x46, 0x46]), 'font_second')
+    // Hold the loader's first storage read so the commit lands while it runs.
+    const original = File.prototype.arrayBuffer
+    let releaseRead!: () => void
+    const gate = new Promise<void>((resolve) => {
+      releaseRead = resolve
+    })
+    let first = true
+    const read = vi.spyOn(File.prototype, 'arrayBuffer')
+    read.mockImplementation(function (this: File) {
+      if (first) {
+        first = false
+        return gate.then(() => original.call(this))
+      }
+      return original.call(this)
+    })
+    try {
+      const loading = loadProjectFonts(docWith([a, b]))
+      await vi.waitFor(() => expect(read).toHaveBeenCalled())
+      const committedFace = new FakeFontFace(fontFaceFamily(b.id), fontBytes())
+      const staged: StagedFont = {
+        font: b,
+        face: committedFace as unknown as FontFace,
+        projectId: PROJECT,
+      }
+      expect(commitStagedFont(staged, PROJECT)).toBe(true)
+      releaseRead()
+      const result = await loading
+      // B's committed face survives; the loader still registers unrelated A.
+      expect(fontSet.faces.has(committedFace)).toBe(true)
+      expect(isFontFamilyActive(a.family)).toBe(true)
+      expect(result.loaded).toBe(1)
+    } finally {
+      read.mockRestore()
+    }
   })
 
   it('staging an incoming project leaves the installed registry untouched', async () => {

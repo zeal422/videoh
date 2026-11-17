@@ -46,7 +46,7 @@ const scope = self as unknown as DedicatedWorkerGlobalScope
 export const DECODE_TIMEOUT_MS = 10_000
 const assets = new Map<string, AssetEntry>()
 const latest = new Map<string, DecodeRequest>()
-const running = new Set<string>()
+const running = new Map<string, symbol>()
 /** Per-clip release epochs: a late frame from before a release is stale. */
 const clipEpochs = new Map<string, number>()
 /** Requests currently inside `decode`, for release invalidation. */
@@ -169,9 +169,13 @@ async function decode(request: DecodeRequest): Promise<ImageBitmap> {
   }
 }
 
-async function drain(clipId: string): Promise<void> {
+async function drain(clipId: string, token: symbol): Promise<void> {
   try {
     while (true) {
+      // A reset clears the map and a new request installs a different token.
+      // The obsolete drain must stop BEFORE dequeueing: otherwise it steals
+      // a newer request from the replacement drain's queue.
+      if (running.get(clipId) !== token) return
       const next = latest.get(clipId)
       if (!next) return
       latest.delete(clipId)
@@ -223,7 +227,9 @@ async function drain(clipId: string): Promise<void> {
       }
     }
   } finally {
-    running.delete(clipId)
+    // A reset clears the map; a newer decode installs a different token. Only
+    // the decode that still owns the entry may remove it.
+    if (running.get(clipId) === token) running.delete(clipId)
   }
 }
 
@@ -266,6 +272,7 @@ function reset(): void {
   for (const entry of assets.values()) entry.input.dispose()
   assets.clear()
   latest.clear()
+  running.clear()
 }
 
 scope.onmessage = (event: MessageEvent<IncomingMessage>) => {
@@ -274,8 +281,9 @@ scope.onmessage = (event: MessageEvent<IncomingMessage>) => {
     case 'decode':
       latest.set(data.clipId, data)
       if (running.has(data.clipId)) return
-      running.add(data.clipId)
-      void drain(data.clipId)
+      const token = Symbol(data.clipId)
+      running.set(data.clipId, token)
+      void drain(data.clipId, token)
       return
     case 'releaseClip':
       releaseClip(data.clipId)

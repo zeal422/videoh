@@ -802,6 +802,7 @@ export class PlaybackCore {
     this.scrubGenerations.clear()
     this.scrubAssets.clear()
     this.scrubFallback.clear()
+    this.imageCache.clear()
     this.setScrubRecovering(false)
     this.opts.onMediaError?.(null)
   }

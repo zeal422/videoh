@@ -832,3 +832,173 @@ Action: kept as a note; freshness checks compare content without generated times
 What happened: the first "keeps the clean-block reason" tests set `mediaCleanBlockReason` directly with `useEditorStore.setState`, so they passed against the pre-change store: zustand merged the unknown key and the no-op save left it alone. The red run initially showed only the clear-state tests failing, which exposed the false locks.
 Would-have-caught: trigger 5 applied to keep-state assertions: drive the state through the real flow (the degraded open) and assert the test did not seed it, then assert the action preserves what the flow set.
 Action: kept as a note; keep-state locks establish the state through the production path, never through a direct store write.
+
+## 2026-11-16 - a transient gesture skip hid slider paint
+
+What happened: the H1 slider gesture opened a pointerless transient, but the
+paused-preview effect skipped every transient, so the f06 and e01 pixel checks
+sampled a stale monitor and the pair battery failed eight steps on both legs.
+The unit suites were green because they assert the doc, not the painted frame.
+Would-have-caught: trigger 6 applied to a preview-path change: a gesture
+lifecycle edit needs the battery pixel proof, and an `isTransientActive` skip
+must distinguish pointer-owned drags from pointerless preview gestures.
+Action: kept as a note; gesture or preview changes run the battery before the
+release verdict, not only the Vitest gate.
+
+## 2026-11-16 - a controlled slider committed before it reported the change
+
+What happened: NamedSlider assumed `onValueChange` ran before `onValueCommit`. In
+Radix 1.3.6 a controlled slider runs the commit callback inside `updateValues`
+and calls `onChange` afterwards, so a keyboard arrow committed the value and
+then opened a pointerless transient that paused autosave. The same slider also
+never received `onValueCommit` when a drag returned to its starting value.
+Would-have-caught: trigger 4 applied to library behavior: read the installed
+callback implementation before ordering side effects around it, and test the
+keyboard, unchanged-drag, and unmount paths, not only pointer moves.
+Action: kept as a note; verify third-party callback order in `node_modules` and
+lock every input modality with its own test.
+
+## 2026-11-16 - nested media reservations deadlocked a waiting clean
+
+What happened: `beginMediaActivityWhenIdle` waited for any clean flag even when
+the caller already held a reservation. The bundle import holds one across font
+staging, so Clear All waited for that reservation while staging waited for the
+clear. The race is invisible without a concurrent clear.
+Would-have-caught: trigger 4's sibling sweep applied to admission gates: list
+every holder of an outer reservation and every nested admission it can reach,
+then pair it with the cleanup wait.
+Action: kept as a note; an admission that waits for active work must let a
+nested admission from the active holder through, and a nested-reservation test
+locks it.
+
+## 2026-11-16 - a window blur kept the slider's pointer flag alive
+
+What happened: EditorShell commits a dangling pointer gesture on window blur,
+but NamedSlider's local `pointerDown` stayed true because no pointerup or
+pointercancel arrived. The next keyboard step was treated as a live drag, so
+its preview was never finalized and autosave stayed paused.
+Would-have-caught: trigger 4's sibling sweep applied to local interaction
+state: list every way the browser can end a drag (pointerup, pointercancel,
+capture loss, window blur) and reset the owning ref on each.
+Action: kept as a note; a component's local gesture flag has to follow every
+loss-of-interaction path, not only the pointer events it handles.
+
+## 2026-11-17 - a slider release still rolled back another gesture
+
+What happened: NamedSlider skipped ending a foreign gesture in its own cleanup,
+but its release still called the panel's `onValueCommit`, and `apply` rolls the
+LIVE gesture back first. A stale release therefore discarded whatever control
+owned the slot now, which the release notes said could not happen.
+Would-have-caught: trigger 4 applied to a release claim: list every store call
+the component makes on release, not only the ones its own token guards, and
+check which of them mutate the live gesture.
+Action: kept as a note; when a doc says a control cannot end another control's
+edit, audit the commit path as well as the cancel path.
+
+## 2026-11-17 - an activity counter is not a nested-reservation token
+
+What happened: the nested-admission fix let any caller through while
+`activeWrites > 0`. That admitted unrelated new imports too, so a stream of new
+work could keep Clear All waiting. The counter proved activity existed, not that
+the caller belonged to it.
+Would-have-caught: trigger 4's identity question: for every bypass, ask "which
+specific holder is this caller nested in?", and if the code cannot answer,
+replace the global predicate with an explicit token.
+Action: kept as a note; pass a reservation token to nested admissions and make
+top-level work wait once a clean is requested.
+
+## 2026-11-17 - sanitization ran after a helper read the hostile field
+
+What happened: `setClipKeyframes` passed the raw payload to the reorder helper
+before `sanitizeKeyframes` dropped malformed entries, so a null entry threw a
+raw TypeError. A separate validator accepted class instances and inherited
+fields because "typeof object" is not "plain object".
+Would-have-caught: trigger 4 applied to validation order and shape: trace the
+first field read on a payload, not the first filter, and test the object shape
+the plan names (plain record) rather than only primitive/null rejection.
+Action: kept as a note; guard entries before any helper reads them, and make
+record validators check the prototype, not only the type.
+
+## 2026-11-17 - JSON.stringify collapsed distinct invalid project ids
+
+What happened: the recovered-id fallback hashed `JSON.stringify(value)`, which
+writes null, NaN, and both infinities as `null` and writes -0 as `0`. Two
+different malformed projects could therefore share one OPFS directory, claims
+record, lock, and install record.
+Would-have-caught: trigger 4 applied to a hash input: list the values that must
+stay distinct (the plan said two distinct invalid ids) and test the lossy
+corners of the serializer (null/NaN/Infinity, -0, nested arrays and objects),
+not only the ordinary string and array cases.
+Action: kept as a note; a deterministic fallback that keys storage must be
+type-preserving, and its injectivity needs hostile-input tests.
+
+## 2026-11-17 - the count lock counted declarations, not runtime cases
+
+What happened: docs-drift counted one `it` declaration for a `for ... of` table,
+but the loop expands to 19 runtime tests. The inventory and headline were short
+by 18, even though the lock passed.
+Would-have-caught: trigger 4 applied to a measuring tool: compare the tool's
+count with the runner's count on at least one generated case, and treat a loop
+that emits tests as an expansion the counter must model.
+Action: kept as a note; the drift check now expands for-of tables, and an
+unregistered imported table fails loudly instead of undercounting.
+
+## 2026-11-17 - a clearing list read as exhaustive
+
+What happened: the privacy page said clearing site data "removes the autosave,
+stored media and fonts, ..." with no qualifier. The plan asked for wording that
+does not claim the list is the whole set, and a new storage item could be added
+without updating the sentence.
+Would-have-caught: trigger 4 applied to user-facing copy: when a requirement
+says "do not imply this is exhaustive", lock the qualifier with a render
+assertion, not just the presence of the listed terms.
+Action: kept as a note; the paragraph now says "the browser-stored data listed
+above, including ...", and the public-pages render test asserts the qualifier.
+
+## 2026-11-17 - a preview frame still wrote into another control's gesture
+
+What happened: NamedSlider refused to commit or cancel a gesture it did not
+own, but it still called the panel's `onValueChange` first. A second slider
+could therefore write its frame into the first slider's live gesture, and the
+first slider's commit would roll the shared base back and drop one edit.
+Would-have-caught: trigger 4 applied to an ownership rule: list every store
+write the component makes (preview frame, commit, cancel, unmount), not only
+the teardown paths, and gate each one on the same token check.
+Action: kept as a note; a foreign preview frame is now dropped, and the slider
+opens its own gesture after the owner releases.
+
+## 2026-11-17 - the loop counter assumed one declaration per iteration
+
+What happened: the docs-drift loop expansion added `rows - 1`, which is only
+correct when the loop body declares one test. A loop with two `it` calls would
+be counted as `plain + rows - 1` instead of `plain + 2 * (rows - 1)`. The row
+counter also ignored scalar and object rows, so a scalar table counted zero.
+Would-have-caught: trigger 4 applied to a count model: test the forms the plan
+accepts (tuple, scalar, object) and more than one declaration per iteration,
+not only the current file's shape.
+Action: kept as a note; the drift scan now counts top-level array elements with
+string/comment/nesting awareness and multiplies by the declarations in the
+loop body.
+
+## 2026-11-17 - the unreadable-id fallback used generic coercion
+
+What happened: when the recovered-id encoder could not read a value, the
+fallback called `String(value)`. Two distinct unreadable objects both became
+`raw:object:[object Object]`, and a hostile accessor could make `String` throw
+inside the fallback.
+Would-have-caught: trigger 4 applied to a fallback: ask what the fallback
+proves about distinctness and whether it can throw, instead of only checking
+that the happy path does not.
+Action: kept as a note; unreadable objects get a per-value WeakMap identity,
+and `String` is only used for primitives that cannot throw.
+
+## 2026-11-17 - a comma inside a regex split a table row
+
+What happened: the drift table scanner treated every depth-zero comma as a row
+separator. A row like `/x,y/` split into two elements because the scanner did
+not recognize a regular-expression literal before the comma.
+Would-have-caught: trigger 4 applied to a lexer boundary: list the literal
+forms a source scanner must consume (strings, comments, regexes, nested
+brackets) and test a comma inside each one, not only the current tables.
+Action: kept as a note; the scanner now consumes regex literals with escape
+and character-class handling, and a `/,/` plus `/x,y/` regression locks it.

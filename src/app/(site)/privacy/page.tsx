@@ -12,7 +12,7 @@ export default function PrivacyPage() {
     <LegalPage
       title="Privacy"
       intro="This page describes what videoh stores in your browser and what leaves your device. It is written to match how the app works, not to claim legal sufficiency."
-      lastUpdated="October 25, 2026"
+      lastUpdated="November 16, 2026"
     >
       <h2>Your media stays local</h2>
       <p>
@@ -24,7 +24,24 @@ export default function PrivacyPage() {
       <h2>What the browser stores</h2>
       <p>videoh uses browser storage for the editor, not for a server-side profile:</p>
       <ul>
-        <li>Autosave keeps the current project in localStorage so you can restore it later.</li>
+        <li>
+          Autosave keeps the current project in a localStorage slot shared by open editor tabs. A
+          small IndexedDB database (<code>web-video-editor-autosave</code>) coordinates those tabs.
+        </li>
+        <li>
+          Stored project media and fonts live in the browser&apos;s origin-private file system
+          (OPFS), keyed by content hash, so a project can reopen, relink, and export without the
+          original file.
+        </li>
+        <li>
+          The template library is an IndexedDB database (<code>videoh-template-library</code>)
+          containing templates you save.
+        </li>
+        <li>
+          Install and recovery records in localStorage remember completed bundle imports, pending
+          installs, and whether install history was lost, so a crashed import cannot delete media
+          another copy still needs.
+        </li>
         <li>Appearance and workspace preferences remember your palette and panel layout.</li>
         <li>
           A first-export marker remembers that this browser profile has already produced a
@@ -37,8 +54,10 @@ export default function PrivacyPage() {
         <li>Project files you download remain wherever you save them.</li>
       </ul>
       <p>
-        You can clear this data through your browser settings. Clearing it removes the autosave,
-        preferences, first-export marker, and release-notes marker from that browser profile.
+        You can clear this data through your browser settings. Clearing site data removes the
+        browser-stored data listed above, including the autosave, stored media and fonts, the
+        template library, preferences, install records, and the first-export and release-notes
+        markers. It does not delete project files you downloaded.
       </p>
 
       <h2>Analytics</h2>

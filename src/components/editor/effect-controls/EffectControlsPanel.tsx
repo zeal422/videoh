@@ -57,7 +57,7 @@ import {
 import { findClip, findMedia } from '@/lib/editor/factories'
 import { AppliedEffectsSection } from '@/components/editor/effect-controls/AppliedEffectsSection'
 import { linkedAudioTwin } from '@/lib/editor/links'
-import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
+import { currentTransientToken, isTransientActive, useEditorStore } from '@/lib/editor/store'
 import { nudgeKeyframeTime } from '@/lib/editor/keyframe-graph-gesture'
 import { useKeyframeGraphDrag } from '@/hooks/editor/useKeyframeGraphDrag'
 import { lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
@@ -467,6 +467,7 @@ function PropertyRow({
   }
 
   const onSlider = (v: number, commit: boolean) => {
+    if (!commit && !isTransientActive()) useEditorStore.getState().beginTransient()
     if (animated) {
       // Editing an animated property writes/updates a keyframe at the playhead.
       const at = axis(playheadLocal)
@@ -1093,6 +1094,7 @@ function AudioShaping({ clip }: { clip: Clip }) {
     if (commit) {
       apply({ type: 'setClipEq', clipId: clip.id, eq: next })
     } else {
+      if (!isTransientActive()) store.beginTransient()
       store.applyTransient({ type: 'setClipEq', clipId: clip.id, eq: next })
     }
   }
@@ -1119,11 +1121,12 @@ function AudioShaping({ clip }: { clip: Clip }) {
           min={-1}
           max={1}
           step={0.05}
-          onValueChange={([v]) =>
+          onValueChange={([v]) => {
+            if (!isTransientActive()) useEditorStore.getState().beginTransient()
             useEditorStore
               .getState()
               .applyTransient({ type: 'setClipPan', clipId: clip.id, pan: v })
-          }
+          }}
           onValueCommit={([v]) => apply({ type: 'setClipPan', clipId: clip.id, pan: v })}
         />
       </div>
@@ -1318,11 +1321,12 @@ function SpeedSection({ clip }: { clip: Clip }) {
             max={SPEED_MAX}
             step={0.05}
             disabled={ramped}
-            onValueChange={([v]) =>
+            onValueChange={([v]) => {
+              if (!isTransientActive()) useEditorStore.getState().beginTransient()
               useEditorStore
                 .getState()
                 .applyTransient({ type: 'setClipSpeed', clipId: clip.id, speed: v })
-            }
+            }}
             onValueCommit={([v]) => apply({ type: 'setClipSpeed', clipId: clip.id, speed: v })}
           />
           {ramped && (

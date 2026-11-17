@@ -122,7 +122,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 export class ScrubFrameCacheSource implements ScrubFrameSource {
   private cache = new Map<string, CachedFrame>()
   private latest = new Map<string, PendingRequest>()
-  private running = new Set<string>()
+  private running = new Map<string, symbol>()
   private failed = new Set<string>()
   private fallbackListeners = new Set<ScrubFallbackListener>()
   private disposed = false
@@ -168,8 +168,9 @@ export class ScrubFrameCacheSource implements ScrubFrameSource {
       resetEpoch: this.resetEpoch,
     })
     if (this.running.has(request.clipId)) return
-    this.running.add(request.clipId)
-    void this.drain(request.clipId)
+    const token = Symbol(request.clipId)
+    this.running.set(request.clipId, token)
+    void this.drain(request.clipId, token)
   }
 
   /** True when a release or reset happened after this request was dequeued. */
@@ -180,9 +181,13 @@ export class ScrubFrameCacheSource implements ScrubFrameSource {
     )
   }
 
-  private async drain(clipId: string): Promise<void> {
+  private async drain(clipId: string, token: symbol): Promise<void> {
     try {
       while (true) {
+        // A reset clears the map and a new request installs a different token.
+        // The obsolete drain must stop BEFORE dequeueing: otherwise it steals
+        // a newer request from the replacement drain's queue.
+        if (this.running.get(clipId) !== token) break
         const next = this.latest.get(clipId)
         if (!next) break
         this.latest.delete(clipId)
@@ -243,7 +248,9 @@ export class ScrubFrameCacheSource implements ScrubFrameSource {
         }
       }
     } finally {
-      this.running.delete(clipId)
+      // Only this decode may remove its own entry: a reset clears the map and
+      // a newer decode for the same clip installs a different token.
+      if (this.running.get(clipId) === token) this.running.delete(clipId)
     }
   }
 
@@ -298,6 +305,7 @@ export class ScrubFrameCacheSource implements ScrubFrameSource {
     this.cache.clear()
     this.latest.clear()
     this.failed.clear()
+    this.running.clear()
     this.decoder.reset()
   }
 

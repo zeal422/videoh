@@ -4,7 +4,14 @@ import { computeDuckingKeyframes, overlappingAudioClips, sanitizeDuckingOptions 
 import { animatedValue } from '../keyframes'
 import { createClip, createShapeClip, createTrack } from '../factories'
 import { WAVEFORM_BUCKETS } from '../constants'
-import type { Clip, Doc, KeyframeInterpolation, KeyframeProperty, MediaAsset } from '../types'
+import type {
+  Clip,
+  Doc,
+  Keyframe,
+  KeyframeInterpolation,
+  KeyframeProperty,
+  MediaAsset,
+} from '../types'
 
 function baseDoc(): { doc: Doc; clipId: string; trackId: string } {
   const clip = createClip({ id: 'clip_1', start: 0, duration: 4 })
@@ -122,6 +129,33 @@ describe('setClipKeyframes', () => {
       keyframes: [{ time: 0, value: 999 }],
     })
     expect(next.project.tracks[0].clips[0].keyframes!.hue![0].value).toBe(180)
+  })
+
+  it('drops a malformed entry instead of throwing before sanitization', () => {
+    const { doc, clipId } = baseDoc()
+    const withKfs = applyCommand(doc, {
+      type: 'setClipKeyframes',
+      clipId,
+      property: 'opacity',
+      keyframes: [
+        { time: 0, value: 0.2 },
+        { time: 2, value: 0.8 },
+      ],
+    })
+    const hostile = [{ time: 0, value: 0.2 }, null] as unknown as Keyframe[]
+    // The reorder helper runs BEFORE sanitization. It must not read `.time`
+    // from a malformed entry: the sanitizer below drops that entry.
+    const next = applyCommand(withKfs, {
+      type: 'setClipKeyframes',
+      clipId,
+      property: 'opacity',
+      keyframes: hostile,
+    })
+    expect(next.project.tracks[0].clips[0].keyframes!.opacity).toEqual([
+      { time: 0, value: 0.2, interpolation: 'linear' },
+    ])
+    // The rejected write never touches the doc it was applied to.
+    expect(withKfs.project.tracks[0].clips[0].keyframes!.opacity).toHaveLength(2)
   })
 
   it('an empty curve clears the property and the map', () => {

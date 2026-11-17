@@ -214,6 +214,29 @@ describe('bundle zip (0.28.0)', () => {
     await expect(readZipDirectory(new Blob([bytes as BlobPart]))).rejects.toThrow(ZipError)
   })
 
+  it('rejects a local header whose name bytes differ from the central record', async () => {
+    const archive = await zipBlob([{ path: 'a.txt', data: new Blob(['abcdef']) }])
+    const bytes = await bytesOf(archive)
+    const entries = await readZipDirectory(new Blob([bytes as BlobPart]))
+    const local = entries[0]!.localHeaderOffset
+    // Same length, one different byte: only a real byte comparison catches it.
+    bytes[local + 30] = bytes[local + 30]! ^ 0xff
+    await expect(readZipDirectory(new Blob([bytes as BlobPart]))).rejects.toThrow(
+      /name does not match/,
+    )
+  })
+
+  it('rejects a nonzero local extra field', async () => {
+    const archive = await zipBlob([{ path: 'a.txt', data: new Blob(['abcdef']) }])
+    const bytes = await bytesOf(archive)
+    const entries = await readZipDirectory(new Blob([bytes as BlobPart]))
+    const view = new DataView(bytes.buffer)
+    view.setUint16(entries[0]!.localHeaderOffset + 28, 1, true)
+    await expect(readZipDirectory(new Blob([bytes as BlobPart]))).rejects.toThrow(
+      /unexpected extra field/,
+    )
+  })
+
   it('ignores a forged larger local-header size and reads the central-size bytes', async () => {
     const archive = await zipBlob([{ path: 'a.txt', data: new Blob(['abcdef']) }])
     const bytes = await bytesOf(archive)

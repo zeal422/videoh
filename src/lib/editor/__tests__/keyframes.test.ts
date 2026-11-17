@@ -257,3 +257,17 @@ describe('splitKeyframeMap', () => {
     expect(r!.hue).toEqual([kf(0, 90)])
   })
 })
+
+describe('sanitizeKeyframes hostile input', () => {
+  it('reads a non-array as empty', () => {
+    expect(sanitizeKeyframes('opacity', null as unknown as Keyframe[])).toEqual([])
+    expect(sanitizeKeyframes('opacity', 'nope' as unknown as Keyframe[])).toEqual([])
+  })
+
+  it('drops null and primitive entries instead of throwing', () => {
+    const mixed = [null, 'x', 1, kf(1, 0.5)] as unknown as Keyframe[]
+    expect(sanitizeKeyframes('opacity', mixed)).toEqual([
+      { time: 1, value: 0.5, interpolation: 'linear' },
+    ])
+  })
+})

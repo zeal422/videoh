@@ -1121,8 +1121,7 @@ describe('PlaybackCore (mocked browser)', () => {
   })
 
   it('falls back to element volume when Web Audio is unavailable', async () => {
-    h.uninstall() // drop the AudioContext stub; keep a manual rAF pump
-    vi.stubGlobal('AudioContext', undefined)
+    h.uninstallAudio() // drop only the AudioContext stub; keep media patches + rAF
     const raf = installRAFPump()
 
     const { doc, asset } = makeDoc()
@@ -1291,6 +1290,50 @@ describe('PlaybackCore (mocked browser)', () => {
     const el = document.querySelector('video') as HTMLVideoElement
     expect(el).toBeTruthy()
     expect(el.paused).toBe(false)
+  })
+
+  it('reloads cached images after a project epoch change (M4)', () => {
+    const srcs: string[] = []
+    class FakeImage extends EventTarget {
+      complete = true
+      naturalWidth = 100
+      naturalHeight = 100
+      width = 100
+      height = 100
+      private source = ''
+      set src(value: string) {
+        this.source = value
+        srcs.push(value)
+      }
+      get src(): string {
+        return this.source
+      }
+    }
+    vi.stubGlobal('Image', FakeImage)
+    const doc = createDoc()
+    const asset = createMediaAsset({
+      kind: 'image',
+      name: 'still.png',
+      duration: 0,
+      width: 100,
+      height: 100,
+      url: 'blob:one',
+    })
+    doc.media = [asset]
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'img', mediaId: asset.id, start: 0, duration: 4 }),
+    )
+    let epoch = 0
+    const { core } = makeCore(doc, { getProjectEpoch: () => epoch })
+    core.refresh(0)
+    expect(srcs).toEqual(['blob:one'])
+
+    // Same asset id, new project, new URL: the cached element must not answer.
+    doc.media = [{ ...asset, url: 'blob:two' }]
+    epoch += 1
+    core.refresh(0)
+    expect(srcs).toEqual(['blob:one', 'blob:two'])
+    core.dispose()
   })
 
   it('releases the element when the asset kind flips to image mid-play', async () => {

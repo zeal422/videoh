@@ -15,26 +15,32 @@ export interface TransitionSpan {
   a: Clip
   /** Incoming clip (overlapping a's tail). */
   b: Clip
-  /** Absolute start of the crossfade region (== b.start). */
+  /** Absolute start of the crossfade region (the later of the two clip starts). */
   start: number
-  /** Absolute end of the crossfade region (<= a.end). */
+  /** Absolute end of the crossfade region (inside both clips). */
   end: number
-  /** Effective duration (end - start), already clamped to the actual overlap. */
+  /** Effective duration (end - start), already clamped to the shared interval. */
   duration: number
 }
 
 /**
  * Computes the crossfade span between clip `a` (with a transitionOut) and the
- * overlapping next clip `b`. Returns null when there is no transition or no overlap.
+ * overlapping next clip `b`. Returns null when there is no transition or no
+ * overlap.
  */
 export function getTransitionSpan(a: Clip, b: Clip): TransitionSpan | null {
   const requested = a.transitionOut?.duration ?? 0
   if (requested <= 0) return null
-  const overlap = a.start + a.duration - b.start
-  if (overlap <= 0) return null
-  const duration = Math.min(requested, overlap)
+  // The crossfade exists only where BOTH clips are present. Deriving the shared
+  // interval first keeps a moved or shortened neighbour from producing a span
+  // that reads either clip outside its own [start, end): a following clip that
+  // starts before this one, or one too short for the requested tail.
+  const start = Math.max(a.start, b.start)
+  const sharedEnd = Math.min(a.start + a.duration, b.start + b.duration)
+  if (sharedEnd <= start) return null
+  const duration = Math.min(requested, sharedEnd - start)
   if (duration <= 0) return null
-  return { a, b, start: b.start, end: b.start + duration, duration }
+  return { a, b, start, end: start + duration, duration }
 }
 
 export interface TransitionAlphas {

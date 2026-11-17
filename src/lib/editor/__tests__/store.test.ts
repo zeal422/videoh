@@ -59,6 +59,20 @@ beforeEach(() => {
   })
 })
 
+describe('playhead guards (L1)', () => {
+  it('ignores non-finite playhead values', () => {
+    const store = useEditorStore.getState()
+    store.setPlayhead(2)
+    store.setPlayhead(Number.NaN)
+    store.setPlayhead(Number.POSITIVE_INFINITY)
+    expect(useEditorStore.getState().playhead).toBe(2)
+    store.setSourcePlayhead(1)
+    store.setSourcePlayhead(Number.NaN)
+    store.setSourcePlayhead(Number.NEGATIVE_INFINITY)
+    expect(useEditorStore.getState().sourcePlayhead).toBe(1)
+  })
+})
+
 describe('active sequence path normalization (0.8.1)', () => {
   it('truncates a path whose parent-child edge was removed', () => {
     const doc = createDoc()
@@ -182,6 +196,30 @@ describe('transient gestures', () => {
     })
     return { clipId: 'clip_sel', markerId: 'marker_sel' }
   }
+
+  it('one slider gesture restores the pre-drag state on the first undo (H1)', () => {
+    addTestClip()
+    const store = useEditorStore.getState()
+    const clipId = store.doc.project.tracks.flatMap((t) => t.clips)[0].id
+    store.apply({ type: 'setClipRotation', clipId, rotation: 10 })
+    const beforeDrag = useEditorStore.getState().doc
+    // The slider's first preview opens the gesture; the release (`apply`)
+    // rolls back to the base and records ONE entry.
+    store.beginTransient()
+    for (const opacity of [0.8, 0.6, 0.4, 0.5]) {
+      useEditorStore.getState().applyTransient({ type: 'setClipOpacity', clipId, opacity })
+    }
+    useEditorStore.getState().apply({ type: 'setClipOpacity', clipId, opacity: 0.5 })
+    const clipNow = () => useEditorStore.getState().doc.project.tracks.flatMap((t) => t.clips)[0]
+    expect(clipNow().rotation).toBe(10)
+    expect(clipNow().opacity).toBe(0.5)
+    useEditorStore.getState().undo()
+    expect(clipNow().rotation).toBe(10)
+    expect(clipNow().opacity).toBeUndefined()
+    expect(JSON.stringify(useEditorStore.getState().doc)).toBe(JSON.stringify(beforeDrag))
+    useEditorStore.getState().undo()
+    expect(clipNow().rotation).toBeUndefined()
+  })
 
   it('commitTransient creates exactly ONE history entry for a whole drag', () => {
     addTestClip()

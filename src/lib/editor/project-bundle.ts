@@ -297,7 +297,12 @@ export function validateBundleManifest(raw: unknown): BundleManifestResult {
     paths.add(path)
     const name = readString(value.name, BUNDLE_MAX_NAME_LENGTH)
     if (!name) return { error: 'The bundle has a media entry with no valid name.' }
-    const type = typeof value.type === 'string' && value.type.length <= 255 ? value.type : null
+    const type =
+      typeof value.type === 'string' &&
+      value.type.length <= 255 &&
+      !CONTROL_CHARACTERS.test(value.type)
+        ? value.type
+        : null
     if (type === null) return { error: 'The bundle has a media entry with no valid type.' }
     const size = readSize(value.size, BUNDLE_MAX_ENTRY_BYTES)
     if (size === null) return { error: 'The bundle has a media entry with an invalid size.' }

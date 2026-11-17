@@ -89,7 +89,7 @@ export async function rehydrateMedia(doc: Doc): Promise<MediaRehydration> {
         continue
       }
       const type = stored.type || mimeTypeForName(asset.name)
-      if (!stored.hasSidecar) sidecarFallbacks += 1
+      if (!stored.hasSidecar || !stored.type) sidecarFallbacks += 1
       const file = new File([stored.file], asset.name, { type })
       const url = URL.createObjectURL(file)
       urls.push(url)

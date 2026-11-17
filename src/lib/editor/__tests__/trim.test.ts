@@ -126,6 +126,15 @@ describe('rebaseCurveFromCut', () => {
   })
 })
 
+describe('empty curve arrays', () => {
+  it('both trim helpers return [] before reading a missing first keyframe', () => {
+    expect(rebaseCurveFromCut([], 1)).toEqual([])
+    expect(truncateCurveAtCut([], 1)).toEqual([])
+    // An empty curve does not override the static speed.
+    expect(sourceConsumption([], 2, 1.5)).toBe(3)
+  })
+})
+
 describe('truncateCurveAtCut', () => {
   it('keeps the curve up to the cut and pins the boundary', () => {
     const kfs: Keyframe[] = [

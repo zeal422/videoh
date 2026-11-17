@@ -35,7 +35,7 @@ import { CHROMA_BOUNDS, EFFECT_KEYFRAME_BOUNDS, effectKeyframeValue } from '@/li
 import type { EffectType } from '@/lib/editor/effects'
 import { BLUR_SHUTTER_MAX, BLUR_SHUTTER_MIN } from '@/lib/editor/constants'
 import { findClip, sequenceTracks } from '@/lib/editor/factories'
-import { useEditorStore } from '@/lib/editor/store'
+import { isTransientActive, useEditorStore } from '@/lib/editor/store'
 import type { Clip, EffectEntry, EffectKeyframeProperty } from '@/lib/editor/types'
 
 const EFFECT_LABELS: Record<EffectType, string> = {
@@ -283,7 +283,10 @@ function EffectKeyframeRow({
     }
     // Refusals surface as toasts (a bare apply would rethrow into React).
     if (commit) tryApply(() => apply(command))
-    else useEditorStore.getState().applyTransient(command)
+    else {
+      if (!isTransientActive()) useEditorStore.getState().beginTransient()
+      useEditorStore.getState().applyTransient(command)
+    }
   }
 
   // Keyframe writes route through the same surfacing: a vanished entry
@@ -319,6 +322,7 @@ function EffectKeyframeRow({
       next.push({ time: at, value: Math.min(bounds.max, Math.max(bounds.min, v)) })
       if (commit) writeCurve(next)
       else {
+        if (!isTransientActive()) useEditorStore.getState().beginTransient()
         useEditorStore.getState().applyTransient({
           type: 'setEffectKeyframes',
           clipId: clip.id,
@@ -398,7 +402,10 @@ function StaticSlider({
       params: { [param]: v },
     }
     if (commit) tryApply(() => apply(command))
-    else useEditorStore.getState().applyTransient(command)
+    else {
+      if (!isTransientActive()) useEditorStore.getState().beginTransient()
+      useEditorStore.getState().applyTransient(command)
+    }
   }
   return (
     <div className="space-y-1" data-testid={`fx-static-${param}`}>

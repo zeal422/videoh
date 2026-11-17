@@ -299,6 +299,7 @@ describe('marker patches and colors', () => {
     }
     expect(markerColorValue()).toBe(MARKER_COLOR_VALUES[DEFAULT_MARKER_COLOR])
     expect(markerColorValue('magenta')).toBe(MARKER_COLOR_VALUES.magenta)
+    expect(markerColorValue('chartreuse' as never)).toBe(MARKER_COLOR_VALUES[DEFAULT_MARKER_COLOR])
   })
 
   it('createMarker clamps the time at 0', () => {

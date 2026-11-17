@@ -152,10 +152,16 @@ export function rehomeSegmentShapes(
   incoming: readonly Keyframe[],
 ): Keyframe[] {
   if (before.length !== incoming.length || before.length < 2) return [...incoming]
-  // A malformed write (a non-finite time from a foreign caller) must not read
-  // as a reorder: sanitize drops those entries after this runs, and sorting
-  // around NaN would shuffle the array underneath that filter.
-  if (!incoming.every((k) => Number.isFinite(k.time))) return [...incoming]
+  // A malformed write (a non-finite time or a non-object entry from a foreign
+  // caller) must not read as a reorder: sanitize drops those entries after this
+  // runs, and reading `.time` from a null entry would throw before that filter.
+  if (
+    !incoming.every(
+      (k) => typeof k === 'object' && k !== null && Number.isFinite((k as Keyframe | null)?.time),
+    )
+  ) {
+    return [...incoming]
+  }
   const indexAligned = incoming.every((k, i) => {
     const b = before[i]
     return (

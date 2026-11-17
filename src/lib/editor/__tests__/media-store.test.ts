@@ -10,7 +10,6 @@ import {
   hashFile,
   isMediaStoreSupported,
   isStoragePersistent,
-  isValidProjectId,
   listMediaFiles,
   projectMediaUsage,
   readMediaClaims,
@@ -21,6 +20,7 @@ import {
   writeMediaFile,
 } from '../media/media-store'
 import { ProjectLock, projectLockName } from '../media/project-lock'
+import { isValidProjectId } from '../project-validation'
 import { createFakeOpfs, FakeLockManager, type FakeOpfs } from './mocks/opfs'
 
 const PROJECT = 'proj_test'
@@ -61,12 +61,15 @@ describe('media store detection and keys', () => {
     )
   })
 
-  it('validates project ids and content hashes as path segments', () => {
+  it('validates project ids and content hashes as path segments', async () => {
     expect(isValidProjectId('proj_ab-12')).toBe(true)
     expect(isValidProjectId('../escape')).toBe(false)
     expect(isValidProjectId('a/b')).toBe(false)
     expect(isValidProjectId('')).toBe(false)
     expect(isValidProjectId('x'.repeat(129))).toBe(false)
+    const fake = createFakeOpfs()
+    await expect(fake.root.getFileHandle('')).rejects.toBeInstanceOf(TypeError)
+    await expect(fake.root.getDirectoryHandle('')).rejects.toBeInstanceOf(TypeError)
   })
 
   it('keeps the first type when the same bytes are stored again', async () => {
@@ -467,6 +470,26 @@ describe('media cleanup', () => {
     expect(await readMediaClaims(PROJECT)).toBeNull()
   })
 
+  it('clear-all counts temp and quarantine bytes in the font namespace', async () => {
+    const fake = createFakeOpfs()
+    stubStorage(fake)
+    await ensureProjectMedia(PROJECT)
+    const font = new File([bytes('font bytes')], 'inter.woff2', { type: 'font/woff2' })
+    const hash = await hashFile(font)
+    await writeMediaFile(PROJECT, hash, font, 'fonts')
+    fake.put(`/${PROJECT}/fonts/.tmp-leftover`, '123')
+    fake.put(`/${PROJECT}/fonts/.quarantine-old`, '45')
+    const expected = [...fake.files.entries()]
+      .filter(([path]) => path.startsWith(`/${PROJECT}/fonts/`))
+      .reduce((total, [, entry]) => total + entry.bytes.length, 0)
+
+    const result = await clearProjectMedia(PROJECT)
+
+    expect(result.deleted).toBe(1)
+    expect(result.reclaimed).toBe(expected)
+    expect([...fake.files.keys()].some((path) => path.startsWith(`/${PROJECT}/fonts/`))).toBe(false)
+  })
+
   it('clear-all removes temp, quarantine, and orphan sidecar bytes and reports them', async () => {
     const fake = createFakeOpfs()
     stubStorage(fake)
@@ -746,9 +769,12 @@ describe('font namespace in the durable store (0.25.0)', () => {
     const font = new File([bytes('font')], 'a.woff2', { type: 'font/woff2' })
     const hash = await hashFile(font)
     await writeMediaFile(PROJECT, hash, font, 'fonts')
+    const expected = [...fake.files.entries()]
+      .filter(([path]) => path.startsWith(`/${PROJECT}/fonts/`))
+      .reduce((total, [, entry]) => total + entry.bytes.length, 0)
     const result = await clearProjectMedia(PROJECT)
     expect(result.deleted).toBe(1)
-    expect(result.reclaimed).toBe(font.size)
+    expect(result.reclaimed).toBe(expected)
     expect(await listMediaFiles(PROJECT, 'fonts')).toEqual([])
     expect(fake.directories.has(`/${PROJECT}/fonts`)).toBe(false)
   })

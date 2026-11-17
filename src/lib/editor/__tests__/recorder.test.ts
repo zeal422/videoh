@@ -289,6 +289,21 @@ describe('recorder helpers (0.27.0)', () => {
     await expect(recorder.stop()).resolves.toBeNull()
   })
 
+  it('still tears down when the error handler throws', async () => {
+    const stream = fakeStream()
+    const recorder = new StreamRecorder(stream, 'screen', 'video/webm', {
+      onError: () => {
+        throw new Error('handler failed')
+      },
+    })
+    recorder.start()
+    const instance = lastRecorder()
+    instance.emit(new Blob(['head']))
+    expect(() => instance.onerror?.()).toThrow('handler failed')
+    expect(recorder.bufferedBytes).toBe(0)
+    await expect(recorder.stop()).resolves.toBeNull()
+  })
+
   it('ignores a chunk that arrives after finalize', async () => {
     const stream = fakeStream()
     const recorder = new StreamRecorder(stream, 'voiceover', 'audio/webm;codecs=opus')

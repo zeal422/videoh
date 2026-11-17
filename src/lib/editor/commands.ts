@@ -137,6 +137,7 @@ import type {
   Marker,
   MarkerPatch,
   MediaAsset,
+  MediaKind,
   Project,
   ProjectFont,
   ProjectLut,
@@ -205,6 +206,15 @@ export class TrackLockedError extends EditorCommandError {
  * head move does not, which is the opposite of the forward shape.
  */
 export type TrimEdge = 'head' | 'tail' | 'span'
+
+const MEDIA_KINDS: readonly MediaKind[] = ['video', 'audio', 'image']
+const TRANSITION_TYPES: readonly Transition['type'][] = [
+  'crossfade',
+  'dipToBlack',
+  'wipe',
+  'slide',
+  'push',
+]
 
 export type EditorCommand =
   // media bin
@@ -832,8 +842,26 @@ export function sanitizeRelinkPatch(
 function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptions): void {
   switch (command.type) {
     case 'addMediaAsset': {
-      if (doc.media.some((m) => m.id === command.asset.id)) {
-        throw new EditorCommandError(`Media asset ${command.asset.id} already exists`)
+      const asset = requireRecord(command.asset, 'Media asset') as unknown as MediaAsset
+      if (typeof asset.id !== 'string' || asset.id.trim().length === 0) {
+        throw new EditorCommandError('Media asset id must be a non-empty string')
+      }
+      if (!MEDIA_KINDS.includes(asset.kind)) {
+        throw new EditorCommandError(`Unknown media kind: ${String(asset.kind)}`)
+      }
+      if (typeof asset.name !== 'string') {
+        throw new EditorCommandError('Media asset name must be a string')
+      }
+      if (typeof asset.url !== 'string') {
+        throw new EditorCommandError('Media asset url must be a string')
+      }
+      for (const field of ['duration', 'width', 'height'] as const) {
+        if (!Number.isFinite(asset[field]) || asset[field] < 0) {
+          throw new EditorCommandError(`Media asset ${field} must be a finite non-negative number`)
+        }
+      }
+      if (doc.media.some((m) => m.id === asset.id)) {
+        throw new EditorCommandError(`Media asset ${asset.id} already exists`)
       }
       doc.media.push(structuredClone(command.asset))
       return
@@ -1071,7 +1099,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
 
     case 'renameTrack': {
       const track = requireTrack(doc, command.trackId)
-      const name = command.name.trim()
+      const name = requireString(command.name, 'Track name').trim()
       if (!name) return
       track.name = name
       // An explicit rename makes the name custom: it must survive later
@@ -1387,6 +1415,14 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
 
     case 'trimClip': {
       const { clip } = requireClip(doc, command.clipId)
+      if (
+        command.edge !== undefined &&
+        command.edge !== 'head' &&
+        command.edge !== 'tail' &&
+        command.edge !== 'span'
+      ) {
+        throw new EditorCommandError(`Unknown trim edge: ${String(command.edge)}`)
+      }
       const asset = findMedia(doc, clip.mediaId)
       let { start, inPoint, duration } = command
       if (!Number.isFinite(duration) || duration < MIN_CLIP_DURATION) {
@@ -1858,19 +1894,23 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
 
     case 'setClipGain': {
       const { clip } = requireClip(doc, command.clipId)
-      clip.gain = clamp(command.gain, GAIN_MIN, GAIN_MAX)
+      clip.gain = clamp(requireFiniteNumber(command.gain, 'Clip gain'), GAIN_MIN, GAIN_MAX)
       return
     }
 
     case 'setClipMuted': {
       const { clip } = requireClip(doc, command.clipId)
-      clip.muted = command.muted
+      clip.muted = requireBoolean(command.muted, 'Clip mute')
       return
     }
 
     case 'setClipOpacity': {
       const { clip } = requireClip(doc, command.clipId)
-      clip.opacity = clamp(command.opacity, OPACITY_MIN, OPACITY_MAX)
+      clip.opacity = clamp(
+        requireFiniteNumber(command.opacity, 'Clip opacity'),
+        OPACITY_MIN,
+        OPACITY_MAX,
+      )
       return
     }
 
@@ -1901,6 +1941,9 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
 
     case 'setClipKeyframes': {
       const { clip } = requireClip(doc, command.clipId)
+      if (!Array.isArray(command.keyframes)) {
+        throw new EditorCommandError('Clip keyframes must be an array')
+      }
       // Checked before sanitizing so a refused payload leaves no curve behind.
       if (
         command.property === 'timeScale' &&
@@ -1956,7 +1999,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       if (clip.sequenceId) throw new EditorCommandError('Compound clips cannot change speed')
       if (clip.shape) throw new EditorCommandError('Shape clips cannot change speed')
       if (clip.text !== undefined) throw new EditorCommandError('Text clips cannot change speed')
-      const speed = clamp(command.speed, SPEED_MIN, SPEED_MAX)
+      const speed = clamp(requireFiniteNumber(command.speed, 'Clip speed'), SPEED_MIN, SPEED_MAX)
       const asset = findMedia(doc, clip.mediaId)
       if (asset && asset.kind !== 'image' && !hasTimeScaleCurve(clip)) {
         // Keep the timeline duration (and everything cut against it) stable;
@@ -2007,34 +2050,36 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       if (clip.sequenceId) throw new EditorCommandError('Compound clips cannot reverse')
       if (clip.shape) throw new EditorCommandError('Shape clips cannot reverse')
       if (clip.text !== undefined) throw new EditorCommandError('Text clips cannot reverse')
-      clip.reverse = command.reverse
+      clip.reverse = requireBoolean(command.reverse, 'Clip reverse')
       return
     }
 
     case 'setClipPan': {
       const { clip } = requireClip(doc, command.clipId)
-      clip.pan = clamp(command.pan, -1, 1)
+      clip.pan = clamp(requireFiniteNumber(command.pan, 'Clip pan'), -1, 1)
       return
     }
 
     case 'setClipEq': {
       const { clip } = requireClip(doc, command.clipId)
-      if (!command.eq) {
+      if (command.eq === null) {
         clip.eq = undefined
         return
       }
-      const band = (v: number) => clamp(v, EQ_DB_MIN, EQ_DB_MAX)
+      const eq = requireRecord(command.eq, 'Clip EQ')
+      const band = (v: unknown, what: string) =>
+        clamp(requireFiniteNumber(v, what), EQ_DB_MIN, EQ_DB_MAX)
       clip.eq = {
-        low: band(command.eq.low),
-        mid: band(command.eq.mid),
-        high: band(command.eq.high),
+        low: band(eq.low, 'EQ low'),
+        mid: band(eq.mid, 'EQ mid'),
+        high: band(eq.high, 'EQ high'),
       }
       return
     }
 
     case 'setClipCompressor': {
       const { clip } = requireClip(doc, command.clipId)
-      clip.compressor = command.enabled
+      clip.compressor = requireBoolean(command.enabled, 'Compressor enabled')
       return
     }
 
@@ -2043,7 +2088,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       // Same shape as the compressor: a switch that stores its own flag, so an
       // off clip stores `false` and the saved file carries `"denoise": false`
       // (hydration reads only `true`, so absent and false load alike).
-      clip.denoise = command.enabled
+      clip.denoise = requireBoolean(command.enabled, 'Denoise enabled')
       return
     }
 
@@ -2051,8 +2096,12 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       const { clip } = requireClip(doc, command.clipId)
       // Neutral values collapse to absent so a graded-then-reset clip (and the
       // file it saves) carries no grade at all.
-      const temperature = clamp(command.temperature, TEMPERATURE_MIN, TEMPERATURE_MAX)
-      const tint = clamp(command.tint, TINT_MIN, TINT_MAX)
+      const temperature = clamp(
+        requireFiniteNumber(command.temperature, 'Color temperature'),
+        TEMPERATURE_MIN,
+        TEMPERATURE_MAX,
+      )
+      const tint = clamp(requireFiniteNumber(command.tint, 'Color tint'), TINT_MIN, TINT_MAX)
       clip.temperature = temperature === 0 ? undefined : temperature
       clip.tint = tint === 0 ? undefined : tint
       return
@@ -2096,9 +2145,16 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
 
     case 'setClipAnimStatic': {
       const { clip } = requireClip(doc, command.clipId)
+      if (!isAnimatableProperty(command.property)) {
+        throw new EditorCommandError(`Unknown animatable property: ${command.property}`)
+      }
       const bounds = KEYFRAME_PROPERTY_BOUNDS[command.property]
       if (!clip.animStatics) clip.animStatics = {}
-      const clamped = clamp(command.value, bounds.min, bounds.max)
+      const clamped = clamp(
+        requireFiniteNumber(command.value, 'Static value'),
+        bounds.min,
+        bounds.max,
+      )
       if (clamped === bounds.default) {
         delete clip.animStatics[command.property]
         if (Object.keys(clip.animStatics).length === 0) clip.animStatics = undefined
@@ -2111,14 +2167,17 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
     case 'setTextContent': {
       const { clip } = requireClip(doc, command.clipId)
       if (clip.text === undefined) throw new EditorCommandError('Not a text clip')
-      clip.text = command.text
+      clip.text = requireString(command.text, 'Text content')
       return
     }
 
     case 'setTextStyle': {
       const { clip } = requireClip(doc, command.clipId)
       if (!clip.style) throw new EditorCommandError('Not a text clip')
-      const patch = { ...command.style }
+      const patch =
+        command.style === undefined
+          ? ({} as Partial<TextStyle>)
+          : ({ ...requireRecord(command.style, 'Text style') } as unknown as Partial<TextStyle>)
       if (patch.fontFamily !== undefined) {
         // The family crosses into a canvas font shorthand. The picker only
         // emits built-ins and generated families, but a command payload is a
@@ -2168,7 +2227,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
     }
 
     case 'renameTextPreset': {
-      const name = normalizePresetName(command.name)
+      const name = normalizePresetName(requireString(command.name, 'Preset name'))
       if (!name) throw new EditorCommandError('Preset name cannot be empty')
       if (name.length > TEXT_PRESET_NAME_MAX) {
         throw new EditorCommandError(
@@ -2448,6 +2507,9 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       // Duration-only re-dispatches (slider drags) keep the clip's
       // existing type instead of resetting it to crossfade.
       const transitionType = command.transitionType ?? a.transitionOut?.type ?? 'crossfade'
+      if (!TRANSITION_TYPES.includes(transitionType)) {
+        throw new EditorCommandError(`Unknown transition type: ${String(transitionType)}`)
+      }
       const direction = command.direction ?? a.transitionOut?.direction ?? 'left'
       if (
         direction !== 'left' &&
@@ -2652,7 +2714,10 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
     }
 
     case 'updateSequenceMarker': {
-      applyMarkerPatch(requireSequenceMarker(doc, command.markerId), command.patch)
+      applyMarkerPatch(
+        requireSequenceMarker(doc, command.markerId),
+        requireMarkerPatch(command.patch),
+      )
       return
     }
 
@@ -2688,7 +2753,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
 
     case 'updateClipMarker': {
       const { clip } = requireClip(doc, command.clipId)
-      applyMarkerPatch(requireClipMarker(clip, command.markerId), command.patch)
+      applyMarkerPatch(requireClipMarker(clip, command.markerId), requireMarkerPatch(command.patch))
       return
     }
 
@@ -2704,15 +2769,26 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
 
     case 'setProjectSettings': {
       const p = doc.project
-      if (command.patch.name !== undefined) p.name = command.patch.name.trim() || p.name
-      if (command.patch.width !== undefined) {
-        p.width = clamp(Math.round(command.patch.width), PROJECT_MIN_W, PROJECT_MAX_W)
+      const patch = requireRecord(command.patch, 'Project settings')
+      if (patch.name !== undefined) {
+        p.name = requireString(patch.name, 'Project name').trim() || p.name
       }
-      if (command.patch.height !== undefined) {
-        p.height = clamp(Math.round(command.patch.height), PROJECT_MIN_H, PROJECT_MAX_H)
+      if (patch.width !== undefined) {
+        p.width = clamp(
+          Math.round(requireFiniteNumber(patch.width, 'Project width')),
+          PROJECT_MIN_W,
+          PROJECT_MAX_W,
+        )
       }
-      if (command.patch.fps !== undefined) {
-        p.fps = clamp(Math.round(command.patch.fps), FPS_MIN, FPS_MAX)
+      if (patch.height !== undefined) {
+        p.height = clamp(
+          Math.round(requireFiniteNumber(patch.height, 'Project height')),
+          PROJECT_MIN_H,
+          PROJECT_MAX_H,
+        )
+      }
+      if (patch.fps !== undefined) {
+        p.fps = clamp(Math.round(requireFiniteNumber(patch.fps, 'Project fps')), FPS_MIN, FPS_MAX)
       }
       return
     }
@@ -2725,6 +2801,48 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
 }
 
 // ————— helpers —————
+
+function requireRecord(value: unknown, what: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new EditorCommandError(`${what} must be an object`)
+  }
+  // A payload is untrusted: a field inherited from a custom prototype (or a
+  // class getter) is not something any UI control sends, so only plain records
+  // and null-prototype records may supply patch fields.
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new EditorCommandError(`${what} must be a plain object`)
+  }
+  return value as Record<string, unknown>
+}
+
+function requireFiniteNumber(value: unknown, what: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new EditorCommandError(`${what} must be a finite number`)
+  }
+  return value
+}
+
+function requireBoolean(value: unknown, what: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new EditorCommandError(`${what} must be a boolean`)
+  }
+  return value
+}
+
+function requireString(value: unknown, what: string): string {
+  if (typeof value !== 'string') {
+    throw new EditorCommandError(`${what} must be a string`)
+  }
+  return value
+}
+
+function requireMarkerPatch(value: unknown): MarkerPatch {
+  const patch = requireRecord(value, 'Marker patch') as MarkerPatch
+  if (patch.name !== undefined) requireString(patch.name, 'Marker name')
+  if (patch.notes !== undefined) requireString(patch.notes, 'Marker notes')
+  return patch
+}
 
 function requireClip(doc: Doc, clipId: string) {
   const found = findClip(doc, clipId)
@@ -2759,17 +2877,8 @@ function applyEffectParams(
   entry: EffectEntry,
   params: Record<string, unknown>,
 ): void {
-  const num = (v: unknown, what: string): number => {
-    if (typeof v !== 'number' || !Number.isFinite(v)) {
-      throw new EditorCommandError(`Effect param must be a finite number: ${what}`)
-    }
-    return v
-  }
-  const boolean = (v: unknown, what: string): boolean => {
-    if (typeof v !== 'boolean')
-      throw new EditorCommandError(`Effect param must be a boolean: ${what}`)
-    return v
-  }
+  const num = requireFiniteNumber
+  const boolean = requireBoolean
   if (entry.type === 'crop') {
     for (const p of ['left', 'right', 'top', 'bottom'] as const) {
       if (params[p] !== undefined) entry[p] = clampEffectPropertyValue(p, num(params[p], p))

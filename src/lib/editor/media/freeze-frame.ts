@@ -77,8 +77,14 @@ async function loadVideoFrame(url: string, time: number): Promise<HTMLVideoEleme
   try {
     video.src = url
     await waitFor(video, 'loadeddata', DECODE_TIMEOUT_MS)
-    video.currentTime = Math.max(0, time)
-    await waitFor(video, 'seeked', DECODE_TIMEOUT_MS)
+    const target = Math.max(0, time)
+    // A seek to the position the element already shows never fires `seeked`
+    // (the clip-start/inPoint-0 freeze case), so skip the wait instead of
+    // timing out on an unchanged currentTime.
+    if (Math.abs(video.currentTime - target) >= 1e-6) {
+      video.currentTime = target
+      await waitFor(video, 'seeked', DECODE_TIMEOUT_MS)
+    }
     return video
   } catch (error) {
     // A decode that never loads or seeks still owns an element and its blob.

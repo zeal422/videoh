@@ -418,6 +418,14 @@ describe('static-source locks (stacking, mount points)', () => {
   // markers-keyboard.test.tsx through the real window listener; a static
   // string check here would pass against a wrong mapping, so there is none.
 
+  it('only clears the marker selection after a successful delete', () => {
+    // A refused delete (locked or already-removed marker) must not strand the
+    // selection on a marker that still exists.
+    expect(sequenceMarkers).toMatch(
+      /const applied = useEditorStore[\s\S]*?deleteSequenceMarker[\s\S]*?if \(applied\)[\s\S]*?selectMarker\(null\)/,
+    )
+  })
+
   it('the schema is v8 and hydrates marker arrays', () => {
     // v5 added the media content hash (0.23.0); the literal is pinned on
     // purpose, so a silent version change is noticed instead of restated.

@@ -223,6 +223,21 @@ describe('planVideoFrame', () => {
     expect(alphaB).toBeCloseTo(0.5, 5)
   })
 
+  it('a third overlap still draws at full opacity during a transition', () => {
+    const a = videoClip({
+      id: 'a1',
+      start: 0,
+      duration: 4,
+      transitionOut: { type: 'crossfade', duration: 1 },
+    })
+    const b = videoClip({ id: 'a2', start: 3, duration: 4 })
+    const c = videoClip({ id: 'a3', start: 3.25, duration: 4 })
+    const d = doc([{ kind: 'video', clips: [a, b, c] }], [])
+    const plan = planVideoFrame(d, 3.5)
+    expect(plan.draws.map((draw) => draw.clip.id)).toEqual(['a1', 'a2', 'a3'])
+    expect(plan.draws.find((draw) => draw.clip.id === 'a3')?.alpha).toBe(1)
+  })
+
   it('dip spans fade out, hit black, then fade in', () => {
     const a = videoClip({
       id: 'd1',

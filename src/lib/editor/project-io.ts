@@ -1433,7 +1433,7 @@ export async function openBundleFile(file: File): Promise<BundleOpenOutcome> {
       return { status: 'cancelled', warnings: [] }
     }
 
-    await beginMediaActivityWhenIdle()
+    const activity = await beginMediaActivityWhenIdle()
     activityStarted = true
     if (!isCurrentProjectLoad(loadId)) {
       await abortPreInstall()
@@ -1490,7 +1490,7 @@ export async function openBundleFile(file: File): Promise<BundleOpenOutcome> {
     const installId = newInstallId()
     claimProjectId = doc.project.id
     claimId = await writeMediaClaim(doc.project.id, collectMediaHashes(hydrated), installId)
-    const stagedFonts = await stageProjectFontFaces(hydrated)
+    const stagedFonts = await stageProjectFontFaces(hydrated, activity)
     warnings.push(...stagedFonts.warnings)
     if (!isCurrentProjectLoad(loadId)) {
       await abortPreInstall()

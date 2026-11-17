@@ -276,6 +276,13 @@ describe('public pages', () => {
     expect(screen.getAllByText(/GoatCounter/).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/Vercel/).length).toBeGreaterThan(0)
     expect(screen.getByText(/last version whose notes were shown/i)).toBeInTheDocument()
+    expect(screen.getByText(/origin-private file system/i)).toBeInTheDocument()
+    expect(screen.getByText(/web-video-editor-autosave/)).toBeInTheDocument()
+    expect(screen.getByText(/videoh-template-library/)).toBeInTheDocument()
+    expect(screen.getByText(/pending installs/i)).toBeInTheDocument()
+    // Clearing site data must not read as an exhaustive list of what the
+    // browser stores.
+    expect(screen.getByText(/including the autosave/i)).toBeInTheDocument()
     unmountPrivacy()
 
     const { unmount: unmountTerms } = render(<TermsPage />)

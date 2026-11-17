@@ -212,6 +212,17 @@ describe('bundle manifest validation (0.28.0)', () => {
     }
   })
 
+  it('refuses a control character in the media MIME type', () => {
+    const one = manifestFor([asset('media_a', 'a.mp4')])
+    const manifest = {
+      ...one,
+      assets: [{ ...one.assets[0]!, type: 'video/\u0001mp4' }],
+    }
+    expect(validateBundleManifest(manifest)).toEqual({
+      error: 'The bundle has a media entry with no valid type.',
+    })
+  })
+
   it('refuses a newer bundle version', () => {
     const manifest = { ...manifestFor([]), bundleVersion: BUNDLE_VERSION + 1 }
     const result = validateBundleManifest(manifest)

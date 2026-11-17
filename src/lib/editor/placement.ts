@@ -45,7 +45,9 @@ export function pendingTrackId(): string {
 
 /** Whole-asset placement duration (images have no intrinsic length). */
 export function clipDurationFor(asset: MediaAsset): number {
-  return asset.kind === 'image' || asset.duration <= 0 ? DEFAULT_IMAGE_DURATION : asset.duration
+  return asset.kind === 'image' || !Number.isFinite(asset.duration) || asset.duration <= 0
+    ? DEFAULT_IMAGE_DURATION
+    : asset.duration
 }
 
 export function clipFromAsset(
@@ -209,8 +211,12 @@ export function planMediaPlacement(
   const untargetedTrackIds = opts.untargetedTrackIds ?? []
   const { sequenceId } = opts
   // The span pre-check runs before anything is built, so a refused placement
-  // never reaches `addClip`'s own floor mid-batch.
-  const effective = asset.kind === 'image' || asset.duration <= 0 ? null : (opts.range ?? null)
+  // never reaches `addClip`'s own floor mid-batch. A non-finite duration has
+  // no source window to clamp a range into, so it takes the same fallback
+  // duration `clipDurationFor` uses instead of reading NaN through the range.
+  const sourceBounded =
+    asset.kind !== 'image' && Number.isFinite(asset.duration) && asset.duration > 0
+  const effective = sourceBounded ? (opts.range ?? null) : null
   // Finite source marks clamp into the asset BEFORE the span is computed.
   // `addClip` clamps the placed clip's own inPoint and duration, but the
   // displacement plan needs the same span the clip will actually occupy.

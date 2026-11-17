@@ -352,13 +352,14 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                 min={0}
                 max={100}
                 step={5}
-                onValueChange={([v]) =>
+                onValueChange={([v]) => {
+                  if (!isTransientActive()) useEditorStore.getState().beginTransient()
                   useEditorStore.getState().applyTransient({
                     type: 'setClipOpacity',
                     clipId: clip.id,
                     opacity: v / 100,
                   })
-                }
+                }}
                 onValueCommit={([v]) =>
                   apply({
                     type: 'setClipOpacity',
@@ -506,7 +507,10 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                     ...values,
                   }
                   if (commit) apply(command)
-                  else useEditorStore.getState().applyTransient(command)
+                  else {
+                    if (!isTransientActive()) useEditorStore.getState().beginTransient()
+                    useEditorStore.getState().applyTransient(command)
+                  }
                 }
                 return (
                   <div key={key}>
@@ -770,7 +774,8 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                         min={0}
                         max={0.5}
                         step={0.01}
-                        onValueChange={([v]) =>
+                        onValueChange={([v]) => {
+                          if (!isTransientActive()) useEditorStore.getState().beginTransient()
                           useEditorStore.getState().applyTransient({
                             type: 'addTransition',
                             clipId: clip.id,
@@ -780,7 +785,7 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                             edge: 'feathered',
                             feather: v,
                           })
-                        }
+                        }}
                         onValueCommit={([v]) =>
                           tryApply(() =>
                             apply({
@@ -812,13 +817,14 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                   min={TRANSITION_MIN}
                   max={Math.min(TRANSITION_MAX, clip.duration, nextClip.duration)}
                   step={0.05}
-                  onValueChange={([v]) =>
+                  onValueChange={([v]) => {
+                    if (!isTransientActive()) useEditorStore.getState().beginTransient()
                     useEditorStore.getState().applyTransient({
                       type: 'addTransition',
                       clipId: clip.id,
                       duration: v,
                     })
-                  }
+                  }}
                   onValueCommit={([v]) =>
                     tryApply(() =>
                       apply({
@@ -924,13 +930,14 @@ function VolumeSection({ clip, audioClip, doc }: { clip: Clip; audioClip: Clip; 
             min={0}
             max={200}
             step={5}
-            onValueChange={([v]) =>
+            onValueChange={([v]) => {
+              if (!isTransientActive()) useEditorStore.getState().beginTransient()
               useEditorStore.getState().applyTransient({
                 type: 'setClipGain',
                 clipId: audioClip.id,
                 gain: v / 100,
               })
-            }
+            }}
             onValueCommit={([v]) =>
               apply({
                 type: 'setClipGain',

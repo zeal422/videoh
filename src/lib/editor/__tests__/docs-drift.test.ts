@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 
+import { COMMAND_BOUNDARY_CASES } from './command-boundary-cases'
+
 /**
  * docs-drift.test.ts — locks the documentation's test-count claims to reality.
  *
@@ -30,6 +32,16 @@ import { basename, join, resolve } from 'node:path'
 const ROOT = resolve(__dirname, '..', '..', '..', '..')
 const DOCS = ['README.md', 'docs/testing.md', 'docs/structure.md', 'AGENTS.md'] as const
 
+/**
+ * Tables imported by a test file for a `for ... of` loop that declares one
+ * `it` per row. The source scan cannot see an imported array's length, so a
+ * new loop table must be registered here; an unregistered one fails the gate
+ * loudly instead of silently undercounting the suite.
+ */
+const IMPORTED_LOOP_TABLES: Record<string, number> = {
+  COMMAND_BOUNDARY_CASES: COMMAND_BOUNDARY_CASES.length,
+}
+
 /** Every test file the suite actually runs (vitest include: any src .test.ts or .test.tsx). */
 function realTestFiles(): string[] {
   const out: string[] = []
@@ -56,7 +68,11 @@ function countCases(file: string): number {
  * the undercount direction, never silently.
  */
 function countCasesFromSource(src: string, file = 'source'): number {
-  return (src.match(/^\s*(?:it|test)\s*\(/gm) ?? []).length + countEachRows(src, file)
+  return (
+    (src.match(/^\s*(?:it|test)\s*\(/gm) ?? []).length +
+    countEachRows(src, file) +
+    countLoopRows(src, file)
+  )
 }
 
 /**
@@ -75,7 +91,8 @@ function countEachRows(src: string, file: string): number {
       : /^\s*(?:it|test)\.each\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(lines[i] ?? '')
     if (!inline && !variable) continue
     if (inline) {
-      rows += countRowsUntilClose(lines, i + 1)
+      const line = lines[i] ?? ''
+      rows += countArrayRows(src, lines, i, line.lastIndexOf('['))
       continue
     }
     const name = variable![1]!
@@ -92,20 +109,212 @@ function countEachRows(src: string, file: string): number {
         `${file}:${i + 1} it.each table "${name}" is ambiguous (${starts.length} declarations)`,
       )
     }
-    rows += countRowsUntilClose(lines, starts[0]! + 1)
+    rows += countArrayRows(src, lines, starts[0]!, (lines[starts[0]!] ?? '').lastIndexOf('['))
   }
   return rows
 }
 
-/** One single-line array row per case, up to the table's closing bracket. */
-function countRowsUntilClose(lines: string[], start: number): number {
-  let rows = 0
-  for (let j = start; j < lines.length; j++) {
-    const line = lines[j] ?? ''
-    if (/^\s*\]/.test(line)) break
-    if (/^\s*\[.*\],?\s*$/.test(line)) rows += 1
+/** Global source offset of one line and column. */
+function sourceOffset(lines: string[], line: number, column: number): number {
+  let offset = 0
+  for (let i = 0; i < line; i++) offset += (lines[i]?.length ?? 0) + 1
+  return offset + column
+}
+
+/** Keywords after which a slash starts a regular expression, not division. */
+const REGEX_AFTER_KEYWORDS = new Set([
+  'await',
+  'case',
+  'delete',
+  'do',
+  'else',
+  'in',
+  'instanceof',
+  'new',
+  'of',
+  'return',
+  'throw',
+  'typeof',
+  'void',
+  'yield',
+])
+
+/**
+ * True when a slash starts a regular expression rather than division. The
+ * previous significant token decides: a value-ending token (identifier, number,
+ * string, closing bracket) means division, while an operator, opening bracket,
+ * comma, or a regex-allowing keyword means an expression may start here.
+ */
+function regexAllowedAfter(src: string, at: number): boolean {
+  let i = at - 1
+  while (i >= 0 && /\s/.test(src[i]!)) i -= 1
+  if (i < 0) return true
+  const ch = src[i]!
+  if (!/[A-Za-z0-9_$]/.test(ch)) return !/[)\]}"'`]/.test(ch)
+  let end = i
+  while (i >= 0 && /[A-Za-z0-9_$]/.test(src[i]!)) i -= 1
+  return REGEX_AFTER_KEYWORDS.has(src.slice(i + 1, end + 1))
+}
+
+/** Consume a regular expression starting at `start`; returns its closing slash. */
+function consumeRegex(src: string, start: number): number {
+  let inClass = false
+  let escaped = false
+  for (let i = start + 1; i < src.length; i++) {
+    const ch = src[i]!
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (ch === '\\') {
+      escaped = true
+      continue
+    }
+    if (ch === '[') {
+      inClass = true
+      continue
+    }
+    if (ch === ']') {
+      inClass = false
+      continue
+    }
+    if (ch === '/' && !inClass) return i
+    if (ch === '\n') break
   }
-  return rows
+  throw new Error('countArrayElements: unterminated regular expression')
+}
+
+/** Count the top-level elements of the array literal starting at `start`. */
+function countArrayElements(src: string, start: number): number {
+  if (src[start] !== '[') throw new Error('countArrayElements: expected an array literal')
+  let depth = 0
+  let elements = 0
+  let hasContent = false
+  let string: string | null = null
+  let escaped = false
+  let lineComment = false
+  let blockComment = false
+  for (let index = start + 1; index < src.length; index++) {
+    const ch = src[index]!
+    const next = src[index + 1]
+    if (lineComment) {
+      if (ch === '\n') lineComment = false
+      continue
+    }
+    if (blockComment) {
+      if (ch === '*' && next === '/') {
+        blockComment = false
+        index += 1
+      }
+      continue
+    }
+    if (string !== null) {
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (ch === '\\') {
+        escaped = true
+        continue
+      }
+      if (ch === string) string = null
+      continue
+    }
+    if (ch === '/' && next === '/') {
+      lineComment = true
+      index += 1
+      continue
+    }
+    if (ch === '/' && next === '*') {
+      blockComment = true
+      index += 1
+      continue
+    }
+    if (ch === '/' && regexAllowedAfter(src, index)) {
+      index = consumeRegex(src, index)
+      hasContent = true
+      continue
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      string = ch
+      hasContent = true
+      continue
+    }
+    if (ch === '[' || ch === '{' || ch === '(') {
+      depth += 1
+      if (depth === 1) hasContent = true
+      continue
+    }
+    if (ch === ']' || ch === '}' || ch === ')') {
+      if (depth === 0 && ch === ']') {
+        if (hasContent) elements += 1
+        return elements
+      }
+      if (depth === 0) throw new Error('countArrayElements: unbalanced array literal')
+      depth -= 1
+      continue
+    }
+    if (ch === ',' && depth === 0) {
+      if (hasContent) elements += 1
+      hasContent = false
+      continue
+    }
+    if (!/\s/.test(ch)) hasContent = true
+  }
+  throw new Error('countArrayElements: unterminated array literal')
+}
+
+/** Count the top-level elements of the array literal on a source line. */
+function countArrayRows(src: string, lines: string[], line: number, column: number): number {
+  if (column < 0) throw new Error('countArrayRows: the table has no array literal')
+  return countArrayElements(src, sourceOffset(lines, line, column))
+}
+
+/**
+ * Count cases generated by `for (const ... of TABLE) { it(...) }`. The plain
+ * scan counts each declaration in the loop once, so this adds
+ * `declarations * (TABLE.length - 1)`. A table declared in the same source is
+ * read from its rows; an imported one comes from `IMPORTED_LOOP_TABLES`.
+ */
+function countLoopRows(src: string, file: string): number {
+  const lines = src.split('\n')
+  let extra = 0
+  for (let i = 0; i < lines.length; i++) {
+    const loop = /^\s*for\s*\(\s*const\s+.*?\bof\s+([A-Za-z_$][\w$]*)\s*\)\s*\{/.exec(
+      lines[i] ?? '',
+    )
+    if (!loop) continue
+    const declarations = loopBodyTestDeclarations(lines, i)
+    if (declarations === 0) continue
+    const name = loop[1]!
+    const declaration = new RegExp(`^\\s*const\\s+${name}\\b[^=\\n]*=\\s*\\[\\s*$`)
+    const starts = lines.flatMap((line, index) => (declaration.test(line) ? [index] : []))
+    let length: number | undefined
+    if (starts.length === 1) {
+      length = countArrayRows(src, lines, starts[0]!, (lines[starts[0]!] ?? '').lastIndexOf('['))
+    } else if (starts.length > 1) {
+      throw new Error(`${file}:${i + 1} loop table "${name}" is ambiguous`)
+    } else {
+      length = IMPORTED_LOOP_TABLES[name]
+      if (length === undefined) {
+        throw new Error(`${file}:${i + 1} loop table "${name}" cannot be resolved`)
+      }
+    }
+    extra += declarations * Math.max(0, length - 1)
+  }
+  return extra
+}
+
+/** Count it/test declarations in a loop body, up to its matching indent. */
+function loopBodyTestDeclarations(lines: string[], start: number): number {
+  const indent = (lines[start]?.match(/^\s*/) ?? [''])[0].length
+  let declarations = 0
+  for (let j = start + 1; j < lines.length; j++) {
+    const line = lines[j] ?? ''
+    if (line.trim() === '}' && (line.match(/^\s*/) ?? [''])[0].length === indent) break
+    if (/^\s*(?:it|test)\s*\(/.test(line)) declarations += 1
+  }
+  return declarations
 }
 
 /**
@@ -347,6 +556,38 @@ describe('docs test-count claims match the real suite', () => {
       '})',
     ].join('\n')
     expect(() => countCasesFromSource(source, 'synthetic')).toThrow(/ambiguous/)
+  })
+
+  it('expands for-of tables across row forms and test declarations', () => {
+    const loop = (rows: string[], declarations = 1) =>
+      [
+        'const CASES = [',
+        ...rows,
+        ']',
+        'for (const [name] of CASES) {',
+        ...Array.from({ length: declarations }, () => '  it("case", () => {})'),
+        '}',
+      ].join('\n')
+    // Tuple, scalar, and object rows all count as one element each.
+    expect(countCasesFromSource(loop(["  ['a'],", "  ['b'],", "  ['c'],"]), 'synthetic')).toBe(3)
+    expect(countCasesFromSource(loop(["  'a',", "  'b',", "  'c',"]), 'synthetic')).toBe(3)
+    expect(
+      countCasesFromSource(loop(['  { name: "a" },', '  { name: "b" },'], 2), 'synthetic'),
+    ).toBe(4)
+
+    const unresolved = ['for (const [name] of UNKNOWN) {', '  it(name, () => {})', '}'].join('\n')
+    expect(() => countCasesFromSource(unresolved, 'synthetic')).toThrow(/cannot be resolved/)
+  })
+
+  it('does not split a row on a comma inside a regular expression', () => {
+    const source = [
+      'const CASES = [',
+      '  /,/,',
+      '  /x,y/,',
+      ']',
+      'it.each(CASES)("case %s", () => {})',
+    ].join('\n')
+    expect(countCasesFromSource(source, 'synthetic')).toBe(2)
   })
 
   it('every per-file row in the testing.md inventory matches its suite', () => {

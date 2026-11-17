@@ -219,6 +219,7 @@ export function commandsToAddShape(
  * would name it T1, T2, …, so the batch renames it explicitly.
  */
 export function commandsToAddCaptionCue(doc: Doc, start: number): EditorCommand[] {
+  if (!Number.isFinite(start)) return []
   const newId = newTrackId()
   return [
     { type: 'addTrack', kind: 'text', trackId: newId },

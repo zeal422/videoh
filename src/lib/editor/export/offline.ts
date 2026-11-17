@@ -175,6 +175,9 @@ export function planVideoFrame(
           alphas.set(a.id, aAlpha)
           alphas.set(b.id, bAlpha)
         }
+        // The pair is always active[0]/active[1]; any third overlap still
+        // draws at full opacity, preserving start order.
+        for (const clip of active.slice(2)) alphas.set(clip.id, 1)
       } else {
         for (const clip of active) alphas.set(clip.id, 1)
       }

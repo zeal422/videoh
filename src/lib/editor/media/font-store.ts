@@ -31,6 +31,7 @@ import {
 import type { Doc, ProjectFont } from '../types'
 import { ensureProjectMedia, readMediaFile, sha256Hex, writeMediaFile } from './media-store'
 import { beginMediaActivityWhenIdle, endMediaActivity } from './persist'
+import type { MediaActivityToken } from './persist'
 
 /** The active project's faces, keyed by generated family. */
 let activeProjectId: string | null = null
@@ -41,6 +42,12 @@ const activeFaces = new Map<string, FontFace>()
  * registers nothing after the switch.
  */
 let activeLoadSeq = 0
+/**
+ * Per-family commit generations. A staged face commits for one family; a
+ * loader that started before it must not register the old face afterwards,
+ * while loaders for other families keep going.
+ */
+const familyCommits = new Map<string, number>()
 
 export interface FontLoadResult {
   warnings: string[]
@@ -150,6 +157,7 @@ export async function loadProjectFonts(doc: Doc): Promise<FontLoadResult> {
   unregisterFaces()
   activeProjectId = doc.project.id
   const seq = ++activeLoadSeq
+  const familyEpochs = new Map(familyCommits)
   const fonts = doc.project.fonts ?? []
   if (fonts.length === 0) {
     if (typeof document !== 'undefined' && document.fonts?.ready) {
@@ -177,6 +185,11 @@ export async function loadProjectFonts(doc: Doc): Promise<FontLoadResult> {
       // signal on its own aborts the load.
       if (seq !== activeLoadSeq || activeProjectId !== doc.project.id) {
         return { warnings, loaded, missing }
+      }
+      // A commit for THIS family during the read owns the registry now. Skip
+      // only this family; an unrelated family still registers.
+      if ((familyCommits.get(font.family) ?? 0) !== (familyEpochs.get(font.family) ?? 0)) {
+        continue
       }
       if ('warning' in result) {
         warnings.push(result.warning)
@@ -216,7 +229,10 @@ export interface StagedProjectFonts {
  * concurrent stages never share mutable state, so neither can plant a stale
  * face in the other project; activation is a separate synchronous step.
  */
-export async function stageProjectFontFaces(doc: Doc): Promise<StagedProjectFonts> {
+export async function stageProjectFontFaces(
+  doc: Doc,
+  activity?: MediaActivityToken,
+): Promise<StagedProjectFonts> {
   const staged: StagedProjectFonts = {
     projectId: doc.project.id,
     faces: [],
@@ -231,7 +247,7 @@ export async function stageProjectFontFaces(doc: Doc): Promise<StagedProjectFont
     staged.missing = fonts.length
     return staged
   }
-  await beginMediaActivityWhenIdle()
+  await beginMediaActivityWhenIdle(activity)
   try {
     for (const font of fonts) {
       const result = await loadFace(doc.project.id, font)
@@ -311,6 +327,7 @@ export async function ensureProjectFontsReady(doc: Doc): Promise<string[]> {
   if (typeof document === 'undefined') return []
   if (activeProjectId !== doc.project.id) return (await loadProjectFonts(doc)).warnings
   const seq = activeLoadSeq
+  const familyEpochs = new Map(familyCommits)
   const fonts = doc.project.fonts ?? []
   const warnings: string[] = []
   if (fonts.length > 0) {
@@ -326,6 +343,9 @@ export async function ensureProjectFontsReady(doc: Doc): Promise<string[]> {
         // Same supersede rule as the full load: a switch or a fresh load
         // during the read owns the registry now.
         if (seq !== activeLoadSeq || activeProjectId !== doc.project.id) return warnings
+        if ((familyCommits.get(font.family) ?? 0) !== (familyEpochs.get(font.family) ?? 0)) {
+          continue
+        }
         if ('warning' in result) {
           warnings.push(result.warning)
           continue
@@ -363,14 +383,17 @@ export interface StagedFont {
  * but deliberately NOT added to `document.fonts` until `commitStagedFont` runs,
  * so a refused or superseded upload leaves no active face behind.
  */
-export async function stageProjectFont(input: {
-  projectId: string
-  id: string
-  name: string
-  file: File
-  weight?: number
-  style?: 'normal' | 'italic'
-}): Promise<StagedFont> {
+export async function stageProjectFont(
+  input: {
+    projectId: string
+    id: string
+    name: string
+    file: File
+    weight?: number
+    style?: 'normal' | 'italic'
+  },
+  activity?: MediaActivityToken,
+): Promise<StagedFont> {
   const name = sanitizeFontName(input.name)
   if (!name) throw new FontUploadError('Font name cannot be empty')
   if (!fontsSupported()) throw new FontUploadError('This browser cannot load custom fonts')
@@ -378,7 +401,7 @@ export async function stageProjectFont(input: {
   // the stored hash is unreferenced until the caller commits it, so a clean
   // must not run between the read and the write. (Every other loader reserves
   // before its read loop; this one used to reserve only around the write.)
-  await beginMediaActivityWhenIdle()
+  await beginMediaActivityWhenIdle(activity)
   try {
     // `File.size` is OS-reported metadata: reject an oversized file before
     // reading it into memory. The byte-length check after the read stays as the
@@ -471,6 +494,10 @@ export function commitStagedFont(staged: StagedFont, currentProjectId: string): 
   }
   document.fonts.add(staged.face)
   activeFaces.set(staged.font.family, staged.face)
+  // Invalidate only this family's in-flight reads. A loader that started
+  // before this commit skips its registration at the final epoch check; a
+  // load for another family is unaffected.
+  familyCommits.set(staged.font.family, (familyCommits.get(staged.font.family) ?? 0) + 1)
   return true
 }
 
@@ -495,6 +522,7 @@ export function resetFontRegistryForTests(): void {
   unregisterFaces()
   activeProjectId = null
   activeLoadSeq = 0
+  familyCommits.clear()
 }
 
 export type { FontFormat }

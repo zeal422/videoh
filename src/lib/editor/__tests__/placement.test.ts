@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import { applyCommands } from '../commands'
 import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
-import { planMediaPlacement } from '../placement'
+import { planMediaPlacement, clipDurationFor } from '../placement'
 import { placementRefusalMessage } from '../sequence-ops'
+import { DEFAULT_IMAGE_DURATION } from '../constants'
 import type { Doc, MediaAsset } from '../types'
 
 /**
@@ -258,6 +259,26 @@ describe('planMediaPlacement — refusals', () => {
       })
     }
     expect(placementRefusalMessage('time')).toBe('Placement time is invalid')
+  })
+
+  it('uses the default duration when the asset duration is not finite', () => {
+    const asset = videoAsset({ duration: Number.NaN })
+    expect(clipDurationFor(asset)).toBe(DEFAULT_IMAGE_DURATION)
+
+    const track = createTrack('video', 1)
+    const doc = createDoc()
+    doc.project.tracks = [track]
+    doc.media = [asset]
+    const outcome = planMediaPlacement(doc, asset, 0, 'overwrite', {
+      trackId: track.id,
+      range: { inPoint: 0, outPoint: 2 },
+    })
+    const commands = outcome.commands
+    expect(commands).not.toBeNull()
+    expect(commands!.find((command) => command.type === 'addClip')).toMatchObject({
+      type: 'addClip',
+      clip: { duration: DEFAULT_IMAGE_DURATION },
+    })
   })
 
   it('refuses an unrepresentable overwrite atomically', () => {

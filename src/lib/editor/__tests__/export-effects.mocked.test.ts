@@ -6,13 +6,67 @@
  * scratch surfaces, so it lives here rather than in offline-plan.test.ts
  * (plain Node, no canvas).
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { compositeFrame } from '../export/mp4'
+import { compositeFrame, exportTimeline } from '../export/mp4'
 import { planVideoFrame } from '../export/offline'
 import { createFake2DContext, installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
-import { createTextClip, createTrack } from '../factories'
+import { createClip, createDoc, createMediaAsset, createTextClip, createTrack } from '../factories'
 import type { Clip, Doc, MediaAsset } from '../types'
+
+const mediabunnyState = vi.hoisted(() => ({
+  inputs: [] as Array<{ disposed: boolean }>,
+  mode: 'track' as 'track' | 'none' | 'rejectSecond',
+}))
+
+vi.mock('mediabunny', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('mediabunny')>()
+  class FakeInput {
+    disposed = false
+    private readonly index: number
+    constructor() {
+      this.index = mediabunnyState.inputs.length
+      mediabunnyState.inputs.push(this)
+    }
+    getPrimaryVideoTrack() {
+      if (mediabunnyState.mode === 'none') return Promise.resolve(undefined)
+      if (mediabunnyState.mode === 'rejectSecond' && this.index === 1) {
+        return Promise.reject(new Error('probe failed'))
+      }
+      return Promise.resolve({})
+    }
+    dispose() {
+      this.disposed = true
+    }
+  }
+  class FakeOutput {
+    addVideoTrack(): void {}
+    addAudioTrack(): void {}
+    async start(): Promise<void> {}
+    async finalize(): Promise<void> {}
+    async cancel(): Promise<void> {}
+  }
+  class FakeCanvasSource {
+    async add(): Promise<void> {}
+    close(): void {}
+  }
+  class FakeVideoSampleSink {
+    async getSample() {
+      return {
+        timestamp: 0,
+        toCanvasImageSource: () => document.createElement('canvas'),
+        close: () => {},
+      }
+    }
+  }
+  return {
+    ...actual,
+    Input: FakeInput,
+    Output: FakeOutput,
+    CanvasSource: FakeCanvasSource,
+    VideoSampleSink: FakeVideoSampleSink,
+  }
+})
 
 let h: MockHarness
 
@@ -290,5 +344,72 @@ describe('export effect execution (0.8.6, mocked 2D context)', () => {
     // Inert stack: text draws directly (fillText), no scratch canvas blit.
     expect(calls.filter((c) => c.op === 'drawImage')).toHaveLength(0)
     expect(calls.filter((c) => c.op === 'fillText').length).toBeGreaterThan(0)
+  })
+})
+
+describe('exportTimeline Input ownership (H6)', () => {
+  function videoDoc(count: number): Doc {
+    const doc = createDoc()
+    doc.media = Array.from({ length: count }, (_, index) =>
+      createMediaAsset({
+        id: `media_${index}`,
+        kind: 'video',
+        name: `clip_${index}.mp4`,
+        duration: 10,
+        width: 640,
+        height: 360,
+        url: `blob:${index}`,
+        file: new File(['x'], `clip_${index}.mp4`, { type: 'video/mp4' }),
+      }),
+    )
+    doc.project.tracks = [
+      createTrack('video', 1, {
+        id: 'v1',
+        clips: [createClip({ id: 'clip', mediaId: 'media_0', start: 0, duration: 1, inPoint: 0 })],
+      }),
+    ]
+    return doc
+  }
+
+  function sink() {
+    return {
+      write: async () => {},
+      close: async () => {},
+      abort: async () => {},
+    }
+  }
+
+  beforeEach(() => {
+    mediabunnyState.inputs.length = 0
+    mediabunnyState.mode = 'track'
+    vi.stubGlobal('VideoEncoder', class {})
+    vi.stubGlobal('VideoFrame', class {})
+    vi.stubGlobal('createImageBitmap', async () => ({ close: () => {} }))
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('disposes the input whose video track is missing', async () => {
+    mediabunnyState.mode = 'none'
+    await exportTimeline(videoDoc(1), { fileStream: sink() as never })
+    expect(mediabunnyState.inputs).toHaveLength(1)
+    expect(mediabunnyState.inputs[0].disposed).toBe(true)
+  })
+
+  it('disposes the input after a successful export', async () => {
+    await exportTimeline(videoDoc(1), { fileStream: sink() as never })
+    expect(mediabunnyState.inputs).toHaveLength(1)
+    expect(mediabunnyState.inputs[0].disposed).toBe(true)
+  })
+
+  it('disposes earlier inputs when a later track probe rejects', async () => {
+    mediabunnyState.mode = 'rejectSecond'
+    await expect(exportTimeline(videoDoc(2), { fileStream: sink() as never })).rejects.toThrow(
+      'probe failed',
+    )
+    expect(mediabunnyState.inputs).toHaveLength(2)
+    expect(mediabunnyState.inputs.every((input) => input.disposed)).toBe(true)
   })
 })

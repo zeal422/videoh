@@ -179,11 +179,15 @@ interface DecodeContext {
   sinks: Map<string, VideoSampleSink>
 }
 
-async function createDecodeContext(doc: Doc): Promise<DecodeContext> {
+async function createDecodeContext(doc: Doc, inputs: Input[]): Promise<DecodeContext> {
   const sinks = new Map<string, VideoSampleSink>()
   for (const asset of doc.media) {
     if (asset.kind !== 'video' || !asset.file) continue
     const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(asset.file) })
+    // Retain every Input from construction: a rejected track probe throws
+    // before this function returns, so the caller-owned list is the only
+    // reference the export's `finally` will have.
+    inputs.push(input)
     const track = await input.getPrimaryVideoTrack()
     if (!track) continue
     sinks.set(asset.id, new VideoSampleSink(track))
@@ -1252,6 +1256,9 @@ export async function exportTimeline(
   // The second decoded frame of a blended draw, keyed by clip id like `frames`
   // (which the blend never extends: a blended clip keeps its primary sample).
   const blends = new Map<string, BlendSample>()
+  // Every mediabunny Input the export opens, retained from construction so the
+  // finally below can release it even when a track probe rejects mid-loop.
+  const inputs: Input[] = []
   // Set once `finalize()` resolves: a finalized output must not be cancelled
   // (cancel on it is a harmless no-op, but the flag keeps the intent exact).
   let finalized = false
@@ -1340,7 +1347,7 @@ export async function exportTimeline(
     output.addVideoTrack(videoSource, { frameRate: fps })
 
     // Decode contexts per video asset (frame-accurate reads).
-    const decode = await createDecodeContext(doc)
+    const decode = await createDecodeContext(doc, inputs)
 
     // Audio mix first (fast, offline). Every track must exist before the output
     // is started, Mediabunny rejects `addTrack` afterwards, so the audio
@@ -1490,6 +1497,13 @@ export async function exportTimeline(
     if (streamed) await safeAbort(opts.fileStream)
     throw error
   } finally {
+    for (const input of inputs) {
+      try {
+        input.dispose()
+      } catch {
+        // An Input already released by a failed probe is harmless.
+      }
+    }
     closeDecodedFrames(frames)
     for (const blend of blends.values()) closeDecodedFrame(blend.frame)
     blends.clear()

@@ -237,7 +237,9 @@ export function writePendingInstallRecord(record: PendingInstallRecord): boolean
 /** True when a durable pending install exists for this project. */
 export function hasPendingInstallFor(projectId: string): boolean {
   const map = readPendingInstallMap()
-  return map !== null && Object.hasOwn(map, projectId)
+  // An unreadable map is unknown history, not proof that no install is
+  // pending: keep the shard (and the clean blocked) in that case.
+  return map === null || Object.hasOwn(map, projectId)
 }
 
 /**

@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.28.3] - 2026-11-16
+
+### Fixed
+
+- Undo and history: a slider drag opens one transient gesture on its first preview frame, so one undo returns to the pre-drag value. A pointercancel or unmount discards that gesture, a drag that returns to its start cancels on release, a keyboard step finalizes its preview after the event and records one undo entry, a window blur clears the slider's pointer ownership after the shell commits the dangling gesture, and a slider neither writes into, ends, nor commits a gesture that another control owns: a preview frame, keyboard step, or stale release is dropped while that gesture is live, and the slider starts its own gesture once the owner releases. The project name commits once on blur or Enter, a draft cannot rename a project installed while the field is focused, and Enter/Escape stay with an active IME composition.
+- Command boundary: names, numeric fields, boolean flags, EQ bands, text style, transition types, media asset name and URL strings, trim edges, marker patches, and keyframe arrays are validated and refused with `EditorCommandError` instead of storing NaN or throwing a raw TypeError. Patches must be plain objects, so a field inherited from a custom prototype or a class instance is refused. `sanitizeKeyframes` reads a non-array as empty and drops primitive entries, the reorder helper ignores malformed entries before reading their fields, and the template parser refuses unknown keyframe fields.
+- Playback and export: Freeze Frame skips a seek when the element is already on the target frame; reversed-clip overwrites guard the low source anchor, and a reversed head trim can shorten an over-consuming timeScale ramp; scrub resets clear the running map, a stale cleanup cannot remove a newer decode, and an obsolete drain checks ownership before taking a newer request; project replacement clears cached images; mediabunny `Input` instances are disposed on every export path, including a rejected track probe; transition spans clamp to both clips' shared interval; a third overlapping clip still draws in both preview and export; a font commit invalidates only its own family.
+- Media and storage: claim writes reserve media activity against a same-tab clean, and a nested admission passes its parent reservation token so an import holding a hold cannot deadlock with Clear All while unrelated new work waits once a clean is requested; a save keeps an offline referenced hash in its claim so a later restore stays protected from another copy's clean; unreadable pending-install state keeps claim shards; the zip reader compares local header name bytes with the central record and rejects local extra fields; the bundle manifest rejects control characters in the MIME type; Clear All counts font temp and quarantine bytes; an empty sidecar type counts as a fallback.
+- Hydration and state: media geometry clamps at zero, text x/y clamps to 0..1, invalid project ids get a type-preserving 64-bit recovered id, so an array or object id cannot collide with its JSON text, null, Infinity, NaN, and -0 stay distinct from each other and from 0, and an unreadable value does not throw, unreachable sequence chains count toward the depth cap, non-finite playheads are ignored, placement uses the default duration for a non-finite asset duration, a non-finite caption start produces no batch, and a throwing recorder error handler cannot skip teardown.
+- Small fixes: an unknown marker color falls back to green, both trim helpers accept an empty curve, a refused sequence-marker delete keeps its selection, and the `angleFromCenter` documentation now names the +x axis.
+- Storage disclosure: the privacy page now names OPFS media and fonts, both IndexedDB databases, and the install and recovery records, and its clearing paragraph presents those items as examples rather than an exhaustive list.
+- Test infrastructure: the browser mock restores patched prototypes on uninstall, the OPFS mock rejects invalid names with `TypeError` to match MDN, the URL revoke spy restores, and the persist mock keeps the production export surface.
+
+### Changed
+
+- Bump the version to 0.28.3; the project schema stays v8.
+
 ## [0.28.2] - 2026-11-16
 
 ### Fixed

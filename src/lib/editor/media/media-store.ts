@@ -17,15 +17,12 @@
  * returning an in-memory directory (see `__tests__/mocks/opfs.ts`).
  */
 
-import { isValidContentHash } from '../project-validation'
+import { isValidContentHash, isValidProjectId } from '../project-validation'
 import {
   hasPendingInstallFor,
   isInstallHistoryLost,
   readInstalledRegistryState,
 } from './installed-registry'
-
-/** Largest project id the store accepts as a directory name. */
-const PROJECT_ID_MAX = 128
 
 const CLAIMS_DIR = 'claims'
 const TEMPORARY_PREFIX = '.tmp-'
@@ -121,14 +118,9 @@ async function rootDirectory(): Promise<MediaStoreDirectory> {
 // validation and key helpers
 
 /**
- * A project id becomes a directory name. Only characters a generated id can
- * contain survive, so a crafted project cannot traverse the store.
+ * A project id becomes a directory name. The rule lives in the pure validation
+ * module so hydration and the store share one boundary.
  */
-export function isValidProjectId(value: unknown): value is string {
-  return (
-    typeof value === 'string' && value.length <= PROJECT_ID_MAX && /^[A-Za-z0-9_-]+$/.test(value)
-  )
-}
 
 function assertProjectId(projectId: string): void {
   if (!isValidProjectId(projectId))
@@ -477,17 +469,23 @@ export async function writeMediaFile(
   let quarantined: string | null = null
   const damaged = await readFileHandle(dir, contentHash)
   if (damaged) {
-    const handle = await dir.getFileHandle(contentHash)
-    const target = temporaryName('quarantine')
-    if (typeof handle.move === 'function') {
-      try {
-        await handle.move(dir, target)
-        quarantined = target
-      } catch {
+    try {
+      const handle = await dir.getFileHandle(contentHash)
+      const target = temporaryName('quarantine')
+      if (typeof handle.move === 'function') {
+        try {
+          await handle.move(dir, target)
+          quarantined = target
+        } catch {
+          await removeEntryQuiet(dir, contentHash)
+        }
+      } else {
         await removeEntryQuiet(dir, contentHash)
       }
-    } else {
-      await removeEntryQuiet(dir, contentHash)
+    } catch (error) {
+      // A concurrent writer may have removed the damaged entry between the
+      // read and the handle lookup; that is already the desired state.
+      if (!isNotFound(error)) throw error
     }
   }
   const tempName = temporaryName('tmp')
@@ -937,8 +935,9 @@ export async function clearProjectMedia(projectId: string): Promise<MediaClearRe
   const fontDir = await namespaceDirectory(projectId, FONT_NAMESPACE, false)
   if (fontDir) {
     for (const name of await directoryNames(fontDir)) {
-      if (!isValidContentHash(name)) continue
-      deleted += 1
+      if (isValidContentHash(name)) deleted += 1
+      // Count every entry, including temp, quarantine, and sidecar leftovers:
+      // the recursive remove frees those bytes too.
       reclaimed += await entrySizeQuiet(fontDir, name)
     }
     await removeEntryStrict(dir, FONT_NAMESPACE, { recursive: true })

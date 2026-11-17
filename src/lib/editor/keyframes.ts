@@ -227,8 +227,16 @@ export function clampPropertyValue(property: KeyframeProperty, value: number): n
  * and normalizes the interpolation (absent or unknown reads as linear).
  */
 export function sanitizeKeyframes(property: KeyframeProperty, keyframes: Keyframe[]): Keyframe[] {
+  if (!Array.isArray(keyframes)) return []
   return keyframes
-    .filter((k) => Number.isFinite(k.time) && k.time >= 0 && Number.isFinite(k.value))
+    .filter(
+      (k): k is Keyframe =>
+        typeof k === 'object' &&
+        k !== null &&
+        Number.isFinite(k.time) &&
+        k.time >= 0 &&
+        Number.isFinite(k.value),
+    )
     .map((k) => ({
       time: k.time,
       value: clampPropertyValue(property, k.value),

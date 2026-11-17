@@ -36,6 +36,9 @@ let h: MockHarness
 beforeEach(() => {
   h = installBrowserMocks()
   document.body.innerHTML = ''
+  // A slider preview opens one module-level gesture; a test that only drives
+  // the preview (or unmounts mid-drag) must not leave its base for the next.
+  useEditorStore.getState().cancelTransient()
   useEditorStore.setState(useEditorStore.getInitialState())
   useWorkspaceStore.setState(useWorkspaceStore.getInitialState())
 })

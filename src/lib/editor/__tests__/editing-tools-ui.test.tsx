@@ -1,16 +1,18 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
+import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 
+import { NamedSlider } from '@/components/editor/NamedSlider'
 import { Toolbar } from '@/components/editor/Toolbar'
 import { TimelinePanel } from '@/components/editor/timeline/TimelinePanel'
 import { useEditorKeyboard } from '@/hooks/editor/useEditorKeyboard'
 import { toast } from '@/hooks/use-toast'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
-import { useEditorStore } from '../store'
+import { currentTransientToken, isTransientActive, useEditorStore } from '../store'
 import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 import type { Clip, Doc, MediaAsset } from '../types'
 
@@ -41,6 +43,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  useEditorStore.getState().cancelTransient()
   cleanup()
   h.uninstall()
 })
@@ -203,6 +206,63 @@ describe('toolbar tools', () => {
     expect(useEditorStore.getState().pxPerSec).toBe(2)
   })
 
+  it('commits one project-name history entry on blur, not per keystroke', () => {
+    const media = asset()
+    const doc = createDoc()
+    doc.media = [media]
+    doc.project.tracks = [
+      createTrack('video', 1, {
+        clips: [createClip({ id: 'v', mediaId: media.id, start: 0, duration: 4 })],
+      }),
+    ]
+    useEditorStore.setState({ doc, past: [], future: [] })
+    render(<Toolbar onOpenExport={() => {}} />)
+    const input = screen.getByLabelText('Project name')
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'Renamed' } })
+    expect(useEditorStore.getState().past).toHaveLength(0)
+    expect(useEditorStore.getState().doc.project.name).not.toBe('Renamed')
+    fireEvent.blur(input)
+    expect(useEditorStore.getState().doc.project.name).toBe('Renamed')
+    expect(useEditorStore.getState().past).toHaveLength(1)
+  })
+
+  it('does not apply a name draft to a project installed while the field is focused', () => {
+    const first = createDoc()
+    first.project.name = 'Project A'
+    useEditorStore.setState({ doc: first, past: [], future: [] })
+    render(<Toolbar onOpenExport={() => {}} />)
+    const input = screen.getByLabelText('Project name')
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'Draft for A' } })
+
+    const second = createDoc()
+    second.project.name = 'Project B'
+    useEditorStore.getState().replaceDoc(second)
+    fireEvent.blur(input)
+
+    expect(useEditorStore.getState().doc.project.name).toBe('Project B')
+  })
+
+  it('leaves Enter and Escape to the IME while composing a project name', () => {
+    const doc = createDoc()
+    doc.project.name = 'Original'
+    useEditorStore.setState({ doc, past: [], future: [] })
+    render(<Toolbar onOpenExport={() => {}} />)
+    const input = screen.getByLabelText('Project name')
+    input.focus()
+    fireEvent.change(input, { target: { value: 'Composing' } })
+
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    expect(useEditorStore.getState().doc.project.name).toBe('Original')
+    expect(useEditorStore.getState().past).toHaveLength(0)
+    expect(document.activeElement).toBe(input)
+
+    fireEvent.keyDown(input, { key: 'Escape', isComposing: true })
+    expect(useEditorStore.getState().doc.project.name).toBe('Original')
+    expect(document.activeElement).toBe(input)
+  })
+
   it('Add Edit splits every track with no selection, as one undo step', () => {
     const media = asset()
     const video = createTrack('video', 1, {
@@ -343,6 +403,306 @@ describe('toolbar tools', () => {
     marker.remove()
     fireEvent.click(pen)
     expect(useEditorStore.getState().activeTool).toBe('pen')
+  })
+})
+
+describe('slider gesture wiring (H1)', () => {
+  function sliderDoc() {
+    const media = createMediaAsset({
+      kind: 'video',
+      name: 'slider.mp4',
+      duration: 30,
+      url: 'blob:slider',
+    })
+    const track = createTrack('video', 1, {
+      id: 'v1',
+      clips: [
+        createClip({ id: 'clip_slider', mediaId: media.id, start: 0, duration: 4, inPoint: 0 }),
+      ],
+    })
+    const doc = createDoc()
+    doc.media = [media]
+    doc.project.tracks = [track]
+    useEditorStore.setState({ doc, past: [], future: [], selections: [], selection: null })
+  }
+
+  function sliderClip() {
+    return useEditorStore.getState().doc.project.tracks[0].clips[0]
+  }
+
+  function SliderHarness() {
+    const [value, setValue] = useState([50])
+    return (
+      <NamedSlider
+        aria-label="Test value"
+        value={value}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(next) => {
+          setValue(next)
+          if (!isTransientActive()) useEditorStore.getState().beginTransient()
+          useEditorStore.getState().applyTransient({
+            type: 'setClipOpacity',
+            clipId: 'clip_slider',
+            opacity: next[0] / 100,
+          })
+        }}
+        onValueCommit={(next) =>
+          useEditorStore
+            .getState()
+            .apply({ type: 'setClipOpacity', clipId: 'clip_slider', opacity: next[0] / 100 })
+        }
+      />
+    )
+  }
+
+  function StoreSliderHarness() {
+    const percent = useEditorStore((state) => {
+      const clip = state.doc.project.tracks[0]?.clips.find((c) => c.id === 'clip_slider')
+      return Math.round((clip?.opacity ?? 1) * 100)
+    })
+    return (
+      <NamedSlider
+        aria-label="Store value"
+        value={[percent]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(next) => {
+          if (!isTransientActive()) useEditorStore.getState().beginTransient()
+          useEditorStore.getState().applyTransient({
+            type: 'setClipOpacity',
+            clipId: 'clip_slider',
+            opacity: next[0] / 100,
+          })
+        }}
+        onValueCommit={(next) =>
+          useEditorStore
+            .getState()
+            .apply({ type: 'setClipOpacity', clipId: 'clip_slider', opacity: next[0] / 100 })
+        }
+      />
+    )
+  }
+
+  function renderSlider() {
+    const view = render(<SliderHarness />)
+    const thumb = screen.getByRole('slider', { name: 'Test value' })
+    const track = thumb.parentElement!
+    const root = track.parentElement!
+    Object.defineProperty(root, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ left: 0, top: 0, width: 100, height: 20, right: 100, bottom: 20 }),
+    })
+    Object.defineProperty(thumb, 'setPointerCapture', { configurable: true, value: () => {} })
+    Object.defineProperty(thumb, 'releasePointerCapture', { configurable: true, value: () => {} })
+    Object.defineProperty(thumb, 'hasPointerCapture', {
+      configurable: true,
+      value: () => true,
+    })
+    return { ...view, thumb }
+  }
+
+  function beginPointerDrag() {
+    const view = renderSlider()
+    fireEvent.pointerDown(view.thumb, { pointerId: 1, clientX: 50, clientY: 10 })
+    fireEvent.pointerMove(view.thumb, { pointerId: 1, clientX: 80, clientY: 10 })
+    return view
+  }
+
+  it('discards the preview and records no history when the pointer is cancelled', () => {
+    sliderDoc()
+    const { thumb } = beginPointerDrag()
+    expect(isTransientActive()).toBe(true)
+    expect(sliderClip().opacity).toBeCloseTo(0.8, 5)
+
+    fireEvent.pointerCancel(thumb, { pointerId: 1 })
+    expect(isTransientActive()).toBe(false)
+    expect(sliderClip().opacity).toBeUndefined()
+    expect(useEditorStore.getState().past).toHaveLength(0)
+  })
+
+  it('does not overwrite or end a transient another component opened', () => {
+    sliderDoc()
+    const store = useEditorStore.getState()
+    store.beginTransient()
+    store.applyTransient({ type: 'setClipOpacity', clipId: 'clip_slider', opacity: 0.4 })
+    const { thumb } = beginPointerDrag()
+    // The drag frame is rejected: it must not write into the other gesture.
+    expect(sliderClip().opacity).toBeCloseTo(0.4, 5)
+
+    fireEvent.pointerCancel(thumb, { pointerId: 1 })
+    expect(isTransientActive()).toBe(true)
+    expect(sliderClip().opacity).toBeCloseTo(0.4, 5)
+    store.cancelTransient()
+  })
+
+  it("leaves another control's live gesture intact when a stale drag is released", async () => {
+    sliderDoc()
+    const { thumb } = beginPointerDrag()
+    const store = useEditorStore.getState()
+    // A second control starts its own gesture while the slider still previews.
+    // The slider no longer owns the slot, so its release must not run `apply`,
+    // which would roll that second gesture back before committing.
+    const second = store.beginTransient()
+    store.applyTransient({
+      type: 'setClipRotation',
+      clipId: 'clip_slider',
+      rotation: 15,
+    })
+
+    fireEvent.pointerUp(thumb, { pointerId: 1 })
+    await Promise.resolve()
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(second)
+    expect(sliderClip().rotation).toBe(15)
+    expect(useEditorStore.getState().past).toHaveLength(0)
+
+    store.cancelTransient()
+    expect(sliderClip().rotation).toBeUndefined()
+  })
+
+  it("drops a keyboard step while another control's gesture is live", async () => {
+    sliderDoc()
+    useEditorStore.getState().apply({ type: 'setClipOpacity', clipId: 'clip_slider', opacity: 0.5 })
+    useEditorStore.setState({ past: [], future: [] })
+    render(<StoreSliderHarness />)
+    const thumb = screen.getByRole('slider', { name: 'Store value' })
+    const store = useEditorStore.getState()
+    const second = store.beginTransient()
+    store.applyTransient({
+      type: 'setClipRotation',
+      clipId: 'clip_slider',
+      rotation: 15,
+    })
+
+    // Radix commits a keyboard step before reporting the change. The live slot
+    // belongs to the other control, so both callbacks are dropped and the
+    // gesture keeps its own value.
+    fireEvent.keyDown(thumb, { key: 'ArrowRight' })
+    await Promise.resolve()
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(second)
+    expect(sliderClip().rotation).toBe(15)
+    expect(sliderClip().opacity).toBeCloseTo(0.5, 5)
+    expect(useEditorStore.getState().past).toHaveLength(0)
+
+    store.cancelTransient()
+    expect(sliderClip().opacity).toBeCloseTo(0.5, 5)
+    expect(sliderClip().rotation).toBeUndefined()
+  })
+
+  it('commits one history entry when a drag changes the value', async () => {
+    sliderDoc()
+    const { thumb } = beginPointerDrag()
+    fireEvent.pointerUp(thumb, { pointerId: 1 })
+    await Promise.resolve()
+    expect(isTransientActive()).toBe(false)
+    expect(sliderClip().opacity).toBeCloseTo(0.8, 5)
+    expect(useEditorStore.getState().past).toHaveLength(1)
+  })
+
+  it('ends the preview without history when a drag returns to its start', async () => {
+    sliderDoc()
+    const { thumb } = beginPointerDrag()
+    fireEvent.pointerMove(thumb, { pointerId: 1, clientX: 50, clientY: 10 })
+    fireEvent.pointerUp(thumb, { pointerId: 1 })
+    await Promise.resolve()
+    expect(isTransientActive()).toBe(false)
+    expect(sliderClip().opacity).toBeUndefined()
+    expect(useEditorStore.getState().past).toHaveLength(0)
+  })
+
+  it('does not leave a pointerless preview after a keyboard step', async () => {
+    sliderDoc()
+    renderSlider()
+    const thumb = screen.getByRole('slider', { name: 'Test value' })
+    fireEvent.keyDown(thumb, { key: 'ArrowLeft' })
+    await Promise.resolve()
+    expect(isTransientActive()).toBe(false)
+    expect(sliderClip().opacity).toBeCloseTo(0.49, 5)
+    expect(useEditorStore.getState().past).toHaveLength(1)
+  })
+
+  it('records one keyboard step, so one undo restores the old value', async () => {
+    sliderDoc()
+    useEditorStore.getState().apply({ type: 'setClipOpacity', clipId: 'clip_slider', opacity: 0.5 })
+    useEditorStore.setState({ past: [], future: [] })
+    render(<StoreSliderHarness />)
+    const thumb = screen.getByRole('slider', { name: 'Store value' })
+    expect(thumb.getAttribute('aria-valuenow')).toBe('50')
+
+    fireEvent.keyDown(thumb, { key: 'ArrowRight' })
+    await Promise.resolve()
+    expect(isTransientActive()).toBe(false)
+    expect(useEditorStore.getState().past).toHaveLength(1)
+    expect(sliderClip().opacity).toBeCloseTo(0.51, 5)
+    expect(thumb.getAttribute('aria-valuenow')).toBe('51')
+
+    act(() => useEditorStore.getState().undo())
+    expect(useEditorStore.getState().past).toHaveLength(0)
+    expect(sliderClip().opacity).toBeCloseTo(0.5, 5)
+    expect(thumb.getAttribute('aria-valuenow')).toBe('50')
+  })
+
+  it('takes a new keyboard preview after a blur ended a drag without pointerup', async () => {
+    sliderDoc()
+    const { thumb } = beginPointerDrag()
+    expect(isTransientActive()).toBe(true)
+
+    // The shell commits the dangling gesture on blur; this harness has no
+    // shell, so do the same before the next interaction.
+    fireEvent.blur(window)
+    useEditorStore.getState().commitTransient()
+    expect(isTransientActive()).toBe(false)
+    expect(useEditorStore.getState().past).toHaveLength(1)
+
+    fireEvent.keyDown(thumb, { key: 'ArrowLeft' })
+    await Promise.resolve()
+    expect(isTransientActive()).toBe(false)
+    expect(sliderClip().opacity).toBeCloseTo(0.79, 5)
+    expect(useEditorStore.getState().past).toHaveLength(2)
+  })
+
+  it('cancels only its own preview when it unmounts before release', () => {
+    sliderDoc()
+    const { thumb, unmount } = beginPointerDrag()
+    expect(isTransientActive()).toBe(true)
+
+    unmount()
+    expect(isTransientActive()).toBe(false)
+    expect(sliderClip().opacity).toBeUndefined()
+    expect(useEditorStore.getState().past).toHaveLength(0)
+  })
+
+  it('leaves another component transient alone when it unmounts', () => {
+    sliderDoc()
+    const store = useEditorStore.getState()
+    store.beginTransient()
+    store.applyTransient({ type: 'setClipOpacity', clipId: 'clip_slider', opacity: 0.4 })
+    const { unmount } = beginPointerDrag()
+    // The drag frame is rejected while the other gesture owns the slot.
+    expect(sliderClip().opacity).toBeCloseTo(0.4, 5)
+
+    unmount()
+    expect(isTransientActive()).toBe(true)
+    expect(sliderClip().opacity).toBeCloseTo(0.4, 5)
+    store.cancelTransient()
+  })
+
+  it('opens one transient gesture on every preview panel slider path', () => {
+    // The store lifecycle test proves the undo behavior; this lock proves the
+    // panels actually open the gesture before their first preview frame. A
+    // Radix slider cannot reliably drive its callbacks in jsdom, so the wiring
+    // is asserted at the source, matching the repo's other wiring locks.
+    const count = (path: string) =>
+      read(path)
+        .split('\n')
+        .filter((line) => line.includes('if (') && line.includes('isTransientActive()')).length
+    expect(count('src/components/editor/InspectorPanel.tsx')).toBe(6)
+    expect(count('src/components/editor/effect-controls/EffectControlsPanel.tsx')).toBe(4)
+    expect(count('src/components/editor/effect-controls/AppliedEffectsSection.tsx')).toBe(3)
   })
 })
 

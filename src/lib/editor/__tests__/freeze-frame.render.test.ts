@@ -60,9 +60,11 @@ class FakeVideo extends EventTarget {
     return this.source
   }
   set currentTime(value: number) {
+    const changed = Math.abs(this.time - value) >= 1e-6
     this.time = value
     this.seeks.push(value)
-    setTimeout(() => this.dispatchEvent(new Event('seeked')), 0)
+    // Real elements only fire `seeked` when the position actually changes.
+    if (changed) setTimeout(() => this.dispatchEvent(new Event('seeked')), 0)
   }
   get currentTime(): number {
     return this.time
@@ -243,6 +245,17 @@ describe('renderFreezeFrame', () => {
     const sourceAt = main.events.findIndex((event) => event.kind === 'drawImage')
     expect(backgroundAt).toBeGreaterThanOrEqual(0)
     expect(sourceAt).toBeGreaterThan(backgroundAt)
+  })
+
+  it('does not wait for a seek when the target is already the current frame', async () => {
+    const doc = docWithVideo()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.start = 0
+    clip.inPoint = 0
+    const file = await renderFreezeFrame(doc, [], 0)
+    expect(videos).toHaveLength(1)
+    expect(videos[0].seeks).toEqual([])
+    expect(file.size).toBeGreaterThan(0)
   })
 
   it('loads a still image directly instead of seeking it', async () => {

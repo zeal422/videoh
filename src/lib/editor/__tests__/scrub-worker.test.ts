@@ -210,6 +210,65 @@ describe('scrub worker asset lifecycle', () => {
     expect(posted.some((message) => (message as { type?: string }).type === 'frame')).toBe(false)
   })
 
+  it('a reset starts a new decode and the stale cleanup keeps its entry (M3)', async () => {
+    const firstCanvas = deferredCanvas()
+    send(decode(1, 'c1'))
+    await vi.waitFor(() => expect(state.canvases).toHaveLength(0))
+
+    send({ type: 'reset' })
+    const secondCanvas = deferredCanvas()
+    send(decode(2, 'c1'))
+    // The reset cleared the running set, so the new request opens a decode.
+    await vi.waitFor(() => expect(state.canvases).toHaveLength(0))
+
+    firstCanvas({ canvas: {} })
+    await vi.waitFor(() => expect(state.bitmaps).toHaveLength(1))
+    const thirdCanvas = deferredCanvas()
+    send(decode(3, 'c1'))
+    await flush()
+    // The stale decode's finally must not remove the running entry that the
+    // second decode owns, so the third request stays queued.
+    expect(state.canvases).toHaveLength(1)
+
+    secondCanvas({ canvas: {} })
+    await flush()
+    thirdCanvas({ canvas: {} })
+    await flush()
+  })
+
+  it('an obsolete drain does not take a newer request after reset', async () => {
+    const firstCanvas = deferredCanvas()
+    send(decode(1, 'c1'))
+    await vi.waitFor(() => expect(state.canvases).toHaveLength(0))
+
+    send({ type: 'reset' })
+    const secondCanvas = deferredCanvas()
+    send(decode(2, 'c1'))
+    await vi.waitFor(() => expect(state.canvases).toHaveLength(0))
+
+    const thirdCanvas = deferredCanvas()
+    send(decode(3, 'c1'))
+
+    // The pre-reset decode finishes. Its drain must not dequeue request 3.
+    // `getCanvas` shifts `state.canvases`, so a remaining deferred means the
+    // obsolete drain did not take it.
+    firstCanvas({ canvas: {} })
+    await flush()
+    expect(state.canvases).toHaveLength(1)
+
+    // The replacement drain finishes request 2, sees request 3 queued, drops
+    // the older frame, and decodes 3.
+    secondCanvas({ canvas: {} })
+    await vi.waitFor(() => expect(state.canvases).toHaveLength(0))
+    thirdCanvas({ canvas: {} })
+    await vi.waitFor(() => {
+      const frames = posted
+        .filter((message) => (message as { type?: string }).type === 'frame')
+        .map((message) => (message as { requestId: number }).requestId)
+      expect(frames).toEqual([3])
+    })
+  })
+
   it('lets a released clip process its next request (0.18.0)', async () => {
     const firstCanvas = deferredCanvas()
     send(decode(1, 'c1'))

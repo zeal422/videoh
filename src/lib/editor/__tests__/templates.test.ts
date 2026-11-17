@@ -77,6 +77,17 @@ describe('local templates (0.26.0)', () => {
     expect(second[0].name).not.toBe('Mutated')
   })
 
+  it('refuses an unknown keyframe field instead of dropping it', () => {
+    const raw = rawTemplate()
+    const sequence = raw.sequence as {
+      tracks: Array<{ clips: Array<Record<string, unknown>> }>
+    }
+    sequence.tracks[0].clips[0].keyframes = {
+      opacity: [{ time: 0, value: 0.5, bogus: 1 }],
+    }
+    expect(() => parseTemplate(raw)).toThrow(/unknown field: bogus/)
+  })
+
   it('accepts a template with repeated link ids and remaps one group', () => {
     const raw = rawTemplate({
       sequence: {

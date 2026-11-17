@@ -135,6 +135,8 @@ const STYLE_KEYS = [
   'shadow',
 ] as const
 
+const KEYFRAME_KEYS = ['time', 'value', 'interpolation', 'easeOut'] as const
+
 function assertKnownKeys(
   entry: Record<string, unknown>,
   allowed: readonly string[],
@@ -326,6 +328,7 @@ function parseVisualFields(entry: Record<string, unknown>): Partial<TemplateClip
           throw new TemplateError('Template clip keyframe is invalid')
         }
         const keyframeRaw = rawKeyframe as Record<string, unknown>
+        assertKnownKeys(keyframeRaw, KEYFRAME_KEYS, 'clip keyframe')
         const time = keyframeRaw.time
         const keyframeValue = keyframeRaw.value
         if (

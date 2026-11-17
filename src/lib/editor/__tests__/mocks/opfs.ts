@@ -20,9 +20,13 @@ interface FakeFile {
 }
 
 function notFound(): Error {
-  const error = new Error('A requested file or directory could not be found')
-  error.name = 'NotFoundError'
-  return error
+  return new DOMException('A requested file or directory could not be found', 'NotFoundError')
+}
+
+function invalidName(): Error {
+  // MDN: an invalid name throws TypeError. TypeMismatchError is for a
+  // directory passed to getFileHandle, or a file to getDirectoryHandle.
+  return new TypeError('Invalid name')
 }
 
 export interface FakeOpfs {
@@ -195,7 +199,9 @@ export function createFakeOpfs(options: { quotaBytes?: number } = {}): FakeOpfs 
       name: string,
       options?: { create?: boolean },
     ): Promise<MediaStoreDirectory> {
-      if (name.includes('/') || name === '..' || name === '.') throw new Error('Invalid name')
+      if (name.length === 0 || name.includes('/') || name === '..' || name === '.') {
+        throw invalidName()
+      }
       const path = this.childPath(name)
       if (!directories.has(path)) {
         if (!options?.create) throw notFound()
@@ -208,7 +214,9 @@ export function createFakeOpfs(options: { quotaBytes?: number } = {}): FakeOpfs 
       name: string,
       options?: { create?: boolean },
     ): Promise<MediaStoreFileHandle> {
-      if (name.includes('/') || name === '..' || name === '.') throw new Error('Invalid name')
+      if (name.length === 0 || name.includes('/') || name === '..' || name === '.') {
+        throw invalidName()
+      }
       const path = this.childPath(name)
       if (!files.has(path) && !options?.create) throw notFound()
       if (!files.has(path)) files.set(path, { bytes: new Uint8Array(), type: '' })
@@ -220,9 +228,7 @@ export function createFakeOpfs(options: { quotaBytes?: number } = {}): FakeOpfs 
     async removeEntry(name: string, options?: { recursive?: boolean }): Promise<void> {
       if (state.failRemoves > 0) {
         state.failRemoves -= 1
-        const error = new Error('The entry could not be removed')
-        error.name = 'InvalidStateError'
-        throw error
+        throw new DOMException('The entry could not be removed', 'InvalidStateError')
       }
       const path = this.childPath(name)
       if (directories.has(path)) {
@@ -230,7 +236,9 @@ export function createFakeOpfs(options: { quotaBytes?: number } = {}): FakeOpfs 
         const hasChildren =
           [...files.keys()].some((key) => key.startsWith(prefix)) ||
           [...directories].some((key) => key.startsWith(prefix))
-        if (hasChildren && !options?.recursive) throw new Error('Directory is not empty')
+        if (hasChildren && !options?.recursive) {
+          throw new DOMException('Directory is not empty', 'InvalidStateError')
+        }
         for (const key of [...files.keys()]) if (key.startsWith(prefix)) files.delete(key)
         for (const key of [...directories]) if (key.startsWith(prefix)) directories.delete(key)
         directories.delete(path)

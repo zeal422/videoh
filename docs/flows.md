@@ -1015,7 +1015,10 @@ Stable hooks used across flows and tests:
   reachable from the live doc, both history stacks, the autosave slot for this project, and every claim
   shard, and it reports the reclaimed size. Same-tab imports, relinks, Freeze Frame writes, and
   rehydration wait for a running clean, so a candidate hash cannot be rewritten between the reference
-  snapshot and the delete. Clean also refuses while an imported project's install record is still
+  snapshot and the delete. A nested operation passes its parent reservation token while a clean
+  drains that reservation, so an import staging a claim or a font cannot deadlock Clear All; an
+  unrelated top-level write waits for the clean instead of joining it. Clean also refuses while an
+  imported project's install record is still
   pending, so recovery cannot retire the import's claim before the registry append lands. The
   pending check runs again inside the exclusion, after the preview yield, so an install that landed
   while the preview was read cannot have its claim retired by recovery. Clear All
@@ -1117,3 +1120,50 @@ Stable hooks used across flows and tests:
   and `--destructive` stay fixed, and the monitor and scopes keep their neutral NLE surfaces.
 - If the browser blocks `localStorage` at the getter, the app falls back to Default instead of
   failing the boot or the dialog; a selection still applies for that session but cannot persist.
+
+## Hardening pass (0.28.3)
+
+- Slider previews in the Inspector and Effect Controls open one transient gesture on their first
+  frame. The release still calls `apply`, so it rolls the open gesture back to its pre-drag base and
+  records one history entry. A `pointercancel` or unmount discards the preview and ends only the
+  gesture this slider opened: it compares the token recorded for each frame and leaves a gesture
+  owned by another control alone. A preview frame, release, or keyboard step that no longer owns the
+  live slot is dropped, so it cannot overwrite or roll back that control's edit; the slider starts
+  its own gesture once the owner releases. A keyboard step commits before Radix reports the value, so the
+  slider finalizes that preview after the event instead of leaving a pointerless transient, and a
+  drag that returns to its starting value cancels its preview on release. A window blur clears the
+  slider's local pointer ownership after the shell commits the dangling gesture, so a drag ended by
+  an app switch cannot turn the next keyboard step into a pointerless preview. A stale gesture is
+  cancelled before a fresh UI test fixture. The project name input holds a local draft tagged with
+  its project id: it commits once on blur or Enter, reverts on Escape, is discarded when another
+  project is installed while the field is focused, and leaves Enter and Escape to an active IME
+  composition.
+- Command payloads are validated at the boundary in `commands.ts`: names, finite numbers, booleans,
+  EQ bands, text style, transition type, media asset fields, trim edge, marker patches, and keyframe
+  arrays refuse with `EditorCommandError`. `sanitizeKeyframes` reads a non-array as empty and drops
+  primitive entries, and templates reject unknown keyframe fields.
+- Freeze Frame skips a seek when the element already shows the target time. A reversed-clip
+  overwrite guards its low `clip.inPoint` anchor in both the interior and keep-right branches, and
+  a reversed head trim validates the kept span so it can shorten an over-consuming timeScale ramp
+  instead of refusing. A transition span clamps to the clips' shared interval, and clips beyond
+  the transition pair draw at full opacity in both the preview and the export plan.
+- A project epoch change clears the playback image cache; scrub resets clear the running map, an
+  obsolete drain checks its token before dequeueing so it cannot take a newer request, and a stale
+  cleanup cannot remove a newer decode's entry. Export keeps every mediabunny `Input` in a
+  caller-owned list and disposes it in the `finally`, including when a later track probe rejects. A
+  font commit bumps only its own family's epoch, so an in-flight load for another family still
+  registers.
+- Claim writes reserve media activity against a same-tab clean. A claim is a durable reference, so
+  it keeps every referenced hash, including one whose bytes are offline at save time; if another
+  copy later restores the bytes, the saved copy's claim still protects them from cleanup. The clean
+  plan unions claims with live references, so the claim cannot hide a deletion. An unreadable
+  pending-install map reads as pending. The zip reader compares local header name bytes with the
+  central record and rejects local extra fields, while the manifest rejects control characters in
+  the MIME type. Clear All counts font temp and quarantine bytes, and an empty sidecar type counts
+  as a fallback.
+- Hydration clamps media geometry at zero and style x/y to 0..1, gives a present-but-invalid project
+  id a type-preserving 64-bit recovered key, so special numbers stay distinct, and counts
+  unreachable sequence depth. An unreadable value gets a per-value tagged identity instead of throwing.
+  Non-finite playheads
+  are ignored, placement uses the default duration for a non-finite asset duration, a non-finite
+  caption start produces no batch, and a throwing recorder handler cannot skip teardown.

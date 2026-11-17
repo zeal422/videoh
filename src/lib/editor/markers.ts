@@ -57,9 +57,9 @@ export function isMarkerColor(value: unknown): value is MarkerColor {
   return typeof value === 'string' && (MARKER_COLORS as readonly string[]).includes(value)
 }
 
-/** The swatch value for a color, defaulting to green. */
-export function markerColorValue(color?: MarkerColor): string {
-  return MARKER_COLOR_VALUES[color ?? DEFAULT_MARKER_COLOR]
+/** The swatch value for a color, defaulting to green for a missing or unknown value. */
+export function markerColorValue(color?: unknown): string {
+  return MARKER_COLOR_VALUES[isMarkerColor(color) ? color : DEFAULT_MARKER_COLOR]
 }
 
 /** A new marker at `time` (finite, clamped at 0; NaN and infinities clamp to 0). */

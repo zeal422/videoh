@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.28.3',
+    date: '2026-11-16',
+    highlights: [
+      'A slider drag undoes in one step, a cancelled drag is discarded, and the project name saves once when you finish typing',
+      'Freeze Frame works at a clip first frame, and reversed-clip overwrites no longer refuse valid cuts',
+      'Exports release every decoder input, and a project switch or reset clears stale preview images and scrub work',
+      'Saved projects reject hostile command values, malformed storage records, forged bundle headers, and colliding recovered ids',
+      'Project files stay at format version 8',
+    ],
+  },
+  {
     version: '0.28.2',
     date: '2026-11-16',
     highlights: [

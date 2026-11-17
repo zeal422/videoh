@@ -470,6 +470,11 @@ describe('commandsToPlaceMedia / commandsToPlaceSource', () => {
 })
 
 describe('commandsToAddCaptionCue (0.8.5)', () => {
+  it('refuses a non-finite cue start with an empty batch', () => {
+    expect(commandsToAddCaptionCue(createDoc(), Number.NaN)).toEqual([])
+    expect(commandsToAddCaptionCue(createDoc(), Number.POSITIVE_INFINITY)).toEqual([])
+  })
+
   it('builds a fresh-track batch with a first-free Captions name', () => {
     const doc = createDoc()
     const batch = commandsToAddCaptionCue(doc, 2)

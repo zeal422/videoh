@@ -29,6 +29,8 @@ export interface ZipWriteSink {
 /** One parsed central-directory entry. */
 export interface ZipEntry {
   path: string
+  /** Raw central-directory name bytes; the local header must match them. */
+  pathBytes: Uint8Array
   /** General-purpose flags. */
   flags: number
   /** Compression method. Only 0 (store) is accepted by the reader. */
@@ -363,6 +365,7 @@ export async function readZipDirectory(
     }
     entries.push({
       path,
+      pathBytes: new Uint8Array(directory.buffer.slice(cursor + 46, cursor + 46 + nameLength)),
       flags,
       method,
       crc32: crc,
@@ -381,6 +384,20 @@ export async function readZipDirectory(
     if (readU32(header, 0) !== LOCAL_SIGNATURE) throw new ZipError('The archive entry is malformed')
     const nameLength = readU16(header, 26)
     const extraLength = readU16(header, 28)
+    if (extraLength !== 0) {
+      throw new ZipError('The archive entry has an unexpected extra field')
+    }
+    if (nameLength !== entry.pathBytes.length) {
+      throw new ZipError('The archive entry name does not match the central directory')
+    }
+    const localName = new Uint8Array(
+      await blob
+        .slice(entry.localHeaderOffset + 30, entry.localHeaderOffset + 30 + nameLength)
+        .arrayBuffer(),
+    )
+    if (localName.some((byte, index) => byte !== entry.pathBytes[index])) {
+      throw new ZipError('The archive entry name does not match the central directory')
+    }
     const dataStart = entry.localHeaderOffset + 30 + nameLength + extraLength
     if (dataStart + entry.compressedSize > blob.size) {
       throw new ZipError('The archive entry is truncated')

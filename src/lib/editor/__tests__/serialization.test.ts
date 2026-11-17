@@ -7,6 +7,7 @@ import {
   serializeDoc,
   SERIALIZATION_VERSION,
 } from '../serialization'
+import { recoveredProjectId } from '../project-validation'
 import { createClip, createDoc, createMediaAsset, createTextClip } from '../factories'
 import { createDefaultTextStyle, createShapeClip, createTrack } from '../factories'
 import { createShapeStyle } from '../shapes'
@@ -31,6 +32,7 @@ import {
   FPS_MIN,
   GAIN_MAX,
   GAIN_MIN,
+  MAX_SEQUENCE_DEPTH,
   MAX_TIMELINE_SECONDS,
   PROJECT_MAX_H,
   PROJECT_MAX_W,
@@ -1915,5 +1917,146 @@ describe('structural and media id hydration trust boundary (0.28.2)', () => {
     const { doc } = deserializeDoc(wire())
     expect(doc.project.tracks[0].clips).toHaveLength(1)
     expect(doc.media[0].id).toBe('media_fixed')
+  })
+})
+
+describe('hostile hydration boundaries (M2)', () => {
+  function serialized(): Record<string, any> {
+    const doc = makeDoc()
+    doc.project.tracks.unshift(
+      createTrack('text', 1, {
+        id: 'text_track',
+        clips: [createTextClip({ id: 'text_clip' })],
+      }),
+    )
+    return JSON.parse(JSON.stringify(serializeDoc(doc))) as Record<string, any>
+  }
+
+  it('clamps negative media geometry and out-of-range text anchors', () => {
+    const json = serialized()
+    json.media[0].duration = -5
+    json.media[0].width = -10
+    json.media[0].height = -1
+    const text = (json.project.tracks as Array<Record<string, any>>)
+      .flatMap((track) => track.clips ?? [])
+      .find((clip) => clip.id === 'text_clip')
+    text.style.x = 1.5
+    text.style.y = -0.25
+    const { doc } = deserializeDoc(json)
+    expect(doc.media[0]).toMatchObject({ duration: 0, width: 0, height: 0 })
+    const loadedText = doc.project.tracks
+      .flatMap((track) => track.clips)
+      .find((clip) => clip.id === 'text_clip')
+    expect(loadedText?.style?.x).toBe(1)
+    expect(loadedText?.style?.y).toBe(0)
+  })
+
+  it('keeps proj_loaded only for a missing id and recovers invalid ids distinctly', () => {
+    const missing = serialized()
+    delete missing.project.id
+    expect(deserializeDoc(missing).doc.project.id).toBe('proj_loaded')
+
+    const first = serialized()
+    first.project.id = '../escape'
+    const second = serialized()
+    second.project.id = 'bad id'
+    const firstId = deserializeDoc(first).doc.project.id
+    const secondId = deserializeDoc(second).doc.project.id
+    expect(firstId).toMatch(/^proj_recovered_[0-9a-f]{16}$/)
+    expect(secondId).toMatch(/^proj_recovered_[0-9a-f]{16}$/)
+    expect(firstId).not.toBe(secondId)
+    expect(firstId).not.toBe('proj_loaded')
+
+    // A JSON array/object id and the string of its JSON text are different
+    // invalid ids. The recovery must not collapse them onto one store key.
+    const arrayId = serialized()
+    arrayId.project.id = []
+    const arrayTextId = serialized()
+    arrayTextId.project.id = '[]'
+    const objectId = serialized()
+    objectId.project.id = {}
+    const objectTextId = serialized()
+    objectTextId.project.id = '{}'
+    const arrayRecovered = deserializeDoc(arrayId).doc.project.id
+    const arrayTextRecovered = deserializeDoc(arrayTextId).doc.project.id
+    const objectRecovered = deserializeDoc(objectId).doc.project.id
+    const objectTextRecovered = deserializeDoc(objectTextId).doc.project.id
+    expect(arrayRecovered).toMatch(/^proj_recovered_[0-9a-f]{16}$/)
+    expect(arrayRecovered).not.toBe(arrayTextRecovered)
+    expect(objectRecovered).not.toBe(objectTextRecovered)
+  })
+
+  it('keeps special invalid ids distinct in the recovered hash', () => {
+    // JSON.stringify writes null, NaN, and both infinities as "null" and writes
+    // -0 as 0. Each pair here is a different invalid id, so a recovered store
+    // key must not collapse them.
+    const distinct: Array<[unknown, unknown]> = [
+      [null, Infinity],
+      [null, Number.NaN],
+      [-0, 0],
+      [[null], [Infinity]],
+      [{ value: -0 }, { value: 0 }],
+      ['Infinity', Infinity],
+    ]
+    for (const [first, second] of distinct) {
+      expect(recoveredProjectId(first)).not.toBe(recoveredProjectId(second))
+    }
+  })
+
+  it('separates distinct unreadable ids without coercing them', () => {
+    const unreadable = () =>
+      new Proxy(
+        {},
+        {
+          getPrototypeOf: () => {
+            throw new Error('no prototype')
+          },
+          get: () => {
+            throw new Error('no properties')
+          },
+        },
+      )
+    const first = unreadable()
+    const second = unreadable()
+    expect(recoveredProjectId(first)).toMatch(/^proj_recovered_[0-9a-f]{16}$/)
+    // The same value keeps its identity, and two distinct values never share
+    // the generic "[object Object]" fallback.
+    expect(recoveredProjectId(first)).toBe(recoveredProjectId(first))
+    expect(recoveredProjectId(first)).not.toBe(recoveredProjectId(second))
+  })
+
+  it('recovers a value JSON cannot serialize without throwing', () => {
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+    expect(recoveredProjectId(circular)).toMatch(/^proj_recovered_[0-9a-f]{16}$/)
+    expect(recoveredProjectId(circular)).toBe(recoveredProjectId(circular))
+  })
+
+  it('counts the depth of an unreachable sequence chain', () => {
+    const json = serialized()
+    json.project.sequences = Array.from({ length: MAX_SEQUENCE_DEPTH + 1 }, (_, index) => ({
+      id: `seq_${index}`,
+      name: `S${index}`,
+      tracks: [
+        {
+          id: `trk_${index}`,
+          kind: 'video',
+          name: 'V1',
+          clips:
+            index < MAX_SEQUENCE_DEPTH
+              ? [
+                  {
+                    id: `clip_${index}`,
+                    start: 0,
+                    duration: 1,
+                    inPoint: 0,
+                    sequenceId: `seq_${index + 1}`,
+                  },
+                ]
+              : [],
+        },
+      ],
+    }))
+    expect(() => deserializeDoc(json)).toThrow(/nesting is too deep/)
   })
 })

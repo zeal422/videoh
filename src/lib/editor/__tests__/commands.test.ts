@@ -33,12 +33,14 @@ import { resolveMatteTrack } from '../effects'
 import { evaluateKeyframes, integrateKeyframes } from '../keyframes'
 import { LUT_LIBRARY_MAX_CHARS, lutLibraryChars, parseCubeLut } from '../lut'
 import { relinkPatchFrom } from '../media/relink'
+import { COMMAND_BOUNDARY_CASES } from './command-boundary-cases'
 import type {
   Clip,
   Doc,
   EffectEntry,
   Keyframe,
   MediaAsset,
+  Project,
   ProjectFont,
   ProjectLut,
   Sequence,
@@ -4529,5 +4531,65 @@ describe('addSequence payload clip invariants (0.28.2)', () => {
     }
     const next = applyCommand(doc, { type: 'addSequence', sequence })
     expect(next.project.sequences?.some((entry) => entry.id === 'seq_mixed')).toBe(true)
+  })
+})
+
+describe('command payload boundary', () => {
+  function boundaryDoc(): Doc {
+    const { doc, videoAsset } = makeDoc()
+    const video = videoTrack(doc)
+    video.clips = [
+      createClip({ id: 'clip_a', mediaId: videoAsset.id, start: 0, duration: 4 }),
+      createClip({ id: 'clip_b', mediaId: videoAsset.id, start: 4, duration: 4 }),
+    ]
+    video.clips[0].markers = [{ id: 'clip_marker', time: 0 }]
+    doc.project.tracks.unshift(
+      createTrack('text', 1, {
+        id: 'track_text_boundary',
+        clips: [createTextClip({ id: 'clip_text_boundary' })],
+      }),
+    )
+    doc.project.markers = [{ id: 'marker_a', time: 1 }]
+    return doc
+  }
+
+  for (const [name, make] of COMMAND_BOUNDARY_CASES) {
+    it(`refuses ${name}`, () => {
+      const doc = boundaryDoc()
+      expect(() => applyCommand(doc, make(doc))).toThrow(EditorCommandError)
+    })
+  }
+
+  it('applies a single-field project settings patch', () => {
+    const doc = boundaryDoc()
+    const next = applyCommand(doc, { type: 'setProjectSettings', patch: { width: 1920 } })
+    expect(next.project.width).toBe(1920)
+    expect(next.project.height).toBe(doc.project.height)
+  })
+
+  it('refuses patches that inherit fields or come from a class instance', () => {
+    const doc = boundaryDoc()
+    const width = doc.project.width
+    const height = doc.project.height
+    // `width` lives on the prototype: without a plain-object check the handler
+    // reads it through the prototype chain and accepts it as a patch field.
+    const inherited = Object.create({ width: 640 })
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setProjectSettings',
+        patch: inherited as Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps'>>,
+      }),
+    ).toThrow(EditorCommandError)
+    class Patch {
+      height = 480
+    }
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setProjectSettings',
+        patch: new Patch() as Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps'>>,
+      }),
+    ).toThrow(EditorCommandError)
+    expect(doc.project.width).toBe(width)
+    expect(doc.project.height).toBe(height)
   })
 })

@@ -567,12 +567,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   beginTransient: (pointerId) => gesture.begin(get().doc, pointerId),
 
   applyTransient: (command) => {
-    // Slider previews (InspectorPanel, EffectControls) apply transient frames
-    // WITHOUT a gesture slot and commit once via onValueCommit. Drag gestures
-    // guard their own frames by token instead. `applyCommand` runs the lock
-    // guard first, so a mid-drag frame on a locked track writes nothing; the
-    // committed `apply` raises the one notice. Gesture paths also pre-check the
-    // lock before `beginTransient`, so a refused drag never starts.
+    // Slider previews (InspectorPanel, EffectControls) open one gesture on
+    // their first frame and commit it through `apply`, which rolls it back
+    // first. Drag gestures guard their own frames by token instead.
+    // `applyCommand` runs the lock guard first, so a mid-drag frame on a
+    // locked track writes nothing; the committed `apply` raises the one
+    // notice. Gesture paths also pre-check the lock before `beginTransient`,
+    // so a refused drag never starts.
     const { doc } = get()
     try {
       set({ doc: applyCommand(doc, command, COMMAND_OPTIONS) })
@@ -846,7 +847,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   deselectAll: () => set({ selections: [], selection: null, selectedMarker: null }),
 
-  setPlayhead: (t) => set({ playhead: Math.max(0, t) }),
+  setPlayhead: (t) => {
+    if (!Number.isFinite(t)) return
+    set({ playhead: Math.max(0, t) })
+  },
   setPlaying: (playing) => set({ playing }),
   setMediaError: (info, clipId) =>
     set((state) => {
@@ -878,6 +882,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   setSourcePlayhead: (t) => {
+    if (!Number.isFinite(t)) return
     const { doc, sourceAssetId } = get()
     const asset = sourceAssetId ? doc.media.find((m) => m.id === sourceAssetId) : undefined
     const max = asset && asset.kind !== 'image' && asset.duration > 0 ? asset.duration : undefined

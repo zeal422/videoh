@@ -68,6 +68,7 @@ export function largestFittingDuration(
  * the curve's low end).
  */
 export function rebaseCurveFromCut(keyframes: Keyframe[], cut: number): Keyframe[] {
+  if (keyframes.length === 0) return []
   const kept = keyframes.filter((k) => k.time >= cut).map((k) => ({ ...k, time: k.time - cut }))
   // The boundary lands at local 0, so the pin test looks at the array START
   // it prepends to.
@@ -93,6 +94,7 @@ export function rebaseCurveFromCut(keyframes: Keyframe[], cut: number): Keyframe
  * curve's HIGH end, so a shrink drops the top and re-pins the rate at the cut.
  */
 export function truncateCurveAtCut(keyframes: Keyframe[], cut: number): Keyframe[] {
+  if (keyframes.length === 0) return []
   const kept = keyframes.filter((k) => k.time <= cut).map((k) => ({ ...k }))
   // The boundary lands at `cut`, so the pin test looks at the array END it
   // appends to. Testing the wrong end skipped the pin whenever a surviving

@@ -575,10 +575,15 @@ export class StreamRecorder {
 
   private fail(error: Error): void {
     this.acceptingData = false
-    this.handlers.onError?.(error)
-    this.chunks.length = 0
-    this.bytes = 0
-    void this.stop()
+    try {
+      this.handlers.onError?.(error)
+    } finally {
+      // A throwing handler must not skip the take teardown: the chunks and
+      // encoder would otherwise stay live after the failure.
+      this.chunks.length = 0
+      this.bytes = 0
+      void this.stop()
+    }
   }
 
   private finalize(): void {

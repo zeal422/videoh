@@ -63,6 +63,128 @@ export function sanitizeTransitionDuration(value: unknown): number | undefined {
   return clamp(value, TRANSITION_MIN, TRANSITION_MAX)
 }
 
+/** Largest project id the media store accepts as a directory name. */
+export const PROJECT_ID_MAX = 128
+
+/**
+ * A project id becomes a directory name, a lock name, and an install key. Only
+ * characters a generated id can contain survive, so a crafted project cannot
+ * traverse the store.
+ */
+export function isValidProjectId(value: unknown): value is string {
+  return (
+    typeof value === 'string' && value.length <= PROJECT_ID_MAX && /^[A-Za-z0-9_-]+$/.test(value)
+  )
+}
+
+/**
+ * Deterministic fallback for a present-but-invalid project id. The value keys
+ * the OPFS directory, claims, lock, and install records, so distinct invalid
+ * ids must not collapse onto one store (or onto `proj_loaded`). The type tag
+ * keeps an array/object id distinct from the string of its JSON text.
+ */
+export function recoveredProjectId(value: unknown): string {
+  return `proj_recovered_${stableIdHash(recoveredIdText(value))}`
+}
+
+/** Per-object identities for values the encoder cannot read. */
+const unencodableIds = new WeakMap<object, number>()
+let nextUnencodableId = 0
+
+/** Type-tag and encode a value for the recovered-id hash. */
+function recoveredIdText(value: unknown): string {
+  try {
+    return encodeRecoveredId(value, new Set<object>())
+  } catch {
+    // A revoked proxy or an object with a throwing accessor cannot be read.
+    // Objects get a per-value identity, so two distinct unencodable ids stay
+    // distinct without invoking coercion; the tag keeps the result apart from
+    // a string that spells the same text.
+    if ((typeof value === 'object' && value !== null) || typeof value === 'function') {
+      const key = value as object
+      let id = unencodableIds.get(key)
+      if (id === undefined) {
+        id = ++nextUnencodableId
+        unencodableIds.set(key, id)
+      }
+      return `raw:${typeof value}:identity:${id}`
+    }
+    // Primitives do not throw during encoding, so this is defensive only.
+    return `raw:${typeof value}:${String(value)}`
+  }
+}
+
+/**
+ * A type-preserving encoding for the recovered-id hash. JSON alone is not
+ * enough: it writes null, NaN, and both infinities as `null`, and writes -0 as
+ * `0`, so distinct invalid ids would share one store key. Each primitive is
+ * tagged, special numbers keep their spelling, and arrays and objects encode
+ * recursively. A circular reference gets a marker instead of throwing.
+ */
+function encodeRecoveredId(value: unknown, seen: Set<object>): string {
+  if (value === null) return 'null'
+  if (typeof value === 'string') return `string:${JSON.stringify(value)}`
+  if (typeof value === 'number') {
+    if (Number.isNaN(value)) return 'number:NaN'
+    if (value === Infinity) return 'number:Infinity'
+    if (value === -Infinity) return 'number:-Infinity'
+    return `number:${Object.is(value, -0) ? '-0' : String(value)}`
+  }
+  if (typeof value === 'bigint') return `bigint:${value.toString()}`
+  if (typeof value === 'boolean') return `boolean:${String(value)}`
+  if (typeof value === 'undefined') return 'undefined'
+  if (typeof value === 'symbol') return `symbol:${JSON.stringify(String(value.description))}`
+  if (typeof value === 'function') return `function:${JSON.stringify(String(value))}`
+
+  if (seen.has(value)) return 'circular'
+  seen.add(value)
+  try {
+    if (Array.isArray(value)) {
+      return `array:[${value.map((item) => encodeRecoveredId(item, seen)).join(',')}]`
+    }
+    if (value instanceof Date) {
+      return `date:${Number.isNaN(value.getTime()) ? 'Invalid' : value.toISOString()}`
+    }
+    if (value instanceof RegExp) return `regexp:${JSON.stringify(String(value))}`
+    if (value instanceof Map) {
+      const entries = [...value].map(
+        ([key, item]) => `${encodeRecoveredId(key, seen)}=>${encodeRecoveredId(item, seen)}`,
+      )
+      return `map:{${entries.join(',')}}`
+    }
+    if (value instanceof Set) {
+      return `set:{${[...value].map((item) => encodeRecoveredId(item, seen)).join(',')}}`
+    }
+    const prototype = Object.getPrototypeOf(value) as object | null
+    const tag =
+      prototype === null
+        ? 'null-proto'
+        : prototype === Object.prototype
+          ? 'object'
+          : `object:${(prototype.constructor as { name?: string } | undefined)?.name ?? 'anonymous'}`
+    const entries = Object.keys(value).map(
+      (key) =>
+        `${JSON.stringify(key)}:${encodeRecoveredId((value as Record<string, unknown>)[key], seen)}`,
+    )
+    return `${tag}:{${entries.join(',')}}`
+  } finally {
+    seen.delete(value)
+  }
+}
+
+/** Two FNV-1a 32-bit lanes, hex, for a 64-bit stable id suffix. */
+function stableIdHash(value: string): string {
+  const lane = (seed: number) => {
+    let hash = seed
+    for (let i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i)
+      hash = Math.imul(hash, 0x01000193) >>> 0
+    }
+    return hash.toString(16).padStart(8, '0')
+  }
+  return lane(0x811c9dc5) + lane(0x050c5d1f)
+}
+
 /**
  * A stored media revision key: exactly 64 lowercase hex characters, the shape
  * of a SHA-256 digest. The value becomes an OPFS path segment, so uppercase,

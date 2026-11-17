@@ -103,7 +103,19 @@ function videoEl(): HTMLVideoElement {
 const drawOps = (ctx: unknown, op: string) =>
   (ctx as { calls: { op: string; args: unknown[] }[] }).calls.filter((c) => c.op === op)
 
+// Captured before any beforeEach installs the harness.
+const pristinePaused = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'paused')
+const pristineGetContext = HTMLCanvasElement.prototype.getContext
+
 describe('compositor drawFrame (mocked 2D context)', () => {
+  it('uninstall restores the patched media and canvas prototypes', () => {
+    h.uninstall()
+    expect(Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'paused')).toEqual(
+      pristinePaused,
+    )
+    expect(HTMLCanvasElement.prototype.getContext).toBe(pristineGetContext)
+  })
+
   it('paints a black background before any layer', () => {
     const { doc } = makeDoc()
     const ctx = createFake2DContext()
@@ -225,6 +237,39 @@ describe('compositor drawFrame (mocked 2D context)', () => {
     const draws = drawOps(ctx, 'drawImage')
     expect(draws[0].args[0]).toBe(ea) // outgoing clip at 1-p
     expect(draws[1].args[0]).toBe(eb) // incoming clip at p
+  })
+
+  it('draws a third overlapping clip during a transition', () => {
+    const { doc, asset } = makeDoc()
+    doc.project.tracks[0].clips.push(
+      createClip({
+        id: 'a',
+        mediaId: asset.id,
+        start: 0,
+        duration: 4,
+        inPoint: 0,
+        transitionOut: { type: 'crossfade', duration: 1 },
+      }),
+    )
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'b', mediaId: asset.id, start: 3, duration: 4, inPoint: 0 }),
+    )
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'c', mediaId: asset.id, start: 3.25, duration: 4, inPoint: 0 }),
+    )
+    const ea = videoEl()
+    const eb = videoEl()
+    const ec = videoEl()
+    const resolve: MediaResolver = (clip) => ({
+      asset,
+      el: clip.id === 'a' ? ea : clip.id === 'b' ? eb : ec,
+    })
+    const ctx = createFake2DContext()
+    drawFrame({ ctx, doc, time: 3.5, resolve })
+
+    const draws = drawOps(ctx, 'drawImage')
+    expect(draws).toHaveLength(3)
+    expect(draws[2].args[0]).toBe(ec)
   })
 
   it('dips through black at the midpoint: neither clip draws', () => {

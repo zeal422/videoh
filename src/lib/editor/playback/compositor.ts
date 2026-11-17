@@ -170,11 +170,19 @@ function drawTrack(
     const geo = transitionGeometry(span, t, width, height)
     if (geo) {
       drawSpatialTransition(ctx, span, geo, t, resolve, width, height, doc, depth)
+      for (const clip of active.slice(2)) {
+        drawClip(ctx, clip, t, resolve, 1, width, height, doc, depth)
+      }
       return
     }
     const { aAlpha, bAlpha } = transitionAlphas(span, t)
     drawClip(ctx, a, t, resolve, aAlpha, width, height, doc, depth)
     drawClip(ctx, b, t, resolve, bAlpha, width, height, doc, depth)
+    // The transition pair is always the first two active clips; any further
+    // overlap must still draw, at full opacity, in start order.
+    for (const clip of active.slice(2)) {
+      drawClip(ctx, clip, t, resolve, 1, width, height, doc, depth)
+    }
     return
   }
   // Plain overlap: the later clip wins.

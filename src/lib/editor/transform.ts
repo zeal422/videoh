@@ -274,7 +274,10 @@ export function pointerProjectPoint(
   }
 }
 
-/** Rotation in degrees of `point` around `center`, measured from 12 o'clock. */
+/**
+ * Rotation in degrees of `point` around `center`, measured from the +x axis
+ * (3 o'clock), clockwise because canvas y grows downward.
+ */
 export function angleFromCenter(center: Point, point: Point): number {
   return (Math.atan2(point.y - center.y, point.x - center.x) * 180) / Math.PI
 }

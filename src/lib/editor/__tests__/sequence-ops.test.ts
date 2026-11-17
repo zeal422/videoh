@@ -494,6 +494,74 @@ describe('planOverwrite', () => {
     }
   })
 
+  it('a trim on a REVERSED clip whose window ends at the asset end still plans', () => {
+    const revAsset = asset(18)
+    const ramp = {
+      timeScale: [
+        { time: 0, value: 3 },
+        { time: 4, value: 1 },
+      ],
+    }
+    const d = doc(
+      [
+        lane('video', 'V1', [
+          clip({
+            id: 'a',
+            mediaId: revAsset.id,
+            start: 0,
+            duration: 4,
+            inPoint: 10,
+            reverse: true,
+            keyframes: ramp,
+          }),
+        ]),
+      ],
+      [revAsset],
+    )
+    const before = d.project.tracks[0].clips[0]
+    const commands = commandsOf(planOverwrite(d, ['V1'], 2, 1))
+    expect(commands).not.toBeNull()
+    const after = applyCommands(d, commands).project.tracks[0].clips[1]
+    expect(after.start).toBeCloseTo(3, 6)
+    for (const local of [0, 0.5, 1]) {
+      expect(sourceTimeAt(after, local)).toBeCloseTo(sourceTimeAt(before, local + 3), 6)
+    }
+  })
+
+  it('a reversed head trim can shorten an over-consuming ramp', () => {
+    const revAsset = asset(18)
+    const ramp = {
+      timeScale: [
+        { time: 0, value: 3 },
+        { time: 4, value: 1 },
+      ],
+    }
+    const d = doc(
+      [
+        lane('video', 'V1', [
+          clip({
+            id: 'a',
+            mediaId: revAsset.id,
+            start: 0,
+            duration: 4,
+            inPoint: 11,
+            reverse: true,
+            keyframes: ramp,
+          }),
+        ]),
+      ],
+      [revAsset],
+    )
+    const before = d.project.tracks[0].clips[0]
+    const commands = commandsOf(planOverwrite(d, ['V1'], 2, 1))
+    expect(commands).not.toBeNull()
+    const after = applyCommands(d, commands).project.tracks[0].clips[1]
+    expect(after.start).toBeCloseTo(3, 6)
+    for (const local of [0, 0.5, 1]) {
+      expect(sourceTimeAt(after, local)).toBeCloseTo(sourceTimeAt(before, local + 3), 6)
+    }
+  })
+
   it('a trim on a 2x clip lands on the frames trimClip derives', () => {
     const fastAsset = asset(30)
     const d = doc(

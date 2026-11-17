@@ -6,18 +6,22 @@ const claimState = vi.hoisted(() => ({
 }))
 
 vi.mock('@/hooks/use-toast', () => ({ toast: vi.fn() }))
-vi.mock('../media/persist', () => ({
-  prepareProjectStore: async () => true,
-  storeMediaAsset: async () => {
-    throw new Error('not used')
-  },
-  writeProjectClaim: () => {
-    claimState.started = true
-    return new Promise<boolean>((resolve) => {
-      claimState.resolve = resolve
-    })
-  },
-}))
+vi.mock('../media/persist', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../media/persist')>()
+  return {
+    ...actual,
+    prepareProjectStore: async () => true,
+    storeMediaAsset: async () => {
+      throw new Error('not used')
+    },
+    writeProjectClaim: () => {
+      claimState.started = true
+      return new Promise<boolean>((resolve) => {
+        claimState.resolve = resolve
+      })
+    },
+  }
+})
 
 import { downloadProjectJSON, installProject } from '../project-io'
 import { createDoc, createMediaAsset } from '../factories'

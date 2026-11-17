@@ -17,6 +17,7 @@ import { createDoc, createMediaAsset } from '../factories'
 import { serializeDoc } from '../serialization'
 import { useEditorStore } from '../store'
 import {
+  cleanProjectMedia,
   ensureProjectMedia,
   readMediaClaims,
   readMediaFile,
@@ -26,6 +27,7 @@ import {
 } from '../media/media-store'
 import {
   beginMediaActivity,
+  beginMediaActivityWhenIdle,
   cleanUnusedMedia,
   clearAllProjectMedia,
   endMediaActivity,
@@ -426,6 +428,146 @@ describe('rehydrateMedia', () => {
     lock.dispose()
   })
 
+  it('admits a nested reservation while a clean waits instead of deadlocking', async () => {
+    const fake = createFakeOpfs()
+    const locks = new FakeLockManager()
+    stubStore(fake, locks)
+    const project = 'proj_clear_nested'
+    const hash = await hashOf()
+    await ensureProjectMedia(project)
+    await writeMediaFile(project, hash, sourceFile())
+    const lock = await ProjectLock.acquire(project)
+    let outerStarted = false
+    let nestedStarted = false
+    try {
+      const outer = await beginMediaActivityWhenIdle()
+      outerStarted = true
+      let cleared = false
+      const pending = clearAllProjectMedia({ projectId: project, lock }).then((outcome) => {
+        cleared = true
+        return outcome
+      })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      // The clean is waiting for the outer reservation, not deleting yet.
+      expect(cleared).toBe(false)
+      // The bundle-import shape: an operation already holding a reservation
+      // passes its token, so the nested admission does not wait for a clean
+      // that is waiting for it.
+      const admitted = await Promise.race([
+        beginMediaActivityWhenIdle(outer).then(() => 'admitted'),
+        new Promise((resolve) => setTimeout(() => resolve('waiting'), 50)),
+      ])
+      expect(admitted).toBe('admitted')
+      nestedStarted = true
+      endMediaActivity()
+      nestedStarted = false
+      endMediaActivity()
+      outerStarted = false
+      expect(await pending).toMatchObject({ status: 'ran' })
+      expect(await readMediaFile(project, hash)).toBeNull()
+    } finally {
+      if (nestedStarted) endMediaActivity()
+      if (outerStarted) endMediaActivity()
+      lock.dispose()
+    }
+  })
+
+  it('keeps unrelated new activity waiting until a requested clear finishes', async () => {
+    const fake = createFakeOpfs()
+    const locks = new FakeLockManager()
+    stubStore(fake, locks)
+    const project = 'proj_clear_independent'
+    const hash = await hashOf()
+    await ensureProjectMedia(project)
+    await writeMediaFile(project, hash, sourceFile())
+    const lock = await ProjectLock.acquire(project)
+    let held = true
+    let independentAdmitted = false
+    try {
+      await beginMediaActivityWhenIdle()
+      let cleared = false
+      const pending = clearAllProjectMedia({ projectId: project, lock }).then((outcome) => {
+        cleared = true
+        return outcome
+      })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(cleared).toBe(false)
+
+      // While the clean waits for the held write, a top-level admission has no
+      // parent token: it must not join (and so prolong) the wait.
+      const independent = beginMediaActivityWhenIdle().then(() => {
+        independentAdmitted = true
+      })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(independentAdmitted).toBe(false)
+      expect(cleared).toBe(false)
+
+      endMediaActivity()
+      held = false
+      expect(await pending).toMatchObject({ status: 'ran' })
+      await independent
+      expect(independentAdmitted).toBe(true)
+      expect(cleared).toBe(true)
+      endMediaActivity()
+    } finally {
+      if (held) endMediaActivity()
+      lock.dispose()
+    }
+  })
+
+  it('keeps a sibling reservation valid after another hold is released', async () => {
+    const fake = createFakeOpfs()
+    const locks = new FakeLockManager()
+    stubStore(fake, locks)
+    const project = 'proj_clear_overlap'
+    const hash = await hashOf()
+    await ensureProjectMedia(project)
+    await writeMediaFile(project, hash, sourceFile())
+    const lock = await ProjectLock.acquire(project)
+    let held = 0
+    try {
+      const first = await beginMediaActivityWhenIdle()
+      held += 1
+      const second = await beginMediaActivityWhenIdle(first)
+      held += 1
+      // Releasing one sibling must not invalidate the other token: activity is
+      // still above zero, so the generation that minted both stays current.
+      endMediaActivity()
+      held -= 1
+
+      let cleared = false
+      const pending = clearAllProjectMedia({ projectId: project, lock }).then((outcome) => {
+        cleared = true
+        return outcome
+      })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(cleared).toBe(false)
+
+      const nested = beginMediaActivityWhenIdle(second).then((token) => {
+        held += 1
+        return token
+      })
+      const admitted = await Promise.race([
+        nested.then(() => 'admitted'),
+        new Promise((resolve) => setTimeout(() => resolve('waiting'), 50)),
+      ])
+      expect(admitted).toBe('admitted')
+
+      endMediaActivity()
+      held -= 1
+      endMediaActivity()
+      held -= 1
+      expect(await pending).toMatchObject({ status: 'ran' })
+      expect(await readMediaFile(project, hash)).toBeNull()
+    } finally {
+      while (held > 0) {
+        endMediaActivity()
+        held -= 1
+      }
+      lock.dispose()
+    }
+  })
+
   it('refuses clear-all without a matching shared hold', async () => {
     const fake = createFakeOpfs()
     const locks = new FakeLockManager()
@@ -579,6 +721,17 @@ describe('rehydrateMedia', () => {
     const result = await rehydrateMedia(doc)
     expect(result.warnings).toEqual([expect.stringContaining('file extension')])
     expect(result.doc.media[0].file?.type).toBe('audio/mpeg')
+  })
+
+  it('counts a present but empty sidecar type as a fallback', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    const hash = await hashOf()
+    const doc = docWithHash(hash, 'clip.mp4', 'video/mp4')
+    await writeMediaFile(doc.project.id, hash, sourceFile('clip.mp4', ''))
+    const result = await rehydrateMedia(doc)
+    expect(result.warnings).toEqual([expect.stringContaining('file extension')])
+    expect(result.doc.media[0].file?.type).toBe('video/mp4')
   })
 
   it('maps known extensions and falls back to a binary type', () => {
@@ -889,6 +1042,69 @@ describe('claims on open and save', () => {
     expect(await readMediaClaims(doc.project.id)).toEqual([hash])
   })
 
+  it('a claim write waits for a clean and never writes during it (H7)', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    const hash = await hashOf()
+    const doc = docWithHash(hash)
+    await ensureProjectMedia(doc.project.id)
+    await writeMediaFile(doc.project.id, hash, sourceFile())
+    let releaseClean!: () => void
+    const clean = runCleanExclusive(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseClean = resolve
+        }),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    const claim = writeProjectClaim(doc)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    // The claim is waiting at the activity admission: no shard exists yet.
+    expect([...fake.files.keys()].some((path) => path.includes('/claims/'))).toBe(false)
+    releaseClean()
+    await clean
+    await expect(claim).resolves.toBe(true)
+    expect([...fake.files.keys()].some((path) => path.includes('/claims/'))).toBe(true)
+    expect(await readMediaClaims(doc.project.id)).toEqual([hash])
+  })
+
+  it('keeps an offline hash claimed so restored bytes survive another copy clean', async () => {
+    const fake = createFakeOpfs()
+    stubStore(fake)
+    const hash = await hashOf()
+    const doc = docWithHash(hash)
+    // Copy A saves while the bytes are absent. The claim is a durable
+    // reference, so it must still name the hash.
+    expect(await writeProjectClaim(doc)).toBe(true)
+    expect(await readMediaClaims(doc.project.id)).toEqual([hash])
+
+    // Copy B restores the same bytes, then removes its reference and cleans.
+    // Copy A's claim must keep the restored bytes.
+    await writeMediaFile(doc.project.id, hash, sourceFile())
+    const result = await cleanProjectMedia(doc.project.id, [])
+    expect(result.deleted).toEqual([])
+    expect(await readMediaFile(doc.project.id, hash)).not.toBeNull()
+  })
+
+  it('a clean returns busy while a save holds its independent shared lock', async () => {
+    const fake = createFakeOpfs()
+    const locks = new FakeLockManager()
+    stubStore(fake, locks)
+    await ensureProjectMedia('proj_lock')
+    const active = await ProjectLock.acquire('proj_lock')
+    const claimLock = await ProjectLock.acquire('proj_lock')
+    try {
+      const outcome = await clearAllProjectMedia({ projectId: 'proj_lock', lock: active })
+      expect(outcome.status).toBe('busy')
+      const doc = docWithHash(await hashOf())
+      doc.project.id = 'proj_lock'
+      await expect(writeProjectClaim(doc)).resolves.toBe(true)
+    } finally {
+      claimLock.dispose()
+      active.dispose()
+    }
+  })
+
   it('revokes the probed URL when a relink is refused', async () => {
     const fake = createFakeOpfs()
     stubStore(fake)
@@ -912,16 +1128,16 @@ describe('claims on open and save', () => {
         url: 'blob:fresh',
       }),
     )
-    const revoke = vi.fn()
-    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke })
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     const apply = vi.spyOn(useEditorStore.getState(), 'apply').mockReturnValue(false)
     try {
       expect(await importMediaFiles([sourceFile()])).toBe(0)
+      expect(revoke).toHaveBeenCalledWith('blob:fresh')
     } finally {
       apply.mockRestore()
+      revoke.mockRestore()
     }
 
-    expect(revoke).toHaveBeenCalledWith('blob:fresh')
     expect(useEditorStore.getState().doc.media[0].missing).toBe(true)
   })
 

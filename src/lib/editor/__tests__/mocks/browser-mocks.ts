@@ -410,10 +410,22 @@ export function installRAFPump(): RAFPump {
 
 // ————— master install/uninstall —————
 
+/** Undo callbacks for patched prototype properties, newest last. */
+const prototypeRestores: Array<() => void> = []
+
+function capturePrototype(target: object, key: PropertyKey): void {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key)
+  prototypeRestores.push(() => {
+    if (descriptor) Object.defineProperty(target, key, descriptor)
+    else delete (target as Record<PropertyKey, unknown>)[key]
+  })
+}
+
 export interface MockHarness {
   pump: RAFPump
   audioContexts(): FakeAudioContext[]
   lastAudioContext(): FakeAudioContext
+  uninstallAudio(): void
   uninstall(): void
 }
 
@@ -425,6 +437,12 @@ export interface MockHarness {
 export function installBrowserMocks(): MockHarness {
   FakeAudioContext.instances = []
   FakeAudioContext.resumeGate = null
+  prototypeRestores.length = 0
+  for (const key of ['paused', 'play', 'pause', 'load', 'currentTime'] as const) {
+    capturePrototype(HTMLMediaElement.prototype, key)
+  }
+  capturePrototype(HTMLVideoElement.prototype, 'requestVideoFrameCallback')
+  capturePrototype(HTMLCanvasElement.prototype, 'getContext')
 
   vi.stubGlobal('AudioContext', FakeAudioContext)
   vi.stubGlobal('MediaStream', FakeMediaStream)
@@ -446,6 +464,15 @@ export function installBrowserMocks(): MockHarness {
     pump,
     audioContexts: () => FakeAudioContext.instances,
     lastAudioContext: () => FakeAudioContext.instances[FakeAudioContext.instances.length - 1],
-    uninstall: () => vi.unstubAllGlobals(),
+    // Drop only the audio stub (the Web Audio fallback tests) while the media
+    // and canvas prototype patches stay installed until the final uninstall.
+    uninstallAudio: () => vi.stubGlobal('AudioContext', undefined),
+    uninstall: () => {
+      // Prototype patches are not `vi.stubGlobal` state: restore each captured
+      // descriptor (or delete a property the harness added) so one suite cannot
+      // leak a patched `paused`, `currentTime`, or `getContext` into the next.
+      for (const restore of prototypeRestores.splice(0).reverse()) restore()
+      vi.unstubAllGlobals()
+    },
   }
 }

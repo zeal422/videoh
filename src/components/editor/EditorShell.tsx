@@ -357,12 +357,13 @@ export function EditorShell() {
     }
   }, [])
 
-  // When the doc changes while paused, refresh the preview frame. A transient
-  // drag frame (0.18.0) only moves clips; seeking the preview on every one of
-  // them was a large part of the drag cost. The commit/cancel that follows
-  // ends the transient, so its doc change still refreshes.
+  // When the doc changes while paused, refresh the preview frame. A pointer-owned
+  // drag frame (0.18.0) only moves clips; seeking on every one of them was a
+  // large part of the drag cost. A pointerless gesture (a slider or a focus-held
+  // text/color edit) DOES change the picture, so it refreshes live. The
+  // commit/cancel that follows still ends the gesture.
   useEffect(() => {
-    if (isTransientActive()) return
+    if (isTransientActive() && activeTransientPointerId() !== null) return
     refreshPausedPreview()
   }, [doc])
 

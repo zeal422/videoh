@@ -50,6 +50,39 @@ describe('getTransitionSpan', () => {
     expect(span?.duration).toBe(0.5)
     expect(span?.end).toBe(4)
   })
+
+  it('clamps the span to the outgoing clip duration', () => {
+    const a = createClip({
+      id: 'a',
+      start: 0,
+      duration: 0.5,
+      transitionOut: { type: 'crossfade', duration: 2 },
+    })
+    const b = createClip({ id: 'b', start: -1, duration: 4 })
+    expect(getTransitionSpan(a, b)).toEqual({ a, b, start: 0, end: 0.5, duration: 0.5 })
+  })
+
+  it('clamps the span to a shorter incoming clip', () => {
+    const a = createClip({
+      id: 'a',
+      start: 0,
+      duration: 4,
+      transitionOut: { type: 'crossfade', duration: 2 },
+    })
+    const b = createClip({ id: 'b', start: 3, duration: 0.5 })
+    expect(getTransitionSpan(a, b)).toEqual({ a, b, start: 3, end: 3.5, duration: 0.5 })
+  })
+
+  it('starts at the outgoing clip when the incoming clip starts earlier', () => {
+    const a = createClip({
+      id: 'a',
+      start: 2,
+      duration: 4,
+      transitionOut: { type: 'crossfade', duration: 1 },
+    })
+    const b = createClip({ id: 'b', start: 0, duration: 10 })
+    expect(getTransitionSpan(a, b)).toEqual({ a, b, start: 2, end: 3, duration: 1 })
+  })
 })
 
 describe('transitionAlphas', () => {

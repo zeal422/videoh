@@ -276,10 +276,20 @@ export function planOverwrite(
           return { commands: null, refusal: 'geometry' }
         }
         const duration = Math.max(right, MIN_CLIP_DURATION)
-        const anchor =
+        const payloadAnchor =
           clip.inPoint +
           sourceConsumption(clip.keyframes?.timeScale, end - clip.start, clip.speed ?? 1)
-        const guarded = guardTrim(doc, clip, anchor, duration)
+        // A reversed clip's surviving head reads the LOW source end, which is
+        // `inPoint`; the payload anchor is the high end and would over-count
+        // the consumed span. The command ignores `inPoint` for a reversed head
+        // trim and re-derives it, so the payload may keep the forward anchor.
+        const guarded = guardTrim(
+          doc,
+          clip,
+          clip.reverse ? clip.inPoint : payloadAnchor,
+          duration,
+          !clip.reverse,
+        )
         if (guarded) return guarded
         const rightId = uid('clip')
         let rightLinkId: string | undefined
@@ -302,7 +312,7 @@ export function planOverwrite(
           type: 'trimClip',
           clipId: rightId,
           start: end,
-          inPoint: anchor,
+          inPoint: payloadAnchor,
           duration,
           edge: 'head',
         })
@@ -334,16 +344,25 @@ export function planOverwrite(
       // edge (payload anchor on the frames the cut lands on); a sliver dies.
       if (right >= MIN_CLIP_DURATION - EPS) {
         const duration = Math.max(right, MIN_CLIP_DURATION)
-        const anchor =
+        const payloadAnchor =
           clip.inPoint +
           sourceConsumption(clip.keyframes?.timeScale, end - clip.start, clip.speed ?? 1)
-        const guarded = guardTrim(doc, clip, anchor, duration)
+        // Same reversed-head rule as the interior branch: guard the LOW anchor
+        // the trim will actually keep; the emitted payload anchor is ignored by
+        // the command for a reversed head trim.
+        const guarded = guardTrim(
+          doc,
+          clip,
+          clip.reverse ? clip.inPoint : payloadAnchor,
+          duration,
+          !clip.reverse,
+        )
         if (guarded) return guarded
         commands.push({
           type: 'trimClip',
           clipId: clip.id,
           start: end,
-          inPoint: anchor,
+          inPoint: payloadAnchor,
           duration,
           edge: 'head',
         })
@@ -368,12 +387,17 @@ function guardTrim(
   clip: Clip,
   anchor: number,
   duration: number,
+  storedMustFit = true,
 ): { commands: null; refusal: 'source' } | undefined {
   const asset = boundedAsset(doc, clip)
   if (!asset) return undefined
   const ramp = clip.keyframes?.timeScale
   const stored = clip.inPoint + sourceConsumption(ramp, clip.duration, clip.speed ?? 1)
-  if (stored > asset.duration + EPS) return { commands: null, refusal: 'source' }
+  // A reversed HEAD trim removes the high source end, so an old span that
+  // over-consumes its ramp can become legal after the trim. The command
+  // truncates the ramp at the kept duration; only the kept span must fit.
+  // Reversed TAIL trims and every forward trim still pin the stored span.
+  if (storedMustFit && stored > asset.duration + EPS) return { commands: null, refusal: 'source' }
   const payload = anchor + sourceConsumption(ramp, duration, clip.speed ?? 1)
   if (payload > asset.duration + EPS) return { commands: null, refusal: 'source' }
   return undefined

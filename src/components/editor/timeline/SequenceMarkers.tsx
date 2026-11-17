@@ -222,10 +222,10 @@ export function SequenceMarkers({ pxPerSec }: { pxPerSec: number }) {
                 data-testid="marker-menu-delete"
                 variant="destructive"
                 onSelect={() => {
-                  useEditorStore
+                  const applied = useEditorStore
                     .getState()
                     .apply({ type: 'deleteSequenceMarker', markerId: marker.id })
-                  useEditorStore.getState().selectMarker(null)
+                  if (applied) useEditorStore.getState().selectMarker(null)
                 }}
               >
                 Delete Marker

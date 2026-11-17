@@ -29,6 +29,7 @@ import type { ProjectLock } from './project-lock'
 
 let activeWrites = 0
 let cleanInProgress = false
+let activityGeneration = 0
 const cleanWaiters: Array<() => void> = []
 const activityWaiters: Array<() => void> = []
 
@@ -37,21 +38,36 @@ export function isMediaActivityActive(): boolean {
   return activeWrites > 0
 }
 
+/**
+ * A media-activity reservation. A nested operation passes its parent's token so
+ * it may start while a clean drains that parent. The generation makes a token
+ * stale once activity reaches zero, so a finished flow cannot admit work.
+ */
+export interface MediaActivityToken {
+  readonly generation: number
+}
+
 /** Marks a media read or write as in flight; the clean action refuses while any is. */
-export function beginMediaActivity(): void {
+export function beginMediaActivity(): MediaActivityToken {
   activeWrites += 1
+  return { generation: activityGeneration }
 }
 
 export function endMediaActivity(): void {
   activeWrites = Math.max(0, activeWrites - 1)
   if (activeWrites === 0) {
+    // A reservation token belongs to the activity it was minted under: once
+    // every hold is released, no scoped intermediary may admit nested work.
+    activityGeneration += 1
     for (const resolve of activityWaiters.splice(0)) resolve()
   }
 }
 
 /**
  * Waits for same-tab media work that already started to finish. Call only with
- * the clean flag held: then no new write can begin, so this terminates.
+ * the clean flag held: a top-level write then waits for the clean, and a nested
+ * one can only run inside a reservation this wait already counts, so it
+ * terminates.
  */
 async function waitForMediaActivityIdle(): Promise<void> {
   while (activeWrites > 0) {
@@ -69,12 +85,22 @@ async function waitForClean(): Promise<void> {
  * Starts a media read or write, waiting while a same-tab clean is running.
  * The reservation is synchronous, so a clean that flips its flag cannot miss a
  * write that starts in the same turn.
+ *
+ * Only a caller that already holds a live reservation may pass its token to
+ * start nested work while a clean waits for that reservation to drain. A
+ * top-level admission always waits for the clean, even when other activity is
+ * still running: otherwise unrelated work could keep arriving and prolong a
+ * Clear All indefinitely.
  */
-export async function beginMediaActivityWhenIdle(): Promise<void> {
-  while (cleanInProgress) {
+export async function beginMediaActivityWhenIdle(
+  parent?: MediaActivityToken,
+): Promise<MediaActivityToken> {
+  const nested =
+    parent !== undefined && parent.generation === activityGeneration && activeWrites > 0
+  while (cleanInProgress && !nested) {
     await new Promise<void>((resolve) => cleanWaiters.push(resolve))
   }
-  beginMediaActivity()
+  return beginMediaActivity()
 }
 
 /**
@@ -168,19 +194,31 @@ export async function writeProjectClaimOutcome(
 ): Promise<ProjectClaimOutcome> {
   const hashes = collectMediaHashes(doc)
   if (hashes.length === 0) return 'claimed'
-  let state: ProjectMediaState
+  // Serialize against a same-tab clean: the clean refuses (or waits) while
+  // this reservation is active, so a candidate hash cannot be claimed while
+  // its bytes are being deleted.
+  await beginMediaActivityWhenIdle()
   try {
-    state = await ensureProjectMedia(doc.project.id)
-  } catch {
-    return 'storage-unavailable'
+    let state: ProjectMediaState
+    try {
+      state = await ensureProjectMedia(doc.project.id)
+    } catch {
+      return 'storage-unavailable'
+    }
+    if (state !== 'ready') return 'claims-missing'
+    try {
+      // A claim is a durable reference, not a statement that the bytes exist
+      // now: a copy that saved while a hash was offline must still protect the
+      // hash if another copy restores the same bytes later. The clean plan
+      // unions claims with live references, so this cannot hide a deletion.
+      await writeMediaClaim(doc.project.id, hashes, installId)
+    } catch {
+      return 'claim-write'
+    }
+    return 'claimed'
+  } finally {
+    endMediaActivity()
   }
-  if (state !== 'ready') return 'claims-missing'
-  try {
-    await writeMediaClaim(doc.project.id, hashes, installId)
-  } catch {
-    return 'claim-write'
-  }
-  return 'claimed'
 }
 
 /**

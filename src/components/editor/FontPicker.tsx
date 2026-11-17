@@ -292,17 +292,20 @@ function FontUploadDialog({
     // clean action refuses while activity is in flight instead of deleting it.
     // The finally below releases the hold on refusal or failure, leaving the
     // bytes for a later clean without touching committed media.
-    await beginMediaActivityWhenIdle()
+    const activity = await beginMediaActivityWhenIdle()
     let staged: StagedFont | null = null
     try {
-      staged = await stageProjectFont({
-        projectId: token.projectId,
-        id: uid('font'),
-        name: display,
-        file,
-        weight: Number(weight),
-        style,
-      })
+      staged = await stageProjectFont(
+        {
+          projectId: token.projectId,
+          id: uid('font'),
+          name: display,
+          file,
+          weight: Number(weight),
+          style,
+        },
+        activity,
+      )
       if (!isProjectTokenCurrent(token)) {
         discardStagedFont(staged)
         return

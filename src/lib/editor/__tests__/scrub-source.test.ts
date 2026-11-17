@@ -325,6 +325,48 @@ describe('ScrubFrameCacheSource', () => {
     expect(onFrame).not.toHaveBeenCalled()
   })
 
+  it('a reset starts a new decode and a stale cleanup keeps its entry (M3)', async () => {
+    const decoder = new FakeDecoder()
+    const source = new ScrubFrameCacheSource(decoder)
+    source.request(request({ sourceTime: 1 }), vi.fn())
+    source.reset()
+    source.request(request({ sourceTime: 2 }), vi.fn())
+    // The reset cleared the running set, so the new request starts a decode.
+    expect(decoder.requests).toHaveLength(2)
+
+    decoder.resolveNext(new FakeBitmap() as unknown as CanvasImageSource)
+    await flush()
+    source.request(request({ sourceTime: 3 }), vi.fn())
+    // The stale decode's finally must not delete the newer decode's entry.
+    expect(decoder.requests).toHaveLength(2)
+  })
+
+  it('an obsolete drain does not take a newer request after reset', async () => {
+    const decoder = new FakeDecoder()
+    const source = new ScrubFrameCacheSource(decoder)
+    const frames: number[] = []
+    source.request(request({ sourceTime: 1 }), () => frames.push(1))
+    source.reset()
+    source.request(request({ sourceTime: 2 }), () => frames.push(2))
+    source.request(request({ sourceTime: 3 }), () => frames.push(3))
+    expect(decoder.requests.map((entry) => entry.sourceTime)).toEqual([1, 2])
+
+    // The pre-reset decode finishes. Its drain must not dequeue request 3.
+    decoder.resolveNext(new FakeBitmap() as unknown as CanvasImageSource)
+    await flush()
+    expect(decoder.requests.map((entry) => entry.sourceTime)).toEqual([1, 2])
+
+    // The replacement drain finishes request 2, sees request 3 queued, drops
+    // the older frame, and decodes 3.
+    decoder.resolveNext(new FakeBitmap() as unknown as CanvasImageSource)
+    await flush()
+    expect(decoder.requests.map((entry) => entry.sourceTime)).toEqual([1, 2, 3])
+
+    decoder.resolveNext(new FakeBitmap() as unknown as CanvasImageSource)
+    await flush()
+    expect(frames).toEqual([3])
+  })
+
   it('processes a new request after a released clip frame is dropped', async () => {
     const decoder = new FakeDecoder()
     const source = new ScrubFrameCacheSource(decoder)

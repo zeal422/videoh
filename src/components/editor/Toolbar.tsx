@@ -75,6 +75,24 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
 
   const loadInputRef = useRef<HTMLInputElement>(null)
   const [isLoading, setIsLoading] = useState(false)
+  const [nameDraft, setNameDraft] = useState<{ projectId: string; value: string } | null>(null)
+  const nameCancelRef = useRef(false)
+
+  const commitNameEdit = () => {
+    const draft = nameDraft
+    setNameDraft(null)
+    if (nameCancelRef.current) {
+      nameCancelRef.current = false
+      return
+    }
+    // Read the live project at commit time, not the render closure: a project
+    // installed while the field was focused may not have re-rendered yet.
+    const current = useEditorStore.getState().doc
+    if (!draft || draft.projectId !== current.project.id) return
+    if (draft.value !== current.project.name) {
+      apply({ type: 'setProjectSettings', patch: { name: draft.value } })
+    }
+  }
 
   const selectedIds = selections
   const hasSelection = selectedIds.length > 0
@@ -348,13 +366,30 @@ export function Toolbar({ onOpenExport }: { onOpenExport: () => void }) {
         <div className="mx-1 min-w-0 flex-1 lg:mx-2">
           <Input
             aria-label="Project name"
-            value={doc.project.name}
-            onChange={(e) =>
-              apply({
-                type: 'setProjectSettings',
-                patch: { name: e.target.value },
-              })
-            }
+            value={nameDraft?.projectId === doc.project.id ? nameDraft.value : doc.project.name}
+            onFocus={() => {
+              const current = useEditorStore.getState().doc
+              setNameDraft({ projectId: current.project.id, value: current.project.name })
+            }}
+            onChange={(e) => {
+              const current = useEditorStore.getState().doc
+              setNameDraft({ projectId: current.project.id, value: e.target.value })
+            }}
+            onBlur={commitNameEdit}
+            onKeyDown={(e) => {
+              // An IME uses Enter/Escape to accept or cancel the composition;
+              // committing or reverting the project name there would drop the
+              // text the user is still composing.
+              if (e.nativeEvent.isComposing) return
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                e.currentTarget.blur()
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                nameCancelRef.current = true
+                e.currentTarget.blur()
+              }
+            }}
             className="h-8 w-full max-w-xs bg-transparent text-sm font-medium"
           />
         </div>

@@ -59,7 +59,9 @@ import {
 import { applyMarkerPatch, isMarkerColor } from './markers'
 import {
   isValidContentHash,
+  isValidProjectId,
   isValidWaveformPeaks,
+  recoveredProjectId,
   sanitizeGain,
   sanitizeThumbnail,
   sanitizeTransitionDuration,
@@ -272,8 +274,14 @@ export function deserializeDoc(data: unknown): {
   const projectFonts = hydrateProjectFonts(projectRaw.fonts)
   const projectGroups = hydrateTrackGroups(projectRaw.trackGroups)
   const projectBrandKit = hydrateBrandKit(projectRaw.brandKit)
+  const projectId =
+    projectRaw.id === undefined
+      ? 'proj_loaded'
+      : isValidProjectId(projectRaw.id)
+        ? projectRaw.id
+        : recoveredProjectId(projectRaw.id)
   const project: Project = {
-    id: typeof projectRaw.id === 'string' ? projectRaw.id : 'proj_loaded',
+    id: projectId,
     name: typeof projectRaw.name === 'string' ? projectRaw.name : 'Imported Project',
     // The same clamps `setProjectSettings` applies: a hand-edited file cannot
     // install a value the UI would reject. Without them a hostile fps makes
@@ -560,7 +568,11 @@ function assertSequenceGraph(project: Project): void {
   }
   // Any sequence the cycle walk has not finished is a cycle in an unreachable
   // component; `visit` throws on re-entry, so a stray cycle is still caught.
-  for (const sequence of sequences) visit(sequence.id)
+  // Unreachable chains still count toward the depth cap: a crafted file must
+  // not hide an oversized nesting behind a missing root reference.
+  for (const sequence of sequences) {
+    maxDepth = Math.max(maxDepth, visit(sequence.id))
+  }
   if (maxDepth > MAX_SEQUENCE_DEPTH) {
     throw new SerializationError('Compound sequence nesting is too deep')
   }
@@ -574,9 +586,9 @@ function hydrateMedia(raw: Record<string, unknown>): MediaAsset {
     id: typeof raw.id === 'string' ? raw.id : `media_${Math.random().toString(36).slice(2)}`,
     name: typeof raw.name === 'string' ? raw.name : 'Media',
     kind,
-    duration: numOr(raw.duration, 0),
-    width: numOr(raw.width, 0),
-    height: numOr(raw.height, 0),
+    duration: Math.max(0, numOr(raw.duration, 0)),
+    width: Math.max(0, numOr(raw.width, 0)),
+    height: Math.max(0, numOr(raw.height, 0)),
     url: '', // object URLs can never persist — asset starts "missing"
     ...(thumbnail ? { thumbnail } : {}),
     ...(typeof raw.hasAudio === 'boolean' ? { hasAudio: raw.hasAudio } : {}),
@@ -1082,8 +1094,8 @@ function hydrateStyle(raw: Record<string, unknown> | undefined): Clip['style'] {
     bold: typeof raw.bold === 'boolean' ? raw.bold : defaults.bold,
     italic: typeof raw.italic === 'boolean' ? raw.italic : defaults.italic,
     align: raw.align === 'left' || raw.align === 'right' ? raw.align : 'center',
-    x: numOr(raw.x, defaults.x),
-    y: numOr(raw.y, defaults.y),
+    x: clamp(numOr(raw.x, defaults.x), 0, 1),
+    y: clamp(numOr(raw.y, defaults.y), 0, 1),
     shadow: typeof raw.shadow === 'boolean' ? raw.shadow : defaults.shadow,
   }
 }

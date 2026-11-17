@@ -13,6 +13,7 @@ import {
 } from '../media/media-store'
 import {
   clearInstalledRegistry,
+  hasPendingInstallFor,
   isInstallHistoryLost,
   isInstallRecorded,
   newInstallId,
@@ -98,6 +99,12 @@ describe('claim recovery (0.28.0)', () => {
     const result = await recoverOrphanedClaimShards(PROJECT)
     expect(result).toMatchObject({ removed: 0, kept: 1, ambiguous: false })
     expect(await readMediaClaims(PROJECT)).toEqual([await hash('a')])
+  })
+
+  it('treats an unreadable pending-install map as pending', () => {
+    localStorageMock.setItem('web-video-editor:pending-install:v1', '{not json')
+    expect(hasPendingInstallFor(PROJECT)).toBe(true)
+    expect(hasPendingInstallFor('proj_other')).toBe(true)
   })
 
   it('keeps every shard and warns when the install registry is unreadable', async () => {
