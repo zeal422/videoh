@@ -9,7 +9,7 @@ import { TimelinePanel } from '@/components/editor/timeline/TimelinePanel'
 import { MarkerDialog } from '@/components/editor/timeline/MarkerDialog'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
-import { isTransientActive, useEditorStore } from '../store'
+import { currentTransientToken, isTransientActive, useEditorStore } from '../store'
 import { createClip, createDoc, createMediaAsset } from '../factories'
 import type { Doc } from '../types'
 
@@ -202,6 +202,112 @@ describe('sequence markers rendering', () => {
     expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
   })
 
+  it('a stale marker release does not commit a replacement gesture', () => {
+    const doc = docWithClip()
+    doc.project.markers = [{ id: 'm1', time: 3 }]
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    const tab = screen.getByTestId('sequence-marker')
+    fireEvent.pointerDown(tab, { button: 0, clientX: 240, clientY: 10, pointerId: 5 })
+    fireEvent.pointerMove(window, { clientX: 320, clientY: 10, pointerId: 5 })
+    expect(isTransientActive()).toBe(true)
+
+    useEditorStore.getState().apply({ type: 'setProjectSettings', patch: { name: 'X' } })
+    expect(isTransientActive()).toBe(false)
+    const pastAfterApply = useEditorStore.getState().past.length
+
+    const replacement = useEditorStore.getState().beginTransient(99)
+    expect(replacement).not.toBeNull()
+    useEditorStore.getState().applyTransient({
+      type: 'moveSequenceMarker',
+      markerId: 'm1',
+      time: 4.5,
+    })
+
+    fireEvent.pointerUp(window, { pointerId: 5 })
+
+    // The stale release neither commits nor cancels the replacement.
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(replacement)
+    expect(useEditorStore.getState().past.length).toBe(pastAfterApply)
+    expect(useEditorStore.getState().doc.project.markers?.[0].time).toBe(4.5)
+    useEditorStore.getState().cancelTransient()
+  })
+
+  it('an unmount after a foreign edit does not cancel a replacement gesture', () => {
+    const doc = docWithClip()
+    doc.project.markers = [{ id: 'm1', time: 3 }]
+    useEditorStore.setState({ doc })
+    const { unmount } = render(<TimelinePanel />)
+
+    fireEvent.pointerDown(screen.getByTestId('sequence-marker'), {
+      button: 0,
+      clientX: 240,
+      clientY: 10,
+      pointerId: 5,
+    })
+    fireEvent.pointerMove(window, { clientX: 320, clientY: 10, pointerId: 5 })
+    expect(isTransientActive()).toBe(true)
+
+    useEditorStore.getState().apply({ type: 'setProjectSettings', patch: { name: 'X' } })
+    expect(isTransientActive()).toBe(false)
+    const replacement = useEditorStore.getState().beginTransient(99)
+    expect(replacement).not.toBeNull()
+    useEditorStore.getState().applyTransient({
+      type: 'moveSequenceMarker',
+      markerId: 'm1',
+      time: 4.5,
+    })
+
+    unmount()
+
+    // The cleanup no longer owns the slot, so it must leave the replacement
+    // open for its real owner.
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(replacement)
+    useEditorStore.getState().cancelTransient()
+  })
+
+  it('a pointerdown after a foreign edit does not cancel a replacement gesture', () => {
+    const doc = docWithClip()
+    doc.project.markers = [{ id: 'm1', time: 3 }]
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    fireEvent.pointerDown(screen.getByTestId('sequence-marker'), {
+      button: 0,
+      clientX: 240,
+      clientY: 10,
+      pointerId: 5,
+    })
+    fireEvent.pointerMove(window, { clientX: 320, clientY: 10, pointerId: 5 })
+    expect(isTransientActive()).toBe(true)
+
+    useEditorStore.getState().apply({ type: 'setProjectSettings', patch: { name: 'X' } })
+    const replacement = useEditorStore.getState().beginTransient(99)
+    expect(replacement).not.toBeNull()
+    useEditorStore.getState().applyTransient({
+      type: 'moveSequenceMarker',
+      markerId: 'm1',
+      time: 4.5,
+    })
+
+    // The abandon cleanup on the second pointerdown must not cancel the
+    // replacement it no longer owns.
+    fireEvent.pointerDown(screen.getByTestId('sequence-marker'), {
+      button: 0,
+      clientX: 240,
+      clientY: 10,
+      pointerId: 9,
+    })
+
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(replacement)
+    expect(useEditorStore.getState().doc.project.markers?.[0].time).toBe(4.5)
+    useEditorStore.getState().cancelTransient()
+  })
+
   it('a drag interrupted by an unmount cancels its transient instead of stranding it', () => {
     // A mid-drag unmount (e.g. the owning clip deleted under a live tab drag)
     // used to leave transientBase set forever: the move never reached history
@@ -329,6 +435,72 @@ describe('clip markers rendering', () => {
       clipId: 'c1',
       markerId: 'cm1',
     })
+  })
+
+  it('a stale clip marker release does not commit a replacement gesture', () => {
+    const doc = docWithClip()
+    doc.project.tracks[0].clips[0].markers = [{ id: 'cm1', time: 3 }]
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    const tab = screen.getByTestId('clip-marker')
+    fireEvent.pointerDown(tab, { button: 0, clientX: 240, clientY: 40, pointerId: 5 })
+    fireEvent.pointerMove(window, { clientX: 320, clientY: 40, pointerId: 5 })
+    expect(isTransientActive()).toBe(true)
+
+    useEditorStore.getState().apply({ type: 'setProjectSettings', patch: { name: 'X' } })
+    expect(isTransientActive()).toBe(false)
+    const pastAfterApply = useEditorStore.getState().past.length
+
+    const replacement = useEditorStore.getState().beginTransient(99)
+    expect(replacement).not.toBeNull()
+    useEditorStore.getState().applyTransient({
+      type: 'moveClipMarker',
+      clipId: 'c1',
+      markerId: 'cm1',
+      time: 4,
+    })
+
+    fireEvent.pointerUp(window, { pointerId: 5 })
+
+    // The stale release neither commits nor cancels the replacement.
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(replacement)
+    expect(useEditorStore.getState().past.length).toBe(pastAfterApply)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].markers?.[0].time).toBe(4)
+    useEditorStore.getState().cancelTransient()
+  })
+
+  it('a clip marker unmount after a foreign edit does not cancel a replacement gesture', () => {
+    const doc = docWithClip()
+    doc.project.tracks[0].clips[0].markers = [{ id: 'cm1', time: 3 }]
+    useEditorStore.setState({ doc })
+    const { unmount } = render(<TimelinePanel />)
+
+    fireEvent.pointerDown(screen.getByTestId('clip-marker'), {
+      button: 0,
+      clientX: 240,
+      clientY: 40,
+      pointerId: 5,
+    })
+    fireEvent.pointerMove(window, { clientX: 320, clientY: 40, pointerId: 5 })
+    expect(isTransientActive()).toBe(true)
+
+    useEditorStore.getState().apply({ type: 'setProjectSettings', patch: { name: 'X' } })
+    const replacement = useEditorStore.getState().beginTransient(99)
+    expect(replacement).not.toBeNull()
+    useEditorStore.getState().applyTransient({
+      type: 'moveClipMarker',
+      clipId: 'c1',
+      markerId: 'cm1',
+      time: 4,
+    })
+
+    unmount()
+
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(replacement)
+    useEditorStore.getState().cancelTransient()
   })
 })
 

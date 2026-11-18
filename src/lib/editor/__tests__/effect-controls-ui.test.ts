@@ -89,7 +89,9 @@ describe('effect controls surface', () => {
     expect(ec).toMatch(
       /onPointerDown=\{\(e\) => \{\s*e\.stopPropagation\(\)\s*if \(refuseLockedClip\(clip\.id\)\) return\s*beginDrag\(i, k, e\)/,
     )
-    expect(hook).toMatch(/beginTransient\(pointer\.pointerId\)/)
+    expect(hook).toMatch(
+      /const token = useEditorStore\.getState\(\)\.beginTransient\(pointer\.pointerId\)\n\s*if \(token === null\) return/,
+    )
     // The drag keeps the token so a foreign commit mid-drag refuses frames.
     expect(hook).toMatch(/if \(currentTransientToken\(\) !== drag\.token\) return/)
     expect(hook).toMatch(/commitTransient\(\)/)

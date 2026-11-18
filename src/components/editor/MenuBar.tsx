@@ -58,6 +58,7 @@ import { canFreezeFrame } from '@/lib/editor/freeze-plan'
 import { PANEL_BOUNDS, PANEL_IDS } from '@/lib/editor/workspace'
 import { useWorkspaceStore } from '@/lib/editor/workspace-store'
 import { useEditorStore, useStableDoc } from '@/lib/editor/store'
+import { UI_EVENTS } from '@/lib/editor/ui-contracts'
 import { executeAction } from '@/lib/editor/action-executor'
 import { createActionContext } from '@/hooks/editor/action-context'
 import { hasClipboardContent } from '@/lib/editor/clipboard'
@@ -301,8 +302,8 @@ export function MenuBar({
   // Premiere G: Audio Gain. The keyboard hook dispatches an app event so the
   // dialog (owned here) can be opened without coupling the hook to React.
   useEffect(() => {
-    window.addEventListener('editor:audio-gain', openGainDialog)
-    return () => window.removeEventListener('editor:audio-gain', openGainDialog)
+    window.addEventListener(UI_EVENTS.AUDIO_GAIN, openGainDialog)
+    return () => window.removeEventListener(UI_EVENTS.AUDIO_GAIN, openGainDialog)
   }, [openGainDialog])
 
   // Sequence > Sequence Settings: Premiere-style dialog over the shared

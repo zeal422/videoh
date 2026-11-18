@@ -22,6 +22,7 @@ import {
 } from '@/lib/editor/project-io'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { useEditorStore } from '@/lib/editor/store'
+import { UI_EVENTS, TIMELINE_SCROLL_SELECTOR } from '@/lib/editor/ui-contracts'
 import { importFile } from '@/lib/editor/media/probe'
 import type { ActionContext } from '@/lib/editor/action-executor'
 import type { MediaAsset } from '@/lib/editor/types'
@@ -206,13 +207,13 @@ export function createActionContext(overrides: ActionContextOverrides = {}): Act
     freezeFrame: () => {
       void freezeFrameAtPlayhead()
     },
-    editMarker: () => window.dispatchEvent(new CustomEvent('editor:marker-edit')),
+    editMarker: () => window.dispatchEvent(new CustomEvent(UI_EVENTS.MARKER_EDIT)),
     seek: (time) => playbackRef.current?.seek(time),
     zoomToFit: () => {
       // Read the store again: the context may be a few ticks old by the time a
       // menu action lands.
       const current = useEditorStore.getState()
-      const el = document.querySelector('[data-timeline-scroll]')
+      const el = document.querySelector(TIMELINE_SCROLL_SELECTOR)
       const viewport = el ? el.clientWidth - TRACK_HEADER_WIDTH - 12 : 0
       const duration = activeSequenceDuration(current.doc, current.activeSequencePath)
       if (viewport > 40 && duration > 0.25) {

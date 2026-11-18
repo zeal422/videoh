@@ -187,8 +187,11 @@ export interface EditorState {
    * errors still throw (callers own their messages).
    */
   apply: (command: EditorCommand | EditorCommand[]) => boolean
-  /** Begins a gesture slot and returns its token; pass the initiating pointerId when known. */
-  beginTransient: (pointerId?: number) => number
+  /**
+   * Begins a gesture slot and returns its token, or null when another gesture
+   * already owns the slot; pass the initiating pointerId when known.
+   */
+  beginTransient: (pointerId?: number) => number | null
   applyTransient: (command: EditorCommand) => void
   /**
    * Validates a whole command batch on a clone and installs it once. A later
@@ -347,8 +350,13 @@ class GestureSlot {
     return this.slotToken
   }
 
-  /** Snapshots `base` and returns the new gesture token. */
-  begin(base: Doc, pointerId?: number): number {
+  /**
+   * Snapshots `base` and returns the new gesture token, or null when a gesture
+   * is already live. A refused begin changes nothing: the owning gesture keeps
+   * its base, display doc, pointer, and token.
+   */
+  begin(base: Doc, pointerId?: number): number | null {
+    if (this.isActive) return null
     this.baseDoc = structuredClone(base)
     this.display = base
     this.pointer = pointerId ?? null
@@ -935,6 +943,11 @@ export function useStableDoc(): Doc {
 
 export function isTransientActive(): boolean {
   return gesture.isActive
+}
+
+/** True only for the token of the live gesture; null never owns the slot. */
+export function ownsTransient(token: number | null): boolean {
+  return token !== null && gesture.isActive && gesture.token === token
 }
 
 /** Monotonic token of the gesture slot; drags compare to detect a foreign end. */

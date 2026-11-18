@@ -167,6 +167,9 @@ export class EditorCommandError extends Error {
   }
 }
 
+/** Refusal for a visibility command aimed at an audio lane. */
+export const AUDIO_VISIBILITY_REFUSAL = 'Visibility applies to video and text tracks only'
+
 /**
  * Options threaded from the browser-side wiring into the pure command core.
  *
@@ -976,7 +979,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       const freshTrackByOld = new Map<string, string>()
       for (const track of ownerTracks) {
         if (!track.clips.some((c) => selectedIds.has(c.id))) continue
-        freshTrackByOld.set(track.id, `track_${cryptoRandom()}`)
+        freshTrackByOld.set(track.id, uid('track'))
       }
       const seqTracks: Track[] = []
       for (const track of ownerTracks) {
@@ -1009,7 +1012,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
           }),
         })
       }
-      const sequenceId = `seq_${cryptoRandom()}`
+      const sequenceId = uid('seq')
       const sequences = doc.project.sequences ?? (doc.project.sequences = [])
       sequences.push({
         id: sequenceId,
@@ -1018,7 +1021,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       })
       // Add the container first so the depth walk SEES the new edge, then check.
       const compound: Clip = {
-        id: `clip_${cryptoRandom()}`,
+        id: uid('clip'),
         sequenceId,
         start: minStart,
         duration,
@@ -1770,7 +1773,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       }
       const right: Clip = {
         ...structuredClone(clip),
-        id: command.rightId ?? `clip_${cryptoRandom()}`,
+        id: command.rightId ?? uid('clip'),
         start: at,
         duration: rightDuration,
         inPoint: isMedia ? (clip.reverse ? clip.inPoint : splitInPoint(leftDuration)) : 0,
@@ -1789,7 +1792,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       // of an A/V pair re-link with each other; a bare linked split gets a
       // fresh group automatically.
       if (right.linkId !== undefined) {
-        right.linkId = command.rightLinkId ?? `link_${cryptoRandom()}`
+        right.linkId = command.rightLinkId ?? uid('link')
       }
       clip.duration = leftDuration
       clip.inPoint = leftInPoint
@@ -1881,7 +1884,7 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
         throw new EditorCommandError('Cannot link clips across sequences')
       }
       const sequenceId = found[0].sequenceId
-      const mergedGroupId = clips.find((c) => c.linkId)?.linkId ?? `link_${cryptoRandom()}`
+      const mergedGroupId = clips.find((c) => c.linkId)?.linkId ?? uid('link')
       const oldGroupIds = new Set(clips.map((c) => c.linkId).filter((x): x is string => !!x))
       for (const track of sequenceTracks(doc, sequenceId)) {
         for (const c of track.clips) {
@@ -2691,6 +2694,11 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       if (typeof command.visible !== 'boolean') {
         throw new EditorCommandError('Track visible must be a boolean')
       }
+      // Audio lanes have no eye: mute is their visibility control. The UI
+      // never sends this, but a command payload is a trust boundary.
+      if (track.kind === 'audio') {
+        throw new EditorCommandError(AUDIO_VISIBILITY_REFUSAL)
+      }
       track.visible = command.visible
       return
     }
@@ -3188,7 +3196,7 @@ export function firstFreeCaptionsName(doc: Doc): string {
 
 function newTrackForKind(doc: Doc, kind: TrackKind, sequenceId?: string) {
   return {
-    id: `track_${cryptoRandom()}`,
+    id: uid('track'),
     kind,
     name: previewTrackName(doc, kind, sequenceId),
     clips: [],
@@ -3222,13 +3230,6 @@ function insertTrack(tracks: Track[], track: Track): void {
   const firstOfKind = tracks.findIndex((t) => t.kind === track.kind)
   if (firstOfKind === -1) tracks.push(track)
   else tracks.splice(firstOfKind, 0, track)
-}
-
-function cryptoRandom(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID()
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 /** Convenience for UI code: total timeline length (re-exported for ergonomics). */

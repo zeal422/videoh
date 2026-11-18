@@ -852,6 +852,12 @@ function KeyframeGraph({
     }
     const onUp = (e: PointerEvent) => {
       if (e.pointerId !== handleDrag.pointerId) return
+      // A foreign edit ended this gesture and may have started another: a stale
+      // release must not commit or cancel what it no longer owns.
+      if (currentTransientToken() !== handleDrag.token) {
+        setHandleDrag(null)
+        return
+      }
       // Commit on release, so the whole drag is one undo step (the same
       // capture-phase ordering and dangling-commit net as the dot drag).
       try {
@@ -863,6 +869,10 @@ function KeyframeGraph({
     }
     const onCancel = (e: PointerEvent) => {
       if (e.pointerId !== handleDrag.pointerId) return
+      if (currentTransientToken() !== handleDrag.token) {
+        setHandleDrag(null)
+        return
+      }
       useEditorStore.getState().cancelTransient()
       setHandleDrag(null)
     }
@@ -1000,6 +1010,7 @@ function KeyframeGraph({
                 if (activeStart === null) return
                 if (refuseLockedClip(clip.id)) return
                 const token = useEditorStore.getState().beginTransient(e.pointerId)
+                if (token === null) return
                 setHandleDrag({ which, startIndex: activeStart, pointerId: e.pointerId, token })
               }}
               onKeyDown={(e) => onHandleKeyDown(which, e)}

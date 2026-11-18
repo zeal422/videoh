@@ -180,7 +180,7 @@ describe('A/V linked clips (Premiere-style split + unlink)', () => {
 
   it('splitClip re-links right halves (fresh group), keeping A/V pairing', () => {
     expect(commands).toMatch(/rightLinkId\??: string/)
-    expect(commands).toMatch(/command\.rightLinkId \?\? `link_\$\{cryptoRandom\(\)\}`/)
+    expect(commands).toMatch(/command\.rightLinkId \?\? uid\('link'\)/)
   })
 
   it('clip moves drag the whole selection along (same time delta, per-lane track offset)', () => {
@@ -290,7 +290,7 @@ describe('A/V linked clips (Premiere-style split + unlink)', () => {
     expect(keyboard).toMatch(/'\\\\'/)
     // Mute still routes to the audio twin; G opens the gain dialog by event.
     expect(executor).toMatch(/audibleClipId\(state\.doc, primary\)/)
-    expect(keyboard).toMatch(/editor:audio-gain/)
+    expect(keyboard).toMatch(/UI_EVENTS\.AUDIO_GAIN/)
   })
 
   it('the inspector routes gain/mute to the audio side and hints the link', () => {
@@ -368,9 +368,14 @@ describe('track operations are reachable from the timeline UI', () => {
     // transient base and beginTransient would overwrite it. The store's flag is
     // the shared truth, and the refusal still leaves the click selecting.
     const clip = read('src/components/editor/timeline/ClipView.tsx')
-    expect(clip).toMatch(/import \{ currentTransientToken, isTransientActive, useEditorStore \}/)
+    expect(clip).toMatch(
+      /import \{\s*currentTransientToken,\s*isTransientActive,\s*ownsTransient,\s*useEditorStore,\s*\} from '@\/lib\/editor\/store'/,
+    )
     expect(clip).toMatch(/const transientOwnedElsewhere = isTransientActive\(\)/)
     expect(clip).toMatch(/if \(transientOwnedElsewhere\) return/)
+    // The release and pointerdown paths gate on the same token, so a stale
+    // endGesture cannot finalize a replacement.
+    expect(clip).toMatch(/if \(ownsTransient\(g\.token\)\) \{/)
   })
 
   it('adding a track scrolls by the new row, so the lanes you were on stay put', () => {

@@ -10,7 +10,7 @@ import { InspectorPanel } from '@/components/editor/InspectorPanel'
 import { useEditorKeyboard } from '@/hooks/editor/useEditorKeyboard'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { playbackRef, type PlaybackController } from '../playback/engine-ref'
-import { isTransientActive, useEditorStore } from '../store'
+import { currentTransientToken, isTransientActive, useEditorStore } from '../store'
 import { useWorkspaceStore } from '../workspace-store'
 import {
   clipFitsTrack,
@@ -961,7 +961,7 @@ describe('InspectorPanel tabs', () => {
     expect(time).toBeCloseTo(1.5, 5)
   })
 
-  it('a second pointer re-grabbing the same dot takes the drag over', async () => {
+  it('a second pointer cannot take a live dot drag over', async () => {
     const { doc } = docWithSelectedVideoClip()
     const clip = doc.project.tracks[0].clips[0]
     clip.keyframes = {
@@ -995,19 +995,23 @@ describe('InspectorPanel tabs', () => {
     fireEvent.pointerMove(window, { pointerId: 5, clientX: 50 }) // 1.5 s
     expect(dotTime()).toBeCloseTo(1.5, 5)
 
-    // The same dot is grabbed by another pointer: ownership transfers, so the
-    // handlers must read the CURRENT pointerId (the effect re-runs) instead of
-    // keeping the first pointer's and ignoring every later frame. The dot is
-    // re-queried because its React key carries the time, so a transient frame
-    // remounts the element (the drag itself rides on window listeners).
+    // Another pointer grabs the same dot: the store refuses the second begin,
+    // so the live drag keeps its pointer and the new pointer's frames are
+    // ignored. The dot is re-queried because its React key carries the time,
+    // so a transient frame remounts the element.
     fireEvent.pointerDown(screen.getByTestId('kf-dot-opacity-0'), {
       bubbles: true,
       pointerId: 9,
       clientX: 33,
     })
-    fireEvent.pointerMove(window, { pointerId: 9, clientX: 100 }) // 3.0 s
-    expect(dotTime()).toBeCloseTo(3, 5)
-    fireEvent.pointerUp(window, { pointerId: 9 })
+    fireEvent.pointerMove(window, { pointerId: 9, clientX: 100 }) // ignored
+    expect(dotTime()).toBeCloseTo(1.5, 5)
+
+    // The original pointer still owns the drag, and its release commits it.
+    fireEvent.pointerMove(window, { pointerId: 5, clientX: 60 }) // 1.8 s
+    expect(dotTime()).toBeCloseTo(1.8, 5)
+    fireEvent.pointerUp(window, { pointerId: 5 })
+    expect(isTransientActive()).toBe(false)
   })
 
   it('a pointercancel discards the keyframe drag instead of stranding its transient', async () => {
@@ -1547,6 +1551,87 @@ describe('keyframe curve, handles and easing defaults', () => {
     expect(quad?.[1]).toBeCloseTo(0.375, 6)
     expect(quad?.[2]).toBe(0.58)
     expect(quad?.[3]).toBe(1)
+  })
+
+  it('a stale handle release does not commit a replacement gesture', async () => {
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 1, value: 1, interpolation: 'easeInOut' },
+          { time: 5, value: 0.2 },
+        ],
+      }
+    }, 1.1)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+    sizeGraph()
+
+    const handle = screen.getByTestId('kf-handle-opacity-out')
+    fireEvent.pointerDown(handle, { bubbles: true, pointerId: 5, clientX: 89, clientY: 0 })
+    const store = useEditorStore.getState()
+    const clipId = store.doc.project.tracks[0].clips[0].id
+    // A foreign edit ends the handle's gesture and bumps its token.
+    store.apply({ type: 'setClipRotation', clipId, rotation: 10 })
+    expect(isTransientActive()).toBe(false)
+    const pastAfterApply = useEditorStore.getState().past.length
+
+    // A replacement gesture owns the slot when the stale pointer releases.
+    const replacement = useEditorStore.getState().beginTransient(99)
+    expect(replacement).not.toBeNull()
+    useEditorStore.getState().applyTransient({ type: 'setClipOpacity', clipId, opacity: 0.3 })
+
+    fireEvent.pointerUp(window, { pointerId: 5 })
+
+    // The stale release neither commits nor cancels the replacement.
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(replacement)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].opacity).toBeCloseTo(0.3, 5)
+    expect(useEditorStore.getState().past.length).toBe(pastAfterApply)
+    useEditorStore.getState().cancelTransient()
+  })
+
+  it('a stale dot release does not commit a replacement gesture', async () => {
+    seed((clip) => {
+      clip.keyframes = {
+        opacity: [
+          { time: 1, value: 1 },
+          { time: 5, value: 0.2 },
+        ],
+      }
+    }, 1.1)
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+    sizeGraph()
+
+    fireEvent.pointerDown(screen.getByTestId('kf-dot-opacity-0'), {
+      bubbles: true,
+      pointerId: 5,
+      clientX: 33,
+      clientY: 20,
+    })
+    fireEvent.pointerMove(window, { pointerId: 5, clientX: 50, clientY: 20 })
+    expect(isTransientActive()).toBe(true)
+
+    const store = useEditorStore.getState()
+    const clipId = store.doc.project.tracks[0].clips[0].id
+    // A foreign edit ends the dot's gesture and bumps its token.
+    store.apply({ type: 'setClipRotation', clipId, rotation: 10 })
+    expect(isTransientActive()).toBe(false)
+    const pastAfterApply = useEditorStore.getState().past.length
+
+    // A replacement gesture owns the slot when the stale pointer releases.
+    const replacement = useEditorStore.getState().beginTransient(99)
+    expect(replacement).not.toBeNull()
+    useEditorStore.getState().applyTransient({ type: 'setClipOpacity', clipId, opacity: 0.3 })
+
+    fireEvent.pointerUp(window, { pointerId: 5 })
+
+    // The stale release neither commits nor cancels the replacement.
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(replacement)
+    expect(useEditorStore.getState().past.length).toBe(pastAfterApply)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].opacity).toBeCloseTo(0.3, 5)
+    useEditorStore.getState().cancelTransient()
   })
 
   it('keeps the eased curve on the pair when a dot is dragged past its neighbour', async () => {

@@ -24,6 +24,7 @@ import {
   type MarkerSelection,
 } from '@/lib/editor/markers'
 import { useEditorStore, useStableDoc } from '@/lib/editor/store'
+import { UI_EVENTS } from '@/lib/editor/ui-contracts'
 import { formatTime } from '@/lib/editor/time'
 import type { MarkerColor } from '@/lib/editor/types'
 import { cn } from '@/lib/utils'
@@ -31,8 +32,8 @@ import { cn } from '@/lib/utils'
 /**
  * Marker editor: name, color swatch and notes, opened by double-clicking a
  * marker or Marker > Edit Selected Marker (the menu bar and the timeline
- * gestures both dispatch `editor:marker-edit`, which this listens for — the
- * same decoupling the Audio Gain dialog uses). Hosted in EditorShell so
+ * gestures both dispatch the shared marker-edit event, which this listens for,
+ * the same decoupling the Audio Gain dialog uses). Hosted in EditorShell so
  * hiding the timeline panel cannot make the command unreachable.
  *
  * The open state is DERIVED from the edited marker resolving in the doc: an
@@ -56,8 +57,8 @@ export function MarkerDialog() {
       setColor(marker.color ?? DEFAULT_MARKER_COLOR)
       setEditing(selection)
     }
-    window.addEventListener('editor:marker-edit', onOpen)
-    return () => window.removeEventListener('editor:marker-edit', onOpen)
+    window.addEventListener(UI_EVENTS.MARKER_EDIT, onOpen)
+    return () => window.removeEventListener(UI_EVENTS.MARKER_EDIT, onOpen)
   }, [])
 
   const target = editing ? markerFromSelection(doc, editing) : undefined

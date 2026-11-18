@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.28.4',
+    date: '2026-11-17',
+    highlights: [
+      'A second drag can no longer take over the gesture in progress, and a stale release cannot finish a different gesture',
+      'Inspector color and text edits never disturb another control, and a refused field applies again once the drag ends',
+      'Hiding an audio track through a command is refused, because audio lanes use mute',
+      'Id generation falls back to browser randomness instead of failing when an API is missing',
+      'Project files stay at format version 8',
+    ],
+  },
+  {
     version: '0.28.3',
     date: '2026-11-16',
     highlights: [

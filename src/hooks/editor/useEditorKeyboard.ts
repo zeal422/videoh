@@ -16,6 +16,7 @@ import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { executeAction, type ExecutorActionId } from '@/lib/editor/action-executor'
 import { createActionContext } from './action-context'
 import { useEditorStore } from '@/lib/editor/store'
+import { UI_EVENTS } from '@/lib/editor/ui-contracts'
 import { isAutomationGestureLive } from './gesture-state'
 
 /**
@@ -326,7 +327,7 @@ export function useEditorKeyboard(onSave: () => void): void {
         case 'G': {
           // Premiere: G opens Audio Gain. The dialog lives in the MenuBar —
           // opened via an app event to keep the hook component-free.
-          window.dispatchEvent(new CustomEvent('editor:audio-gain'))
+          window.dispatchEvent(new CustomEvent(UI_EVENTS.AUDIO_GAIN))
           break
         }
         case 't':

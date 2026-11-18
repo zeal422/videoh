@@ -3,7 +3,12 @@
 import * as React from 'react'
 import * as SliderPrimitive from '@radix-ui/react-slider'
 
-import { currentTransientToken, isTransientActive, useEditorStore } from '@/lib/editor/store'
+import {
+  currentTransientToken,
+  isTransientActive,
+  ownsTransient,
+  useEditorStore,
+} from '@/lib/editor/store'
 import { cn } from '@/lib/utils'
 
 /**
@@ -49,11 +54,7 @@ function NamedSlider({
   const pointerDown = React.useRef(false)
   const finishPreview = React.useCallback((mode: 'commit' | 'cancel') => {
     const token = previewToken.current
-    const owns =
-      previewing.current &&
-      token !== null &&
-      isTransientActive() &&
-      currentTransientToken() === token
+    const owns = previewing.current && ownsTransient(token)
     previewing.current = false
     previewToken.current = null
     if (!owns) return
@@ -114,11 +115,7 @@ function NamedSlider({
       }}
       onValueCommit={(next) => {
         const token = previewToken.current
-        const owns =
-          previewing.current &&
-          token !== null &&
-          isTransientActive() &&
-          currentTransientToken() === token
+        const owns = previewing.current && ownsTransient(token)
         // The panel's commit runs `apply`, which rolls the LIVE gesture back
         // first. A release that holds no gesture of its own (it lost the slot,
         // or previewed inside another control's) must not discard that
@@ -126,9 +123,12 @@ function NamedSlider({
         // a local-draft slider has no gesture, so both still commit when no
         // foreign gesture is live.
         const foreign = isTransientActive() && !owns
+        // A preview that owned the slot and lost it to a foreign edit must not
+        // record its leftover value as a fresh entry after the slot closes.
+        const stalePreview = previewing.current && token !== null && !owns
         previewing.current = false
         previewToken.current = null
-        if (foreign) return
+        if (foreign || stalePreview) return
         onValueCommit?.(next)
       }}
       onPointerDown={(event) => {

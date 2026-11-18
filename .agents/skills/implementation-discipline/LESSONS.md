@@ -1002,3 +1002,85 @@ forms a source scanner must consume (strings, comments, regexes, nested
 brackets) and test a comma inside each one, not only the current tables.
 Action: kept as a note; the scanner now consumes regex literals with escape
 and character-class handling, and a `/,/` plus `/x,y/` regression locks it.
+
+## 2026-11-17 - plan claimed a preservation test passed on old code
+
+What happened: PLAN.md said the stale-slider rewrite would pass on current code
+because `finishPreview` returns early. The rewrite failed on the unfixed code:
+pointerup also runs `onValueCommit`, which called the panel's `apply` when no
+gesture was live and recorded a second history entry.
+Would-have-caught: trigger 8 (findings are untrusted) applied to a plan claim:
+trace every handler the same event runs before accepting "this passes on old
+code".
+Action: kept as a note; `NamedSlider` now drops a release whose own preview
+token was retired, and the rewritten test proves no second entry.
+
+## 2026-11-17 - beginTransient test audit missed a UI-driven second begin
+
+What happened: the new store refusal invalidated `effect-controls-ui.render.test.tsx`'s
+"a second pointer re-grabbing the same dot takes the drag over" test, which the
+plan's `beginTransient` audit did not list because it reaches the API through a
+pointer event rather than a direct call.
+Would-have-caught: trigger 4 (sweep callers) applied to UI callers: a direct-call
+grep is not enough when a behavior change reaches the API through a component
+handler.
+Action: kept as a note; the test now proves the second pointer cannot take over
+and the original pointer still commits.
+
+## 2026-11-17 - headed fixture upload failed on the manual proof
+
+What happened: a headed `agent-browser` session could not read an uploaded media
+or project fixture ("The requested file could not be read"), while the battery's
+headless uploads passed minutes earlier. The manual proof used added text clips
+and the automated suite instead of the fixture path.
+Would-have-caught: probing a headed upload before planning a file-dependent
+manual proof, and treating the battery as the file-path proof when the headed
+harness cannot read the fixture.
+Action: kept as a note; the manual proof covers the slider history and release
+notes, and the battery covers the file import path.
+
+## 2026-11-18 - release sweep stopped at the paths a review named
+
+What happened: the audit named the keyframe dot, the marker releases, and the
+envelope releases. A sweep of every production `commitTransient` /
+`cancelTransient` caller also found `ClipView.endGesture` and the marker and
+envelope pointerdown and unmount cleanup cancels, all of which could end a
+replacement gesture.
+Would-have-caught: rule 4 applied to the whole store-ending surface: inventory
+every commit and cancel caller, including cleanup effects and pointerdown
+abandon paths, not only the release handlers in the report.
+Action: kept as a note; all release and cleanup paths now compare the captured
+token, and nine red-first tests cover them.
+
+## 2026-11-18 - a static import lock failed only in the full gate
+
+What happened: adding `ownsTransient` to `ClipView`'s store import passed the
+targeted gesture tests but failed `compositing-ui.test.ts`, whose regex pinned
+the exact import list. The full check caught it.
+Would-have-caught: after changing an import line, grep the test tree for the
+exact import string or run the static wiring suites before the full gate.
+Action: kept as a note; the lock now allows Prettier's multiline import and
+also asserts the `endGesture` token guard.
+
+## 2026-11-18 - testing inventory prose would reflow the whole table
+
+What happened: `docs/testing.md`'s per-file rows are padded to one fixed width;
+appending coverage prose pushed a row past 4178 characters and would have made
+Prettier re-pad every row.
+Would-have-caught: check the table's current line width before adding prose to
+a generated-width markdown table; put behavior detail in architecture and flows
+and keep the inventory to count updates.
+Action: kept as a note; counts moved and the stale-release behavior is
+documented in `docs/flows.md` and `docs/architecture.md`.
+
+## 2026-11-18 - a retry can own a transient with no target
+
+What happened: `AutomationEnvelope`'s pending-press retry began its transient
+before looking up the grabbed keyframe. A foreign edit could remove that
+keyframe while the retry waited, leaving an owned empty transient and the
+pending-press marker until pointerup.
+Would-have-caught: rule 4 applied to a retry path: after acquiring ownership,
+re-validate the captured identity before acting; if it is gone, cancel the
+empty transient and detach.
+Action: kept as a note; `abortPendingRetry` cancels the empty transient, clears
+the pending press, and a red-first test covers the missing-keyframe retry.

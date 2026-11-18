@@ -8,7 +8,7 @@ import { InspectorPanel } from '@/components/editor/InspectorPanel'
 import { AutomationEnvelope } from '@/components/editor/timeline/AutomationEnvelope'
 import { findClip, createClip, createMediaAsset, createTrack } from '@/lib/editor/factories'
 import { computeDuckingKeyframes } from '@/lib/editor/ducking'
-import { isTransientActive, useEditorStore } from '@/lib/editor/store'
+import { currentTransientToken, isTransientActive, useEditorStore } from '@/lib/editor/store'
 import { frameToTime } from '@/lib/editor/time'
 import { dbToGain, gainToDb, gainToUnit } from '@/lib/editor/volume-automation'
 import type { Clip, Doc, Keyframe, MediaAsset } from '@/lib/editor/types'
@@ -1079,6 +1079,124 @@ describe('opacity envelope and the Pen (0.16.0)', () => {
     expect(useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity).toEqual(
       OPACITY_POINTS,
     )
+  })
+
+  it('a stale envelope release does not commit a replacement gesture', () => {
+    seedStore(videoDoc(OPACITY_POINTS), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    stubPlot('opacity-envelope')
+
+    fireEvent.pointerDown(screen.getByTestId('opacity-dot-0'), {
+      bubbles: true,
+      pointerId: 7,
+      clientX: 0,
+      clientY: yForOpacity(1),
+      button: 0,
+    })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 100, clientY: yForOpacity(0.5) })
+    expect(isTransientActive()).toBe(true)
+
+    useEditorStore.getState().apply({ type: 'setProjectSettings', patch: { name: 'X' } })
+    expect(isTransientActive()).toBe(false)
+    const pastAfterApply = useEditorStore.getState().past.length
+
+    const replacement = useEditorStore.getState().beginTransient(99)
+    expect(replacement).not.toBeNull()
+    useEditorStore.getState().applyTransient({
+      type: 'setClipOpacity',
+      clipId: 'clip-v',
+      opacity: 0.3,
+    })
+
+    fireEvent.pointerUp(window, { pointerId: 7 })
+
+    // The stale release neither commits nor cancels the replacement.
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(replacement)
+    expect(useEditorStore.getState().past.length).toBe(pastAfterApply)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].opacity).toBeCloseTo(0.3, 5)
+    useEditorStore.getState().cancelTransient()
+  })
+
+  it('an envelope unmount after a foreign edit does not cancel a replacement gesture', () => {
+    seedStore(videoDoc(OPACITY_POINTS), 'clip-v')
+    const { unmount } = render(
+      <EnvelopeHarness id="clip-v" property="opacity" selected penTarget />,
+    )
+    stubPlot('opacity-envelope')
+
+    fireEvent.pointerDown(screen.getByTestId('opacity-dot-0'), {
+      bubbles: true,
+      pointerId: 7,
+      clientX: 0,
+      clientY: yForOpacity(1),
+      button: 0,
+    })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 100, clientY: yForOpacity(0.5) })
+    expect(isTransientActive()).toBe(true)
+
+    useEditorStore.getState().apply({ type: 'setProjectSettings', patch: { name: 'X' } })
+    const replacement = useEditorStore.getState().beginTransient(99)
+    expect(replacement).not.toBeNull()
+    useEditorStore.getState().applyTransient({
+      type: 'setClipOpacity',
+      clipId: 'clip-v',
+      opacity: 0.3,
+    })
+
+    unmount()
+
+    // The cleanup no longer owns the slot, so it must leave the replacement
+    // open for its real owner.
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(replacement)
+    useEditorStore.getState().cancelTransient()
+  })
+
+  it('a refused begin that retries after its keyframe disappears closes the transient', () => {
+    seedStore(videoDoc(OPACITY_POINTS), 'clip-v')
+    render(<EnvelopeHarness id="clip-v" property="opacity" selected penTarget />)
+    stubPlot('opacity-envelope')
+    const root = screen.getByTestId('opacity-envelope')
+    const dot = screen.getByTestId('opacity-dot-0')
+
+    // A foreign gesture holds the slot, so the first drag frame is refused and
+    // the envelope stays in its pending-press state.
+    const foreign = useEditorStore.getState().beginTransient(99)
+    expect(foreign).not.toBeNull()
+    fireEvent.pointerDown(dot, {
+      bubbles: true,
+      pointerId: 7,
+      clientX: 0,
+      clientY: yForOpacity(1),
+      button: 0,
+    })
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 100, clientY: yForOpacity(0.5) })
+    expect(isTransientActive()).toBe(true)
+    expect(root).toHaveAttribute('data-automation-gesture', 'true')
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].keyframes?.opacity).toEqual(
+      OPACITY_POINTS,
+    )
+
+    // The slot frees, but the grabbed point is gone before the retry.
+    useEditorStore.getState().cancelTransient()
+    useEditorStore.getState().apply({
+      type: 'setClipKeyframes',
+      clipId: 'clip-v',
+      property: 'opacity',
+      keyframes: [OPACITY_POINTS[1]],
+    })
+    const pastAfterRemove = useEditorStore.getState().past.length
+
+    fireEvent.pointerMove(window, { pointerId: 7, clientX: 100, clientY: yForOpacity(0.5) })
+
+    // The retry acquired the slot but cannot identify its keyframe: it must
+    // release the transient and clear the pending press instead of holding an
+    // empty gesture until pointerup.
+    expect(isTransientActive()).toBe(false)
+    expect(root).not.toHaveAttribute('data-automation-gesture')
+    fireEvent.pointerUp(window, { pointerId: 7 })
+    expect(useEditorStore.getState().past.length).toBe(pastAfterRemove)
   })
 
   it('clears a pending Pen gesture marker on window blur', () => {

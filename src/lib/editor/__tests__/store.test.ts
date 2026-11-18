@@ -9,6 +9,7 @@ import {
   currentTransientToken,
   isTransientActive,
   normalizeCommittedState,
+  ownsTransient,
   stableDocForRender,
   useEditorStore,
 } from '../store'
@@ -508,14 +509,48 @@ describe('transient gestures', () => {
     expect(currentTransientToken()).toBe(token)
 
     store.commitTransient()
-    expect(currentTransientToken()).toBe(token + 1)
+    expect(currentTransientToken()).toBe(token! + 1)
     expect(activeTransientPointerId()).toBeNull()
 
     // Same for a cancel, and for begin-without-pointer (tokenless consumers).
     const token2 = store.beginTransient()
     expect(activeTransientPointerId()).toBeNull()
     store.cancelTransient()
-    expect(currentTransientToken()).toBe(token2 + 1)
+    expect(currentTransientToken()).toBe(token2! + 1)
+  })
+
+  it('refuses a second begin without touching the live gesture', () => {
+    addTestClip()
+    const store = useEditorStore.getState()
+    const clipId = store.doc.project.tracks.flatMap((t) => t.clips)[0].id
+    const trackId = videoTrackId(store.doc)
+
+    const token = store.beginTransient(7)
+    expect(token).not.toBeNull()
+    useEditorStore.getState().applyTransient({ type: 'moveClip', clipId, trackId, start: 2 })
+    const pastBefore = useEditorStore.getState().past.length
+
+    const second = useEditorStore.getState().beginTransient(9)
+    expect(second).toBeNull()
+    // The live gesture keeps its token, pointer, and pre-gesture display doc.
+    expect(currentTransientToken()).toBe(token)
+    expect(activeTransientPointerId()).toBe(7)
+    expect(stableDocForRender(useEditorStore.getState().doc).project.tracks[0].clips[0].start).toBe(
+      0,
+    )
+    expect(ownsTransient(token)).toBe(true)
+    expect(ownsTransient(null)).toBe(false)
+    expect(ownsTransient(currentTransientToken() + 1)).toBe(false)
+
+    // The first gesture still commits one entry, and its base is the doc that
+    // existed before the FIRST begin, not the refused begin's live frame.
+    useEditorStore.getState().applyTransient({ type: 'moveClip', clipId, trackId, start: 3 })
+    useEditorStore.getState().commitTransient()
+    expect(isTransientActive()).toBe(false)
+    expect(ownsTransient(token)).toBe(false)
+    expect(useEditorStore.getState().past).toHaveLength(pastBefore + 1)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].start).toBe(3)
+    expect(useEditorStore.getState().past[pastBefore].project.tracks[0].clips[0].start).toBe(0)
   })
 })
 

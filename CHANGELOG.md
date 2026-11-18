@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.28.4] - 2026-11-17
+
+### Fixed
+
+- Gesture ownership: a second `beginTransient` is refused at the store, returning `null` and leaving the live base, display doc, pointer, and token untouched. All eight direct drag begins bail before installing drag state, the marker and envelope drags retry once the slot frees, and every release and cleanup path compares the captured token before committing or cancelling: the keyframe dot and handle, clip gestures, sequence and clip markers, and the automation envelope. A stale pointerup, a second pointerdown, or an unmount can no longer end a replacement gesture, and the marker and envelope cleanup stores the token instead of a boolean. An envelope retry that cannot find its grabbed keyframe cancels the empty transient and clears the pending press instead of holding the slot until pointerup.
+- Inspector edit sessions: shape fill, shape stroke, text content, and text color share a section-scoped transient owner. A focus or blur during another control's gesture neither overwrites nor commits it, a refused field retries on its next change, and an unmount commits only the session it owns. `NamedSlider` uses the shared token predicate and drops a release whose own preview gesture was retired by a foreign edit.
+- Command boundary: `setTrackVisible` refuses an audio lane with `EditorCommandError`; video and text lanes still toggle.
+- Id generation: `uid` falls back from `randomUUID` to 16 `getRandomValues` bytes as hex, then the weak timestamp fallback. A missing or throwing API falls through instead of failing the call, and the duplicate `cryptoRandom` in `commands.ts` is gone.
+- Shared UI contracts: the audio-gain and marker-edit event names and the timeline scroll attribute live in `ui-contracts.ts`; producers and consumers import them while CSS and DOM-contract tests keep the literal.
+
+### Changed
+
+- Bump the version to 0.28.4; the project schema stays v8.
+
 ## [0.28.3] - 2026-11-16
 
 ### Fixed

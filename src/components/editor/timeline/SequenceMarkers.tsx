@@ -19,7 +19,8 @@ import {
 } from '@/lib/editor/markers'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { applySnap, computeSnapPoints, snapGuide } from '@/lib/editor/snap'
-import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
+import { currentTransientToken, ownsTransient, useEditorStore } from '@/lib/editor/store'
+import { UI_EVENTS } from '@/lib/editor/ui-contracts'
 import type { Marker } from '@/lib/editor/types'
 import { cn } from '@/lib/utils'
 
@@ -56,14 +57,17 @@ export function SequenceMarkers({ pxPerSec }: { pxPerSec: number }) {
   )
   // Detach for a drag that is still live when the panel unmounts, and cancel
   // the gesture: a stranded transientBase would block autosave forever (see
-  // ClipMarkers' unmount cleanup). The ownership flag keeps the cleanup from
-  // cancelling a foreign gesture that outlives this component.
+  // ClipMarkers' unmount cleanup). The token names the gesture this component
+  // still owns, so the cleanup never cancels a replacement that took the slot
+  // after a foreign edit.
   const detachRef = useRef<(() => void) | null>(null)
-  const ownsTransientRef = useRef(false)
+  const tokenRef = useRef<number | null>(null)
   useEffect(
     () => () => {
       detachRef.current?.()
-      if (ownsTransientRef.current) useEditorStore.getState().cancelTransient()
+      const token = tokenRef.current
+      tokenRef.current = null
+      if (ownsTransient(token)) useEditorStore.getState().cancelTransient()
     },
     [],
   )
@@ -73,7 +77,7 @@ export function SequenceMarkers({ pxPerSec }: { pxPerSec: number }) {
 
   const openDialog = (marker: Marker) => {
     selectMarker(marker)
-    window.dispatchEvent(new CustomEvent('editor:marker-edit'))
+    window.dispatchEvent(new CustomEvent(UI_EVENTS.MARKER_EDIT))
   }
 
   function beginPointerDrag(e: React.PointerEvent, marker: Marker) {
@@ -84,8 +88,9 @@ export function SequenceMarkers({ pxPerSec }: { pxPerSec: number }) {
     // rollback) rather than just detaching, which would fold its move into
     // the new drag's undo entry. Multi-pointer only.
     detachRef.current?.()
-    if (ownsTransientRef.current) {
-      ownsTransientRef.current = false
+    const previous = tokenRef.current
+    tokenRef.current = null
+    if (ownsTransient(previous)) {
       useEditorStore.getState().cancelTransient()
       // The cancel restored the BASE doc; read the live marker or the
       // replacement drag would start a jump of the abandoned delta away
@@ -103,16 +108,19 @@ export function SequenceMarkers({ pxPerSec }: { pxPerSec: number }) {
     let moved = false
     // The gesture slot begins lazily on the first real move (past the wobble
     // threshold); the token lets later frames detect a foreign end.
-    let token = -1
+    let token: number | null = null
 
     function onMove(ev: PointerEvent) {
       if (ev.pointerId !== pointerId) return
       const dx = ev.clientX - startX
       if (!moved && Math.abs(dx) < DRAG_THRESHOLD_PX) return
       if (!moved) {
-        moved = true
-        ownsTransientRef.current = true
+        // A refused begin leaves this drag pending: a later frame retries once
+        // the foreign gesture ends. Ownership is claimed only with a token.
         token = useEditorStore.getState().beginTransient(pointerId)
+        if (token === null) return
+        moved = true
+        tokenRef.current = token
       }
       // A foreign commit (keyboard delete, undo) ended the gesture slot:
       // applying further frames would mutate the doc with no undo entry, and
@@ -147,8 +155,9 @@ export function SequenceMarkers({ pxPerSec }: { pxPerSec: number }) {
       const live = useEditorStore.getState()
       live.setSnapLine(null)
       if (moved) {
-        ownsTransientRef.current = false
-        live.commitTransient()
+        const token = tokenRef.current
+        tokenRef.current = null
+        if (ownsTransient(token)) live.commitTransient()
         return
       }
       // Never traveled: a plain click selects and seeks to the marker.
@@ -162,8 +171,9 @@ export function SequenceMarkers({ pxPerSec }: { pxPerSec: number }) {
       const live = useEditorStore.getState()
       live.setSnapLine(null)
       if (moved) {
-        ownsTransientRef.current = false
-        live.cancelTransient()
+        const token = tokenRef.current
+        tokenRef.current = null
+        if (ownsTransient(token)) live.cancelTransient()
       }
     }
 

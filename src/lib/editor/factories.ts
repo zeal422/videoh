@@ -15,13 +15,32 @@ import type {
   TrackKind,
 } from './types'
 
-/** Collision-safe unique id (crypto.randomUUID with fallback for old runtimes). */
+/**
+ * Collision-safe unique id: `crypto.randomUUID` when present, 16 random bytes
+ * as hex when only `getRandomValues` is available, then a weak timestamp plus
+ * Math.random fallback for a runtime with no usable randomness. Each API is
+ * guarded so a present but throwing call falls through instead of failing the
+ * whole id.
+ */
 export function uid(prefix = 'id'): string {
-  const raw =
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-  return `${prefix}_${raw}`
+  const source = typeof crypto !== 'undefined' ? crypto : undefined
+  if (source && typeof source.randomUUID === 'function') {
+    try {
+      return `${prefix}_${source.randomUUID()}`
+    } catch {
+      // Fall through to the byte generator.
+    }
+  }
+  if (source && typeof source.getRandomValues === 'function') {
+    try {
+      const bytes = source.getRandomValues(new Uint8Array(16))
+      const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+      return `${prefix}_${hex}`
+    } catch {
+      // Fall through to the weak fallback.
+    }
+  }
+  return `${prefix}_${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 export function createDefaultTextStyle(): TextStyle {

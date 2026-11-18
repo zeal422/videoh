@@ -310,7 +310,10 @@ describe('monitor transform gizmo', () => {
     expect(moved.style!.x).toBeCloseTo(startX + 230.4 / 1920 / 2, 4)
   })
 
-  it('a stale release does not commit a replacement gesture', () => {
+  it('a stale release does not commit after a foreign edit', () => {
+    // Stability guard, not a red proof: HEAD's endGizmoDrag already compared
+    // the token, so this passed before 0.28.4. It locks that ownership rule
+    // against a future regression.
     docWithSelectedClip()
     render(<PreviewPanel />)
     const canvas = screen.getByTestId('preview-canvas')
@@ -318,14 +321,15 @@ describe('monitor transform gizmo', () => {
     const parts = gizmoParts()
 
     fireEvent.pointerDown(parts.rotate, { button: 0, pointerId: 8, clientX: 200, clientY: 42.75 })
-    // A replacement gesture takes the slot before the stale pointer releases.
+    // A foreign edit resolves the gizmo's gesture before the stale pointer
+    // releases. The release must not roll that committed edit back or add a
+    // second history entry.
     const live = useEditorStore.getState()
-    live.beginTransient(99)
-    live.applyTransient({ type: 'setClipRotation', clipId: 'clip_v', rotation: 10 })
+    live.apply({ type: 'setClipRotation', clipId: 'clip_v', rotation: 10 })
+    const pastAfterApply = useEditorStore.getState().past.length
     fireEvent.pointerUp(screen.getByTestId('transform-gizmo'), { pointerId: 8 })
 
-    // The replacement stays open and uncommitted: no history entry, change kept.
-    expect(useEditorStore.getState().past.length).toBe(0)
+    expect(useEditorStore.getState().past.length).toBe(pastAfterApply)
     expect(useEditorStore.getState().doc.project.tracks[0].clips[0].rotation).toBe(10)
   })
 

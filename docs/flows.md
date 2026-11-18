@@ -1167,3 +1167,33 @@ Stable hooks used across flows and tests:
   Non-finite playheads
   are ignored, placement uses the default duration for a non-finite asset duration, a non-finite
   caption start produces no batch, and a throwing recorder handler cannot skip teardown.
+
+## Gesture ownership (0.28.4)
+
+- The gesture slot refuses a second begin. `beginTransient` returns `null` and leaves the live base,
+  display doc, pointer, and token untouched. `ownsTransient(token)` is the one predicate for "this
+  session still owns the slot", and a null token never owns it.
+- Every direct drag begin (the preview gizmo and text drags, clip gestures, sequence and clip
+  markers, the automation envelope, the keyframe dot, and the keyframe handle) captures the returned
+  token and bails before it installs drag state. The marker and envelope drags retry the begin on a
+  later frame and set their token ref only after a token arrives, so a refused drag leaves no
+  half-built gesture and no stale ownership. An envelope retry that acquires the slot after a
+  foreign edit validates its captured keyframe first; if the point disappeared while the retry
+  waited, it cancels the empty transient and clears the pending press instead of holding the slot
+  until pointerup.
+- Every release and cleanup path that can end a gesture compares the token it captured before
+  committing or cancelling: the keyframe dot and handle, clip gestures, sequence and clip markers,
+  and the automation envelope. The marker and envelope cleanup stores that token instead of a
+  boolean, so a foreign edit that ended the drag, a second pointerdown, or an unmount cannot cancel
+  a replacement gesture that owns the slot now.
+- The Inspector shape and text sections own one `useTransientOwner` session each. Focus begins the
+  session, every preview frame runs through `preview`, blur commits only an owned session, and
+  unmount commits an owned session. A refused focus drops its changes while a foreign gesture is
+  live and retries `begin()` on the next change once the slot frees; it never overwrites, ends, or
+  commits the foreign gesture.
+- `NamedSlider` uses `ownsTransient` for the preview cleanup and the release commit. A release whose
+  own preview gesture was retired by a foreign edit is dropped instead of recording its leftover
+  value as a fresh history entry; a keyboard step that never opened a preview still commits.
+- The shared UI event names and the timeline scroll attribute live in `src/lib/editor/ui-contracts.ts`.
+  Producers and consumers import them, while the CSS rule and the DOM-contract tests keep the literal
+  attribute value.

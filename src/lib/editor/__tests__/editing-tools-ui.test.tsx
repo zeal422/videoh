@@ -2,7 +2,7 @@
 import '@testing-library/jest-dom/vitest'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 
@@ -13,6 +13,7 @@ import { useEditorKeyboard } from '@/hooks/editor/useEditorKeyboard'
 import { toast } from '@/hooks/use-toast'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { currentTransientToken, isTransientActive, useEditorStore } from '../store'
+import { TIMELINE_SCROLL_ATTRIBUTE, TIMELINE_SCROLL_SELECTOR, UI_EVENTS } from '../ui-contracts'
 import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 import type { Clip, Doc, MediaAsset } from '../types'
 
@@ -538,29 +539,22 @@ describe('slider gesture wiring (H1)', () => {
     store.cancelTransient()
   })
 
-  it("leaves another control's live gesture intact when a stale drag is released", async () => {
+  it('does not record history when a stale slider release follows a foreign edit', async () => {
     sliderDoc()
     const { thumb } = beginPointerDrag()
     const store = useEditorStore.getState()
-    // A second control starts its own gesture while the slider still previews.
+    // A foreign edit resolves the slider's gesture before the pointer releases.
     // The slider no longer owns the slot, so its release must not run `apply`,
-    // which would roll that second gesture back before committing.
-    const second = store.beginTransient()
-    store.applyTransient({
-      type: 'setClipRotation',
-      clipId: 'clip_slider',
-      rotation: 15,
-    })
+    // which would roll the foreign edit's committed state back again.
+    store.apply({ type: 'setClipRotation', clipId: 'clip_slider', rotation: 15 })
+    expect(isTransientActive()).toBe(false)
+    const pastAfterApply = useEditorStore.getState().past.length
 
     fireEvent.pointerUp(thumb, { pointerId: 1 })
     await Promise.resolve()
-    expect(isTransientActive()).toBe(true)
-    expect(currentTransientToken()).toBe(second)
+    expect(useEditorStore.getState().past.length).toBe(pastAfterApply)
     expect(sliderClip().rotation).toBe(15)
-    expect(useEditorStore.getState().past).toHaveLength(0)
-
-    store.cancelTransient()
-    expect(sliderClip().rotation).toBeUndefined()
+    expect(isTransientActive()).toBe(false)
   })
 
   it("drops a keyboard step while another control's gesture is live", async () => {
@@ -700,9 +694,73 @@ describe('slider gesture wiring (H1)', () => {
       read(path)
         .split('\n')
         .filter((line) => line.includes('if (') && line.includes('isTransientActive()')).length
-    expect(count('src/components/editor/InspectorPanel.tsx')).toBe(6)
+    expect(count('src/components/editor/InspectorPanel.tsx')).toBe(5)
     expect(count('src/components/editor/effect-controls/EffectControlsPanel.tsx')).toBe(4)
     expect(count('src/components/editor/effect-controls/AppliedEffectsSection.tsx')).toBe(3)
+  })
+
+  it('every direct drag begin bails when the gesture slot refuses it', () => {
+    // The store owns the one-gesture invariant; each begin captures the token
+    // and returns before it installs drag state when the slot is already live.
+    const guarded: Array<[string, number]> = [
+      ['src/components/editor/PreviewPanel.tsx', 2],
+      ['src/components/editor/timeline/ClipView.tsx', 1],
+      ['src/components/editor/timeline/SequenceMarkers.tsx', 1],
+      ['src/components/editor/timeline/AutomationEnvelope.tsx', 1],
+      ['src/components/editor/timeline/ClipMarkers.tsx', 1],
+      ['src/components/editor/effect-controls/EffectControlsPanel.tsx', 1],
+      ['src/hooks/editor/useKeyframeGraphDrag.ts', 1],
+    ]
+    const guard =
+      /(?:const )?token = [^\n]*beginTransient\([^)]*\)\n\s*if \(token === null\) return/g
+    let total = 0
+    for (const [path, expected] of guarded) {
+      const found = read(path).match(guard) ?? []
+      expect(found, path).toHaveLength(expected)
+      total += found.length
+    }
+    expect(total).toBe(8)
+
+    // The two in-component drags capture the token before they touch their
+    // drag state, so a refused begin leaves no half-built gesture behind.
+    const preview = read('src/components/editor/PreviewPanel.tsx')
+    expect(preview.indexOf('const token = live.beginTransient')).toBeLessThan(
+      preview.indexOf('gizmoDrag.current = {'),
+    )
+    expect(preview.indexOf('const token = store.beginTransient')).toBeLessThan(
+      preview.indexOf('dragOrigin.current = {'),
+    )
+    const clipView = read('src/components/editor/timeline/ClipView.tsx')
+    expect(clipView.indexOf('const token = useEditorStore.getState().beginTransient')).toBeLessThan(
+      clipView.indexOf('gesture.current = {'),
+    )
+  })
+
+  it('names the shared UI event and scroll contracts in one module', () => {
+    expect(UI_EVENTS.AUDIO_GAIN).toBe('editor:audio-gain')
+    expect(UI_EVENTS.MARKER_EDIT).toBe('editor:marker-edit')
+    expect(TIMELINE_SCROLL_ATTRIBUTE).toBe('data-timeline-scroll')
+    expect(TIMELINE_SCROLL_SELECTOR).toBe('[data-timeline-scroll]')
+    const literals = ['editor:audio-gain', 'editor:marker-edit', 'data-timeline-scroll']
+    const offenders: string[] = []
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          walk(path)
+          continue
+        }
+        if (!/\.(ts|tsx)$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name)) continue
+        const text = readFileSync(path, 'utf8')
+        for (const literal of literals) {
+          if (text.includes(literal)) offenders.push(`${path}: ${literal}`)
+        }
+      }
+    }
+    walk('src')
+    expect(offenders.sort()).toEqual(
+      literals.map((literal) => `src/lib/editor/ui-contracts.ts: ${literal}`).sort(),
+    )
   })
 })
 

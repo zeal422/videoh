@@ -57,6 +57,7 @@ import {
   TRANSITION_MIN,
 } from '@/lib/editor/constants'
 import { isTransientActive, useEditorStore } from '@/lib/editor/store'
+import { useTransientOwner } from '@/hooks/editor/useTransientOwner'
 import { BrandColorSwatches } from '@/components/editor/BrandColorSwatches'
 import type {
   BlendMode,
@@ -984,8 +985,7 @@ function VolumeSection({ clip, audioClip, doc }: { clip: Clip; audioClip: Clip; 
 function ShapeFields({ clip }: { clip: Clip }) {
   const apply = useEditorStore((s) => s.apply)
   const applyTransient = useEditorStore((s) => s.applyTransient)
-  const beginTransient = useEditorStore((s) => s.beginTransient)
-  const commitTransient = useEditorStore((s) => s.commitTransient)
+  const session = useTransientOwner()
   const shape = clip.shape!
   const setShape = (patch: Partial<typeof shape>) =>
     apply({
@@ -993,14 +993,17 @@ function ShapeFields({ clip }: { clip: Clip }) {
       clipId: clip.id,
       shape: { ...shape, ...patch },
     })
-  // Live color picking previews through a gesture slot opened on focus and
-  // commits one history entry on blur, so undo returns to the pre-edit color.
+  // Live color picking previews through the section's gesture session, which
+  // opens on focus and commits one history entry on blur or unmount. A foreign
+  // gesture is never joined: a refused session retries on the next change.
   const setShapeTransient = (patch: Partial<typeof shape>) =>
-    applyTransient({
-      type: 'setClipShape',
-      clipId: clip.id,
-      shape: { ...shape, ...patch },
-    })
+    session.preview(() =>
+      applyTransient({
+        type: 'setClipShape',
+        clipId: clip.id,
+        shape: { ...shape, ...patch },
+      }),
+    )
   return (
     <>
       <Separator />
@@ -1036,9 +1039,9 @@ function ShapeFields({ clip }: { clip: Clip }) {
                 type="color"
                 aria-label="Shape fill"
                 value={shape.fill}
-                onFocus={() => beginTransient()}
+                onFocus={() => session.begin()}
                 onChange={(e) => setShapeTransient({ fill: e.target.value })}
-                onBlur={() => commitTransient()}
+                onBlur={() => session.commit()}
                 className="mt-1 h-8 w-full cursor-pointer p-0.5"
               />
               <BrandColorSwatches
@@ -1082,9 +1085,9 @@ function ShapeFields({ clip }: { clip: Clip }) {
                   type="color"
                   aria-label="Shape stroke color"
                   value={shape.stroke}
-                  onFocus={() => beginTransient()}
+                  onFocus={() => session.begin()}
                   onChange={(e) => setShapeTransient({ stroke: e.target.value })}
-                  onBlur={() => commitTransient()}
+                  onBlur={() => session.commit()}
                   className="mt-1 h-8 w-full cursor-pointer p-0.5"
                 />
                 <BrandColorSwatches
@@ -1142,27 +1145,24 @@ function ShapeFields({ clip }: { clip: Clip }) {
 function TextFields({ clip }: { clip: Clip }) {
   const apply = useEditorStore((s) => s.apply)
   const applyTransient = useEditorStore((s) => s.applyTransient)
-  const beginTransient = useEditorStore((s) => s.beginTransient)
-  const commitTransient = useEditorStore((s) => s.commitTransient)
+  const session = useTransientOwner()
   const style = clip.style!
 
-  // Typing opens one gesture slot on focus and commits it on blur, so a whole
-  // edit session is one undo entry that restores the pre-edit text (the plain
-  // applyTransient/apply pair would record the last transient frame, leaving
-  // undo with nothing to revert). An unmount commits too: otherwise the next
-  // edit would roll the uncommitted text back to the focus snapshot.
-  useEffect(() => () => useEditorStore.getState().commitTransient(), [])
+  // Typing opens the section's gesture session on focus and commits it on blur,
+  // so a whole edit session is one undo entry that restores the pre-edit text.
+  // The session hook also commits an owned session on unmount: otherwise the
+  // next edit would roll the uncommitted text back to the focus snapshot. It
+  // leaves a foreign gesture alone.
 
   const setStyle = (patch: Partial<TextStyle>) =>
     apply({ type: 'setTextStyle', clipId: clip.id, style: patch })
-  // Slider frames preview through a gesture opened on the FIRST frame, so the
-  // commit's rollback restores the pre-drag value: undo after a drag returns to
-  // where the slider started, not to its last preview frame. The commit below
-  // uses `apply`, which rolls the open gesture back to its base first.
-  const setStyleTransient = (patch: Partial<TextStyle>) => {
-    if (!isTransientActive()) beginTransient()
-    applyTransient({ type: 'setTextStyle', clipId: clip.id, style: patch })
-  }
+  // Slider frames preview through the session, which begins on the FIRST frame
+  // (or retries after a refused focus), so the commit's rollback restores the
+  // pre-drag value: undo after a drag returns to where the slider started, not
+  // to its last preview frame. The commit below uses `apply`, which rolls the
+  // open gesture back to its base first.
+  const setStyleTransient = (patch: Partial<TextStyle>) =>
+    session.preview(() => applyTransient({ type: 'setTextStyle', clipId: clip.id, style: patch }))
 
   return (
     <>
@@ -1171,15 +1171,17 @@ function TextFields({ clip }: { clip: Clip }) {
           aria-label="Text content"
           value={clip.text ?? ''}
           rows={3}
-          onFocus={() => beginTransient()}
+          onFocus={() => session.begin()}
           onChange={(e) =>
-            applyTransient({
-              type: 'setTextContent',
-              clipId: clip.id,
-              text: e.target.value,
-            })
+            session.preview(() =>
+              applyTransient({
+                type: 'setTextContent',
+                clipId: clip.id,
+                text: e.target.value,
+              }),
+            )
           }
-          onBlur={() => commitTransient()}
+          onBlur={() => session.commit()}
         />
       </Section>
       <Separator />
@@ -1207,9 +1209,9 @@ function TextFields({ clip }: { clip: Clip }) {
                 id="text-color"
                 type="color"
                 value={style.color}
-                onFocus={() => beginTransient()}
+                onFocus={() => session.begin()}
                 onChange={(e) => setStyleTransient({ color: e.target.value })}
-                onBlur={() => commitTransient()}
+                onBlur={() => session.commit()}
                 className="mt-1 h-8 w-full cursor-pointer p-0.5"
               />
               <BrandColorSwatches
@@ -1279,7 +1281,7 @@ function TextFields({ clip }: { clip: Clip }) {
               step={0.01}
               onValueChange={([v]) => setStyleTransient({ x: v })}
               onValueCommit={([v]) => setStyle({ x: v })}
-              onBlur={() => commitTransient()}
+              onBlur={() => session.commit()}
             />
             <div className="mb-1 mt-2 flex items-center justify-between">
               <Label className="text-xs">Position Y</Label>
@@ -1293,7 +1295,7 @@ function TextFields({ clip }: { clip: Clip }) {
               step={0.01}
               onValueChange={([v]) => setStyleTransient({ y: v })}
               onValueCommit={([v]) => setStyle({ y: v })}
-              onBlur={() => commitTransient()}
+              onBlur={() => session.commit()}
             />
           </div>
         </div>

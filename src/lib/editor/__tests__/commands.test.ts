@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import {
   applyCommand,
   applyCommands,
+  AUDIO_VISIBILITY_REFUSAL,
   EditorCommand,
   EditorCommandError,
   firstFreeCaptionsName,
@@ -3525,6 +3526,29 @@ describe('effects commands (0.8.6)', () => {
     expect(() =>
       applyCommand(doc, { type: 'setTrackVisible', trackId: v2.id, visible: 'no' as never }),
     ).toThrow(EditorCommandError)
+  })
+
+  it('setTrackVisible refuses audio lanes and keeps video and text working', () => {
+    const { doc } = fxDoc()
+    const audio = { ...createTrack('audio', 1), id: 'a1' }
+    const text = { ...createTrack('text', 1), id: 't1' }
+    const lanes: Doc = {
+      ...doc,
+      project: { ...doc.project, tracks: [...doc.project.tracks, audio, text] },
+    }
+    const refuseAudio = () =>
+      applyCommand(lanes, { type: 'setTrackVisible', trackId: 'a1', visible: false })
+    expect(refuseAudio).toThrow(EditorCommandError)
+    expect(refuseAudio).toThrow(AUDIO_VISIBILITY_REFUSAL)
+    // The refused dispatch leaves the source doc untouched.
+    expect(lanes.project.tracks[2].visible).toBeUndefined()
+
+    const textNext = applyCommand(lanes, {
+      type: 'setTrackVisible',
+      trackId: 't1',
+      visible: false,
+    })
+    expect(textNext.project.tracks[3].visible).toBe(false)
   })
 
   it('moveClip drops mattes orphaned by the move in the same step', () => {

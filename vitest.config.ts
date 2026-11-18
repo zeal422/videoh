@@ -65,6 +65,7 @@ export default defineConfig({
         'src/lib/editor/project-bundle.ts',
         'src/lib/editor/bundle-zip.ts',
         'src/lib/editor/store.ts',
+        'src/lib/editor/ui-contracts.ts',
         'src/lib/editor/persistence.ts',
         'src/lib/editor/workspace.ts',
         'src/lib/editor/theme.ts',

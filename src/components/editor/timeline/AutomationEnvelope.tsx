@@ -17,7 +17,7 @@ import {
   sampleAutomationCurve,
   type AutomationProperty,
 } from '@/lib/editor/pen'
-import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
+import { currentTransientToken, ownsTransient, useEditorStore } from '@/lib/editor/store'
 import { frameToTime } from '@/lib/editor/time'
 import { lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
 import { dbToGain, gainToDb, DB_CEIL, DB_FLOOR } from '@/lib/editor/volume-automation'
@@ -85,22 +85,21 @@ export function AutomationEnvelope({
   const rootRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<HTMLDivElement>(null)
   const detachRef = useRef<(() => void) | null>(null)
-  const ownsTransientRef = useRef(false)
+  const tokenRef = useRef<number | null>(null)
 
   // A mid-drag unmount (the clip was deleted by a shortcut, or its lane
   // remounted) must cancel this gesture's transient, not leave it live: an
   // abandoned transient blocks autosave and folds later edits into a snapshot
-  // no undo can reach. Only cancel a gesture THIS component owns.
+  // no undo can reach. Only cancel a gesture THIS component still owns.
   useEffect(
     () => () => {
       detachRef.current?.()
       // A pending press owns the tool keys even before a transient starts; an
       // unmount must release that marker with the gesture.
       rootRef.current?.removeAttribute('data-automation-gesture')
-      if (ownsTransientRef.current) {
-        ownsTransientRef.current = false
-        useEditorStore.getState().cancelTransient()
-      }
+      const token = tokenRef.current
+      tokenRef.current = null
+      if (ownsTransient(token)) useEditorStore.getState().cancelTransient()
     },
     [],
   )
@@ -222,10 +221,9 @@ export function AutomationEnvelope({
     // A second pointerdown abandons the still-live gesture first: detach it
     // and roll its transient back, rather than folding two drags into one undo.
     detachRef.current?.()
-    if (ownsTransientRef.current) {
-      ownsTransientRef.current = false
-      useEditorStore.getState().cancelTransient()
-    }
+    const previous = tokenRef.current
+    tokenRef.current = null
+    if (ownsTransient(previous)) useEditorStore.getState().cancelTransient()
 
     const startKey = keyframes[index]
     if (!startKey) return
@@ -246,7 +244,7 @@ export function AutomationEnvelope({
     let dragTime = startKey.time
     let moved = false
     let began = false
-    let token = -1
+    let token: number | null = null
     ;(e.currentTarget as HTMLElement).focus()
 
     function detach() {
@@ -258,12 +256,29 @@ export function AutomationEnvelope({
       rootRef.current?.removeAttribute('data-automation-gesture')
     }
 
+    /**
+     * A retry can acquire the slot after its grabbed keyframe disappeared.
+     * Close the empty transient and end the pending press instead of holding
+     * the slot until pointerup.
+     */
+    function abortPendingRetry() {
+      began = false
+      token = null
+      const owned = tokenRef.current
+      tokenRef.current = null
+      if (ownsTransient(owned)) useEditorStore.getState().cancelTransient()
+      detach()
+      setHud(null)
+    }
+
     // A window blur loses the pointer. The editor shell's dangling-gesture net
     // commits a live transient; this clears the pending-press marker and closes
     // the gesture's own listeners so a stuck marker cannot hold the tool keys.
     function onBlur() {
       detach()
-      if (began) {
+      const owned = tokenRef.current
+      tokenRef.current = null
+      if (began && ownsTransient(owned)) {
         const live = useEditorStore.getState()
         try {
           live.commitTransient()
@@ -271,7 +286,6 @@ export function AutomationEnvelope({
           live.cancelTransient()
         }
       }
-      ownsTransientRef.current = false
       setHud(null)
     }
 
@@ -287,16 +301,27 @@ export function AutomationEnvelope({
       moved = true
       // An Alt-press that moves is neither a removal nor a drag.
       if (altRemove) return
+      let startedNow = false
       if (!began) {
-        began = true
-        ownsTransientRef.current = true
+        // A refused begin leaves the drag pending; a later frame retries once
+        // the foreign gesture ends, and ownership is claimed only with a token.
         token = useEditorStore.getState().beginTransient(pointerId)
+        if (token === null) return
+        began = true
+        startedNow = true
+        tokenRef.current = token
       }
-      if (currentTransientToken() !== token) return
+      if (currentTransientToken() !== token) {
+        if (startedNow) abortPendingRetry()
+        return
+      }
       const rect = plotRef.current?.getBoundingClientRect()
       if (!rect || rect.width <= 0 || rect.height <= 0) return
       const found = liveCurve()
-      if (!found) return
+      if (!found) {
+        if (startedNow) abortPendingRetry()
+        return
+      }
       const time = Math.min(
         Math.max(
           0,
@@ -313,9 +338,15 @@ export function AutomationEnvelope({
         found.curve[index]?.time === dragTime
           ? index
           : found.curve.findIndex((k) => k.time === dragTime)
-      if (target < 0) return
+      if (target < 0) {
+        if (startedNow) abortPendingRetry()
+        return
+      }
       const current = found.curve[target]
-      if (!current) return
+      if (!current) {
+        if (startedNow) abortPendingRetry()
+        return
+      }
       // nudgeKeyframe writes clampAutomationTime(current.time + delta), NOT the
       // raw pointer time: `a + (b - a)` can differ from `b` by one ULP, and the
       // next frame's exact lookup would then miss the grabbed point and freeze
@@ -339,9 +370,11 @@ export function AutomationEnvelope({
     function onUp(ev: PointerEvent) {
       if (ev.pointerId !== pointerId) return
       detach()
+      const owned = tokenRef.current
+      tokenRef.current = null
       if (altRemove) {
         if (!moved) removeAtTime(removeTime)
-      } else if (began) {
+      } else if (began && ownsTransient(owned)) {
         const live = useEditorStore.getState()
         try {
           live.commitTransient()
@@ -349,17 +382,15 @@ export function AutomationEnvelope({
           live.cancelTransient()
         }
       }
-      ownsTransientRef.current = false
       setHud(null)
     }
 
     function onCancel(ev: PointerEvent) {
       if (ev.pointerId !== pointerId) return
       detach()
-      if (began) {
-        ownsTransientRef.current = false
-        useEditorStore.getState().cancelTransient()
-      }
+      const owned = tokenRef.current
+      tokenRef.current = null
+      if (began && ownsTransient(owned)) useEditorStore.getState().cancelTransient()
       setHud(null)
     }
 

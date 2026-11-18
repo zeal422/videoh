@@ -65,6 +65,7 @@ import {
 import { placementRefusalMessage } from '@/lib/editor/sequence-ops'
 import { previewTrackName } from '@/lib/editor/commands'
 import { computeTrackDropTarget, mediaKindFromDragEvent } from '@/lib/editor/timeline-drop'
+import { TIMELINE_SCROLL_ATTRIBUTE } from '@/lib/editor/ui-contracts'
 import {
   marqueeHitClipIds,
   normalizeMarquee,
@@ -747,7 +748,7 @@ export function TimelinePanel() {
     >
       <div
         ref={scrollRef}
-        data-timeline-scroll
+        {...{ [TIMELINE_SCROLL_ATTRIBUTE]: '' }}
         className="editor-scroll relative min-h-0 flex-1 overflow-auto"
         onPointerDown={(e) => {
           // A click on the bare scroll surface (outside the content box, e.g.

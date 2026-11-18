@@ -238,8 +238,11 @@ them:
 - **Marker swatches** use the eight-colour Premiere palette (`MARKER_COLOR_VALUES` in
   `markers.ts`, Tailwind 500-family values) applied as an inline `backgroundColor`. They are content
   data (the colour the user picked) and stay fixed across themes.
-- The kind colours and the marker swatch palette are the only places non-token palette values are
-  expected, plus the boot splash below; surfaces, text, and controls still use tokens.
+- The fixed chrome keeps its literal palette values: clip kind colours, the rose playhead and
+  selection, the amber snap guide, the marker swatch palette, the monitor and scopes zinc, the boot
+  splash, `--destructive`, the chart/sidebar/radius tokens, and the release-notes emerald. Code
+  accents stay fixed too: image teal, missing-media red, effect-dot amber, and the recording sky
+  bar. Surfaces, text, and controls still use tokens.
 - **The boot splash** is a fullscreen exception in the monitor's spirit: a pure black field
   (`bg-black`) matching the pitch-black reference, with a violet cell base (`hsl(270, 100%, 50%)`,
   the reference's start hue) that the wrapper hue-rotates through the full wheel. No token can
@@ -351,9 +354,6 @@ them:
   clip.
 - **Blend mode sits under Opacity.** The `Clip blend mode` dropdown lives in the Clip tab directly
   below the opacity control (Premiere placement), Normal default, clearing back to absent.
-- **Track eyeball dims the whole lane.** The header eye (video/text lanes only) toggles `visible`;
-  the lane div carries `data-visible` and dims with the header, so a hidden lane reads as one unit.
-  Audio lanes get no eye; muting stays on the track mute toggle.
 
 ## Components
 

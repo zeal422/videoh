@@ -19,7 +19,8 @@ import {
 } from '@/lib/editor/markers'
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { applySnap, computeSnapPoints, snapGuide } from '@/lib/editor/snap'
-import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
+import { currentTransientToken, ownsTransient, useEditorStore } from '@/lib/editor/store'
+import { UI_EVENTS } from '@/lib/editor/ui-contracts'
 import { lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
 import { clamp } from '@/lib/editor/time'
 import { toast } from '@/hooks/use-toast'
@@ -42,18 +43,21 @@ export function ClipMarkers({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }
   const selectedMarker = useEditorStore((s) => s.selectedMarker)
   const markers = useMemo(() => visibleClipMarkers(clip), [clip])
   const detachRef = useRef<(() => void) | null>(null)
-  // True only while THIS component's own drag owns the store's transient, so
-  // the unmount cleanup below never cancels a foreign gesture (e.g. a ClipView
-  // clip drag that remounts this component on a lane change).
-  const ownsTransientRef = useRef(false)
+  // The token names the gesture THIS component still owns, so the unmount
+  // cleanup below never cancels a replacement that took the slot after a
+  // foreign edit (or a foreign gesture such as a ClipView clip drag).
+  const tokenRef = useRef<number | null>(null)
   useEffect(
     () => () => {
       detachRef.current?.()
       // A mid-drag unmount (the owning clip was deleted under a live tab drag)
-      // must cancel the gesture, not just drop the listeners, or transientBase
-      // stays set forever: the move never reaches history and autosave skips
-      // every later change (initAutosave ignores stores mid-transient).
-      if (ownsTransientRef.current) useEditorStore.getState().cancelTransient()
+      // must cancel the gesture it owns, not just drop the listeners, or
+      // transientBase stays set forever: the move never reaches history and
+      // autosave skips every later change (initAutosave ignores stores
+      // mid-transient).
+      const token = tokenRef.current
+      tokenRef.current = null
+      if (ownsTransient(token)) useEditorStore.getState().cancelTransient()
     },
     [],
   )
@@ -64,7 +68,7 @@ export function ClipMarkers({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }
 
   const openDialog = (marker: Marker) => {
     selectMarker(marker)
-    window.dispatchEvent(new CustomEvent('editor:marker-edit'))
+    window.dispatchEvent(new CustomEvent(UI_EVENTS.MARKER_EDIT))
   }
 
   function beginPointerDrag(e: React.PointerEvent, marker: Marker) {
@@ -86,8 +90,9 @@ export function ClipMarkers({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }
     // rollback) rather than just detaching, which would fold its move into
     // the new drag's undo entry. Multi-pointer only.
     detachRef.current?.()
-    if (ownsTransientRef.current) {
-      ownsTransientRef.current = false
+    const previous = tokenRef.current
+    tokenRef.current = null
+    if (ownsTransient(previous)) {
       useEditorStore.getState().cancelTransient()
       // The cancel restored the BASE doc, so the closure's marker may be a
       // stale clone; read the live one or the replacement drag would start a
@@ -106,16 +111,19 @@ export function ClipMarkers({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }
     let moved = false
     // The gesture slot begins lazily on the first real move (past the wobble
     // threshold); the token lets later frames detect a foreign end.
-    let token = -1
+    let token: number | null = null
 
     function onMove(ev: PointerEvent) {
       if (ev.pointerId !== pointerId) return
       const dx = ev.clientX - startX
       if (!moved && Math.abs(dx) < DRAG_THRESHOLD_PX) return
       if (!moved) {
-        moved = true
-        ownsTransientRef.current = true
+        // A refused begin leaves this drag pending: a later frame retries once
+        // the foreign gesture ends. Ownership is claimed only with a token.
         token = useEditorStore.getState().beginTransient(pointerId)
+        if (token === null) return
+        moved = true
+        tokenRef.current = token
       }
       // A foreign commit (keyboard delete, undo) ended the gesture slot:
       // applying further frames would mutate the doc with no undo entry, and
@@ -152,8 +160,9 @@ export function ClipMarkers({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }
       const live = useEditorStore.getState()
       live.setSnapLine(null)
       if (moved) {
-        ownsTransientRef.current = false
-        live.commitTransient()
+        const token = tokenRef.current
+        tokenRef.current = null
+        if (ownsTransient(token)) live.commitTransient()
         return
       }
       selectMarker(marker)
@@ -166,8 +175,9 @@ export function ClipMarkers({ clip, pxPerSec }: { clip: Clip; pxPerSec: number }
       const live = useEditorStore.getState()
       live.setSnapLine(null)
       if (moved) {
-        ownsTransientRef.current = false
-        live.cancelTransient()
+        const token = tokenRef.current
+        tokenRef.current = null
+        if (ownsTransient(token)) live.cancelTransient()
       }
     }
 

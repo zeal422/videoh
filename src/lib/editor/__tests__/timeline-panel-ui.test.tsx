@@ -10,7 +10,7 @@ import { Ruler } from '@/components/editor/timeline/Ruler'
 import { applyCommands } from '@/lib/editor/commands'
 import * as commandsModule from '@/lib/editor/commands'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
-import { editorStore, isTransientActive, useEditorStore } from '../store'
+import { currentTransientToken, editorStore, isTransientActive, useEditorStore } from '../store'
 import { PPS_DEFAULT } from '@/lib/editor/constants'
 import { createClip, createDoc, createMediaAsset, createTrack, sourceTimeAt } from '../factories'
 import { toast } from '@/hooks/use-toast'
@@ -944,6 +944,47 @@ describe('drag commit path (transient gesture -> one undo entry)', () => {
     expect(startNow()).toBe(1)
     expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
     fireEvent.pointerUp(window)
+  })
+
+  it('a stale clip release does not commit a replacement gesture', () => {
+    const { doc, asset, trackId } = docWithClips()
+    doc.project.tracks[0].clips = [
+      createClip({ id: 'clip_x', mediaId: asset.id, start: 1, duration: 5, inPoint: 0 }),
+    ]
+    useEditorStore.setState({ doc })
+    render(<TimelinePanel />)
+
+    const RULER_HEIGHT = 28
+    fireEvent.pointerDown(screen.getByTestId('clip-clip_x'), {
+      button: 0,
+      pointerId: 5,
+      clientX: 100,
+      clientY: RULER_HEIGHT + 10,
+    })
+    fireEvent.pointerMove(window, { pointerId: 5, clientX: 180, clientY: RULER_HEIGHT + 10 })
+    expect(isTransientActive()).toBe(true)
+
+    useEditorStore.getState().apply({ type: 'setClipMuted', clipId: 'clip_x', muted: true })
+    expect(isTransientActive()).toBe(false)
+    const pastAfterApply = useEditorStore.getState().past.length
+
+    const replacement = useEditorStore.getState().beginTransient(99)
+    expect(replacement).not.toBeNull()
+    useEditorStore.getState().applyTransient({
+      type: 'moveClip',
+      clipId: 'clip_x',
+      trackId,
+      start: 4,
+    })
+
+    fireEvent.pointerUp(window, { pointerId: 5 })
+
+    // The stale release neither commits nor cancels the replacement.
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(replacement)
+    expect(useEditorStore.getState().past.length).toBe(pastAfterApply)
+    expect(useEditorStore.getState().doc.project.tracks[0].clips[0].start).toBe(4)
+    useEditorStore.getState().cancelTransient()
   })
 
   it('dragging via applyTransient does NOT push history until commit', () => {

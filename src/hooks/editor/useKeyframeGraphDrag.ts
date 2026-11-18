@@ -50,7 +50,10 @@ export function useKeyframeGraphDrag({
     keyframe: Keyframe,
     pointer: { pointerId: number; clientY: number },
   ) => {
+    // A second drag cannot take the live gesture's base: the store refuses the
+    // begin, so this drag never installs its state or listeners.
     const token = useEditorStore.getState().beginTransient(pointer.pointerId)
+    if (token === null) return
     dragTimeRef.current = keyframe.time
     setDrag({
       index,
@@ -106,6 +109,12 @@ export function useKeyframeGraphDrag({
       // Capture phase, so this keeps the first word over the shell's
       // dangling-commit net.
       if (e.pointerId !== drag.pointerId) return
+      // A foreign edit ended this drag and may have started another: a stale
+      // release must not commit or cancel what it no longer owns.
+      if (currentTransientToken() !== drag.token) {
+        setDrag(null)
+        return
+      }
       try {
         try {
           useEditorStore.getState().commitTransient()
@@ -120,6 +129,11 @@ export function useKeyframeGraphDrag({
       if (e.pointerId !== drag.pointerId) return
       // The browser took the pointer (touch pan, native drag): discard the drag
       // rather than leaving its transient live, which would block autosave.
+      // The same ownership rule as pointerup applies.
+      if (currentTransientToken() !== drag.token) {
+        setDrag(null)
+        return
+      }
       try {
         useEditorStore.getState().cancelTransient()
       } finally {

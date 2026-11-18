@@ -26,6 +26,7 @@ import {
 } from '@/lib/editor/factories'
 import { hasTimeScaleCurve } from '@/lib/editor/keyframes'
 import { shapeKindLabel } from '@/lib/editor/shapes'
+import { TIMELINE_SCROLL_SELECTOR } from '@/lib/editor/ui-contracts'
 import { computeSnapPoints } from '@/lib/editor/snap'
 import {
   decideMove,
@@ -70,7 +71,12 @@ import {
   linkedClips,
   resolveSelectionGroups,
 } from '@/lib/editor/links'
-import { currentTransientToken, isTransientActive, useEditorStore } from '@/lib/editor/store'
+import {
+  currentTransientToken,
+  isTransientActive,
+  ownsTransient,
+  useEditorStore,
+} from '@/lib/editor/store'
 import { firstLockedTrackForClips, lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
 import { clipCarriesSound } from '@/lib/editor/volume-automation'
 import type { Clip, Doc, MediaAsset, Track } from '@/lib/editor/types'
@@ -227,7 +233,7 @@ export function ClipView({
    * wrong lane.
    */
   const readLanes = () => {
-    const scrollEl = document.querySelector('[data-timeline-scroll]')
+    const scrollEl = document.querySelector(TIMELINE_SCROLL_SELECTOR)
     const laneEls = scrollEl?.querySelectorAll<HTMLElement>('[data-lane-id]') ?? []
     return Array.from(laneEls).map((el) => {
       const r = el.getBoundingClientRect()
@@ -392,6 +398,10 @@ export function ClipView({
         (activeTool === 'ripple' && gesture.current?.mode !== 'move')
       endGesture(ev.type === 'pointercancel' && modalGesture)
     }
+    // A second drag cannot join the live gesture: the store refuses the begin
+    // and leaves that gesture untouched, so this one never installs its state.
+    const token = useEditorStore.getState().beginTransient(e.pointerId)
+    if (token === null) return
     gesture.current = {
       mode: gestureMode,
       rateStretch: e.altKey && mode !== 'move',
@@ -413,7 +423,7 @@ export function ClipView({
       lastStart: clip.start,
       lastPartnerUpdates: [],
       snapPoints,
-      token: useEditorStore.getState().beginTransient(e.pointerId),
+      token,
       pointerId: e.pointerId,
       slipGroup: gestureMode === 'slip' ? linkedClips(fresh.doc, clip.id) : undefined,
       slipAssetDuration:
@@ -429,7 +439,7 @@ export function ClipView({
       onUp,
     }
     window.addEventListener('pointermove', onMove)
-    const scrollEl = document.querySelector('[data-timeline-scroll]')
+    const scrollEl = document.querySelector(TIMELINE_SCROLL_SELECTOR)
     scrollEl?.addEventListener('scroll', onLanesDirty, { passive: true })
     window.addEventListener('resize', onLanesDirty)
     // Capture phase on purpose. EditorShell registers a "commit any dangling
@@ -460,7 +470,7 @@ export function ClipView({
    */
   const autoScrollTick = () => {
     const g = gesture.current
-    const el = document.querySelector('[data-timeline-scroll]')
+    const el = document.querySelector(TIMELINE_SCROLL_SELECTOR)
     const dy = g && el ? autoScrollStep(g.lastY, el.getBoundingClientRect()) : 0
     if (!g || !el || dy === 0) {
       // Pointer left the band (or the timeline went away): let the loop stop.
@@ -489,7 +499,7 @@ export function ClipView({
    * pointer sits over that strip when a drag is pushed to the very top.
    */
   const syncAutoScroll = (g: NonNullable<typeof gesture.current>) => {
-    const el = document.querySelector('[data-timeline-scroll]')
+    const el = document.querySelector(TIMELINE_SCROLL_SELECTOR)
     if (!el || autoScrollStep(g.lastY, el.getBoundingClientRect()) === 0) {
       stopAutoScroll()
       return
@@ -910,7 +920,7 @@ export function ClipView({
     window.removeEventListener('pointermove', g.onMove)
     window.removeEventListener('pointerup', g.onUp, true)
     window.removeEventListener('pointercancel', g.onUp, true)
-    const scrollEl = document.querySelector('[data-timeline-scroll]')
+    const scrollEl = document.querySelector(TIMELINE_SCROLL_SELECTOR)
     scrollEl?.removeEventListener('scroll', g.onLanesDirty)
     window.removeEventListener('resize', g.onLanesDirty)
     // Releasing over an incompatible lane is refused — say why, so the clip
@@ -951,56 +961,61 @@ export function ClipView({
     // time under a toast saying the drop was invalid. Cancel restores the base
     // doc instead, so the clip goes back to where it started. A cancelled
     // modal gesture does the same.
+    // A foreign edit ended this drag and may have started another: a stale
+    // release or a second pointerdown must detach and clear this drag, but it
+    // must not commit or cancel a gesture it no longer owns.
     const store = useEditorStore.getState()
-    if (cancelled || g.blockedLane) {
-      store.cancelTransient()
-    } else if (g.insert) {
-      // A pending insert: capture the last transient start before the base
-      // restore, cancel the transient, then commit one batch against the base
-      // doc. `commitTransient` only promotes the base, so it cannot add a track
-      // and a cross-track move by itself.
-      const insert = g.insert
-      const lastStart = g.lastStart
-      const partnerUpdates = g.lastPartnerUpdates
-      const sequenceId = activeSequenceId(store.activeSequencePath)
-      store.cancelTransient()
-      const base = useEditorStore.getState().doc
-      const tracks = activeTracks(base, useEditorStore.getState().activeSequencePath)
-      const index = resolveInsertIndex(tracks, insert.boundary)
-      const trackId = uid('track')
-      const commands: EditorCommand[] = [
-        {
-          type: 'addTrack',
-          kind: insert.kind,
-          trackId,
-          atIndex: index,
-          ...(sequenceId ? { sequenceId } : {}),
-        },
-        { type: 'moveClip', clipId: clip.id, trackId, start: lastStart },
-        ...partnerUpdates.map((p) => ({
-          type: 'moveClip' as const,
-          clipId: p.clipId,
-          trackId: p.trackId,
-          start: p.start,
-        })),
-      ]
-      try {
-        // A lock refusal returns false and records `lockNotice`; the shell
-        // reports it. Do not return here: the gesture and HUD still need the
-        // cleanup below, or the drag stays half-open.
-        store.apply(commands)
-      } catch (error) {
-        // The batch is validated against the restored base doc and writes
-        // nothing on failure, so the base doc is intact and the error is the
-        // whole story.
-        toast({
-          title: 'Could not create the track',
-          description: error instanceof Error ? error.message : String(error),
-          variant: 'destructive',
-        })
+    if (ownsTransient(g.token)) {
+      if (cancelled || g.blockedLane) {
+        store.cancelTransient()
+      } else if (g.insert) {
+        // A pending insert: capture the last transient start before the base
+        // restore, cancel the transient, then commit one batch against the base
+        // doc. `commitTransient` only promotes the base, so it cannot add a track
+        // and a cross-track move by itself.
+        const insert = g.insert
+        const lastStart = g.lastStart
+        const partnerUpdates = g.lastPartnerUpdates
+        const sequenceId = activeSequenceId(store.activeSequencePath)
+        store.cancelTransient()
+        const base = useEditorStore.getState().doc
+        const tracks = activeTracks(base, useEditorStore.getState().activeSequencePath)
+        const index = resolveInsertIndex(tracks, insert.boundary)
+        const trackId = uid('track')
+        const commands: EditorCommand[] = [
+          {
+            type: 'addTrack',
+            kind: insert.kind,
+            trackId,
+            atIndex: index,
+            ...(sequenceId ? { sequenceId } : {}),
+          },
+          { type: 'moveClip', clipId: clip.id, trackId, start: lastStart },
+          ...partnerUpdates.map((p) => ({
+            type: 'moveClip' as const,
+            clipId: p.clipId,
+            trackId: p.trackId,
+            start: p.start,
+          })),
+        ]
+        try {
+          // A lock refusal returns false and records `lockNotice`; the shell
+          // reports it. Do not return here: the gesture and HUD still need the
+          // cleanup below, or the drag stays half-open.
+          store.apply(commands)
+        } catch (error) {
+          // The batch is validated against the restored base doc and writes
+          // nothing on failure, so the base doc is intact and the error is the
+          // whole story.
+          toast({
+            title: 'Could not create the track',
+            description: error instanceof Error ? error.message : String(error),
+            variant: 'destructive',
+          })
+        }
+      } else {
+        store.commitTransient()
       }
-    } else {
-      store.commitTransient()
     }
     gesture.current = null
     setSlipHud(null)

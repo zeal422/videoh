@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { filmstripCanvasFits, filmstripPlan, type FilmstripViewport } from '@/lib/editor/filmstrip'
+import { TIMELINE_SCROLL_SELECTOR } from '@/lib/editor/ui-contracts'
 import {
   filmstripProgressSnapshot,
   releaseFilmstrip,
@@ -58,7 +59,7 @@ export function Filmstrip({
   // own box and the scroll viewport give the intersection directly, so the
   // track-header column never offsets the tile.
   useEffect(() => {
-    const scrollEl = document.querySelector('[data-timeline-scroll]') as HTMLElement | null
+    const scrollEl = document.querySelector(TIMELINE_SCROLL_SELECTOR) as HTMLElement | null
     if (!scrollEl || !rootEl) return
     let raf = 0
     const compute = () => {

@@ -279,10 +279,14 @@ export function PreviewPanel() {
     }
     const local = live.playhead - found.clip.start
     const transform = clipTransform(found.clip, local) ?? IDENTITY_TRANSFORM
+    // A second drag cannot join the live gesture: the store refuses the begin
+    // and leaves that gesture untouched, so this drag never starts.
+    const token = live.beginTransient(e.pointerId)
+    if (token === null) return
     gizmoDrag.current = {
       mode,
       pointerId: e.pointerId,
-      token: live.beginTransient(e.pointerId),
+      token,
       clipId: gizmoClip.id,
       at: local,
       center,
@@ -490,6 +494,8 @@ export function PreviewPanel() {
     } catch {
       /* headless/automation: proceed without capture */
     }
+    const token = store.beginTransient(e.pointerId)
+    if (token === null) return
     dragOrigin.current = {
       px: e.clientX,
       py: e.clientY,
@@ -499,7 +505,7 @@ export function PreviewPanel() {
       // gizmo text move below: divide the pointer delta by the captured scale.
       scale: clipTransform(textClip, store.playhead - textClip.start)?.scale ?? 1,
     }
-    textDragToken.current = store.beginTransient(e.pointerId)
+    textDragToken.current = token
     textDragPointerId.current = e.pointerId
     setDraggingText(true)
   }

@@ -29,7 +29,7 @@ vi.mock('@/lib/editor/media/stickers', async (importOriginal) => {
 import { InspectorPanel } from '@/components/editor/InspectorPanel'
 import { StickerPicker } from '@/components/editor/StickerPicker'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
-import { useEditorStore } from '../store'
+import { useEditorStore, currentTransientToken, isTransientActive } from '../store'
 import { createShapeClip, createTextClip, createTrack } from '../factories'
 import { createShapeStyle } from '../shapes'
 import { fontFamilyForId } from '../fonts'
@@ -46,6 +46,9 @@ let h: MockHarness
 beforeEach(() => {
   h = installBrowserMocks()
   document.body.innerHTML = ''
+  // A preview or refusal test can leave the module-level gesture open; a
+  // failing test must not leak its base into the next fixture.
+  useEditorStore.getState().cancelTransient()
   useEditorStore.setState(useEditorStore.getInitialState())
   vi.clearAllMocks()
 })
@@ -188,23 +191,35 @@ describe('inspector edit history (0.25.0)', () => {
     expect(useEditorStore.getState().doc.project.tracks[0].clips[0].style!.x).toBe(0.5)
 
     // jsdom cannot drive Radix's pointer math, so the wiring itself is locked
-    // by source: the preview helper opens the gesture, and both position
-    // sliders commit through the command path.
+    // by source: the shared session opens the gesture for the first frame, and
+    // both position sliders commit through the command path.
     const source = readFileSync(
       join(process.cwd(), 'src/components/editor/InspectorPanel.tsx'),
       'utf8',
     )
-    expect(source).toContain('if (!isTransientActive()) beginTransient()')
+    expect(source.match(/onFocus=\{\(\) => session\.begin\(\)\}/g)).toHaveLength(4)
+    expect(source.match(/onBlur=\{\(\) => session\.commit\(\)\}/g)).toHaveLength(6)
+    expect(source).not.toContain('if (!isTransientActive()) beginTransient()')
     expect(source.match(/onValueCommit=\{\(\[v\]\) => setStyle\(\{ x: v \}\)\}/g)).toHaveLength(1)
     expect(source.match(/onValueCommit=\{\(\[v\]\) => setStyle\(\{ y: v \}\)\}/g)).toHaveLength(1)
   })
 
-  it('records one undo entry for a shape color session', () => {
+  const shapeDoc = () => {
     const doc = baseDoc()
     const video = doc.project.tracks.find((track) => track.kind === 'video')!
     const shape = createShapeClip({ id: 'clip_shape', shape: createShapeStyle('rectangle') })
     video.clips.push(shape)
     useEditorStore.setState({ selection: shape.id, selections: [shape.id] })
+    return shape
+  }
+  const shapeOf = () =>
+    useEditorStore
+      .getState()
+      .doc.project.tracks.flatMap((track) => track.clips)
+      .find((clip) => clip.id === 'clip_shape')!.shape!
+
+  it('records one undo entry for a shape color session', () => {
+    shapeDoc()
     render(<InspectorPanel />)
     const fill = screen.getByLabelText('Shape fill')
     const pastBefore = useEditorStore.getState().past.length
@@ -214,11 +229,101 @@ describe('inspector edit history (0.25.0)', () => {
     fireEvent.blur(fill)
     expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
     useEditorStore.getState().undo()
-    const undone = useEditorStore
-      .getState()
-      .doc.project.tracks.flatMap((track) => track.clips)
-      .find((clip) => clip.id === 'clip_shape')!.shape!
-    expect(undone.fill).toBe(createShapeStyle('rectangle').fill)
+    expect(shapeOf().fill).toBe(createShapeStyle('rectangle').fill)
+  })
+
+  it('a focus field cannot join a foreign gesture', () => {
+    shapeDoc()
+    render(<InspectorPanel />)
+    const fill = screen.getByLabelText('Shape fill')
+    const store = useEditorStore.getState()
+    const foreign = store.beginTransient(99)
+    expect(foreign).not.toBeNull()
+    const before = shapeOf().fill
+
+    fireEvent.focus(fill)
+    fireEvent.change(fill, { target: { value: '#112233' } })
+
+    // The refused focus leaves the foreign gesture's token and doc intact.
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(foreign)
+    expect(shapeOf().fill).toBe(before)
+    store.cancelTransient()
+  })
+
+  it('a blur during a foreign gesture does not end it', () => {
+    const shape = shapeDoc()
+    render(<InspectorPanel />)
+    const fill = screen.getByLabelText('Shape fill')
+    const store = useEditorStore.getState()
+    const foreign = store.beginTransient(99)
+    expect(foreign).not.toBeNull()
+
+    fireEvent.focus(fill)
+    fireEvent.change(fill, { target: { value: '#112233' } })
+    fireEvent.blur(fill)
+
+    expect(isTransientActive()).toBe(true)
+    expect(currentTransientToken()).toBe(foreign)
+    // The foreign owner still writes into its own gesture after the blur.
+    store.applyTransient({
+      type: 'setClipShape',
+      clipId: shape.id,
+      shape: { ...shape.shape!, fill: '#abcdef' },
+    })
+    expect(shapeOf().fill).toBe('#abcdef')
+    store.cancelTransient()
+    expect(shapeOf().fill).toBe(createShapeStyle('rectangle').fill)
+  })
+
+  it('retries a refused field change once the slot is free', () => {
+    shapeDoc()
+    render(<InspectorPanel />)
+    const fill = screen.getByLabelText('Shape fill')
+    const store = useEditorStore.getState()
+    const foreign = store.beginTransient(99)
+    expect(foreign).not.toBeNull()
+    const before = shapeOf().fill
+
+    fireEvent.focus(fill)
+    fireEvent.change(fill, { target: { value: '#112233' } })
+    expect(shapeOf().fill).toBe(before)
+
+    // The foreign gesture ends; the still-focused field retries on its next
+    // change, without a second focus.
+    store.commitTransient()
+    expect(isTransientActive()).toBe(false)
+    const pastBefore = useEditorStore.getState().past.length
+
+    fireEvent.change(fill, { target: { value: '#445566' } })
+    expect(shapeOf().fill).toBe('#445566')
+    expect(isTransientActive()).toBe(true)
+
+    fireEvent.blur(fill)
+    expect(isTransientActive()).toBe(false)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+    useEditorStore.getState().undo()
+    expect(shapeOf().fill).toBe(before)
+  })
+
+  it('commits an owned shape session when the section unmounts', () => {
+    shapeDoc()
+    const { unmount } = render(<InspectorPanel />)
+    const fill = screen.getByLabelText('Shape fill')
+    const before = shapeOf().fill
+    const pastBefore = useEditorStore.getState().past.length
+
+    fireEvent.focus(fill)
+    fireEvent.change(fill, { target: { value: '#112233' } })
+    fireEvent.change(fill, { target: { value: '#445566' } })
+    expect(shapeOf().fill).toBe('#445566')
+    expect(isTransientActive()).toBe(true)
+
+    unmount()
+    expect(isTransientActive()).toBe(false)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore + 1)
+    useEditorStore.getState().undo()
+    expect(shapeOf().fill).toBe(before)
   })
 })
 
