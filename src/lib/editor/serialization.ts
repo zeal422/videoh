@@ -71,6 +71,8 @@ import {
   TEXT_PRESET_FONT_MIN,
   createBuiltinTextPresets,
   createDefaultTextStyle,
+  findMedia,
+  laneKindFits,
   sanitizePresetStyle,
   uid,
 } from './factories'
@@ -200,6 +202,7 @@ interface HydrationStats {
   droppedOverflowClips: number
   droppedMarkers: number
   droppedInvalidClips: number
+  droppedLaneClips: number
 }
 
 function hydrationWarnings(stats: HydrationStats): string[] {
@@ -227,6 +230,11 @@ function hydrationWarnings(stats: HydrationStats): string[] {
   if (stats.droppedInvalidClips > 0) {
     warnings.push(
       `Dropped ${stats.droppedInvalidClips} malformed shape clip${stats.droppedInvalidClips === 1 ? '' : 's'}.`,
+    )
+  }
+  if (stats.droppedLaneClips > 0) {
+    warnings.push(
+      `Dropped ${stats.droppedLaneClips} clip${stats.droppedLaneClips === 1 ? '' : 's'} that do not fit their track kind.`,
     )
   }
   return warnings
@@ -265,6 +273,7 @@ export function deserializeDoc(data: unknown): {
     droppedOverflowClips: 0,
     droppedMarkers: 0,
     droppedInvalidClips: 0,
+    droppedLaneClips: 0,
   }
   const projectMarkers = hydrateMarkers(projectRaw.markers, stats)
   const projectDefaults = hydrateKeyframeDefaults(projectRaw.keyframeDefaults)
@@ -375,6 +384,21 @@ export function deserializeDoc(data: unknown): {
   }
   dropBadMattes(project.tracks)
   for (const sequence of project.sequences ?? []) dropBadMattes(sequence.tracks)
+  // Lane-kind compatibility needs the assembled doc. The shared `laneKindFits`
+  // predicate is deliberately narrower than `clipFitsTrack`: hydration's
+  // existing contract keeps a clip whose media did not survive (the sweep
+  // clears the dangling mediaId) and keeps an empty text clip on its text lane.
+  // Only a material/lane disagreement is dropped, and the command layer uses
+  // the same predicate for a supplied sequence so accepted clips round-trip.
+  const dropLaneClips = (tracks: Track[]) => {
+    for (const track of tracks) {
+      const before = track.clips.length
+      track.clips = track.clips.filter((clip) => laneKindFits(doc, clip, track))
+      stats.droppedLaneClips += before - track.clips.length
+    }
+  }
+  dropLaneClips(project.tracks)
+  for (const sequence of project.sequences ?? []) dropLaneClips(sequence.tracks)
 
   return { doc, missingMediaIds, warnings: hydrationWarnings(stats) }
 }
@@ -536,45 +560,62 @@ function assertShapeClips(project: Project): void {
  * Rejects a cyclic sequence graph and one deeper than {@link MAX_SEQUENCE_DEPTH}.
  * A cycle bypasses the command-time guard and would recurse forever in the
  * render, duration and id walks, so it is refused at the trust boundary.
+ *
+ * Iterative on purpose: the depth cap must trip before a crafted 20k-deep
+ * chain can overflow the JS call stack, and unreachable chains count too.
  */
 function assertSequenceGraph(project: Project): void {
   const sequences = project.sequences
   if (!sequences || sequences.length === 0) return
   const byId = new Map(sequences.map((s) => [s.id, s]))
-  const state = new Map<string, 1 | 2>()
-  const height = new Map<string, number>()
-  const visit = (id: string): number => {
-    const st = state.get(id)
-    if (st === 1) throw new SerializationError('Compound sequence graph contains a cycle')
-    if (st === 2) return height.get(id) ?? 0
-    const sequence = byId.get(id)
-    if (!sequence) return 0
-    state.set(id, 1)
-    let best = 0
+
+  // Child references (sequences this one renders), and the reverse edges used
+  // to propagate heights from the leaves up.
+  const children = new Map<string, Set<string>>()
+  const parents = new Map<string, string[]>()
+  for (const sequence of sequences) {
+    const refs = new Set<string>()
     for (const track of sequence.tracks) {
       for (const clip of track.clips) {
-        if (clip.sequenceId) best = Math.max(best, visit(clip.sequenceId))
+        if (clip.sequenceId && byId.has(clip.sequenceId)) refs.add(clip.sequenceId)
       }
     }
-    state.set(id, 2)
-    height.set(id, best + 1)
-    return best + 1
-  }
-  let maxDepth = 0
-  for (const track of project.tracks) {
-    for (const clip of track.clips) {
-      if (clip.sequenceId) maxDepth = Math.max(maxDepth, visit(clip.sequenceId))
+    children.set(sequence.id, refs)
+    for (const ref of refs) {
+      const list = parents.get(ref)
+      if (list) list.push(sequence.id)
+      else parents.set(ref, [sequence.id])
     }
   }
-  // Any sequence the cycle walk has not finished is a cycle in an unreachable
-  // component; `visit` throws on re-entry, so a stray cycle is still caught.
-  // Unreachable chains still count toward the depth cap: a crafted file must
-  // not hide an oversized nesting behind a missing root reference.
+
+  const unresolved = new Map<string, number>()
+  const heights = new Map<string, number>()
+  const queue: string[] = []
   for (const sequence of sequences) {
-    maxDepth = Math.max(maxDepth, visit(sequence.id))
+    const count = children.get(sequence.id)!.size
+    unresolved.set(sequence.id, count)
+    if (count === 0) {
+      heights.set(sequence.id, 1)
+      queue.push(sequence.id)
+    }
   }
-  if (maxDepth > MAX_SEQUENCE_DEPTH) {
-    throw new SerializationError('Compound sequence nesting is too deep')
+  // A queue index instead of shift() keeps a long chain linear.
+  for (let index = 0; index < queue.length; index++) {
+    const id = queue[index]
+    const height = heights.get(id) ?? 1
+    if (height > MAX_SEQUENCE_DEPTH) {
+      throw new SerializationError('Compound sequence nesting is too deep')
+    }
+    for (const parent of parents.get(id) ?? []) {
+      const remaining = (unresolved.get(parent) ?? 0) - 1
+      unresolved.set(parent, remaining)
+      if (height + 1 > (heights.get(parent) ?? 0)) heights.set(parent, height + 1)
+      if (remaining === 0) queue.push(parent)
+    }
+  }
+  // A node whose children never all resolve sits on (or behind) a cycle.
+  if (queue.length < sequences.length) {
+    throw new SerializationError('Compound sequence graph contains a cycle')
   }
 }
 

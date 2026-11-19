@@ -406,6 +406,7 @@ describe('rehydrateMedia', () => {
     const hash = await hashOf()
     await ensureProjectMedia(project)
     await writeMediaFile(project, hash, sourceFile())
+    const sidecarBytes = fake.get(`/${project}/${hash}.json`)!.bytes.length
     const lock = await ProjectLock.acquire(project)
     beginMediaActivity()
 
@@ -422,7 +423,8 @@ describe('rehydrateMedia', () => {
     endMediaActivity()
     expect(await pending).toEqual({
       status: 'ran',
-      result: { deleted: 1, reclaimed: sourceFile().size },
+      // The paired sidecar's bytes are reclaimed with the media entry.
+      result: { deleted: 1, reclaimed: sourceFile().size + sidecarBytes },
     })
     expect(await readMediaFile(project, hash)).toBeNull()
     lock.dispose()

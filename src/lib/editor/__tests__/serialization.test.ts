@@ -284,7 +284,7 @@ describe('deserializeDoc', () => {
       project: {
         tracks: [
           {
-            kind: 'video',
+            kind: 'text',
             clips: [{ start: 'x', duration: null, text: 'hello' }],
           },
           { kind: 'audio' },
@@ -1918,6 +1918,122 @@ describe('structural and media id hydration trust boundary (0.28.2)', () => {
     expect(doc.project.tracks[0].clips).toHaveLength(1)
     expect(doc.media[0].id).toBe('media_fixed')
   })
+
+  it('drops clips that do not fit their lane kind and warns once', () => {
+    const { doc, warnings } = deserializeDoc({
+      version: SERIALIZATION_VERSION,
+      project: {
+        id: 'proj_lanes',
+        name: 'Lanes',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [
+          {
+            id: 'v1',
+            kind: 'video',
+            name: 'V1',
+            clips: [
+              { id: 'text_on_video', start: 0, duration: 1, text: 'Hi' },
+              { id: 'audio_on_video', start: 0, duration: 1, mediaId: 'ma' },
+              { id: 'valid_video', start: 0, duration: 1, mediaId: 'mv' },
+            ],
+          },
+          {
+            id: 't1',
+            kind: 'text',
+            name: 'T1',
+            clips: [{ id: 'valid_text', start: 0, duration: 1, text: 'Hi' }],
+          },
+          {
+            id: 'a1',
+            kind: 'audio',
+            name: 'A1',
+            clips: [
+              { id: 'compound_on_audio', start: 0, duration: 1, sequenceId: 'seq1' },
+              { id: 'valid_audio', start: 0, duration: 1, mediaId: 'ma' },
+            ],
+          },
+        ],
+        sequences: [
+          {
+            id: 'seq1',
+            name: 'S1',
+            tracks: [{ id: 'sv', kind: 'video', name: 'V1', clips: [] }],
+          },
+        ],
+      },
+      media: [
+        { id: 'ma', kind: 'audio', name: 'a.mp3', duration: 10 },
+        { id: 'mv', kind: 'video', name: 'v.mp4', duration: 10 },
+      ],
+    })
+    expect(doc.project.tracks.find((track) => track.id === 'v1')!.clips.map((c) => c.id)).toEqual([
+      'valid_video',
+    ])
+    expect(doc.project.tracks.find((track) => track.id === 't1')!.clips.map((c) => c.id)).toEqual([
+      'valid_text',
+    ])
+    expect(doc.project.tracks.find((track) => track.id === 'a1')!.clips.map((c) => c.id)).toEqual([
+      'valid_audio',
+    ])
+    expect(warnings).toEqual([expect.stringContaining('track kind')])
+  })
+
+  it('keeps dangling media and empty text while dropping material lane mismatches', () => {
+    const { doc, warnings } = deserializeDoc({
+      version: SERIALIZATION_VERSION,
+      project: {
+        id: 'proj_lane_edges',
+        name: 'Lane edges',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [
+          {
+            id: 'v1',
+            kind: 'video',
+            name: 'V1',
+            clips: [
+              { id: 'dangling', start: 0, duration: 1, mediaId: 'gone' },
+              { id: 'text_with_media', start: 0, duration: 1, mediaId: 'mv', text: 'Hi' },
+              { id: 'audio_only_video', start: 0, duration: 1, mediaId: 'mv', audioOnly: true },
+              { id: 'image_on_video', start: 0, duration: 1, mediaId: 'mi' },
+            ],
+          },
+          {
+            id: 't1',
+            kind: 'text',
+            name: 'T1',
+            clips: [{ id: 'empty_text', start: 0, duration: 1, text: '' }],
+          },
+          {
+            id: 'a1',
+            kind: 'audio',
+            name: 'A1',
+            clips: [
+              { id: 'audio_only_on_audio', start: 0, duration: 1, mediaId: 'mv', audioOnly: true },
+              { id: 'image_on_audio', start: 0, duration: 1, mediaId: 'mi' },
+            ],
+          },
+        ],
+      },
+      media: [
+        { id: 'mv', kind: 'video', name: 'v.mp4', duration: 10 },
+        { id: 'mi', kind: 'image', name: 'i.png', duration: 0 },
+      ],
+    })
+    const ids = (trackId: string) =>
+      doc.project.tracks.find((track) => track.id === trackId)!.clips.map((clip) => clip.id)
+    // The dangling mediaId is cleared and the clip is kept for a relink; an
+    // empty text clip stays on its text lane. Both are existing hydration
+    // contracts, so the lane pass must not treat them as material mismatches.
+    expect(ids('v1')).toEqual(['dangling', 'audio_only_video', 'image_on_video'])
+    expect(ids('t1')).toEqual(['empty_text'])
+    // A text clip carrying media is still text material; an image is not audio.
+    expect(ids('a1')).toEqual(['audio_only_on_audio'])
+    expect(warnings).toEqual([expect.stringContaining('track kind')])
+  })
 })
 
 describe('hostile hydration boundaries (M2)', () => {
@@ -2057,6 +2173,36 @@ describe('hostile hydration boundaries (M2)', () => {
         },
       ],
     }))
+    expect(() => deserializeDoc(json)).toThrow(/nesting is too deep/)
+  })
+
+  it('refuses a 20k-deep chain with SerializationError instead of overflowing the stack', () => {
+    const json = serialized()
+    const depth = 20_000
+    json.project.sequences = Array.from({ length: depth }, (_, index) => ({
+      id: `seq_${index}`,
+      name: `S${index}`,
+      tracks: [
+        {
+          id: `trk_${index}`,
+          kind: 'video',
+          name: 'V1',
+          clips:
+            index < depth - 1
+              ? [
+                  {
+                    id: `clip_${index}`,
+                    start: 0,
+                    duration: 1,
+                    inPoint: 0,
+                    sequenceId: `seq_${index + 1}`,
+                  },
+                ]
+              : [],
+        },
+      ],
+    }))
+    expect(() => deserializeDoc(json)).toThrow(SerializationError)
     expect(() => deserializeDoc(json)).toThrow(/nesting is too deep/)
   })
 })

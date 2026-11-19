@@ -1179,10 +1179,15 @@ async function finishExport(
   spec: ExportContainerSpec,
   bytes: number,
   duration: number,
+  handle: ExportHandle,
 ): Promise<ExportResult> {
-  if (streamed && opts.fileStream) {
-    // finalize resolved: NOW commit the file (close, not abort).
-    await opts.fileStream.close()
+  const sink = streamed ? opts.fileStream : undefined
+  if (sink) {
+    // The caller's last check ran before this call; `close()` is the commit.
+    // Recheck at the boundary so a cancellation that landed in between aborts
+    // the sink instead of committing a file the user no longer wants.
+    if (handle.cancelled) throw new Error('Export cancelled')
+    await sink.close()
     return {
       kind: 'file',
       fileName: opts.fileName ?? `export${spec.extension}`,
@@ -1283,11 +1288,19 @@ export async function exportTimeline(
       }
       if (handle.cancelled) throw new Error('Export cancelled')
       const audioBuffer = await renderAudioMix(doc, duration)
+      if (handle.cancelled) throw new Error('Export cancelled')
       if (!audioBuffer) throw new Error('Timeline has no audible audio to export')
       const audioSource = await createAudioSource(container)
+      if (handle.cancelled) {
+        // An unconnected source has no track yet, so mediabunny's close() is
+        // invalid here. Dropping the unstarted source is the cleanup.
+        throw new Error('Export cancelled')
+      }
       output.addAudioTrack(audioSource)
       await output.start()
+      if (handle.cancelled) throw new Error('Export cancelled')
       opts.onProgress?.(duration / 2, duration)
+      if (handle.cancelled) throw new Error('Export cancelled')
       await audioSource.add(audioBuffer)
       audioSource.close()
       if (handle.cancelled) throw new Error('Export cancelled')
@@ -1295,7 +1308,7 @@ export async function exportTimeline(
       await output.finalize()
       finalized = true
       if (handle.cancelled) throw new Error('Export cancelled')
-      return await finishExport(target, streamed, opts, spec, bytes, duration)
+      return await finishExport(target, streamed, opts, spec, bytes, duration, handle)
     }
 
     if (!webCodecsSupported()) {
@@ -1307,6 +1320,7 @@ export async function exportTimeline(
     // Export waits for the project's custom fonts before the first frame. A
     // missing font is reported, never silently swapped mid-render.
     for (const warning of await ensureProjectFontsReady(doc)) opts.onWarning?.(warning)
+    if (handle.cancelled) throw new Error('Export cancelled')
 
     const { width, height, fps } = doc.project
     const outputSize = resolveOutputSize(opts.width, opts.height, { width, height })
@@ -1348,6 +1362,7 @@ export async function exportTimeline(
 
     // Decode contexts per video asset (frame-accurate reads).
     const decode = await createDecodeContext(doc, inputs)
+    if (handle.cancelled) throw new Error('Export cancelled')
 
     // Audio mix first (fast, offline). Every track must exist before the output
     // is started, Mediabunny rejects `addTrack` afterwards, so the audio
@@ -1356,7 +1371,13 @@ export async function exportTimeline(
     // chunks; submitting the whole mix after every video packet would queue
     // the video until the end and defeat the streamed target's memory bound.
     const audioBuffer = await renderAudioMix(doc, duration)
+    if (handle.cancelled) throw new Error('Export cancelled')
     const audioSource = audioBuffer ? await createAudioSource(container) : null
+    if (handle.cancelled) {
+      // An unconnected source has no track yet, so mediabunny's close() is
+      // invalid here. Dropping the unstarted source is the cleanup.
+      throw new Error('Export cancelled')
+    }
     if (audioSource) output.addAudioTrack(audioSource)
     const audioChunks = audioBuffer
       ? audioChunkRanges(audioBuffer.length, audioBuffer.sampleRate)
@@ -1364,6 +1385,7 @@ export async function exportTimeline(
     let nextAudioChunk = 0
 
     await output.start()
+    if (handle.cancelled) throw new Error('Export cancelled')
 
     // Image elements once (they never decode per-frame). Await the decode before
     // the loop: a still-decoding image would leave the first frames blank. A
@@ -1380,6 +1402,7 @@ export async function exportTimeline(
       pendingImages.push(preloadImage(img, () => imageCache.delete(asset.id)))
     }
     await Promise.all(pendingImages)
+    if (handle.cancelled) throw new Error('Export cancelled')
 
     for (let i = 0; i < totalFrames; i++) {
       if (handle.cancelled) throw new Error('Export cancelled')
@@ -1423,8 +1446,11 @@ export async function exportTimeline(
         )
         if (sample) {
           const primaryTimestamp = sample.timestamp
-          const bitmap = await createImageBitmap(sample.toCanvasImageSource() as CanvasImageSource)
-          sample.close()
+          // Close the decoded sample on BOTH outcomes: a rejected bitmap
+          // conversion has no frame map entry to drain in the finally.
+          const bitmap = await createImageBitmap(
+            sample.toCanvasImageSource() as CanvasImageSource,
+          ).finally(() => sample.close())
           frames.set(draw.clip.id, bitmap)
           if (draw.blendTime !== undefined) {
             // One extra sample per blended frame, and only when the decoder
@@ -1435,14 +1461,17 @@ export async function exportTimeline(
               draw.clip.reverse ? nextLowerFrame(blendTime, fps) : blendTime,
             )
             if (second) {
-              const weight = blendWeight(sourceTime, primaryTimestamp, second.timestamp)
-              if (weight > 0 && weight < 1) {
-                const blendBitmap = await createImageBitmap(
-                  second.toCanvasImageSource() as CanvasImageSource,
-                )
-                blends.set(draw.clip.id, { frame: blendBitmap, weight })
+              try {
+                const weight = blendWeight(sourceTime, primaryTimestamp, second.timestamp)
+                if (weight > 0 && weight < 1) {
+                  const blendBitmap = await createImageBitmap(
+                    second.toCanvasImageSource() as CanvasImageSource,
+                  )
+                  blends.set(draw.clip.id, { frame: blendBitmap, weight })
+                }
+              } finally {
+                second.close()
               }
-              second.close()
             }
           }
         }
@@ -1485,12 +1514,15 @@ export async function exportTimeline(
       audioSource.close()
     }
 
+    // A cancel during the last frame's submission must not spend the finalize
+    // await on a file that is already unwanted.
+    if (handle.cancelled) throw new Error('Export cancelled')
     await output.finalize()
     finalized = true
 
     if (handle.cancelled) throw new Error('Export cancelled')
 
-    return await finishExport(target, streamed, opts, spec, bytes, duration)
+    return await finishExport(target, streamed, opts, spec, bytes, duration, handle)
   } catch (error) {
     // Any failure discards the destination: a streamed file is aborted, never
     // committed (the wrapper's close() is a no-op, so nothing partial lands).

@@ -2,7 +2,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { renderFreezeFrame, FreezeFrameError } from '../media/freeze-frame'
-import { createClip, createDoc, createMediaAsset, createShapeClip, createTrack } from '../factories'
+import {
+  createClip,
+  createDoc,
+  createMediaAsset,
+  createShapeClip,
+  createTrack,
+  SOURCE_END_MARGIN,
+} from '../factories'
 import type { Doc } from '../types'
 
 /**
@@ -256,6 +263,40 @@ describe('renderFreezeFrame', () => {
     expect(videos).toHaveLength(1)
     expect(videos[0].seeks).toEqual([])
     expect(file.size).toBeGreaterThan(0)
+  })
+
+  it('clamps a reversed head frame to the last readable source instant', async () => {
+    const doc = docWithVideo()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.start = 0
+    clip.duration = 20
+    clip.inPoint = 5
+    clip.reverse = true
+    // Local 1 of the mirror reads 5 + (20 - 1) = 24, past the 20 s asset.
+    const file = await renderFreezeFrame(doc, [], 1)
+    expect(videos).toHaveLength(1)
+    expect(videos[0].seeks).toHaveLength(1)
+    expect(videos[0].seeks[0]).toBeCloseTo(20 - SOURCE_END_MARGIN, 5)
+    expect(file.size).toBeGreaterThan(0)
+  })
+
+  it('clamps a frame on an over-consuming time ramp', async () => {
+    const doc = docWithVideo()
+    const clip = doc.project.tracks[0].clips[0]
+    clip.start = 0
+    clip.duration = 20
+    clip.inPoint = 0
+    clip.keyframes = {
+      timeScale: [
+        { time: 0, value: 2 },
+        { time: 20, value: 2 },
+      ],
+    }
+    // Local 15 at 2x reads source 30, past the 20 s asset.
+    await renderFreezeFrame(doc, [], 15)
+    expect(videos).toHaveLength(1)
+    expect(videos[0].seeks).toHaveLength(1)
+    expect(videos[0].seeks[0]).toBeCloseTo(20 - SOURCE_END_MARGIN, 5)
   })
 
   it('loads a still image directly instead of seeking it', async () => {

@@ -45,6 +45,27 @@ import { ScopesPanel } from './ScopesPanel'
 import { TransformGizmo, type GizmoMode } from './TransformGizmo'
 import type { EditorCommand } from '@/lib/editor/commands'
 
+type TextDragOrigin = {
+  clipId: string
+  px: number
+  py: number
+  x: number
+  y: number
+  scale: number
+}
+
+/** True while the drag's captured clip is still selected and under the playhead. */
+function textDragStillValid(origin: TextDragOrigin): boolean {
+  const live = useEditorStore.getState()
+  const captured = findClip(live.doc, origin.clipId)
+  return (
+    !!captured &&
+    live.selection === origin.clipId &&
+    live.playhead >= captured.clip.start &&
+    live.playhead < captured.clip.start + captured.clip.duration
+  )
+}
+
 /**
  * Center panel: the program monitor (canvas composited by the playback engine)
  * plus transport controls (play/pause, skip, frame-step, time display, volume).
@@ -71,9 +92,7 @@ export function PreviewPanel() {
   // state, so they add no PanelId, no sanitize case and no menu entry.
   const [scopesOpen, setScopesOpen] = useState(false)
   const [draggingText, setDraggingText] = useState(false)
-  const dragOrigin = useRef<{ px: number; py: number; x: number; y: number; scale: number } | null>(
-    null,
-  )
+  const dragOrigin = useRef<TextDragOrigin | null>(null)
   /** Initiating pointer of the active text drag (multi-touch: ignore others). */
   const textDragPointerId = useRef<number | null>(null)
   /** Gesture token from beginTransient: a foreign commit bumps it and the
@@ -497,6 +516,10 @@ export function PreviewPanel() {
     const token = store.beginTransient(e.pointerId)
     if (token === null) return
     dragOrigin.current = {
+      // The gesture owns this clip for its whole life: a selection change or a
+      // playhead move must cancel the drag, never retarget it at whatever text
+      // clip the next render happens to derive.
+      clipId: textClip.id,
       px: e.clientX,
       py: e.clientY,
       x: textClip.style.x,
@@ -519,6 +542,13 @@ export function PreviewPanel() {
     // A foreign commit (keyboard delete, undo) ended the gesture slot: applying
     // further frames would mutate the doc with no undo entry behind them.
     if (currentTransientToken() !== textDragToken.current) return
+    // The captured clip must still be the selected, live clip. Reading the
+    // render's derived `textClip` here would follow a selection switch or throw
+    // once the playhead left the clip.
+    if (!textDragStillValid(origin)) {
+      endTextDrag(false)
+      return
+    }
     const rect = canvas.getBoundingClientRect()
     if (rect.width === 0 || rect.height === 0) return
     // Client-pixel delta ÷ displayed canvas size = normalized project delta
@@ -529,7 +559,7 @@ export function PreviewPanel() {
     const y = clamp01(origin.y + (e.clientY - origin.py) / rect.height / scale)
     useEditorStore.getState().applyTransient({
       type: 'setTextStyle',
-      clipId: textClip!.id,
+      clipId: origin.clipId,
       style: { x, y },
     })
   }
@@ -549,6 +579,36 @@ export function PreviewPanel() {
     if (commit) store.commitTransient()
     else store.cancelTransient()
   }
+
+  const onCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const origin = dragOrigin.current
+    // A selection or playhead change can land after the last pointermove. The
+    // release must recheck validity, or it commits the stale preview to a clip
+    // that is no longer the gesture's target.
+    if (origin && !textDragStillValid(origin)) {
+      endTextDrag(false, e)
+      return
+    }
+    endTextDrag(true, e)
+  }
+
+  useEffect(() => {
+    const cancelInvalidOnRelease = (e: PointerEvent) => {
+      const origin = dragOrigin.current
+      if (!origin || e.pointerId !== textDragPointerId.current) return
+      if (textDragStillValid(origin)) return
+      // The canvas handler cannot see a release that lands outside it (capture
+      // loss). Cancel in the capture phase, before the shell's bubble pointerup
+      // safety net commits the stale transient.
+      const token = textDragToken.current
+      dragOrigin.current = null
+      textDragPointerId.current = null
+      setDraggingText(false)
+      if (currentTransientToken() === token) useEditorStore.getState().cancelTransient()
+    }
+    window.addEventListener('pointerup', cancelInvalidOnRelease, true)
+    return () => window.removeEventListener('pointerup', cancelInvalidOnRelease, true)
+  }, [])
 
   return (
     /* @container: the volume slider's visibility (@lg:) keys off THIS panel's
@@ -581,7 +641,7 @@ export function PreviewPanel() {
             title={canDragText ? 'Drag to reposition the selected text' : undefined}
             onPointerDown={onCanvasPointerDown}
             onPointerMove={onCanvasPointerMove}
-            onPointerUp={(e) => endTextDrag(true, e)}
+            onPointerUp={onCanvasPointerUp}
             onPointerCancel={(e) => endTextDrag(false, e)}
           />
           {textBox && (

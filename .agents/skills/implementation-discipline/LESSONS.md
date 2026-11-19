@@ -1084,3 +1084,265 @@ re-validate the captured identity before acting; if it is gone, cancel the
 empty transient and detach.
 Action: kept as a note; `abortPendingRetry` cancels the empty transient, clears
 the pending press, and a red-first test covers the missing-keyframe retry.
+
+## 2026-11-19 - a reused predicate widened a trust-boundary change
+
+What happened: the 0.28.5 hydration fix reused `clipFitsTrack` for the new
+post-assembly lane pass as the plan named it. The predicate also returns false
+for a clip whose media no longer resolves and for an empty text clip, so the
+pass dropped 46 existing fixtures' media-less clips and changed hydration's
+long-standing "clear the dangling id, keep the clip" contract. The full suite
+caught it; the pass was narrowed to the material/lane kind mismatch it was
+meant to enforce.
+Would-have-caught: rule 3's reuse rung read as a semantic check, not a name
+check: before reusing a predicate at a new boundary, read every condition it
+enforces and list the callers whose contract it defines. A predicate that is
+wider than the new boundary's need is a behavior change, not a reuse.
+Action: kept as a note; trust-boundary fixes reuse only the part of a predicate
+they mean to enforce, and the narrowed rule names both exceptions in a comment.
+
+## 2026-11-19 - a full-monitor overlay swallowed the gesture underneath
+
+What happened: the 0.28.5 text-drag fix was verified by jsdom tests that
+dispatch pointer events directly to the canvas, so they could not see that the
+transform gizmo's full-monitor SVG root hit-tested every click above it. In the
+live browser the canvas text drag never started. A manual pass after the final
+gate found it; `pointer-events: none` on the overlay root with the box and
+handles opting back in restored both gestures.
+Would-have-caught: rule 7 applied to the hit target, not only the handler: a
+gesture proof must show the pointer reached the intended element, and a
+full-size overlay above a canvas gets a hit-test check in a real browser.
+Action: kept as a note; overlay roots do not hit-test, and canvas gestures get
+a live `elementFromPoint` plus drag proof, not only a direct-dispatch test.
+
+## 2026-11-19 - a lock keyed by reusable identity is not ownership
+
+What happened: the 0.28.5 audio-recovery lock was a `clipId -> element` map,
+and the late `.then` cleared it when both matched. A project replacement can
+reuse both the clip id and the element, so an old recovery that settled after a
+new one started deleted the new lock. The existing replacement test changed the
+media URL, which created a different element, so it never exercised the race.
+Would-have-caught: rule 4 applied to ownership: a lock must carry the identity
+of the operation that took it, not just the identity of the resource it guards.
+When a resource can be reused across an epoch, compare a per-acquisition token.
+Action: kept as a note; `audioRecovery` stores `{ el, token }`, the finally
+compares the token, and a red-first test holds two recoveries on the same
+element and checks the newer lock survives the older timeout.
+
+## 2026-11-19 - cancellation checks were counted per path, not per await
+
+What happened: the first audio-only cancellation patch checked the handle after
+the mix only in the video path. The audio-only path still started the encoder
+and fed the whole mix before checking. The first attempt to close an unconnected
+`AudioBufferSource` on cancel also threw mediabunny's "Cannot call close without
+connecting the source" instead of `Export cancelled`; the new test caught both.
+Would-have-caught: rule 7 applied to cancellation: enumerate every long await on
+the path and prove each one with an observable (no `start`, no `add`, no
+`finalize`), not only the final rejection. A cleanup call on an unconnected
+resource needs its own proof.
+Action: kept as a note; both export paths check after the mix, source creation,
+and start, tests assert the encoder never starts and the mix is never fed, and
+an unconnected source is dropped instead of closed.
+
+## 2026-11-19 - the changelog named the wrong function
+
+What happened: the 0.28.5 hydration entry said `dispose` drops a lane-incompatible
+clip, but the drop happens in `deserializeDoc`. The code was correct; the release
+note named a function that never performed the action.
+Would-have-caught: rule 7 applied to docs: every named function in a changelog
+entry needs the same code check as a bug claim.
+Action: kept as a note; the entry now says hydration drops the clip.
+
+## 2026-11-19 - a dev-only battery shard failure before a green rerun
+
+What happened: the first pair run after the 0.28.5 follow-up fixes failed dev
+shard 4 on `f05 blend` (the video clip did not select) and `f06 LUT`, while the
+artifact leg passed both with the same code. A second pair run passed 74/74 on
+both legs. The failing steps touch selection and monitor grading, neither of
+which the changed audio-recovery and export-cancel code paths reach.
+Would-have-caught: rule 12's single post-recovery rerun applies to a dev-only
+shard failure whose artifact counterpart passes; record the first failure and
+rerun the full pair before calling it a regression.
+Action: kept as a note; a dev-only late-shard failure with a green artifact leg
+gets one full pair rerun, and the report states both outcomes.
+
+## 2026-11-19 - a superseded export completion still owned the dialog
+
+What happened: after export A was cancelled and export B started, A's awaited
+completion called `setPhase('setup')` and its `finally` cleared `handleRef`.
+That replaced B's exporting view with setup and left B's Cancel button pointing
+at no handle. The same stale result also wrote `resultContainer` and could toast.
+Would-have-caught: rule 4 applied to async ownership: every post-await branch and
+the finally must check that the captured handle is still the current one, not
+only whether the old handle was cancelled. The finally may clean its own
+subscription unconditionally, but clear shared state only when it still owns it.
+Action: kept as a note; the completion and catch return when the ref no longer
+matches, the finally clears only its own handle, and a held A/B test proves B
+keeps its view and Cancel handle.
+
+## 2026-11-19 - release did not revalidate the transient
+
+What happened: the text drag checked the captured clip on pointermove, but the
+canvas pointerup committed unconditionally. A selection switch or playhead move
+after the last frame therefore committed the stale preview. The existing tests
+always sent one more pointermove before release, so they missed it.
+Would-have-caught: rule 7 applied to gesture ends: the commit path is part of
+the gesture's validity contract. Prove the release with the invalidating change
+and no final move, not only the move path.
+Action: kept as a note; `textDragStillValid` is shared by move and release, the
+release cancels instead of committing when invalid, and two red-first tests cover
+selection and playhead changes without a final move.
+
+## 2026-11-19 - addSequence accepted clips hydration would drop
+
+What happened: `addSequence` validated shape/compound fields but not the general
+lane rule, so it accepted audio on video, text on audio, and a compound on audio.
+The save/reload hydration lane pass then silently removed them. The command
+layer and hydration had drifted because the lane predicate lived only inside
+`deserializeDoc`.
+Would-have-caught: rule 4 applied to a trust boundary: when a command accepts a
+document that must later survive hydration, both sides must call one shared
+predicate. A local predicate is not shared because it has the same shape.
+Action: kept as a note; `laneKindFits` lives beside `clipFitsTrack` in factories,
+hydration and `addSequence` both use it, and a save/reload test locks the
+dangling-media and empty-text exceptions.
+
+## 2026-11-19 - the shell safety net committed before the drag could cancel
+
+What happened: the canvas pointerup cancelled an invalid text drag, but the
+editor shell's window pointerup listener is the safety net for a release that
+lands outside the canvas after capture loss. The shell committed the stale
+transient before any PreviewPanel handler could see that the playhead had left
+the clip. A shell-mounted test with `pointerUp(document.body)` reproduced it.
+Would-have-caught: rule 7 applied to global fallbacks: a generic safety net that
+finalizes state must not run before the owning gesture has a chance to validate
+and cancel. Ordering is part of the behavior, so mount the shell and release
+outside the target.
+Action: kept as a note; PreviewPanel registers a capture-phase pointerup that
+cancels an invalid text drag before the shell's bubble listener, and the shell
+test covers both on-canvas and outside-canvas releases.
+
+## 2026-11-19 - test doubles must match the constructor shape they replace
+
+What happened: `FakeAudioBuffer` accepted only positional constructor arguments,
+but the exporter creates chunk buffers with the real `AudioBuffer` options
+object. Registering the fake as the global silently allocated the wrong shape.
+Would-have-caught: rule 7 applied to test infrastructure: a global fake must
+implement every constructor form production code uses, and a direct test should
+cover the form the exporter actually calls.
+Action: kept as a note; `FakeAudioBuffer` accepts the options object and keeps
+positional use, with a test for both.
+
+## 2026-11-19 - a pre-delete read can block the delete it measures
+
+What happened: cleanup read the sidecar with `readFileHandle` before deleting the
+main entry. A directory-shaped or unreadable sidecar name threw and blocked the
+whole cleanup, even though the deletion itself would have succeeded.
+Would-have-caught: rule 4 applied to destructive flows: size collection must be
+best-effort (`entrySizeQuiet`) and deletion strict (`removeEntryStrict`), so a
+measurement failure cannot veto the action. Sweep both clean and clear-all.
+Action: kept as a note; both sidecar reads use `entrySizeQuiet`, the OPFS double
+models TypeMismatchError, and clean plus clear-all have directory-sidecar tests.
+
+## 2026-11-19 - a shared sequence DAG was walked once per path
+
+What happened: the offline walk recursed into every compound reference. A valid
+DAG that references the same sequence and window through several branches did
+the identical child scan repeatedly, and it kept walking after the first offline
+hit. The sequence validator caps depth but not reference count.
+Would-have-caught: rule 4 applied to graph walks: memoize the visited
+(sequence, window) key and let the visitor signal completion, then test the
+repeated-reference case with a visit counter.
+Action: kept as a note; `scanOfflineClips` memoizes identical sequence windows
+and stops when the visitor returns true.
+
+## 2026-11-19 - the clock switch was one-way
+
+What happened: the playback tick re-anchored when audio started running but not
+when it suspended. The next tick switched to the performance clock using a
+performance anchor captured at play start, adding the whole elapsed wall time
+and jumping the playhead.
+Would-have-caught: rule 7 applied to clock transitions: re-anchor on every state
+change, in both directions, and test a suspension between ticks rather than only
+a resume.
+Action: kept as a note; the tick re-anchors from the current playhead on either
+transition, and the red-first test covers suspend and resume.
+
+## 2026-11-19 - a zero-length ramp constant-extended the floor backwards
+
+What happened: a dialogue cue starting at 2 s with `attackRelease: 0` emitted no
+unity keyframe because the rounded attack start equaled the floor time. The
+first keyframe was then the floor at 2 s, and both `animatedValue` and
+`clipGainSchedule` constant-extend the first keyframe, so the music ducked from
+the clip head onward.
+Would-have-caught: rule 4 applied to generated curves: a boundary case that
+removes the ramp must still leave an explicit value for the span before the
+event. Test the first keyframe's value at time zero, not only the duck window.
+Action: kept as a note; a non-head duck with a zero or sub-millisecond attack
+places unity one millisecond before the floor, while a duck at the clip head
+still emits only the floor. The test covers the value at 0, 1.9, and 2 s.
+
+## 2026-11-19 - placement accepted a clip hydration classifies as text
+
+What happened: `clipFitsTrack` checked `text` only inside the text-track branch,
+so a clip carrying both a video `mediaId` and a string `text` passed placement
+on a video lane. Hydration's `laneKindFits` classifies any string text as text
+material and drops the clip from that lane, so the clip vanished on reload.
+Would-have-caught: rule 7 applied across trust boundaries: compare every live
+validator against its hydration counterpart for the same payload, especially
+when a field is a type discriminator in one path and an optional extra in the
+other.
+Action: kept as a note; `clipFitsTrack` now classifies string text as text
+material before asset resolution, and the test exercises addClip and moveClip
+against a video lane while keeping the clip legal on a text lane.
+
+## 2026-11-19 - a zero-length release held the floor to the clip end
+
+What happened: the entry side handled a zero `attackRelease`, but the release
+side still compared the rounded release time against the raw sample time. A zero
+release produced `releaseTime === holdTime`, the release key was skipped, and the
+music stayed at the floor for the rest of the clip.
+Would-have-caught: rule 4 applied symmetrically: when a ramp duration can be
+zero, test both the entry and the exit transition. A zero span still needs a
+keyframe for each side of the switch, not just the hold.
+Action: kept as a note; a zero or sub-millisecond release holds the floor one
+millisecond before the switch and snaps to unity at the release, while a release
+at the clip edge still holds the floor. The test asserts the full keyframe list
+and the value just before and at the release.
+
+## 2026-11-19 - a test lock that searches past its function is not a lock
+
+What happened: the static release lock matched `textDragStillValid(origin)`
+anywhere after `const onCanvasPointerUp`, and the window listener below the
+handler contains the same call. Removing the canvas check left the test green.
+Would-have-caught: rule 6 applied to static-source assertions: bound the slice
+to the function or block the claim names, and mutation-check the lock by
+deleting the exact line it claims to protect.
+Action: kept as a note; the lock now slices from `const onCanvasPointerUp =` to
+the next `useEffect(` and fails when the canvas check is removed.
+
+## 2026-11-19 - one branch test does not cover the twin path
+
+What happened: the read-only status branch exists in both the debounced save and
+the resumed save. The suite covered only the debounced path, so removing the
+resume branch would leave no red test. The same gap existed for the primary
+bitmap rejection, which used a different close mechanism than the blend sample.
+Would-have-caught: rule 6 applied to duplicated handling: when the same result
+or cleanup branch is added to two call sites, test each call site with its own
+gating, and mutation-check each new lock.
+Action: kept as a note; the resumed-write test holds the slot write's lock,
+re-adds a foreign owner, releases it, and asserts `error` plus the untouched
+slot. A direct primary-bitmap rejection test asserts the sample closes.
+
+## 2026-11-19 - a memo key in absolute time misses equivalent local windows
+
+What happened: the offline walk deduped compound scans by sequence id plus the
+absolute root offset and limit. The same child window reached from root 0 and
+root 10 produced different keys and was walked twice; the child's visible span
+is local to its own sequence, which always starts at zero.
+Would-have-caught: rule 4 applied to memo keys: key a recursive call in its own
+coordinate system, not an ancestor's, and test the same local window from two
+root positions plus two genuinely different local windows.
+Action: kept as a note; `scanOfflineClips` now carries a sequence-local
+`windowEnd`, keys by `(sequenceId, windowEnd)`, and derives a child window as
+`min(clip.duration, windowEnd - clip.start)`. Both guards are mutation-checked.

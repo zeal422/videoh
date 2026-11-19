@@ -1336,6 +1336,48 @@ describe('PlaybackCore (mocked browser)', () => {
     core.dispose()
   })
 
+  it('reloads a cached image when a relink changes its URL without a new epoch (M4)', () => {
+    const srcs: string[] = []
+    class FakeImage extends EventTarget {
+      complete = true
+      naturalWidth = 100
+      naturalHeight = 100
+      width = 100
+      height = 100
+      private source = ''
+      set src(value: string) {
+        this.source = value
+        srcs.push(value)
+      }
+      get src(): string {
+        return this.source
+      }
+    }
+    vi.stubGlobal('Image', FakeImage)
+    const doc = createDoc()
+    const asset = createMediaAsset({
+      kind: 'image',
+      name: 'still.png',
+      duration: 0,
+      width: 100,
+      height: 100,
+      url: 'blob:one',
+    })
+    doc.media = [asset]
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'img', mediaId: asset.id, start: 0, duration: 4 }),
+    )
+    // Relink is an ordinary `apply`: the project epoch does NOT move.
+    const { core } = makeCore(doc, { getProjectEpoch: () => 0 })
+    core.refresh(0)
+    expect(srcs).toEqual(['blob:one'])
+
+    doc.media = [{ ...asset, url: 'blob:two' }]
+    core.refresh(0)
+    expect(srcs).toEqual(['blob:one', 'blob:two'])
+    core.dispose()
+  })
+
   it('releases the element when the asset kind flips to image mid-play', async () => {
     // TO_FIX item 12: the live set checked absent/missing only, while
     // syncMedia also skips url-less and image assets. No UI path flips a kind,
@@ -1516,6 +1558,221 @@ describe('PlaybackCore (mocked browser)', () => {
     // No duplicate chains accumulated from identical ticks.
     expect(masterGainOf(h.lastAudioContext()).inputs.length).toBe(1)
     core.dispose()
+  })
+
+  it('advances on the performance clock while audio is suspended, then re-anchors', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 1, inPoint: 0 })
+    const ends: number[] = []
+    const { core } = makeCore(doc, { onEnd: () => ends.push(core.currentTime) })
+    await core.prepare()
+    const ctx = h.lastAudioContext()
+    ctx.state = 'suspended'
+    ctx.resume = async () => {
+      throw new Error('autoplay policy')
+    }
+    let clock = 0
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    try {
+      await core.play()
+      // Half a second passes while the context is stuck at its frozen clock.
+      clock = 500
+      await h.pump.pump(1)
+      expect(core.currentTime).toBeCloseTo(0.5, 3)
+      expect(ends).toHaveLength(0)
+
+      // The context starts running with its own fresh clock: the transport
+      // must re-anchor at the current playhead instead of jumping to 20 s.
+      ctx.state = 'running'
+      ctx.currentTime = 20
+      await h.pump.pump(1)
+      expect(core.currentTime).toBeCloseTo(0.5, 3)
+
+      // From the re-anchor, the audio clock drives the transport again.
+      ctx.currentTime = 20.6
+      await h.pump.pump(1)
+      expect(ends).toHaveLength(1)
+      expect(core.currentTime).toBeCloseTo(1, 3)
+    } finally {
+      now.mockRestore()
+    }
+    core.dispose()
+  })
+
+  it('re-anchors from the playhead when audio suspends between ticks', async () => {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { mediaId: asset.id, start: 0, duration: 2, inPoint: 0 })
+    const { core } = makeCore(doc)
+    await core.prepare()
+    const ctx = h.lastAudioContext()
+    ctx.state = 'running'
+    let clock = 0
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    try {
+      await core.play()
+      await h.pump.pump(1)
+      ctx.currentTime = 0.5
+      await h.pump.pump(1)
+      expect(core.currentTime).toBeCloseTo(0.5, 3)
+
+      // The context suspends between ticks. Its clock freezes while wall time
+      // advances; the tick must re-anchor at the playhead instead of adding the
+      // whole wall interval to the performance anchor captured at play start.
+      ctx.state = 'suspended'
+      clock = 2000
+      await h.pump.pump(1)
+      expect(core.currentTime).toBeCloseTo(0.5, 3)
+
+      // Resuming re-anchors again from the same playhead, so the fresh audio
+      // clock does not jump either.
+      ctx.state = 'running'
+      ctx.currentTime = 20
+      await h.pump.pump(1)
+      expect(core.currentTime).toBeCloseTo(0.5, 3)
+      ctx.currentTime = 20.3
+      await h.pump.pump(1)
+      expect(core.currentTime).toBeCloseTo(0.8, 3)
+    } finally {
+      now.mockRestore()
+    }
+    core.dispose()
+  })
+
+  it('cancels presented-frame callbacks on release and dispose', () => {
+    const pending = new Map<number, (now: number, metadata: VideoFrameCallbackMetadata) => void>()
+    const cancelled: number[] = []
+    let nextId = 1
+    const videoProto = HTMLVideoElement.prototype as unknown as {
+      requestVideoFrameCallback?: unknown
+      cancelVideoFrameCallback?: unknown
+    }
+    const originalRequest = Object.getOwnPropertyDescriptor(videoProto, 'requestVideoFrameCallback')
+    const originalCancel = Object.getOwnPropertyDescriptor(videoProto, 'cancelVideoFrameCallback')
+    Object.defineProperty(videoProto, 'requestVideoFrameCallback', {
+      configurable: true,
+      value: (callback: (now: number, metadata: VideoFrameCallbackMetadata) => void) => {
+        const id = nextId++
+        pending.set(id, callback)
+        return id
+      },
+    })
+    Object.defineProperty(videoProto, 'cancelVideoFrameCallback', {
+      configurable: true,
+      value: (id: number) => {
+        cancelled.push(id)
+        pending.delete(id)
+      },
+    })
+    try {
+      const { doc, asset } = makeDoc()
+      addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 2, inPoint: 0 })
+      addVideoClip(doc, { id: 'c2', mediaId: asset.id, start: 4, duration: 2, inPoint: 0 })
+      const { core } = makeCore(doc)
+      core.refresh(1)
+      expect(pending.size).toBe(1)
+
+      // Deleting the clip releases its element while paused.
+      doc.project.tracks[0].clips = doc.project.tracks[0].clips.filter((clip) => clip.id !== 'c1')
+      core.refresh(5)
+      expect(cancelled).toEqual([1])
+      expect(pending.size).toBe(1) // c2's callback is still armed
+
+      core.dispose()
+      expect(cancelled).toEqual([1, 2])
+      expect(pending.size).toBe(0)
+    } finally {
+      if (originalRequest) {
+        Object.defineProperty(videoProto, 'requestVideoFrameCallback', originalRequest)
+      } else {
+        delete videoProto.requestVideoFrameCallback
+      }
+      if (originalCancel) {
+        Object.defineProperty(videoProto, 'cancelVideoFrameCallback', originalCancel)
+      } else {
+        delete videoProto.cancelVideoFrameCallback
+      }
+    }
+  })
+
+  it('drops an in-flight audio recovery when the project is replaced', async () => {
+    const { doc } = makeDoc()
+    const audio = createMediaAsset({
+      kind: 'audio',
+      name: 'a.m4a',
+      duration: 10,
+      url: 'blob:audio',
+    })
+    doc.media.push(audio)
+    doc.project.tracks[1].clips.push(
+      createClip({ id: 'a1', mediaId: audio.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    let epoch = 0
+    const { core } = makeCore(doc, { getProjectEpoch: () => epoch })
+    await core.play()
+    await h.pump.pump(1)
+    core.pause()
+    const el = document.querySelector('audio') as HTMLAudioElement
+    el.load = () => setMediaError(el, 3)
+    setMediaError(el, 3)
+    expect(core['audioRecovery'].has('a1')).toBe(true)
+
+    // The project is reinstalled: the epoch moves and the media URL changes.
+    epoch += 1
+    doc.media = [{ ...audio, url: 'blob:audio-2' }]
+    core.refresh(core.currentTime)
+    expect(core['audioRecovery'].size).toBe(0)
+
+    // The old recovery settles late; it must not mute the new project's clip.
+    await h.pump.pump(1)
+    expect(core['failedAudioClips'].has('a1')).toBe(false)
+    core.dispose()
+  })
+
+  it('keeps a newer audio recovery lock when an older one on the same element settles late', async () => {
+    const { doc } = makeDoc()
+    const audio = createMediaAsset({
+      kind: 'audio',
+      name: 'a.m4a',
+      duration: 10,
+      url: 'blob:audio',
+    })
+    doc.media.push(audio)
+    doc.project.tracks[1].clips.push(
+      createClip({ id: 'a1', mediaId: audio.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    let epoch = 0
+    const { core } = makeCore(doc, { getProjectEpoch: () => epoch })
+    await core.play()
+    await h.pump.pump(1)
+    core.pause()
+    const el = document.querySelector('audio') as HTMLAudioElement
+    // Hold both reloads open: no load event settles either one.
+    el.load = () => {}
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      setMediaError(el, 3)
+      expect(core['audioRecovery'].has('a1')).toBe(true)
+      vi.advanceTimersByTime(1000)
+
+      // A replacement that keeps the same clip id and URL gets the SAME
+      // element back, so the new recovery takes a new lock on reused state.
+      epoch += 1
+      await core.play()
+      expect(core['audioRecovery'].has('a1')).toBe(true)
+      core.pause()
+
+      // Recovery 1 times out at 5s; recovery 2 is not due until 6s. The old
+      // finally must not clear the newer lock.
+      vi.advanceTimersByTime(4000)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(core['audioRecovery'].has('a1')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+      core.dispose()
+    }
   })
 })
 

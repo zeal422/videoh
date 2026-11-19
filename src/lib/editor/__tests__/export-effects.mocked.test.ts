@@ -9,14 +9,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { compositeFrame, exportTimeline } from '../export/mp4'
-import { planVideoFrame } from '../export/offline'
-import { createFake2DContext, installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
+import { exportFrameCount, planVideoFrame } from '../export/offline'
+import {
+  FakeAudioBuffer,
+  FakeOfflineContext,
+  createFake2DContext,
+  installBrowserMocks,
+  type MockHarness,
+} from './mocks/browser-mocks'
 import { createClip, createDoc, createMediaAsset, createTextClip, createTrack } from '../factories'
 import type { Clip, Doc, MediaAsset } from '../types'
 
 const mediabunnyState = vi.hoisted(() => ({
   inputs: [] as Array<{ disposed: boolean }>,
   mode: 'track' as 'track' | 'none' | 'rejectSecond',
+  finalizeCalls: 0,
+  cancelCalls: 0,
+  startCalls: 0,
+  /** When set, every start() waits for it (tests hold the setup await). */
+  startGate: null as Promise<void> | null,
+  /** Called with the 1-based submission count of every CanvasSource.add. */
+  onAdd: null as ((count: number) => void) | null,
+  samples: [] as Array<{ closed: boolean; timestamp: number }>,
+  /** When set, the audio codec probe waits for it. */
+  audioGate: null as Promise<boolean> | null,
+  audioProbeCalls: 0,
 }))
 
 vi.mock('mediabunny', async (importOriginal) => {
@@ -42,21 +59,44 @@ vi.mock('mediabunny', async (importOriginal) => {
   class FakeOutput {
     addVideoTrack(): void {}
     addAudioTrack(): void {}
-    async start(): Promise<void> {}
-    async finalize(): Promise<void> {}
-    async cancel(): Promise<void> {}
+    async start(): Promise<void> {
+      mediabunnyState.startCalls += 1
+      if (mediabunnyState.startGate) await mediabunnyState.startGate
+    }
+    async finalize(): Promise<void> {
+      mediabunnyState.finalizeCalls += 1
+    }
+    async cancel(): Promise<void> {
+      mediabunnyState.cancelCalls += 1
+    }
   }
   class FakeCanvasSource {
-    async add(): Promise<void> {}
+    private adds = 0
+    async add(): Promise<void> {
+      this.adds += 1
+      mediabunnyState.onAdd?.(this.adds)
+    }
     close(): void {}
   }
   class FakeVideoSampleSink {
-    async getSample() {
-      return {
-        timestamp: 0,
-        toCanvasImageSource: () => document.createElement('canvas'),
-        close: () => {},
+    async getSample(time = 0) {
+      const sample: {
+        timestamp: number
+        closed: boolean
+        toCanvasImageSource: () => CanvasImageSource
+        close: () => void
+      } = {
+        // Snap like a real decoder: the requested read resolves to the frame
+        // that starts at or before it.
+        timestamp: Math.floor(time * 30) / 30,
+        closed: false,
+        toCanvasImageSource: () => document.createElement('canvas') as unknown as CanvasImageSource,
+        close: () => {
+          sample.closed = true
+        },
       }
+      mediabunnyState.samples.push(sample)
+      return sample
     }
   }
   return {
@@ -65,6 +105,16 @@ vi.mock('mediabunny', async (importOriginal) => {
     Output: FakeOutput,
     CanvasSource: FakeCanvasSource,
     VideoSampleSink: FakeVideoSampleSink,
+    canEncodeAudio: (
+      codec: Parameters<typeof actual.canEncodeAudio>[0],
+      options?: Parameters<typeof actual.canEncodeAudio>[1],
+    ) => {
+      if (mediabunnyState.audioGate) {
+        mediabunnyState.audioProbeCalls += 1
+        return mediabunnyState.audioGate
+      }
+      return actual.canEncodeAudio(codec, options)
+    },
   }
 })
 
@@ -371,17 +421,53 @@ describe('exportTimeline Input ownership (H6)', () => {
     return doc
   }
 
+  function videoDocWithAudio(): Doc {
+    const doc = videoDoc(1)
+    const audio = createMediaAsset({
+      id: 'audio_1',
+      kind: 'audio',
+      name: 'a.wav',
+      duration: 1,
+      url: 'blob:audio',
+      file: new File(['x'], 'a.wav', { type: 'audio/wav' }),
+    })
+    doc.media.push(audio)
+    doc.project.tracks.push(
+      createTrack('audio', 2, {
+        id: 'a1',
+        clips: [createClip({ id: 'ca', mediaId: audio.id, start: 0, duration: 1 })],
+      }),
+    )
+    return doc
+  }
+
   function sink() {
+    const calls: string[] = []
     return {
-      write: async () => {},
-      close: async () => {},
-      abort: async () => {},
+      calls,
+      write: async () => {
+        calls.push('write')
+      },
+      close: async () => {
+        calls.push('close')
+      },
+      abort: async () => {
+        calls.push('abort')
+      },
     }
   }
 
   beforeEach(() => {
     mediabunnyState.inputs.length = 0
     mediabunnyState.mode = 'track'
+    mediabunnyState.finalizeCalls = 0
+    mediabunnyState.cancelCalls = 0
+    mediabunnyState.startCalls = 0
+    mediabunnyState.startGate = null
+    mediabunnyState.onAdd = null
+    mediabunnyState.samples.length = 0
+    mediabunnyState.audioGate = null
+    mediabunnyState.audioProbeCalls = 0
     vi.stubGlobal('VideoEncoder', class {})
     vi.stubGlobal('VideoFrame', class {})
     vi.stubGlobal('createImageBitmap', async () => ({ close: () => {} }))
@@ -411,5 +497,134 @@ describe('exportTimeline Input ownership (H6)', () => {
     )
     expect(mediabunnyState.inputs).toHaveLength(2)
     expect(mediabunnyState.inputs.every((input) => input.disposed)).toBe(true)
+  })
+
+  it('rechecks cancellation at the commit boundary on the video path', async () => {
+    const fileSink = sink()
+    const handle = { cancelled: false }
+    let reads = 0
+    const options = {
+      get fileStream() {
+        reads += 1
+        // Read 1 creates the export output; read 2 is the commit boundary.
+        if (reads === 2) handle.cancelled = true
+        return fileSink
+      },
+    }
+    await expect(exportTimeline(videoDoc(1), options, handle)).rejects.toThrow('Export cancelled')
+    expect(fileSink.calls).toEqual(['abort'])
+  })
+
+  it('closes the primary decoded sample when its bitmap conversion rejects', async () => {
+    vi.stubGlobal('createImageBitmap', async () => {
+      throw new Error('primary bitmap failed')
+    })
+    await expect(exportTimeline(videoDoc(1), { fileStream: sink() as never })).rejects.toThrow(
+      'primary bitmap failed',
+    )
+    expect(mediabunnyState.samples).toHaveLength(1)
+    expect(mediabunnyState.samples[0].closed).toBe(true)
+  })
+
+  it('closes both decoded samples when a blend bitmap conversion rejects', async () => {
+    let bitmaps = 0
+    vi.stubGlobal('createImageBitmap', async () => {
+      bitmaps += 1
+      // Frame 0 decodes a primary and a partner; reject the partner's bitmap.
+      if (bitmaps === 2) throw new Error('bitmap failed')
+      return { close: () => {} }
+    })
+    const doc = videoDoc(1)
+    // Half speed reads below the source frame rate, so the export blends.
+    doc.project.tracks[0].clips[0].speed = 0.5
+    await expect(exportTimeline(doc, { fileStream: sink() as never })).rejects.toThrow(
+      'bitmap failed',
+    )
+    expect(mediabunnyState.samples.length).toBeGreaterThanOrEqual(2)
+    expect(mediabunnyState.samples.every((sample) => sample.closed)).toBe(true)
+  })
+
+  it('does not finalize when cancellation lands during the last frame submit', async () => {
+    const total = exportFrameCount(1, 30)
+    const handle = { cancelled: false }
+    mediabunnyState.onAdd = (count) => {
+      if (count === total) handle.cancelled = true
+    }
+    await expect(
+      exportTimeline(videoDoc(1), { fileStream: sink() as never }, handle),
+    ).rejects.toThrow('Export cancelled')
+    expect(mediabunnyState.finalizeCalls).toBe(0)
+    expect(mediabunnyState.cancelCalls).toBe(1)
+  })
+
+  it('stops after the sink-start await when cancelled before image preload', async () => {
+    class HangingImage {
+      src = ''
+      complete = false
+      decode(): Promise<void> {
+        return new Promise(() => undefined)
+      }
+    }
+    vi.stubGlobal('Image', HangingImage)
+    let releaseStart!: () => void
+    mediabunnyState.startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve
+    })
+    const imageDoc = createDoc()
+    imageDoc.media = [
+      createMediaAsset({
+        id: 'still',
+        kind: 'image',
+        name: 'still.png',
+        duration: 0,
+        width: 64,
+        height: 64,
+        url: 'blob:still',
+      }),
+    ]
+    imageDoc.project.tracks = [
+      createTrack('video', 1, {
+        id: 'v1',
+        clips: [createClip({ id: 'img', mediaId: 'still', start: 0, duration: 1 })],
+      }),
+    ]
+    const handle = { cancelled: false }
+    const run = exportTimeline(imageDoc, { fileStream: sink() as never }, handle).then(
+      () => 'resolved',
+      (error) => (error instanceof Error ? error.message : String(error)),
+    )
+    await vi.waitFor(() => expect(mediabunnyState.startCalls).toBe(1))
+    handle.cancelled = true
+    releaseStart()
+    mediabunnyState.startGate = null
+    const outcome = await Promise.race([
+      run,
+      new Promise<string>((resolve) => setTimeout(() => resolve('timeout'), 250)),
+    ])
+    expect(outcome).toBe('Export cancelled')
+    expect(mediabunnyState.finalizeCalls).toBe(0)
+    expect(mediabunnyState.cancelCalls).toBe(1)
+  })
+
+  it('checks cancellation after the audio source is created before starting the encoder', async () => {
+    vi.stubGlobal('AudioBuffer', FakeAudioBuffer)
+    vi.stubGlobal('OfflineAudioContext', FakeOfflineContext)
+    let release!: (supported: boolean) => void
+    mediabunnyState.audioProbeCalls = 0
+    mediabunnyState.audioGate = new Promise<boolean>((resolve) => {
+      release = resolve
+    })
+    try {
+      const handle = { cancelled: false }
+      const run = exportTimeline(videoDocWithAudio(), { fileStream: sink() as never }, handle)
+      await vi.waitFor(() => expect(mediabunnyState.audioProbeCalls).toBeGreaterThan(0))
+      handle.cancelled = true
+      release(true)
+      await expect(run).rejects.toThrow('Export cancelled')
+      expect(mediabunnyState.startCalls).toBe(0)
+      expect(mediabunnyState.cancelCalls).toBe(1)
+    } finally {
+      mediabunnyState.audioGate = null
+    }
   })
 })

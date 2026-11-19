@@ -430,9 +430,10 @@ describe('media cleanup', () => {
 
   it('deletes only unclaimed hashes outside the keep set and reports the size', async () => {
     const { fake, claimedHash, keptHash, orphanHash } = await seeded()
+    const sidecarBytes = fake.get(`/${PROJECT}/${orphanHash}.json`)!.bytes.length
     const result = await cleanProjectMedia(PROJECT, [keptHash])
     expect(result.deleted).toEqual([orphanHash])
-    expect(result.reclaimed).toBe(mediaFile('orphan').size)
+    expect(result.reclaimed).toBe(mediaFile('orphan').size + sidecarBytes)
     expect(result.claimsUnreadable).toBe(false)
     expect(await readMediaFile(PROJECT, claimedHash)).not.toBeNull()
     expect(await readMediaFile(PROJECT, keptHash)).not.toBeNull()
@@ -457,10 +458,14 @@ describe('media cleanup', () => {
 
   it('clear-all removes every entry and the claims directory, keeping the project dir', async () => {
     const { fake, claimedHash, keptHash, orphanHash } = await seeded()
+    const sidecarBytes = [claimedHash, keptHash, orphanHash].reduce(
+      (total, hash) => total + (fake.get(`/${PROJECT}/${hash}.json`)?.bytes.length ?? 0),
+      0,
+    )
     const result = await clearProjectMedia(PROJECT)
     expect(result.deleted).toBe(3)
     expect(result.reclaimed).toBe(
-      mediaFile('claimed').size + mediaFile('kept').size + mediaFile('orphan').size,
+      mediaFile('claimed').size + mediaFile('kept').size + mediaFile('orphan').size + sidecarBytes,
     )
     for (const hash of [claimedHash, keptHash, orphanHash]) {
       expect(fake.get(`/${PROJECT}/${hash}`)).toBeUndefined()
@@ -500,11 +505,12 @@ describe('media cleanup', () => {
     fake.put(`/${PROJECT}/.tmp-leftover`, '123')
     fake.put(`/${PROJECT}/.quarantine-old`, '45')
     fake.put(`/${PROJECT}/${'b'.repeat(64)}.json`, '1234')
+    const pairedSidecar = fake.get(`/${PROJECT}/${hash}.json`)!.bytes.length
 
     const result = await clearProjectMedia(PROJECT)
 
     expect(result.deleted).toBe(1)
-    expect(result.reclaimed).toBe(file.size + 3 + 2 + 4)
+    expect(result.reclaimed).toBe(file.size + pairedSidecar + 3 + 2 + 4)
     expect(fake.get(`/${PROJECT}/.tmp-leftover`)).toBeUndefined()
     expect(fake.get(`/${PROJECT}/.quarantine-old`)).toBeUndefined()
     expect(fake.get(`/${PROJECT}/${'b'.repeat(64)}.json`)).toBeUndefined()
@@ -524,6 +530,44 @@ describe('media cleanup', () => {
     // The failure surfaced instead of reading as "nothing to clean": the
     // entry is still there and no size was counted as reclaimed.
     expect(fake.get(`/${PROJECT}/${hash}`)?.bytes).toBeDefined()
+  })
+
+  it('cleans an entry whose sidecar name is a directory, counting only readable bytes', async () => {
+    const fake = createFakeOpfs()
+    stubStorage(fake)
+    await ensureProjectMedia(PROJECT)
+    const file = mediaFile('orphan with sidecar directory')
+    const hash = await hashFile(file)
+    await writeMediaFile(PROJECT, hash, file)
+    const sidecar = `/${PROJECT}/${hash}.json`
+    fake.remove(sidecar)
+    fake.directories.add(sidecar)
+
+    const result = await cleanProjectMedia(PROJECT, [])
+
+    expect(result.deleted).toEqual([hash])
+    expect(result.reclaimed).toBe(file.size)
+    expect(fake.get(`/${PROJECT}/${hash}`)).toBeUndefined()
+    expect(fake.directories.has(sidecar)).toBe(false)
+  })
+
+  it('clear-all removes an entry whose sidecar name is a directory', async () => {
+    const fake = createFakeOpfs()
+    stubStorage(fake)
+    await ensureProjectMedia(PROJECT)
+    const file = mediaFile('clear with sidecar directory')
+    const hash = await hashFile(file)
+    await writeMediaFile(PROJECT, hash, file)
+    const sidecar = `/${PROJECT}/${hash}.json`
+    fake.remove(sidecar)
+    fake.directories.add(sidecar)
+
+    const result = await clearProjectMedia(PROJECT)
+
+    expect(result.deleted).toBe(1)
+    expect(result.reclaimed).toBe(file.size)
+    expect(fake.get(`/${PROJECT}/${hash}`)).toBeUndefined()
+    expect(fake.directories.has(sidecar)).toBe(false)
   })
 
   it('reports storage estimates and persistence', async () => {
@@ -740,9 +784,10 @@ describe('font namespace in the durable store (0.25.0)', () => {
     await writeMediaFile(PROJECT, mediaHash, media)
     await writeMediaClaim(PROJECT, [mediaHash])
 
+    const sidecarBytes = fake.get(`/${PROJECT}/fonts/${droppedHash}.json`)!.bytes.length
     const result = await cleanProjectMedia(PROJECT, [keptHash])
     expect(result.deleted).toEqual([droppedHash])
-    expect(result.reclaimed).toBe(dropped.size)
+    expect(result.reclaimed).toBe(dropped.size + sidecarBytes)
     expect(await listMediaFiles(PROJECT, 'fonts')).toEqual([{ hash: keptHash, size: kept.size }])
     expect(await readMediaFile(PROJECT, mediaHash)).not.toBeNull()
   })

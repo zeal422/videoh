@@ -277,8 +277,18 @@ export function ExportDialog({
         },
         handle,
       )
+      // A newer export can start after this one was cancelled. Its completion
+      // owns the dialog now: this stale result must not change the view, toast,
+      // or history.
+      if (handleRef.current !== handle) return
       setResultContainer(exportContainer)
-      if (result.kind === 'file') {
+      if (handle.cancelled) {
+        // Cancellation landed after the engine's last poll (for example while
+        // close() was committing): never report the result as a success. The
+        // user cancel already returned to setup; the project-switch guard did
+        // not, so mirror the catch's phase.
+        setPhase('setup')
+      } else if (result.kind === 'file') {
         setResultFile({ name: result.fileName, bytes: result.bytes })
         setPhase('done')
         toast({
@@ -295,8 +305,11 @@ export function ExportDialog({
           description: `${(result.blob.size / 1e6).toFixed(1)} MB ${exportSpec.label}`,
         })
       }
-      trackExportSuccess()
+      if (!handle.cancelled) trackExportSuccess()
     } catch (error) {
+      // A superseded export must not surface its own failure or reset the newer
+      // export's view.
+      if (handleRef.current !== handle) return
       const message = error instanceof Error ? error.message : String(error)
       if (message !== 'Export cancelled') {
         toast({
@@ -308,7 +321,9 @@ export function ExportDialog({
       setPhase('setup')
     } finally {
       stopOnProjectSwitch()
-      handleRef.current = null
+      // Only the export that still owns the ref may clear it. A stale finally
+      // used to null a newer export's handle, disabling its Cancel button.
+      if (handleRef.current === handle) handleRef.current = null
     }
   }
 

@@ -218,6 +218,12 @@ export function createFakeOpfs(options: { quotaBytes?: number } = {}): FakeOpfs 
         throw invalidName()
       }
       const path = this.childPath(name)
+      // Real OPFS getFileHandle() on a directory throws TypeMismatchError, not
+      // NotFoundError. Cleanup must size such an entry quietly and still try to
+      // remove it, so the double has to model the distinction.
+      if (directories.has(path)) {
+        throw new DOMException('The requested file is a directory', 'TypeMismatchError')
+      }
       if (!files.has(path) && !options?.create) throw notFound()
       if (!files.has(path)) files.set(path, { bytes: new Uint8Array(), type: '' })
       const handle = new FakeFileHandle(this, name)

@@ -25,8 +25,16 @@ describe('preview drag-to-position (text)', () => {
   it('wires pointer down/move/up/cancel on the preview canvas', () => {
     expect(panel).toMatch(/onPointerDown=\{onCanvasPointerDown\}/)
     expect(panel).toMatch(/onPointerMove=\{onCanvasPointerMove\}/)
-    expect(panel).toMatch(/onPointerUp=\{\(e\) => endTextDrag\(true, e\)\}/)
+    expect(panel).toMatch(/onPointerUp=\{onCanvasPointerUp\}/)
     expect(panel).toMatch(/onPointerCancel=\{\(e\) => endTextDrag\(false, e\)\}/)
+    // The release path rechecks the captured clip before committing. Bound the
+    // slice to the handler: the later window listener also calls the predicate,
+    // so an open-ended regex would pass even if the canvas check were removed.
+    const releaseStart = panel.indexOf('const onCanvasPointerUp =')
+    const releaseEnd = panel.indexOf('useEffect(', releaseStart)
+    expect(releaseStart).toBeGreaterThan(-1)
+    expect(releaseEnd).toBeGreaterThan(releaseStart)
+    expect(panel.slice(releaseStart, releaseEnd)).toContain('textDragStillValid(origin)')
   })
 
   it('grab cursor only when a text clip is live at the playhead', () => {

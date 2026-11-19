@@ -169,6 +169,78 @@ describe('EditorShell dangling-gesture safety net', () => {
     expect(isTransientActive()).toBe(true)
     useEditorStore.getState().cancelTransient()
   })
+
+  function mountTextDrag(): { canvas: HTMLElement; clipId: string } {
+    const clip = createTextClip({ id: 'clip_shell_text', start: 0, duration: 4 })
+    const track = createTrack('text', 1, { clips: [clip] })
+    const doc: Doc = {
+      project: {
+        tracks: [track],
+        id: 'p_shell_text',
+        name: 'shell text',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      },
+      media: [],
+    }
+    useEditorStore.setState({
+      doc,
+      selection: clip.id,
+      selections: [clip.id],
+      playhead: 1,
+    })
+    render(<EditorShell />)
+    const canvas = screen.getByTestId('preview-canvas')
+    canvas.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 400,
+        bottom: 225,
+        width: 400,
+        height: 225,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect
+    return { canvas, clipId: clip.id }
+  }
+
+  function shellTextStyleX(): number | undefined {
+    return useEditorStore.getState().doc.project.tracks[0].clips[0].style?.x
+  }
+
+  it('a shell-mounted release on the canvas cancels an invalid text drag', () => {
+    const { canvas } = mountTextDrag()
+    const pastBefore = useEditorStore.getState().past.length
+    fireEvent.pointerDown(canvas, { button: 0, clientX: 100, clientY: 100, pointerId: 5 })
+    fireEvent.pointerMove(canvas, { clientX: 150, clientY: 100, pointerId: 5 })
+    expect(shellTextStyleX()).toBeCloseTo(0.625, 5)
+
+    useEditorStore.getState().setPlayhead(5)
+    fireEvent.pointerUp(canvas, { pointerId: 5 })
+
+    expect(shellTextStyleX()).toBeCloseTo(0.5, 5)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore)
+  })
+
+  it('a shell-mounted release outside the canvas cancels an invalid text drag', () => {
+    const { canvas } = mountTextDrag()
+    const pastBefore = useEditorStore.getState().past.length
+    fireEvent.pointerDown(canvas, { button: 0, clientX: 100, clientY: 100, pointerId: 5 })
+    fireEvent.pointerMove(canvas, { clientX: 150, clientY: 100, pointerId: 5 })
+    expect(shellTextStyleX()).toBeCloseTo(0.625, 5)
+
+    // The playhead leaves the clip, then capture loss sends the release
+    // outside the canvas. The shell's safety net must not commit the stale
+    // preview before the drag can cancel it.
+    useEditorStore.getState().setPlayhead(5)
+    fireEvent.pointerUp(document.body, { pointerId: 5 })
+
+    expect(shellTextStyleX()).toBeCloseTo(0.5, 5)
+    expect(useEditorStore.getState().past.length).toBe(pastBefore)
+  })
 })
 
 describe('preview active-sequence reset (0.8.1)', () => {

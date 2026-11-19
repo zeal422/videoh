@@ -56,62 +56,73 @@ async function decodeAudio(file: File): Promise<AudioBuffer | null> {
 /** Transcodes a file to a lower-resolution A/V MP4 blob per the plan. */
 async function transcode(file: File, plan: ProxyPlan): Promise<Blob> {
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS })
-  const videoTrack = await input.getPrimaryVideoTrack()
-  if (!videoTrack) throw new Error('Proxy source has no video track')
+  try {
+    const videoTrack = await input.getPrimaryVideoTrack()
+    if (!videoTrack) throw new Error('Proxy source has no video track')
 
-  const sink = new CanvasSink(videoTrack, {
-    width: plan.width,
-    height: plan.height,
-    fit: 'contain',
-  })
-  const canvas = document.createElement('canvas')
-  canvas.width = plan.width
-  canvas.height = plan.height
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('Proxy canvas unavailable')
-
-  const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() })
-  const videoSource = new CanvasSource(canvas, {
-    codec: plan.videoCodec,
-    quality: new Quality({ bitrate: plan.videoBitrate }),
-  })
-  output.addVideoTrack(videoSource)
-
-  // The source's OWN demuxed audio track is the authority on whether the proxy
-  // must carry audio. `plan.includeAudio` comes from the import-time waveform
-  // probe, which can fail even when the element still plays the audio; trusting
-  // it alone could ship a video-only proxy that silences the clip.
-  const sourceHasAudio = (await input.getAudioTracks()).length > 0
-  let audioSource: AudioBufferSource | null = null
-  let audioBuffer: AudioBuffer | null = null
-  if (sourceHasAudio || plan.includeAudio) {
-    audioBuffer = await decodeAudio(file)
-    // A proxy that cannot carry the source audio must not be marked ready: a
-    // video-only proxy would silence the clip in both monitors. Fail the build
-    // so the element stays on the original instead.
-    if (!audioBuffer) throw new Error('Proxy audio could not be decoded')
-    audioSource = new AudioBufferSource({
-      codec: await pickAudioCodec(() => canEncodeAudio('aac')),
-      quality: new Quality({ bitrate: AUDIO_BITRATE }),
+    const sink = new CanvasSink(videoTrack, {
+      width: plan.width,
+      height: plan.height,
+      fit: 'contain',
     })
-    output.addAudioTrack(audioSource)
-  }
+    const canvas = document.createElement('canvas')
+    canvas.width = plan.width
+    canvas.height = plan.height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('Proxy canvas unavailable')
 
-  await output.start()
-  for await (const frame of sink.canvases()) {
-    ctx.clearRect(0, 0, plan.width, plan.height)
-    ctx.drawImage(frame.canvas, 0, 0)
-    await videoSource.add(frame.timestamp, frame.duration)
-  }
-  if (audioSource && audioBuffer) {
-    await audioSource.add(audioBuffer)
-    audioSource.close()
-  }
-  await output.finalize()
+    const output = new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() })
+    const videoSource = new CanvasSource(canvas, {
+      codec: plan.videoCodec,
+      quality: new Quality({ bitrate: plan.videoBitrate }),
+    })
+    output.addVideoTrack(videoSource)
 
-  const buffer = (output.target as BufferTarget).buffer
-  if (!buffer) throw new Error('Proxy produced no data')
-  return new Blob([buffer], { type: 'video/mp4' })
+    // The source's OWN demuxed audio track is the authority on whether the proxy
+    // must carry audio. `plan.includeAudio` comes from the import-time waveform
+    // probe, which can fail even when the element still plays the audio; trusting
+    // it alone could ship a video-only proxy that silences the clip.
+    const sourceHasAudio = (await input.getAudioTracks()).length > 0
+    let audioSource: AudioBufferSource | null = null
+    let audioBuffer: AudioBuffer | null = null
+    if (sourceHasAudio || plan.includeAudio) {
+      audioBuffer = await decodeAudio(file)
+      // A proxy that cannot carry the source audio must not be marked ready: a
+      // video-only proxy would silence the clip in both monitors. Fail the build
+      // so the element stays on the original instead.
+      if (!audioBuffer) throw new Error('Proxy audio could not be decoded')
+      audioSource = new AudioBufferSource({
+        codec: await pickAudioCodec(() => canEncodeAudio('aac')),
+        quality: new Quality({ bitrate: AUDIO_BITRATE }),
+      })
+      output.addAudioTrack(audioSource)
+    }
+
+    await output.start()
+    for await (const frame of sink.canvases()) {
+      ctx.clearRect(0, 0, plan.width, plan.height)
+      ctx.drawImage(frame.canvas, 0, 0)
+      await videoSource.add(frame.timestamp, frame.duration)
+    }
+    if (audioSource && audioBuffer) {
+      await audioSource.add(audioBuffer)
+      audioSource.close()
+    }
+    await output.finalize()
+
+    const buffer = (output.target as BufferTarget).buffer
+    if (!buffer) throw new Error('Proxy produced no data')
+    return new Blob([buffer], { type: 'video/mp4' })
+  } finally {
+    // Every exit path releases the demuxer, source reader and decoders: the
+    // import path starts these builds automatically, and a failed build that
+    // leaked them would accumulate for the rest of the session.
+    try {
+      input.dispose()
+    } catch {
+      // An Input already released by a failed probe is harmless.
+    }
+  }
 }
 
 /**

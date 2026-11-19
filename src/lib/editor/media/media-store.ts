@@ -903,13 +903,19 @@ export async function cleanProjectMedia(
   let reclaimed = 0
   for (const entry of entries) {
     if (keep.has(entry.hash)) continue
+    // The sidecar is deleted with its media entry. Size it quietly so a
+    // directory or unreadable sidecar name cannot block the main delete; a
+    // readable sidecar still reports its exact bytes.
+    const sidecarSize = await entrySizeQuiet(entry.dir, sidecarName(entry.hash))
     // Strict: a failed delete must surface instead of reading as "nothing to
     // clean" downstream. Temp and quarantine sweeping above stays best-effort.
     if (await removeEntryStrict(entry.dir, entry.hash)) {
       deleted.add(entry.hash)
       reclaimed += entry.size
     }
-    await removeEntryStrict(entry.dir, sidecarName(entry.hash))
+    if (await removeEntryStrict(entry.dir, sidecarName(entry.hash))) {
+      reclaimed += sidecarSize
+    }
   }
   return {
     deleted: [...deleted].sort(),
@@ -951,11 +957,17 @@ export async function clearProjectMedia(projectId: string): Promise<MediaClearRe
     if (isValidContentHash(name)) {
       const file = await readFileHandle(dir, name)
       const size = file?.size ?? 0
+      // Same rule as cleanProjectMedia: an unreadable or directory-shaped
+      // sidecar name must not block the main delete. Readable sidecars keep
+      // their exact byte count.
+      const sidecarSize = await entrySizeQuiet(dir, sidecarName(name))
       if (await removeEntryStrict(dir, name)) {
         deleted += 1
         reclaimed += size
       }
-      await removeEntryStrict(dir, sidecarName(name))
+      if (await removeEntryStrict(dir, sidecarName(name))) {
+        reclaimed += sidecarSize
+      }
       continue
     }
     // A temp entry, a quarantine leftover, or an orphaned sidecar is not valid

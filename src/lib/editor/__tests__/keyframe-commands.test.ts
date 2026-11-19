@@ -464,6 +464,52 @@ describe('computeDuckingKeyframes', () => {
     ])
   })
 
+  it('emits one floor keyframe at time zero when dialogue is loud at the clip head', () => {
+    const { doc, music, dialogue } = duckSetup(0.8)
+    const kfs = computeDuckingKeyframes(doc, music, [{ ...dialogue, start: 0 }])
+    // A unity key and the floor key at the same time made the first instant
+    // play unducked; only the floor belongs at 0.
+    expect(kfs[0]).toEqual({ time: 0, value: 0.4 })
+    const times = kfs.map((keyframe) => keyframe.time)
+    expect(new Set(times).size).toBe(times.length)
+    // A zero attack is the same story: the clip head has nowhere to ramp from.
+    const zero = computeDuckingKeyframes(doc, music, [{ ...dialogue, start: 0 }], {
+      attackRelease: 0,
+    })
+    expect(zero[0]).toEqual({ time: 0, value: 0.4 })
+    const zeroTimes = zero.map((keyframe) => keyframe.time)
+    expect(new Set(zeroTimes).size).toBe(zeroTimes.length)
+  })
+
+  it('keeps pre-dialogue unity when the attack is zero', () => {
+    const { doc, music, dialogue } = duckSetup(0.8)
+    const kfs = computeDuckingKeyframes(doc, music, [dialogue], { attackRelease: 0 })
+    const ducked = { ...music, keyframes: { volume: kfs } }
+    // With no ramp, the first keyframe would otherwise be the floor at 2 s and
+    // constant extension would duck the music from the clip head onward.
+    expect(animatedValue(ducked, 'volume', 0)).toBe(1)
+    expect(animatedValue(ducked, 'volume', 1.9)).toBe(1)
+    expect(animatedValue(ducked, 'volume', 2)).toBe(0.4)
+    expect(kfs[0]).toEqual({ time: 1.999, value: 1 })
+  })
+
+  it('recovers to unity when the release has zero duration', () => {
+    const { doc, music, dialogue } = duckSetup(0.8)
+    const kfs = computeDuckingKeyframes(doc, music, [dialogue], { attackRelease: 0 })
+    const ducked = { ...music, keyframes: { volume: kfs } }
+    // The dialogue ends at 6 s. A zero release has no ramp span, so the floor
+    // must hold to just before 6 and then snap to unity; otherwise the last
+    // keyframe stays at the floor and the music never recovers.
+    expect(animatedValue(ducked, 'volume', 5.999)).toBe(0.4)
+    expect(animatedValue(ducked, 'volume', 6)).toBe(1)
+    expect(kfs.map((k) => [k.time, k.value])).toEqual([
+      [1.999, 1],
+      [2, 0.4],
+      [5.999, 0.4],
+      [6, 1],
+    ])
+  })
+
   it('holds the floor through the dialogue instead of creeping back up', () => {
     const { doc, music, dialogue } = duckSetup(0.8)
     const ducked = {

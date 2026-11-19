@@ -339,13 +339,14 @@ export function computePeaks(buffer: AudioBuffer, buckets = WAVEFORM_BUCKETS): n
   const channelCount = Math.min(2, buffer.numberOfChannels)
   const ch0 = buffer.getChannelData(0)
   const ch1 = channelCount > 1 ? buffer.getChannelData(1) : null
-  const perBucket = Math.max(1, Math.floor(length / buckets))
   const peaks: number[] = new Array(buckets).fill(0)
 
   let max = 0
   for (let b = 0; b < buckets; b++) {
-    const start = b * perBucket
-    const end = Math.min(length, start + perBucket)
+    // Proportional bucket boundaries cover every sample exactly once, including
+    // the tail of a length that is not divisible by the bucket count.
+    const start = Math.floor((b * length) / buckets)
+    const end = Math.floor(((b + 1) * length) / buckets)
     let peak = 0
     for (let i = start; i < end; i++) {
       const v = ch1 ? Math.abs(ch0[i]) + Math.abs(ch1[i]) : Math.abs(ch0[i])

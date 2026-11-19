@@ -1,7 +1,7 @@
-import { activeTracks, findMedia, findSequence, rootReachableSequences } from './factories'
+import { activeTracks, findMedia, findSequence } from './factories'
 import { assetHasAudio, hasLinkedAudioTwin, linkGroupChangesRateIgnoringPlayability } from './links'
 import { audibleTrackIds } from './tracks'
-import type { Doc, Track } from './types'
+import type { Clip, Doc, MediaAsset, Track } from './types'
 
 /**
  * Offline-media detection for the monitor.
@@ -18,6 +18,88 @@ import type { Doc, Track } from './types'
  * - Names are deduplicated, so an A/V pair of the same file reports once.
  */
 /**
+ * One clip reachable from the project root, with the source it would read and
+ * the audibility set of the sequence that owns its track.
+ */
+interface OfflineScanEntry {
+  clip: Clip
+  track: Track
+  asset: MediaAsset | undefined
+  audibleTracks: Set<string>
+}
+
+/**
+ * Walks every clip the root timeline renders, descending into compound
+ * sequences only over the span the container actually shows. Both export
+ * gates share this walk so their time windows cannot drift; their per-clip
+ * predicates stay separate.
+ *
+ * `descend` lets the audio gate stop at a muted compound (or one whose track
+ * is soloed out) before visiting its children, exactly like the old inline
+ * loop did. The visual gate always descends.
+ *
+ * @internal exported for tests
+ */
+export function scanOfflineClips(
+  doc: Doc,
+  visit: (entry: OfflineScanEntry) => boolean | void,
+  descend: (entry: OfflineScanEntry) => boolean = () => true,
+): void {
+  // A valid sequence graph may share a child sequence through several
+  // compounds. Do not walk the same child window twice: the visible clips and
+  // audibility set are identical, so the first scan already answered for it.
+  const seen = new Set<string>()
+  let done = false
+  const scan = (
+    tracks: readonly Track[],
+    windowEnd: number = Number.POSITIVE_INFINITY,
+    sequenceId?: string,
+  ): void => {
+    if (done) return
+    if (sequenceId !== undefined) {
+      // A compound always renders its child from child time zero (it has no
+      // source window), so a sequence's visible span is [0, windowEnd]. Key by
+      // the LOCAL end: the same child window at different root positions is
+      // one scan, while a partially visible window stays distinct from a full
+      // one.
+      const key = `${sequenceId}\u0000${windowEnd}`
+      if (seen.has(key)) return
+      seen.add(key)
+    }
+    const audibleTracks = audibleTrackIds(tracks)
+    for (const track of tracks) {
+      if (done) return
+      for (const clip of track.clips) {
+        if (done) return
+        // A nested clip outside its container's visible span is never
+        // rendered or mixed, so its missing bytes cannot matter.
+        if (clip.start >= windowEnd) continue
+        const entry: OfflineScanEntry = {
+          clip,
+          track,
+          asset: findMedia(doc, clip.mediaId),
+          audibleTracks,
+        }
+        if (clip.sequenceId) {
+          const sequence = findSequence(doc, clip.sequenceId)
+          if (sequence && descend(entry)) {
+            // The child starts at local zero; the parent's remaining visible
+            // span caps how much of it renders.
+            scan(sequence.tracks, Math.min(clip.duration, windowEnd - clip.start), sequence.id)
+          }
+          continue
+        }
+        if (visit(entry) === true) {
+          done = true
+          return
+        }
+      }
+    }
+  }
+  scan(doc.project.tracks)
+}
+
+/**
  * True when any USED clip's media cannot render: its asset is offline (a
  * restored session's url-less entry), or its `mediaId` no longer resolves at
  * all. Per-clip on purpose: an offline asset nothing uses must not block an
@@ -26,17 +108,15 @@ import type { Doc, Track } from './types'
  * containers use `offlineAudibleMedia` instead.
  */
 export function hasOfflineMedia(doc: Doc): boolean {
-  // Root plus every ROOT-REACHABLE compound sequence (0.8.1): a nested clip
-  // that cannot render blocks the export, but an orphan sequence the export
-  // never renders must not.
-  const tracks = [...doc.project.tracks, ...rootReachableSequences(doc).flatMap((s) => s.tracks)]
-  return tracks.some((t) =>
-    t.clips.some((c) => {
-      if (!c.mediaId) return false
-      const asset = findMedia(doc, c.mediaId)
-      return !asset || asset.missing || !asset.url
-    }),
-  )
+  let offline = false
+  scanOfflineClips(doc, ({ clip, asset }) => {
+    if (!clip.mediaId) return
+    if (!asset || asset.missing || !asset.url) {
+      offline = true
+      return true
+    }
+  })
+  return offline
 }
 
 /**
@@ -50,46 +130,28 @@ export function hasOfflineMedia(doc: Doc): boolean {
 export function offlineAudibleMedia(doc: Doc): string[] {
   const names: string[] = []
   const seen = new Set<string>()
-  const scan = (
-    tracks: readonly Track[],
-    offset: number,
-    limitEnd: number = Number.POSITIVE_INFINITY,
-  ): void => {
-    const audibleTracks = audibleTrackIds(tracks)
-    for (const track of tracks) {
-      for (const clip of track.clips) {
-        if (clip.muted || !audibleTracks.has(track.id)) continue
-        const startAt = offset + clip.start
-        // A nested clip outside its container's visible span is never mixed,
-        // so its missing bytes cannot lose audio in the export.
-        if (Math.min(clip.duration, limitEnd - startAt) <= 0) continue
-        if (clip.sequenceId) {
-          const sequence = findSequence(doc, clip.sequenceId)
-          if (sequence) {
-            scan(sequence.tracks, startAt, Math.min(limitEnd, startAt + clip.duration))
-          }
-          continue
-        }
-        if (!clip.mediaId) continue
-        const asset = findMedia(doc, clip.mediaId)
-        if (asset && !asset.missing && asset.url) continue
-        if (asset?.kind === 'image') continue
-        const audible = !asset
-          ? true
-          : asset.kind === 'audio' ||
-            clip.audioOnly ||
-            (asset.kind === 'video' && assetHasAudio(asset) && !hasLinkedAudioTwin(doc, clip))
-        if (!audible) continue
-        if (clip.reverse) continue
-        if (linkGroupChangesRateIgnoringPlayability(doc, clip)) continue
-        const name = asset?.name ?? clip.mediaId
-        if (seen.has(name)) continue
-        seen.add(name)
-        names.push(name)
-      }
-    }
-  }
-  scan(doc.project.tracks, 0)
+  scanOfflineClips(
+    doc,
+    ({ clip, track, asset, audibleTracks }) => {
+      if (clip.muted || !audibleTracks.has(track.id)) return
+      if (!clip.mediaId) return
+      if (asset && !asset.missing && asset.url) return
+      if (asset?.kind === 'image') return
+      const audible = !asset
+        ? true
+        : asset.kind === 'audio' ||
+          clip.audioOnly ||
+          (asset.kind === 'video' && assetHasAudio(asset) && !hasLinkedAudioTwin(doc, clip))
+      if (!audible) return
+      if (clip.reverse) return
+      if (linkGroupChangesRateIgnoringPlayability(doc, clip)) return
+      const name = asset?.name ?? clip.mediaId
+      if (seen.has(name)) return
+      seen.add(name)
+      names.push(name)
+    },
+    ({ clip, track, audibleTracks }) => !clip.muted && audibleTracks.has(track.id),
+  )
   return names
 }
 

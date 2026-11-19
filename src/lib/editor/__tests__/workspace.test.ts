@@ -490,3 +490,24 @@ describe('workspace store persistence (0.18.0)', () => {
     expect('collapsed' in stored).toBe(false)
   })
 })
+
+describe('workspace store blocked storage', () => {
+  it('falls back to defaults when the localStorage getter throws at module load', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() {
+        throw new Error('storage blocked')
+      },
+    })
+    try {
+      vi.resetModules()
+      const fresh = await import('../workspace-store')
+      expect(fresh.useWorkspaceStore.getState().hidden).toEqual(defaultWorkspace().hidden)
+    } finally {
+      if (descriptor) Object.defineProperty(window, 'localStorage', descriptor)
+      else delete (window as unknown as { localStorage?: unknown }).localStorage
+      vi.resetModules()
+    }
+  })
+})

@@ -9,7 +9,7 @@
  * elements. The plan pass already refused an empty playhead and offline media.
  */
 
-import { activeTracks, sourceTimeAt } from '../factories'
+import { activeTracks, clampSourceTime, sourceTimeAt } from '../factories'
 import { drawFrame } from '../playback/compositor'
 import type { Clip, Doc } from '../types'
 
@@ -151,7 +151,13 @@ export async function renderFreezeFrame(
       if (asset.kind === 'image') {
         frames.set(key, await loadImage(asset.url))
       } else if (asset.kind === 'video') {
-        const video = await loadVideoFrame(asset.url, sourceTimeAt(request.clip, request.localTime))
+        // Clamped like every other decode path: a reverse head or an
+        // over-consuming ramp asks for source the asset no longer holds, and
+        // the still must capture the same last readable frame as the monitor.
+        const video = await loadVideoFrame(
+          asset.url,
+          clampSourceTime(sourceTimeAt(request.clip, request.localTime), asset),
+        )
         videos.push(video)
         frames.set(key, video)
       }

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { createClip, createDoc, createMediaAsset, createTextClip, createTrack } from '../factories'
-import { hasOfflineMedia, offlineAudibleMedia, offlineMediaAt } from '../offline'
+import { hasOfflineMedia, offlineAudibleMedia, offlineMediaAt, scanOfflineClips } from '../offline'
 import type { Clip, Doc, MediaAsset, TrackKind } from '../types'
 
 /**
@@ -116,6 +116,126 @@ describe('hasOfflineMedia (the export gate predicate)', () => {
   it('passes a fully online doc', () => {
     const asset = video('online.mp4', { url: 'blob:x' })
     const doc = buildDoc([asset], [createClip({ mediaId: asset.id, start: 0, duration: 4 })])
+    expect(hasOfflineMedia(doc)).toBe(false)
+  })
+
+  it('ignores nested offline media outside the compound visible span', () => {
+    const offline = video('nested-gone.mp4', { url: '', missing: true })
+    const root = createDoc()
+    const sequence: Doc['project']['sequences'] = [
+      {
+        id: 'seq_inner',
+        name: 'Inner',
+        tracks: [
+          createTrack('video', 1, {
+            id: 'inner_v',
+            clips: [createClip({ id: 'nested', mediaId: offline.id, start: 4, duration: 2 })],
+          }),
+        ],
+      },
+    ]
+    const doc: Doc = {
+      project: {
+        ...root.project,
+        tracks: [
+          createTrack('video', 1, {
+            id: 'v1',
+            clips: [createClip({ id: 'comp', sequenceId: 'seq_inner', start: 0, duration: 2 })],
+          }),
+        ],
+        sequences: sequence,
+      },
+      media: [offline],
+    }
+    // The compound renders inner local 0..2; the offline clip starts at 4.
+    expect(hasOfflineMedia(doc)).toBe(false)
+
+    // Moving it inside the visible span blocks the export again.
+    sequence![0].tracks[0].clips[0].start = 1
+    expect(hasOfflineMedia(doc)).toBe(true)
+  })
+
+  it('ignores a compound inPoint, matching the child-time-zero renderer', () => {
+    const offline = video('head-gone.mp4', { url: '', missing: true })
+    const root = createDoc()
+    const doc: Doc = {
+      project: {
+        ...root.project,
+        tracks: [
+          createTrack('video', 1, {
+            id: 'v1',
+            clips: [
+              createClip({
+                id: 'comp',
+                sequenceId: 'seq_inner',
+                start: 0,
+                duration: 2,
+                inPoint: 5,
+              }),
+            ],
+          }),
+        ],
+        sequences: [
+          {
+            id: 'seq_inner',
+            name: 'Inner',
+            tracks: [
+              createTrack('video', 1, {
+                id: 'inner_v',
+                clips: [createClip({ id: 'nested', mediaId: offline.id, start: 0, duration: 1 })],
+              }),
+            ],
+          },
+        ],
+      },
+      media: [offline],
+    }
+    // Preview and export pass container-local time to the child and never read
+    // a compound's inPoint; the scan must use the same child window.
+    expect(hasOfflineMedia(doc)).toBe(true)
+  })
+
+  it('clips a child compound window to the parent that renders it', () => {
+    const offline = video('deep-gone.mp4', { url: '', missing: true })
+    const root = createDoc()
+    const doc: Doc = {
+      project: {
+        ...root.project,
+        tracks: [
+          createTrack('video', 1, {
+            id: 'v1',
+            clips: [createClip({ id: 'outer', sequenceId: 'seq_outer', start: 8, duration: 2 })],
+          }),
+        ],
+        sequences: [
+          {
+            id: 'seq_outer',
+            name: 'Outer',
+            tracks: [
+              createTrack('video', 1, {
+                id: 'outer_v',
+                clips: [
+                  createClip({ id: 'inner', sequenceId: 'seq_deep', start: 0, duration: 10 }),
+                ],
+              }),
+            ],
+          },
+          {
+            id: 'seq_deep',
+            name: 'Deep',
+            tracks: [
+              createTrack('video', 1, {
+                id: 'deep_v',
+                clips: [createClip({ id: 'deep', mediaId: offline.id, start: 5, duration: 1 })],
+              }),
+            ],
+          },
+        ],
+      },
+      media: [offline],
+    }
+    // The outer compound is visible at root 8..10, so the child window is only
+    // child time 0..2: offline media at child time 5 is never rendered.
     expect(hasOfflineMedia(doc)).toBe(false)
   })
 })
@@ -360,5 +480,126 @@ describe('offline media across compound clips (0.8.1)', () => {
       },
     ]
     expect(hasOfflineMedia(doc)).toBe(false)
+  })
+})
+
+describe('offline scan graph bounds', () => {
+  it('scans an identical shared sequence window once', () => {
+    const asset = video('online.mp4', { url: 'blob:online' })
+    const doc = createDoc()
+    doc.media = [asset]
+    doc.project.sequences = [
+      {
+        id: 'seq_shared',
+        name: 'Shared',
+        tracks: [
+          createTrack('video', 1, {
+            id: 'seq_shared_track',
+            clips: [createClip({ id: 'shared_clip', mediaId: asset.id, start: 0, duration: 8 })],
+          }),
+        ],
+      },
+    ]
+    doc.project.tracks = [
+      createTrack('video', 1, {
+        id: 'root_shared',
+        clips: [
+          createClip({ id: 'c1', sequenceId: 'seq_shared', start: 0, duration: 2 }),
+          createClip({ id: 'c2', sequenceId: 'seq_shared', start: 0, duration: 2 }),
+          createClip({ id: 'c3', sequenceId: 'seq_shared', start: 0, duration: 2 }),
+        ],
+      }),
+    ]
+    let visits = 0
+    scanOfflineClips(doc, () => {
+      visits += 1
+    })
+    expect(visits).toBe(1)
+  })
+
+  it('scans an equivalent shared window at different root positions once', () => {
+    const asset = video('online.mp4', { url: 'blob:online' })
+    const doc = createDoc()
+    doc.media = [asset]
+    doc.project.sequences = [
+      {
+        id: 'seq_shared',
+        name: 'Shared',
+        tracks: [
+          createTrack('video', 1, {
+            id: 'seq_shared_track',
+            clips: [createClip({ id: 'shared_clip', mediaId: asset.id, start: 0, duration: 8 })],
+          }),
+        ],
+      },
+    ]
+    doc.project.tracks = [
+      createTrack('video', 1, {
+        id: 'root_shared',
+        clips: [
+          createClip({ id: 'c1', sequenceId: 'seq_shared', start: 0, duration: 2 }),
+          createClip({ id: 'c2', sequenceId: 'seq_shared', start: 10, duration: 2 }),
+          createClip({ id: 'c3', sequenceId: 'seq_shared', start: 20, duration: 2 }),
+        ],
+      }),
+    ]
+    let visits = 0
+    scanOfflineClips(doc, () => {
+      visits += 1
+    })
+    expect(visits).toBe(1)
+  })
+
+  it('keeps distinct visible windows of one shared sequence', () => {
+    const offline = video('window-gone.mp4', { url: '', missing: true })
+    const doc = createDoc()
+    doc.media = [offline]
+    doc.project.sequences = [
+      {
+        id: 'seq_shared',
+        name: 'Shared',
+        tracks: [
+          createTrack('video', 1, {
+            id: 'seq_shared_track',
+            clips: [createClip({ id: 'window_clip', mediaId: offline.id, start: 3, duration: 1 })],
+          }),
+        ],
+      },
+    ]
+    doc.project.tracks = [
+      createTrack('video', 1, {
+        id: 'root_shared',
+        clips: [
+          // The short reference shows child time 0..2; the long one shows
+          // 0..4 and therefore reaches the offline clip at 3.
+          createClip({ id: 'short', sequenceId: 'seq_shared', start: 0, duration: 2 }),
+          createClip({ id: 'long', sequenceId: 'seq_shared', start: 10, duration: 4 }),
+        ],
+      }),
+    ]
+    let visits = 0
+    scanOfflineClips(doc, () => {
+      visits += 1
+    })
+    expect(visits).toBe(1)
+    expect(hasOfflineMedia(doc)).toBe(true)
+  })
+
+  it('stops visiting after the callback reports done', () => {
+    const offline = video('gone.mp4', { url: '', missing: true })
+    const online = video('online.mp4', { url: 'blob:online' })
+    const doc = buildDoc(
+      [offline, online],
+      [
+        createClip({ id: 'offline_clip', mediaId: offline.id, start: 0, duration: 1 }),
+        createClip({ id: 'online_clip', mediaId: online.id, start: 2, duration: 1 }),
+      ],
+    )
+    let visits = 0
+    scanOfflineClips(doc, ({ clip }) => {
+      visits += 1
+      return clip.id === 'offline_clip'
+    })
+    expect(visits).toBe(1)
   })
 })

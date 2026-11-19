@@ -34,7 +34,14 @@ interface WorkspaceStoreState extends WorkspaceState {
 let sizeDebounce: ReturnType<typeof setTimeout> | null = null
 
 function getPreferredStorage(): Pick<Storage, 'getItem' | 'setItem'> | null {
-  return typeof window === 'undefined' ? null : window.localStorage
+  if (typeof window === 'undefined') return null
+  // Reading the getter can throw when storage is blocked (privacy mode, a
+  // sandboxed frame). The workspace then falls back to its in-memory defaults.
+  try {
+    return window.localStorage
+  } catch {
+    return null
+  }
 }
 
 export const useWorkspaceStore = create<WorkspaceStoreState>((set, get) => {

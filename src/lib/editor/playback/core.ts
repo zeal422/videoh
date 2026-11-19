@@ -290,7 +290,8 @@ function shapingSignature(clip: Clip): string {
 export class PlaybackCore {
   private ctx2d: CanvasRenderingContext2D | null
   private pool: ClipMediaPool
-  private imageCache = new Map<string, HTMLImageElement>()
+  /** Decoded stills keyed by asset id, carrying the URL they decoded from. */
+  private imageCache = new Map<string, { url: string; el: HTMLImageElement }>()
 
   private audio: AudioContext | null = null
   private masterGain: GainNode | null = null
@@ -314,6 +315,8 @@ export class PlaybackCore {
   private anchorDoc = 0
   private anchorAudio = 0
   private anchorPerf = 0
+  /** True when the transport's elapsed time comes from the audio clock. */
+  private anchorAudioRunning = false
   /**
    * Elements with a seek in flight, with the wall-clock time it started and
    * the `seeked` listener that clears it. While an element is here (or reports
@@ -344,6 +347,8 @@ export class PlaybackCore {
   private presentedTimes = new WeakMap<HTMLMediaElement, number>()
   /** Elements already registered with requestVideoFrameCallback. */
   private watchingFrames = new WeakSet<HTMLMediaElement>()
+  /** The one pending presented-frame callback id per element. */
+  private presentedFrameIds = new WeakMap<HTMLMediaElement, number>()
 
   /** Elements latched after a terminal decode error, one per failed range. */
   private terminalElements = new WeakSet<HTMLMediaElement>()
@@ -352,9 +357,12 @@ export class PlaybackCore {
   /**
    * Audio-only clips recovering in place. This path is deliberately outside
    * the single-flight video recovery: an audio decode failure must never pause
-   * the master clock or move the playhead.
+   * the master clock or move the playhead. The token is the ownership: a clip
+   * id and element pair can be reused after a project replacement, so only the
+   * recovery that took the current lock may clear it.
    */
-  private audioRecovery = new Set<string>()
+  private audioRecovery = new Map<string, { el: HTMLAudioElement; token: number }>()
+  private audioRecoveryToken = 0
   /** Audio-only clips muted after a repeated in-place recovery failure. */
   private failedAudioClips = new Set<string>()
   /** Last in-place audio failure per element, to bound the retry. */
@@ -482,6 +490,7 @@ export class PlaybackCore {
 
     this.anchorDoc = this.time
     this.anchorAudio = this.audio ? this.audio.currentTime : 0
+    this.anchorAudioRunning = this.audio?.state === 'running'
     this.anchorPerf = performance.now()
     this.playingState = true
     this.opts.onPlayingChange?.(true)
@@ -695,6 +704,7 @@ export class PlaybackCore {
     if (this.playingState) {
       this.anchorDoc = this.time
       this.anchorAudio = this.audio ? this.audio.currentTime : 0
+      this.anchorAudioRunning = this.audio?.state === 'running'
       this.anchorPerf = performance.now()
       this.syncMedia(this.time, true)
     } else {
@@ -794,6 +804,11 @@ export class PlaybackCore {
     this.failedPartners = new WeakSet()
     for (const clipId of [...this.failedAudioClips]) this.releaseClip(clipId)
     this.failedAudioClips.clear()
+    // An audio recovery in flight belongs to the replaced project: drop its
+    // lock and its failure budget so a reused clip id is not silently muted.
+    // Reassign the WeakMap because it has no clear().
+    this.audioRecovery.clear()
+    this.audioFailures = new WeakMap()
     this.recoveryRecords.clear()
     this.noticeRanges.clear()
     this.deferredErrors.clear()
@@ -811,6 +826,7 @@ export class PlaybackCore {
   private releaseClip(clipId: string): void {
     const el = this.pool.peek(clipId)
     if (el) {
+      this.cancelPresentedFrames(el)
       if (!el.paused) el.pause()
       this.endSeek(el)
     }
@@ -840,6 +856,13 @@ export class PlaybackCore {
       this.clipGains.delete(clipId)
     }
     this.pool.release(clipId)
+  }
+
+  /** Releases a parked blend partner, cancelling its presented-frame watch. */
+  private releasePartner(clipId: string): void {
+    const partner = this.pool.peekNext(clipId)
+    if (partner) this.cancelPresentedFrames(partner)
+    this.pool.releaseNext(clipId)
   }
 
   /** Routes a media-element error into recovery, partner latch, or a deferral. */
@@ -947,7 +970,7 @@ export class PlaybackCore {
     this.terminalElements.add(el)
     const partner = this.pool.peekNext(clipId)
     if (partner) this.endSeek(partner)
-    this.pool.releaseNext(clipId)
+    this.releasePartner(clipId)
     this.applySeek(record.failedFrom)
     if (!inFlight) {
       // No recovery finally runs for this terminalization, so drop errors
@@ -1034,7 +1057,7 @@ export class PlaybackCore {
         this.endSeek(partner)
       }
       this.releaseClip(clipId)
-      this.pool.releaseNext(clipId)
+      this.releasePartner(clipId)
       this.recoveryRecords.delete(clipId)
       this.noticeRanges.delete(clipId)
       this.opts.onMediaError?.(null, clipId)
@@ -1131,12 +1154,15 @@ export class PlaybackCore {
       this.muteAudioClip(clipId, el)
       return
     }
-    this.audioRecovery.add(clipId)
+    const token = ++this.audioRecoveryToken
+    this.audioRecovery.set(clipId, { el, token })
+    const projectEpoch = this.opts.getProjectEpoch?.() ?? 0
     if (!el.paused) el.pause()
     this.endSeek(el)
     void this.reloadElement(el)
       .then((result) => {
         try {
+          if ((this.opts.getProjectEpoch?.() ?? 0) !== projectEpoch) return
           if (this.pool.peek(clipId) !== el || this.failedAudioClips.has(clipId)) return
           if (result !== 'ok') {
             this.muteAudioClip(clipId, el)
@@ -1155,7 +1181,11 @@ export class PlaybackCore {
           )
           this.seekElement(el, expected)
         } finally {
-          this.audioRecovery.delete(clipId)
+          // Only the recovery that owns the current lock may clear it: a late
+          // recovery from a replaced project must not unlock a newer recovery
+          // that reused the same clip id and element.
+          const current = this.audioRecovery.get(clipId)
+          if (current?.token === token) this.audioRecovery.delete(clipId)
         }
       })
       .catch((error) => {
@@ -1316,7 +1346,7 @@ export class PlaybackCore {
       if (reload !== 'ok') {
         record.attempts += 1
         this.releaseClip(clipId)
-        this.pool.releaseNext(clipId)
+        this.releasePartner(clipId)
         // The next sync creates a fresh element. Resume it now instead of
         // leaving playback silently stopped after a transient reload failure.
         // At the sequence end, stay paused: startPlayback would restart at 0.
@@ -1370,7 +1400,7 @@ export class PlaybackCore {
       record.attempts += 1
       record.failedTo = skipTo
       record.committed = true
-      this.pool.releaseNext(clipId)
+      this.releasePartner(clipId)
       // A reload parks the element at 0, and the paused WebCodecs path never
       // touches it. Park it on the committed keyframe here so the commit check
       // below verifies a real seek instead of terminalizing a recoverable GOP.
@@ -1497,6 +1527,16 @@ export class PlaybackCore {
 
   dispose(): void {
     this.halt()
+    // Cancel every self-rearming frame watch before the pool tears the
+    // elements down: a pending callback would retain the engine after dispose.
+    for (const id of this.pool.ids()) {
+      const el = this.pool.peek(id)
+      if (el) this.cancelPresentedFrames(el)
+    }
+    for (const id of this.pool.nextIds()) {
+      const el = this.pool.peekNext(id)
+      if (el) this.cancelPresentedFrames(el)
+    }
     this.pool.dispose()
     this.imageCache.clear()
     for (const el of [...this.seekingEls.keys()]) this.endSeek(el) // detach listeners too
@@ -1544,8 +1584,21 @@ export class PlaybackCore {
     const doc = this.opts.getDoc()
     const duration = this.durationOf(doc)
 
-    const elapsed = this.audio
-      ? this.audio.currentTime - this.anchorAudio
+    // The audio clock is authoritative only while the context is actually
+    // running. A resume blocked by the autoplay policy (or a context
+    // re-suspended after play) freezes `currentTime`; reading it there stops
+    // the transport and the end callback never fires. Re-anchor both clocks on
+    // any transition, in either direction, so the switch cannot jump the
+    // playhead and a suspended tick cannot reuse a stale performance anchor.
+    const audioRunning = this.audio?.state === 'running'
+    if (audioRunning !== this.anchorAudioRunning) {
+      this.anchorDoc = this.time
+      this.anchorAudio = this.audio ? this.audio.currentTime : 0
+      this.anchorPerf = performance.now()
+      this.anchorAudioRunning = audioRunning
+    }
+    const elapsed = audioRunning
+      ? this.audio!.currentTime - this.anchorAudio
       : (performance.now() - this.anchorPerf) / 1000
     this.time = this.anchorDoc + elapsed
 
@@ -1593,7 +1646,7 @@ export class PlaybackCore {
       if (live.has(id)) continue
       const partner = this.pool.peekNext(id)
       if (partner) this.endSeek(partner)
-      this.pool.releaseNext(id)
+      this.releasePartner(id)
     }
     for (const id of this.pool.ids()) {
       if (live.has(id)) continue
@@ -1749,7 +1802,7 @@ export class PlaybackCore {
       this.opts.getDoc().project.fps,
     )
     if (partner === undefined) {
-      this.pool.releaseNext(clip.id)
+      this.releasePartner(clip.id)
       return
     }
     const el = this.pool.getNext(clip, asset, this.mediaUrl(asset))
@@ -1788,9 +1841,24 @@ export class PlaybackCore {
       // nothing else would revisit the parked canvas. One repaint per presented
       // frame, and none while playing (the render loop already repaints).
       if (!this.playingState) this.render(this.time)
-      video.requestVideoFrameCallback(onFrame)
+      this.presentedFrameIds.set(el, video.requestVideoFrameCallback(onFrame))
     }
-    video.requestVideoFrameCallback(onFrame)
+    this.presentedFrameIds.set(el, video.requestVideoFrameCallback(onFrame))
+  }
+
+  /**
+   * Cancels an element's self-rearming presented-frame callback. Without this,
+   * a released or disposed element keeps the engine (and itself) reachable
+   * through the browser's callback list and can repaint a dead monitor.
+   */
+  private cancelPresentedFrames(el: HTMLMediaElement): void {
+    const video = el as HTMLVideoElement
+    const id = this.presentedFrameIds.get(el)
+    if (id !== undefined && typeof video.cancelVideoFrameCallback === 'function') {
+      video.cancelVideoFrameCallback(id)
+    }
+    this.presentedFrameIds.delete(el)
+    this.watchingFrames.delete(el)
   }
 
   /**
@@ -2295,7 +2363,7 @@ export class PlaybackCore {
       // frame blends exactly like a playing one. Its seek landing has to
       // redraw: until it does, the pair falls back to the single frame.
       if (partner === undefined) {
-        this.pool.releaseNext(clip.id)
+        this.releasePartner(clip.id)
         continue
       }
       const next = this.pool.getNext(clip, asset, this.mediaUrl(asset))
@@ -2345,16 +2413,19 @@ export class PlaybackCore {
       // Missing assets have no URL. An Image with src "" is a permanent
       // decode failure; skip so the frame plan falls through cleanly.
       if (asset.missing || !asset.url) return undefined
-      let img = this.imageCache.get(asset.id)
-      if (!img) {
-        img = new Image()
+      // A relink keeps the asset id and changes the url. The cached element
+      // carries the URL it decoded from, so it can never answer for a new file.
+      let entry = this.imageCache.get(asset.id)
+      if (!entry || entry.url !== asset.url) {
+        const img = new Image()
         img.onload = () => {
           if (!this.playingState) this.render(this.time) // refresh once decoded
         }
         img.src = asset.url
-        this.imageCache.set(asset.id, img)
+        entry = { url: asset.url, el: img }
+        this.imageCache.set(asset.id, entry)
       }
-      return { asset, el: img.complete ? img : undefined }
+      return { asset, el: entry.el.complete ? entry.el : undefined }
     }
     if (asset.kind === 'video') {
       // Missing (restored) assets have no URL: never build an element for them.

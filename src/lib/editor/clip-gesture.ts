@@ -262,10 +262,15 @@ function snapMove(
     (tail.snapped === null ||
       Math.abs(head.time - rawStart) <= Math.abs(tail.time - (rawStart + orig.duration)))
   ) {
-    return { start: head.time, snapped: head.snapped }
+    const start = Math.max(0, head.time)
+    return { start, snapped: start === head.time ? head.snapped : null }
   }
   if (tail.snapped !== null) {
-    return { start: Math.max(0, tail.time - orig.duration), snapped: tail.snapped }
+    const tailStart = tail.time - orig.duration
+    const start = Math.max(0, tailStart)
+    // A start clamped at zero leaves the tail short of the snap point: the
+    // guide must not advertise a time no clip edge reaches.
+    return { start, snapped: start === tailStart ? tail.snapped : null }
   }
   return { start: rawStart, snapped: null }
 }
@@ -529,8 +534,14 @@ export function decideTrimEnd(args: {
     // Accept the snap only while it stays inside the media boundary: a snap
     // point past origStart + maxDuration would otherwise extend the clip past
     // the asset's end (the pre-snap clamp cannot help, it ran on the raw time).
-    const snappedDuration = Math.max(MIN_CLIP_DURATION, s.time - origStart)
-    if (s.snapped !== null && snappedDuration <= maxDuration) {
+    // A point below origStart + MIN would floor to MIN, so the applied tail
+    // would not be the advertised point either.
+    const snappedDuration = s.time - origStart
+    if (
+      s.snapped !== null &&
+      snappedDuration >= MIN_CLIP_DURATION &&
+      snappedDuration <= maxDuration
+    ) {
       newDuration = snappedDuration
       snapped = s.snapped
     }

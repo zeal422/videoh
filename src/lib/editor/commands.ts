@@ -48,6 +48,7 @@ import {
   findSequence,
   findTrack,
   findTrackIn,
+  laneKindFits,
   maxSequenceDepth,
   nextClipOnTrack,
   sequenceReachable,
@@ -915,9 +916,11 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
               'Compound clips cannot carry media, text or retiming fields',
             )
           }
-          // A shape renders picture only, so it cannot enter the project on a
-          // text or audio lane. Mirrors `addClip`'s lane check.
-          if (clip.shape && !clipFitsTrack(doc, clip, track)) {
+          // A supplied sequence must survive the hydration lane pass. Use the
+          // hydration predicate rather than `clipFitsTrack` so a dangling
+          // media id and an empty text clip are still accepted (hydration keeps
+          // them), while a real material/lane mismatch is refused here.
+          if (!laneKindFits(doc, clip, track)) {
             throw new EditorCommandError(
               `${describeClip(doc, clip)} cannot be placed on a ${track.kind} track`,
             )
@@ -1044,6 +1047,12 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
     }
 
     case 'addTrack': {
+      // The kind chooses the lane family every later placement, audibility and
+      // renumber rule keys off. A command payload is a trust boundary, so an
+      // unknown kind is refused instead of stored and compared as undefined.
+      if (command.kind !== 'video' && command.kind !== 'audio' && command.kind !== 'text') {
+        throw new EditorCommandError(`Unknown track kind: ${String(command.kind)}`)
+      }
       if (command.trackId !== undefined) {
         assertStructuralIdFree(doc, command.trackId, 'Track')
       }
@@ -1329,6 +1338,10 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       // position to clamp to, so it lands at zero rather than poisoning
       // sort order and span math with NaN.
       if (!Number.isFinite(clip.start) || clip.start < 0) clip.start = 0
+      // Source offset is a clip field for every kind, not just bounded media:
+      // `clampClipToMedia` returns early for text and images, so normalize it
+      // here or a hostile payload installs a NaN/negative the inspector shows.
+      if (!Number.isFinite(clip.inPoint) || clip.inPoint < 0) clip.inPoint = 0
       assertShapeClipFields(clip)
       if (compoundClipViolations(clip)) {
         throw new EditorCommandError('Compound clips cannot carry media, text or retiming fields')
@@ -2189,7 +2202,10 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
         if (!family) throw new EditorCommandError('Invalid font family')
         patch.fontFamily = family
       }
-      clip.style = { ...clip.style, ...patch }
+      // Merge first, then bound the whole style exactly like hydration and the
+      // preset library: a command payload is its own trust boundary, and x, y
+      // and fontSize reach canvas geometry verbatim otherwise.
+      clip.style = sanitizePresetStyle({ ...clip.style, ...patch })
       return
     }
 

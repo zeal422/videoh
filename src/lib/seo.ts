@@ -99,14 +99,16 @@ export function canonicalUrl(path: string): string {
 
 export const INDEXABLE_ROUTES = [
   { path: '/', changeFrequency: 'weekly', priority: 1, lastModified: LAST_CONTENT_UPDATE },
-  { path: '/about', changeFrequency: 'monthly', priority: 0.8, lastModified: LAST_CONTENT_UPDATE },
-  { path: '/privacy', changeFrequency: 'yearly', priority: 0.3, lastModified: LAST_CONTENT_UPDATE },
-  { path: '/terms', changeFrequency: 'yearly', priority: 0.3, lastModified: LAST_CONTENT_UPDATE },
+  // Each legal page renders its own "Last updated" line (October 25, 2026);
+  // privacy was revised later (November 16, 2026). The sitemap must agree.
+  { path: '/about', changeFrequency: 'monthly', priority: 0.8, lastModified: '2026-10-25' },
+  { path: '/privacy', changeFrequency: 'yearly', priority: 0.3, lastModified: '2026-11-16' },
+  { path: '/terms', changeFrequency: 'yearly', priority: 0.3, lastModified: '2026-10-25' },
   {
     path: '/contact',
     changeFrequency: 'monthly',
     priority: 0.5,
-    lastModified: LAST_CONTENT_UPDATE,
+    lastModified: '2026-10-25',
   },
 ] as const
 

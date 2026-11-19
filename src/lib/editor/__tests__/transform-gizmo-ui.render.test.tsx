@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 
 import { PreviewPanel } from '@/components/editor/PreviewPanel'
@@ -241,7 +242,8 @@ describe('monitor transform gizmo', () => {
     render(<PreviewPanel />)
     expect(screen.getByTestId('transform-gizmo')).toBeInTheDocument()
 
-    // The overlay swallows canvas clicks, so it must yield while sampling.
+    // The overlay's box and handles swallow canvas clicks, so they must yield
+    // while sampling.
     act(() => {
       useEditorStore.getState().setEyedropper({ clipId, effectId: 'fx' })
     })
@@ -251,6 +253,16 @@ describe('monitor transform gizmo', () => {
       useEditorStore.getState().setEyedropper(null)
     })
     expect(screen.getByTestId('transform-gizmo')).toBeInTheDocument()
+  })
+
+  it('hit-tests only its box and handles, leaving the canvas reachable', () => {
+    // The SVG root spans the whole monitor. Without pointer-events: none it
+    // absorbs every canvas click, and the monitor's text drag (which starts on
+    // the canvas) can never run. The move box and the handles opt back in.
+    const src = readFileSync('src/components/editor/TransformGizmo.tsx', 'utf8')
+    const openTag = src.slice(src.indexOf('<svg'), src.indexOf('>', src.indexOf('<svg')) + 1)
+    expect(openTag).toMatch(/pointerEvents: 'none'|pointer-events-none/)
+    expect(src.match(/pointerEvents: 'all'/g)?.length ?? 0).toBeGreaterThanOrEqual(3)
   })
 
   it('keeps the rotation handle inside the frame for a full-frame clip', () => {

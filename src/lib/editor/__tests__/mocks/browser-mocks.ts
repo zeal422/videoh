@@ -116,6 +116,107 @@ export class FakeMediaStreamAudioDestinationNode extends FakeAudioNode {
   stream = new FakeStreamDest().stream
 }
 
+// OfflineAudioContext fakes (export mix)
+
+/** A minimal AudioBuffer for offline-render fakes. */
+export class FakeAudioBuffer {
+  readonly duration: number
+  readonly length: number
+  readonly numberOfChannels: number
+  readonly sampleRate: number
+  private readonly channels: Float32Array[]
+
+  constructor(
+    numberOfChannelsOrOptions:
+      number | { numberOfChannels?: number; length: number; sampleRate: number } = 2,
+    length = 48_000,
+    sampleRate = 48_000,
+  ) {
+    const options = typeof numberOfChannelsOrOptions === 'object' ? numberOfChannelsOrOptions : null
+    const numberOfChannels =
+      options?.numberOfChannels ??
+      (typeof numberOfChannelsOrOptions === 'number' ? numberOfChannelsOrOptions : 2)
+    const frames = options?.length ?? length
+    const rate = options?.sampleRate ?? sampleRate
+    this.numberOfChannels = numberOfChannels
+    this.length = frames
+    this.sampleRate = rate
+    this.duration = frames / rate
+    this.channels = Array.from({ length: numberOfChannels }, () => new Float32Array(frames))
+  }
+
+  getChannelData(channel: number): Float32Array {
+    return this.channels[channel]
+  }
+
+  copyFromChannel(destination: Float32Array, channel: number, start = 0): void {
+    destination.set(this.channels[channel].subarray(start, start + destination.length))
+  }
+}
+
+class FakeOfflineParam {
+  value = 1
+  setValueAtTime(): this {
+    return this
+  }
+  linearRampToValueAtTime(): this {
+    return this
+  }
+  setTargetAtTime(): this {
+    return this
+  }
+  cancelScheduledValues(): this {
+    return this
+  }
+}
+
+/** A minimal OfflineAudioContext for the export audio mix. */
+export class FakeOfflineContext {
+  destination = { connect: () => undefined }
+  sampleRate = 48_000
+  currentTime = 0
+
+  createGain() {
+    return { gain: new FakeOfflineParam(), connect: () => undefined }
+  }
+  createStereoPanner() {
+    return { pan: new FakeOfflineParam(), connect: () => undefined }
+  }
+  createBiquadFilter() {
+    return {
+      type: '',
+      frequency: new FakeOfflineParam(),
+      Q: new FakeOfflineParam(),
+      gain: new FakeOfflineParam(),
+      connect: () => undefined,
+    }
+  }
+  createDynamicsCompressor() {
+    return {
+      threshold: new FakeOfflineParam(),
+      knee: new FakeOfflineParam(),
+      ratio: new FakeOfflineParam(),
+      attack: new FakeOfflineParam(),
+      release: new FakeOfflineParam(),
+      connect: () => undefined,
+    }
+  }
+  createBufferSource() {
+    return {
+      buffer: null,
+      playbackRate: new FakeOfflineParam(),
+      connect: () => undefined,
+      start: () => undefined,
+    }
+  }
+  decodeAudioData(): Promise<FakeAudioBuffer> {
+    return Promise.resolve(new FakeAudioBuffer())
+  }
+  startRendering(): Promise<FakeAudioBuffer> {
+    return Promise.resolve(new FakeAudioBuffer())
+  }
+}
+
 export class FakeAudioContext {
   static instances: FakeAudioContext[] = []
   /** When set, every resume() waits for it (tests hold play() inside prepare()). */

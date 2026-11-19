@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const recorderMock = vi.hoisted(() => ({ readRecordingDuration: vi.fn() }))
 vi.mock('../media/recorder', () => recorderMock)
 
-import { importFile } from '../media/probe'
+import { importFile, computePeaks } from '../media/probe'
 
 /**
  * A media element stand-in. `src` announces metadata on the next microtask, and
@@ -189,5 +189,23 @@ describe('WebM duration repair on the generic import path (0.27.0)', () => {
     const asset = await importFile(webm('Voiceover.webm', 'audio/webm'))
 
     expect(asset.duration).toBe(6)
+  })
+})
+
+describe('computePeaks bucket coverage', () => {
+  it('covers the trailing samples of a length not divisible by the bucket count', () => {
+    const length = 4800
+    const data = new Float32Array(length)
+    // A spike in the last 17 percent: the old fixed-width buckets stopped at
+    // index 3999, so this sample was never read.
+    data[4700] = 1
+    const buffer = {
+      length,
+      numberOfChannels: 1,
+      getChannelData: () => data,
+    } as unknown as AudioBuffer
+    const peaks = computePeaks(buffer, 1000)
+    expect(peaks[979]).toBe(1)
+    expect(peaks.filter((value) => value > 0)).toHaveLength(1)
   })
 })

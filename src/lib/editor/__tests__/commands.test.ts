@@ -35,6 +35,7 @@ import { evaluateKeyframes, integrateKeyframes } from '../keyframes'
 import { LUT_LIBRARY_MAX_CHARS, lutLibraryChars, parseCubeLut } from '../lut'
 import { relinkPatchFrom } from '../media/relink'
 import { COMMAND_BOUNDARY_CASES } from './command-boundary-cases'
+import { deserializeDoc, serializeDoc } from '../serialization'
 import type {
   Clip,
   Doc,
@@ -679,6 +680,38 @@ describe('addClip', () => {
     ).not.toThrow()
   })
 
+  it('rejects a clip carrying both video media and text on a video track', () => {
+    const { doc, videoAsset } = makeDoc()
+    const textTrack = createTrack('text', 1, { id: 't_hybrid' })
+    doc.project.tracks.unshift(textTrack)
+    const hybrid = {
+      ...createClip({ id: 'clip_hybrid', mediaId: videoAsset.id, start: 0, duration: 4 }),
+      text: 'Hi',
+    }
+    // Hydration classifies a string text as text material and drops it from a
+    // video lane. Placement must refuse the same payload instead of accepting a
+    // clip that disappears on reload.
+    expect(() =>
+      applyCommand(doc, { type: 'addClip', trackId: videoTrack(doc).id, clip: hybrid }),
+    ).toThrow(EditorCommandError)
+
+    // The clip is legal on a text lane, but moving it to video is refused.
+    const seeded = applyCommand(doc, {
+      type: 'addClip',
+      trackId: textTrack.id,
+      clip: hybrid,
+    })
+    expect(textTrackOf(seeded).clips.map((clip) => clip.id)).toEqual(['clip_hybrid'])
+    expect(() =>
+      applyCommand(seeded, {
+        type: 'moveClip',
+        clipId: 'clip_hybrid',
+        trackId: videoTrack(doc).id,
+        start: 0,
+      }),
+    ).toThrow(EditorCommandError)
+  })
+
   it('rejects too-short clips and keeps input doc untouched', () => {
     const { doc, videoAsset } = makeDoc()
     const before = JSON.stringify(doc)
@@ -690,6 +723,76 @@ describe('addClip', () => {
       }),
     ).toThrow(EditorCommandError)
     expect(JSON.stringify(doc)).toBe(before)
+  })
+})
+
+describe('command payload trust boundaries (0.28.5)', () => {
+  it('normalizes an inPoint for every clip kind, including media-less clips', () => {
+    const doc = createDoc()
+    const textTrack = createTrack('text', 1, { id: 't_text' })
+    doc.project.tracks = [textTrack, ...doc.project.tracks]
+    const text = applyCommand(doc, {
+      type: 'addClip',
+      trackId: 't_text',
+      clip: createTextClip({ id: 'text_hostile', inPoint: -5, duration: 2 }),
+    })
+    expect(textTrackOf(text).clips[0].inPoint).toBe(0)
+
+    const notFinite = applyCommand(doc, {
+      type: 'addClip',
+      trackId: 't_text',
+      clip: createTextClip({ id: 'text_nan', inPoint: Number.NaN, duration: 2 }),
+    })
+    expect(textTrackOf(notFinite).clips[0].inPoint).toBe(0)
+
+    // An image returns early in clampClipToMedia, so addClip itself must
+    // normalize the source offset.
+    const image = createMediaAsset({
+      kind: 'image',
+      name: 'still.png',
+      duration: 0,
+      width: 100,
+      height: 100,
+      url: 'blob:still',
+    })
+    doc.media.push(image)
+    const imageDoc = applyCommand(doc, {
+      type: 'addClip',
+      trackId: videoTrack(doc).id,
+      clip: createClip({
+        id: 'image_nan',
+        mediaId: image.id,
+        inPoint: Number.NaN,
+        duration: 1,
+      }),
+    })
+    expect(videoTrack(imageDoc).clips[0].inPoint).toBe(0)
+  })
+
+  it('refuses an unknown track kind instead of installing a lane nothing can host', () => {
+    const doc = createDoc()
+    const before = doc.project.tracks.length
+    expect(() => applyCommand(doc, { type: 'addTrack', kind: 'bogus' as never })).toThrow(
+      EditorCommandError,
+    )
+    expect(doc.project.tracks.length).toBe(before)
+  })
+
+  it('clamps a hostile text style through the hydration range', () => {
+    const doc = createDoc()
+    const textTrack = createTrack('text', 1, { id: 't_text' })
+    const clip = createTextClip({ id: 'text_edit', duration: 2 })
+    textTrack.clips = [clip]
+    doc.project.tracks = [textTrack, ...doc.project.tracks]
+    const next = applyCommand(doc, {
+      type: 'setTextStyle',
+      clipId: clip.id,
+      style: { x: 2, y: -1, fontSize: Number.POSITIVE_INFINITY },
+    })
+    const style = textTrackOf(next).clips[0].style!
+    expect(style.x).toBe(1)
+    expect(style.y).toBe(0)
+    expect(style.fontSize).toBe(64)
   })
 })
 
@@ -4555,6 +4658,99 @@ describe('addSequence payload clip invariants (0.28.2)', () => {
     }
     const next = applyCommand(doc, { type: 'addSequence', sequence })
     expect(next.project.sequences?.some((entry) => entry.id === 'seq_mixed')).toBe(true)
+  })
+
+  it('refuses an audio clip on a video lane payload', () => {
+    const { doc, audioAsset } = makeDoc()
+    const sequence: Sequence = {
+      id: 'seq_audio_video',
+      name: 'Audio on video',
+      tracks: [
+        createTrack('video', 1, {
+          id: 'seq_audio_video_track',
+          clips: [
+            createClip({
+              id: 'audio_on_video',
+              mediaId: audioAsset.id,
+              start: 0,
+              duration: 2,
+            }),
+          ],
+        }),
+      ],
+    }
+    expect(() => applyCommand(doc, { type: 'addSequence', sequence })).toThrow(
+      /cannot be placed on a video track/,
+    )
+  })
+
+  it('refuses a text clip on an audio lane payload', () => {
+    const { doc } = makeDoc()
+    const sequence: Sequence = {
+      id: 'seq_text_audio',
+      name: 'Text on audio',
+      tracks: [
+        createTrack('audio', 1, {
+          id: 'seq_text_audio_track',
+          clips: [createTextClip({ id: 'text_on_audio', start: 0, duration: 2 })],
+        }),
+      ],
+    }
+    expect(() => applyCommand(doc, { type: 'addSequence', sequence })).toThrow(/audio track/)
+  })
+
+  it('refuses a compound clip on an audio lane payload', () => {
+    const { doc } = makeDoc()
+    doc.project.sequences = [{ id: 'seq_child', name: 'Child', tracks: [] }]
+    const sequence: Sequence = {
+      id: 'seq_compound_audio',
+      name: 'Compound on audio',
+      tracks: [
+        createTrack('audio', 1, {
+          id: 'seq_compound_audio_track',
+          clips: [
+            createClip({
+              id: 'compound_on_audio',
+              sequenceId: 'seq_child',
+              start: 0,
+              duration: 2,
+            }),
+          ],
+        }),
+      ],
+    }
+    expect(() => applyCommand(doc, { type: 'addSequence', sequence })).toThrow(/audio track/)
+  })
+
+  it('accepts the hydration lane exceptions and keeps them across a save and reload', () => {
+    const { doc } = makeDoc()
+    const sequence: Sequence = {
+      id: 'seq_lane_keep',
+      name: 'Kept',
+      tracks: [
+        createTrack('video', 1, {
+          id: 'seq_lane_video',
+          clips: [
+            createClip({ id: 'dangling_media', mediaId: 'missing_asset', start: 0, duration: 2 }),
+            createClip({ id: 'media_less', start: 0, duration: 2 }),
+          ],
+        }),
+        createTrack('text', 1, {
+          id: 'seq_lane_text',
+          clips: [createTextClip({ id: 'empty_text', start: 0, duration: 2, text: '' })],
+        }),
+      ],
+    }
+    const next = applyCommand(doc, { type: 'addSequence', sequence })
+    const reloaded = deserializeDoc(serializeDoc(next)).doc
+    const saved = reloaded.project.sequences?.find((entry) => entry.id === 'seq_lane_keep')
+    expect(saved).toBeDefined()
+    expect(
+      saved?.tracks.find((track) => track.id === 'seq_lane_video')?.clips.map((clip) => clip.id),
+    ).toEqual(['dangling_media', 'media_less'])
+    expect(
+      saved?.tracks.find((track) => track.id === 'seq_lane_text')?.clips.map((clip) => clip.id),
+    ).toEqual(['empty_text'])
   })
 })
 

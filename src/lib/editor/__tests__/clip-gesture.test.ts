@@ -102,6 +102,19 @@ describe('decideMove', () => {
     expect(d.start).toBe(0)
   })
 
+  it('suppresses the guide when the move start clamps at zero', () => {
+    const d = decideMove({
+      ...base,
+      orig: clip({ start: 0.5 }),
+      clientX: 95, // dx -0.5: raw start 0, tail 4
+      clientY: 25,
+      snapping: true,
+      snapPoints: [3.9], // the tail snaps, but start would clamp to zero
+    })
+    expect(d.start).toBe(0)
+    expect(d.snapped).toBeNull()
+  })
+
   it('moves to a compatible lane under the pointer', () => {
     const d = decideMove({ ...base, clientX: 100, clientY: 75, lanes: lanes() })
     expect(d.targetTrackId).toBe('t2')
@@ -514,6 +527,18 @@ describe('decideTrimEnd', () => {
       snapPoints: [8.5],
     })
     expect(d.duration).toBe(6)
+    expect(d.snapped).toBeNull()
+  })
+
+  it('rejects a snap that would floor the duration below MIN_CLIP_DURATION', () => {
+    const d = decideTrimEnd({
+      ...base,
+      maxDuration: Infinity,
+      clientX: -380, // raw duration clamps to MIN, so the tail sits at 2.05
+      snapping: true,
+      snapPoints: [2.02], // inside the threshold, but below origStart + MIN
+    })
+    expect(d.duration).toBeCloseTo(MIN_CLIP_DURATION, 10)
     expect(d.snapped).toBeNull()
   })
 })

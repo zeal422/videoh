@@ -4,9 +4,8 @@ import { TrackedLink } from '@/components/site/TrackedLink'
 import { GITHUB_URL } from '@/lib/seo'
 
 /**
- * The closing conversion panel. It sits directly under the privacy section,
- * as the reference does, so the page ends on the local-first promise before
- * the FAQ and footer.
+ * The closing conversion panel. It sits after the FAQ, as the last content
+ * block before the footer, so the page ends on the call to action.
  */
 export function CtaPanel() {
   return (

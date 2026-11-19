@@ -519,8 +519,13 @@ export function clipFitsTrack(doc: Doc, clip: Clip, track: Track): boolean {
   if (clip.sequenceId) return track.kind === 'video'
   // A shape clip is a generated picture source with no media asset.
   if (clip.shape) return track.kind === 'video'
-  if (track.kind === 'text')
-    return typeof clip.text === 'string' && (!!clip.text || clip.isCaption === true)
+  // A string text classifies the clip as text material even when it also names
+  // media, matching hydration's `laneKindFits`. Without this, placement accepts
+  // a clip on a video lane that reload drops as a material/lane mismatch.
+  if (typeof clip.text === 'string') {
+    return track.kind === 'text' && (!!clip.text || clip.isCaption === true)
+  }
+  if (track.kind === 'text') return false
   const asset = findMedia(doc, clip.mediaId)
   if (!asset) return false
   if (track.kind === 'video') return asset.kind === 'video' || asset.kind === 'image'
@@ -528,6 +533,24 @@ export function clipFitsTrack(doc: Doc, clip: Clip, track: Track): boolean {
     return asset.kind === 'audio' || (asset.kind === 'video' && !!clip.audioOnly)
   }
   return false
+}
+
+/**
+ * Hydration's material/lane rule. It is deliberately narrower than
+ * `clipFitsTrack`: a clip whose media did not survive keeps its place (the
+ * sweep clears the dangling `mediaId` for a relink), and an empty text clip
+ * stays on its text lane. The command layer uses this same rule for a supplied
+ * sequence, so every accepted clip survives `serializeDoc` and reload.
+ */
+export function laneKindFits(doc: Doc, clip: Clip, track: Track): boolean {
+  if (clip.sequenceId || clip.shape) return track.kind === 'video'
+  if (typeof clip.text === 'string') return track.kind === 'text'
+  if (track.kind === 'text') return false
+  if (!clip.mediaId) return true
+  const asset = findMedia(doc, clip.mediaId)
+  if (!asset) return true // unresolved source: the sweep already handled it
+  if (track.kind === 'video') return asset.kind === 'video' || asset.kind === 'image'
+  return asset.kind === 'audio' || (asset.kind === 'video' && clip.audioOnly === true)
 }
 
 /**

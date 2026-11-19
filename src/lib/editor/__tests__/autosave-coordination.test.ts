@@ -189,6 +189,48 @@ describe('autosave ownership (0.28.0)', () => {
     }
   })
 
+  it('keeps a newer retry alive when an older retry write resolves', async () => {
+    vi.useFakeTimers()
+    const locks = (navigator as unknown as { locks: FakeLockManager }).locks
+    const original = locks.request.bind(locks)
+    let releaseWrite: (() => void) | null = null
+    let gate = false
+    locks.request = ((name: string, options: never, callback: never) => {
+      if (name !== AUTOSAVE_LOCK_NAME || !gate) return original(name, options, callback)
+      gate = false
+      return new Promise<unknown>((resolve, reject) => {
+        releaseWrite = () => {
+          void original(name, options, callback).then(resolve, reject)
+        }
+      })
+    }) as typeof locks.request
+    try {
+      queueAutosaveRetry('{"first":true}')
+      gate = true
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(releaseWrite).not.toBeNull()
+
+      // A newer edit queues its own retry while the first write is in flight.
+      queueAutosaveRetry('{"second":true}')
+      // The first write fails (quota); its completion must not requeue over
+      // the newer retry and erase it.
+      vi.stubGlobal('localStorage', {
+        ...localStorageMock,
+        setItem: () => {
+          throw new Error('quota')
+        },
+      })
+      releaseWrite!()
+      await vi.advanceTimersByTimeAsync(0)
+      vi.stubGlobal('localStorage', localStorageMock)
+
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(readAutosave()).toBe('{"second":true}')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('retains the original sequence when a failed retry requeues', async () => {
     vi.useFakeTimers()
     const unsubscribe = initAutosave()
@@ -810,6 +852,144 @@ describe('autosave pause handshake (0.28.0)', () => {
     } finally {
       cleanup()
       vi.useRealTimers()
+    }
+  })
+
+  it('keeps a resumed write pending when a newer edit lands during it', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('BroadcastChannel', undefined)
+    const listeners = new Map<string, (event: StorageEvent) => void>()
+    vi.stubGlobal('window', {
+      addEventListener: (type: string, listener: (event: StorageEvent) => void) => {
+        listeners.set(type, listener)
+      },
+      removeEventListener: (type: string) => listeners.delete(type),
+    })
+    storage.set(AUTOSAVE_KEY, '{"mine":true}')
+    readValidAutosave()
+    writeRecord({ tabId: 'other-tab' })
+    const cleanupCoordination = initAutosaveCoordination()
+    const unsubscribe = initAutosave()
+    const locks = (navigator as unknown as { locks: FakeLockManager }).locks
+    const original = locks.request.bind(locks)
+    let releaseWrite: (() => void) | null = null
+    let requests = 0
+    locks.request = ((name: string, options: never, callback: never) => {
+      if (name !== AUTOSAVE_LOCK_NAME) return original(name, options, callback)
+      requests += 1
+      // Request 1 is the ownership recheck; request 2 is the resumed slot
+      // write, which the test holds open.
+      if (requests !== 2) return original(name, options, callback)
+      return new Promise<unknown>((resolve, reject) => {
+        releaseWrite = () => {
+          void original(name, options, callback).then(resolve, reject)
+        }
+      })
+    }) as typeof locks.request
+    try {
+      expect(isAutosavePaused()).toBe(true)
+      storage.delete(OWNER_KEY)
+      listeners.get('storage')?.({ key: OWNER_KEY, newValue: null } as StorageEvent)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(releaseWrite).not.toBeNull()
+      expect(isAutosavePaused()).toBe(false)
+
+      const first = useEditorStore.getState().doc
+      useEditorStore.setState({
+        doc: { ...first, project: { ...first.project, name: 'Newer edit' } },
+      })
+      releaseWrite!()
+      await vi.advanceTimersByTimeAsync(0)
+      // The resumed write carried the OLD document; it must not report the
+      // newer edit saved.
+      expect(useEditorStore.getState().autosaveStatus).toBe('pending')
+
+      await vi.advanceTimersByTimeAsync(800)
+      expect(useEditorStore.getState().autosaveStatus).toBe('saved')
+      expect(parseSerializedDoc(readAutosave()!).doc.project.name).toBe('Newer edit')
+    } finally {
+      unsubscribe()
+      cleanupCoordination()
+      useEditorStore.getState().setAutosaveStatus('idle')
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('reports autosave off when a resumed write is refused as read-only', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('BroadcastChannel', undefined)
+    const listeners = new Map<string, (event: StorageEvent) => void>()
+    vi.stubGlobal('window', {
+      addEventListener: (type: string, listener: (event: StorageEvent) => void) => {
+        listeners.set(type, listener)
+      },
+      removeEventListener: (type: string) => listeners.delete(type),
+    })
+    storage.set(AUTOSAVE_KEY, '{"mine":true}')
+    readValidAutosave()
+    writeRecord({ tabId: 'other-tab' })
+    const cleanupCoordination = initAutosaveCoordination()
+    const unsubscribe = initAutosave()
+    const locks = (navigator as unknown as { locks: FakeLockManager }).locks
+    const original = locks.request.bind(locks)
+    let releaseWrite: (() => void) | null = null
+    let requests = 0
+    locks.request = ((name: string, options: never, callback: never) => {
+      if (name !== AUTOSAVE_LOCK_NAME) return original(name, options, callback)
+      requests += 1
+      // Request 1 is the ownership recheck; request 2 is the resumed slot
+      // write, which the test holds open.
+      if (requests !== 2) return original(name, options, callback)
+      return new Promise<unknown>((resolve, reject) => {
+        releaseWrite = () => {
+          void original(name, options, callback).then(resolve, reject)
+        }
+      })
+    }) as typeof locks.request
+    try {
+      expect(isAutosavePaused()).toBe(true)
+      storage.delete(OWNER_KEY)
+      listeners.get('storage')?.({ key: OWNER_KEY, newValue: null } as StorageEvent)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(releaseWrite).not.toBeNull()
+      expect(isAutosavePaused()).toBe(false)
+
+      // Another tab takes the slot while the resumed write waits for the
+      // lock. The write must report the read-only refusal as autosave off,
+      // not leave the indicator pending or claim the old slot saved.
+      writeRecord({ tabId: 'other-tab' })
+      releaseWrite!()
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(useEditorStore.getState().autosaveStatus).toBe('error')
+      expect(readAutosave()).toBe('{"mine":true}')
+    } finally {
+      unsubscribe()
+      cleanupCoordination()
+      useEditorStore.getState().setAutosaveStatus('idle')
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('reports autosave off when a debounced write is refused as read-only', async () => {
+    vi.useFakeTimers()
+    const unsubscribe = initAutosave()
+    try {
+      writeRecord({ tabId: 'other-tab' })
+      const first = useEditorStore.getState().doc
+      useEditorStore.setState({
+        doc: { ...first, project: { ...first.project, name: 'Blocked edit' } },
+      })
+      await vi.advanceTimersByTimeAsync(900)
+      expect(useEditorStore.getState().autosaveStatus).toBe('error')
+      expect(isAutosavePaused()).toBe(true)
+    } finally {
+      unsubscribe()
+      useEditorStore.getState().setAutosaveStatus('idle')
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
     }
   })
 

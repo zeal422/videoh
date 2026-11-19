@@ -1276,7 +1276,7 @@ describe('createExportOutput (bounded export target)', () => {
     expect(src).toMatch(/kind: 'blob'/)
     expect(src).toMatch(/kind: 'file'/)
     // The streamed path commits only after finalize resolves.
-    expect(src).toMatch(/await opts\.fileStream\.close\(\)/)
+    expect(src).toMatch(/await sink\.close\(\)/)
   })
 })
 
@@ -1294,7 +1294,7 @@ describe('export sink lifecycle (static locks)', () => {
 
   it('aborts the sink when the commit fails too (close is inside the try)', () => {
     const s = src()
-    const closeAt = s.indexOf('await opts.fileStream.close()')
+    const closeAt = s.indexOf('await sink.close()')
     const catchAt = s.indexOf('} catch (error) {')
     expect(closeAt).toBeGreaterThan(-1)
     expect(closeAt).toBeLessThan(catchAt)

@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.28.5',
+    date: '2026-11-19',
+    highlights: [
+      'A cancelled export can no longer commit the file and report success, and a failed frame decode releases its sample',
+      'Proxy builds release their decoder inputs on every path, and Freeze Frame captures the same last readable frame as the monitor',
+      'Autosave reports the real state during a resume, a retry, or a blocked tab, and relinking an image updates the monitor at once',
+      'Text stays draggable around the transform box, a paused drag keeps its clip, and saved projects drop clips that do not fit their lane kind',
+      'Project files stay at format version 8',
+    ],
+  },
+  {
     version: '0.28.4',
     date: '2026-11-17',
     highlights: [

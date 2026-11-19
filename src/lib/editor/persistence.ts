@@ -526,14 +526,28 @@ function resumePendingAutosave(): void {
     // holds. Do not replace that session before the user chooses Restore or
     // Discard.
     if (store.pendingRestore) return
-    const json = JSON.stringify(serializeDoc(store.doc))
+    const savedDoc = store.doc
+    const json = JSON.stringify(serializeDoc(savedDoc))
     void writeAutosaveCooperatively(json)
       .then((result) => {
         const current = editorStore.getState()
-        if (result === 'saved' || result === 'superseded') {
+        if (result === 'saved') {
+          // A newer edit landed while this write was queued. Its own save is
+          // already scheduled; reporting it saved would hide that.
+          if (current.doc !== savedDoc) {
+            current.setAutosaveStatus('pending')
+            return
+          }
+          current.setAutosaveStatus('saved')
+          current.markAutosaved()
+        } else if (result === 'superseded') {
           current.setAutosaveStatus('saved')
           current.markAutosaved()
         } else if (result === 'error') {
+          current.setAutosaveStatus('error')
+        } else if (result === 'read-only') {
+          // The tab resumed but another tab owns the slot now: report autosave
+          // off instead of leaving the indicator pending forever.
           current.setAutosaveStatus('error')
         }
       })
@@ -1425,6 +1439,10 @@ export function queueAutosaveRetry(json: string, seq?: number, projectId?: strin
         }
       }
       void writeAutosaveCooperatively(json, useSeq, target ?? undefined).then((result) => {
+        // A newer retry was queued while this write was in flight. Clearing or
+        // replacing it here would erase that payload; its own completion owns
+        // the slot and the status.
+        if (retry !== scheduled) return
         if (result === 'saved' || result === 'superseded') {
           retry = null
           if (target !== null) {
@@ -1651,6 +1669,11 @@ export function initAutosave(): () => void {
           store.setAutosaveStatus('saved')
           store.markAutosaved()
         } else if (result === 'error') {
+          store.setAutosaveStatus('error')
+        } else if (result === 'read-only') {
+          // The tab is paused, imported away, or no longer owns the slot: the
+          // write will not land, so "pending" is wrong. StatusBar renders
+          // `error` as "Autosave off".
           store.setAutosaveStatus('error')
         }
       })

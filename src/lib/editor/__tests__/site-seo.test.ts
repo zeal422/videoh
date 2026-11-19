@@ -133,12 +133,30 @@ describe('site metadata', () => {
       '/terms',
       '/contact',
     ])
+    // Each route carries the date its page renders: the legal pages are
+    // October 25, privacy is November 16, and only the home page has no
+    // rendered date (the site-wide content update).
+    expect(
+      Object.fromEntries(INDEXABLE_ROUTES.map((route) => [route.path, route.lastModified])),
+    ).toEqual({
+      '/': LAST_CONTENT_UPDATE,
+      '/about': '2026-10-25',
+      '/privacy': '2026-11-16',
+      '/terms': '2026-10-25',
+      '/contact': '2026-10-25',
+    })
     for (const route of INDEXABLE_ROUTES) {
-      expect(route.lastModified).toBe(LAST_CONTENT_UPDATE)
       expect(route.priority).toBeGreaterThan(0)
       expect(route.changeFrequency).toMatch(/^(weekly|monthly|yearly)$/)
     }
     expect(INDEXABLE_ROUTES.map((route) => route.path as string)).not.toContain('/editor')
+  })
+
+  it('keeps the sitemap dates in step with the rendered page copy', () => {
+    expect(read('src/app/(site)/about/page.tsx')).toContain('lastUpdated="October 25, 2026"')
+    expect(read('src/app/(site)/terms/page.tsx')).toContain('lastUpdated="October 25, 2026"')
+    expect(read('src/app/(site)/contact/page.tsx')).toContain('lastUpdated="October 25, 2026"')
+    expect(read('src/app/(site)/privacy/page.tsx')).toContain('lastUpdated="November 16, 2026"')
   })
 
   it('canonicalizes paths with the production origin', () => {

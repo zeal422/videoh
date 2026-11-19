@@ -57,6 +57,11 @@ export function TransformGizmo({
       className="absolute inset-0 size-full touch-none"
       viewBox={`0 0 ${projectWidth} ${projectHeight}`}
       preserveAspectRatio="none"
+      // The root spans the monitor, so it must not hit-test: clicks that miss
+      // the box and handles belong to the canvas underneath (the text drag
+      // starts there). The move polygon and handles opt back in below, and
+      // pointer capture keeps the gesture on the root once it starts.
+      style={{ pointerEvents: 'none' }}
       onPointerDown={(e) => {
         const mode = modeFromTarget(e.target)
         if (!mode) return

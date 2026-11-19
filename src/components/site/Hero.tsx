@@ -13,9 +13,9 @@ import { GITHUB_URL } from '@/lib/seo'
 
 /**
  * The public landing page. It is one server-rendered composition: the hero,
- * feature strip, product proof, gradient tools band, privacy panel, closing
- * CTA, and the FAQ that keeps the FAQPage JSON-LD eligible. The editor never
- * mounts here; the timeline is CSS and the screenshot is a static image.
+ * feature strip, product proof, gradient tools band, privacy panel, FAQ, and
+ * closing CTA. The editor never mounts here; the timeline is CSS and the
+ * screenshot is a static image.
  */
 export function Hero() {
   return (

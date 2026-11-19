@@ -103,6 +103,9 @@ export function computeDuckingKeyframes(
   const options = { ...DUCKING_DEFAULTS, ...opts }
   const amount = clampPropertyValue('volume', 1 - Math.min(1, Math.max(0, options.amount)))
   const floor = Math.max(0.001, amount)
+  // A negative ramp has no meaning and would place the unity key after the
+  // floor key; zero means an instant switch and is handled below.
+  const attack = Math.max(0, options.attackRelease)
   const keyframes: Keyframe[] = []
   const curve = dialogueCurve(doc, dialogueClips, music)
   const step = music.duration / SAMPLES
@@ -113,28 +116,52 @@ export function computeDuckingKeyframes(
     const t = i * step
     if (loud && !ducking) {
       ducking = true
-      const attackStart = Math.max(0, t - options.attackRelease)
-      keyframes.push({ time: round3(attackStart), value: 1 })
-      keyframes.push({ time: round3(t), value: floor })
+      const attackStart = Math.max(0, t - attack)
+      const floorTime = round3(t)
+      // A duck that starts at the clip head has nowhere to ramp from: emitting
+      // unity and the floor at the same time makes the first instant unducked.
+      if (floorTime > 0) {
+        const rampStart = round3(attackStart)
+        // A zero (or sub-millisecond) attack has no distinct ramp start. Keep
+        // the span before the drop at unity with the nearest millisecond the
+        // keyframe grid can express: constant extension would otherwise carry
+        // the floor back to the clip head and duck the music before dialogue
+        // begins.
+        keyframes.push({
+          time: rampStart < floorTime ? rampStart : round3(floorTime - 0.001),
+          value: 1,
+        })
+      }
+      keyframes.push({ time: floorTime, value: floor })
     } else if (!loud && ducking) {
       ducking = false
       // Hold the floor at the release point, THEN ramp to unity. The hold is
       // what makes this a release: a ramp interpolates from the previous
       // keyframe, so without it the rise would start back at the duck instead
       // of at the end of the dialogue.
-      keyframes.push({ time: round3(t), value: floor })
+      const holdTime = round3(t)
       // The release endpoint is clamped to the clip edge: when the quiet
       // transition lands at (or within attackRelease of) the end, the release
       // would reach past the clip, and a keyframe beyond the clip leaks its
       // value into clipGainSchedule's edge constant-extension. Round BEFORE
       // the clamp: rounding a value already pinned to a fractional edge can
       // push it back outside the clip (8.066666... -> 8.067), so the clamp has
-      // to be the last step. When it collapses the release onto the hold, skip
-      // it: the duck then just holds the floor to the edge, like a duck still
-      // active at the clip end.
-      const releaseTime = Math.min(round3(t + options.attackRelease), music.duration)
-      if (releaseTime > t) {
+      // to be the last step.
+      const releaseTime = Math.min(round3(t + attack), music.duration)
+      if (releaseTime > holdTime) {
+        keyframes.push({ time: holdTime, value: floor })
         keyframes.push({ time: releaseTime, value: 1 })
+      } else if (releaseTime < music.duration) {
+        // A zero (or sub-millisecond) release has no ramp span. Hold the floor
+        // one millisecond before the switch, then snap to unity at the release
+        // so the duck recovers instead of holding to the clip end.
+        keyframes.push({ time: round3(Math.max(0, holdTime - 0.001)), value: floor })
+        keyframes.push({ time: holdTime, value: 1 })
+      } else {
+        // The quiet transition lands at the clip edge: no span remains, so the
+        // duck just holds the floor to the edge, like a duck still active at
+        // the clip end.
+        keyframes.push({ time: holdTime, value: floor })
       }
     }
   }

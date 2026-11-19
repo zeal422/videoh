@@ -325,6 +325,25 @@ describe('export dialog validation and start (0.21.0)', () => {
       expect.stringMatching(/\.mp4$/),
     )
   })
+
+  it('does not report a result when cancellation lands as the export resolves', async () => {
+    mocks.exportTimeline.mockImplementation(
+      async (_doc: unknown, _options: unknown, handle: { cancelled: boolean }) => {
+        handle.cancelled = true
+        return {
+          kind: 'blob' as const,
+          blob: new Blob(['x'], { type: 'video/mp4' }),
+          mimeType: 'video/mp4',
+          duration: 4,
+        }
+      },
+    )
+    render(<ExportDialog open onOpenChange={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Start export' }))
+    await waitFor(() => expect(mocks.exportTimeline).toHaveBeenCalledTimes(1))
+    expect(screen.queryByTestId('export-result-video')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start export' })).toBeInTheDocument()
+  })
 })
 
 describe('export project guard (0.25.0)', () => {
@@ -422,6 +441,60 @@ describe('export project guard (0.25.0)', () => {
       blob: new Blob(['x'], { type: 'video/mp4' }),
       mimeType: 'video/mp4',
       duration: 4,
+    })
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Start export' })).toBeInTheDocument(),
+    )
+  })
+
+  it('a cancelled export cannot clear a newer export view or handle', async () => {
+    const pending: Array<{
+      handle: { cancelled: boolean }
+      resolve: (result: { kind: 'blob'; blob: Blob; mimeType: string; duration: number }) => void
+    }> = []
+    mocks.exportTimeline.mockImplementation(
+      (_doc: unknown, _options: unknown, handle: { cancelled: boolean }) =>
+        new Promise((resolve) => {
+          pending.push({ handle, resolve })
+        }),
+    )
+    render(<ExportDialog open onOpenChange={() => {}} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start export' }))
+    await waitFor(() => expect(pending).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Start export' })).toBeInTheDocument(),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start export' }))
+    await waitFor(() => expect(pending).toHaveLength(2))
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+
+    // Export A settles after B took over. Its cancellation completion must not
+    // return the dialog to setup or clear B's handle.
+    await act(async () => {
+      pending[0].resolve({
+        kind: 'blob',
+        blob: new Blob(['a'], { type: 'video/mp4' }),
+        mimeType: 'video/mp4',
+        duration: 4,
+      })
+    })
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start export' })).not.toBeInTheDocument()
+
+    // B's Cancel still owns B's handle.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(pending[1].handle.cancelled).toBe(true)
+
+    await act(async () => {
+      pending[1].resolve({
+        kind: 'blob',
+        blob: new Blob(['b'], { type: 'video/mp4' }),
+        mimeType: 'video/mp4',
+        duration: 4,
+      })
     })
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Start export' })).toBeInTheDocument(),
