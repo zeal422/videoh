@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { applyCommand, TrackLockedError } from '../commands'
 import { createClip, createMediaAsset, createTrack, sourceTimeAt } from '../factories'
-import { planSlip } from '../slip'
+import { planSlip, sharesSourceWindow } from '../slip'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
 
 /**
@@ -222,5 +222,39 @@ describe('the setClipInPoint command', () => {
         /no source window/,
       )
     }
+  })
+})
+
+describe('slip source-window comparison (0.29.0)', () => {
+  const base = (over: Partial<Clip> = {}) =>
+    ({ id: 'a', mediaId: 'm1', duration: 2, inPoint: 0, start: 0, ...over }) as Clip
+
+  it('refuses every window difference', () => {
+    const a = base()
+    expect(sharesSourceWindow(a, base({ mediaId: 'm2' }))).toBe(false)
+    expect(sharesSourceWindow(a, base({ text: 'Hi' }))).toBe(false)
+    expect(sharesSourceWindow(a, base({ sequenceId: 'seq' }))).toBe(false)
+    expect(sharesSourceWindow(a, base({ reverse: true }))).toBe(false)
+    expect(sharesSourceWindow(a, base({ speed: 2 }))).toBe(false)
+    expect(sharesSourceWindow(a, base({ keyframes: { timeScale: [{ time: 0, value: 1 }] } }))).toBe(
+      false,
+    )
+    expect(sharesSourceWindow(a, base())).toBe(true)
+  })
+
+  it('refuses a non-finite delta and a window already past its source', () => {
+    expect(planSlip({ clip: base({ mediaId: undefined }), assetDuration: 10, delta: 1 })).toEqual({
+      status: 'refused',
+      message: 'This clip has no source window to slip',
+    })
+    const clip = base({ duration: 4, inPoint: 0 })
+    expect(planSlip({ clip, assetDuration: 10, delta: Number.NaN })).toEqual({
+      status: 'refused',
+      message: 'Invalid slip position',
+    })
+    expect(planSlip({ clip, assetDuration: 2, delta: 1 })).toEqual({
+      status: 'refused',
+      message: 'This clip already reads past the end of its source',
+    })
   })
 })

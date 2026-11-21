@@ -508,3 +508,269 @@ describe('template shape links and shape-only fields (0.28.2)', () => {
     expect(minted.sequence.tracks[0].clips[0].keyframes?.timeScale).toBeUndefined()
   })
 })
+
+describe('template hostile matrix (0.29.0)', () => {
+  const textClip = (over: Record<string, unknown> = {}) => ({
+    id: 'clip_t',
+    start: 0,
+    duration: 1,
+    text: 'Hi',
+    style: { fontFamily: 'Arial, sans-serif' },
+    ...over,
+  })
+  const withClip = (clip: unknown, kind: 'text' | 'video' = 'text') =>
+    rawTemplate({
+      sequence: {
+        id: 'seq_t',
+        name: 'S',
+        tracks: [{ id: 'tr_t', kind, name: 'T', clips: [clip] }],
+      },
+    })
+
+  it.each([
+    [{ id: '' }, /id is invalid/],
+    [{ id: 'bad id' }, /id is invalid/],
+    [{ name: 7 }, /name must be a string/],
+    [{ name: '   ' }, /name cannot be empty/],
+    [{ name: 'x'.repeat(65) }, /name is too long/],
+    [{ name: 'bad\u0001name' }, /control characters/],
+    [{ description: 7 }, /description must be a string/],
+    [{ description: 'x'.repeat(201) }, /description is too long/],
+    [{ description: 'bad\u0001text' }, /description contains control/],
+  ])('refuses root metadata %j', (overrides, message) => {
+    expect(() => parseTemplate(rawTemplate(overrides))).toThrow(message)
+  })
+
+  it('defaults an absent description and accepts a normal one', () => {
+    const raw = rawTemplate()
+    delete raw.description
+    expect(parseTemplate(raw).description).toBe('')
+  })
+
+  it.each([
+    [withClip(textClip({ text: '' })), /has no text/],
+    [withClip(textClip({ text: 'x'.repeat(501) })), /text is too long/],
+    [withClip(textClip({ text: 'bad\u0001text' })), /text contains control/],
+    [withClip(textClip({ style: undefined })), /has no style/],
+    [withClip(textClip({ style: { fontFamily: 7 } })), /font family is invalid/],
+  ])('refuses malformed text clips', (raw, message) => {
+    expect(() => parseTemplate(raw)).toThrow(message)
+  })
+
+  it('falls a missing font family back to the default style', () => {
+    const parsed = parseTemplate(withClip(textClip({ style: { fontSize: 40 } })))
+    expect(parsed.sequence.tracks[0]!.clips[0]!.style!.fontFamily).toBeTruthy()
+  })
+
+  it.each([
+    [withClip(textClip({ opacity: 'x' })), /opacity is invalid/],
+    [withClip(textClip({ rotation: Number.NaN })), /rotation is invalid/],
+    [withClip(textClip({ flipX: 1 })), /flip is invalid/],
+    [withClip(textClip({ flipY: 'yes' })), /flip is invalid/],
+    [withClip(textClip({ animStatics: 5 })), /static values are invalid/],
+    [withClip(textClip({ animStatics: { opacity: 0.5 } })), /unsupported static property/],
+    [withClip(textClip({ animStatics: { scale: 'x' } })), /static value is invalid/],
+    [withClip(textClip({ keyframes: 5 })), /keyframes are invalid/],
+    [withClip(textClip({ keyframes: { opacity: 5 } })), /keyframes are invalid/],
+    [withClip(textClip({ keyframes: { volume: [] } })), /unsupported keyframe property/],
+    [withClip(textClip({ keyframes: { opacity: [null] } })), /keyframe is invalid/],
+    [
+      withClip(textClip({ keyframes: { opacity: [{ time: 'x', value: 0 }] } })),
+      /keyframe is invalid/,
+    ],
+    [withClip(null), /clip is not an object/],
+    [withClip({ ...textClip(), start: -1 }), /start must be a non-negative/],
+    [withClip({ ...textClip(), start: 'x' }), /start must be a non-negative/],
+    [withClip({ ...textClip(), duration: 0 }), /duration is too short/],
+    [withClip({ ...textClip(), duration: 'x' }), /duration is too short/],
+    [withClip({ id: 'clip_n', start: 0, duration: 1 }), /either a text clip or a shape clip/],
+  ])('refuses malformed visual and timing fields', (raw, message) => {
+    expect(() => parseTemplate(raw)).toThrow(message)
+  })
+
+  it('hydrates non-default visuals, flips, statics, and keyframes', () => {
+    const parsed = parseTemplate(
+      withClip(
+        textClip({
+          opacity: 0.5,
+          rotation: 45,
+          flipX: true,
+          flipY: true,
+          animStatics: { scale: 2, positionX: 0 },
+          keyframes: {
+            opacity: [
+              {
+                time: 0,
+                value: 0.5,
+                interpolation: 'easeInOut',
+                easeOut: [0, 0, 1, 1],
+              },
+              { time: 1, value: 1, interpolation: 'bogus' },
+            ],
+          },
+        }),
+      ),
+    )
+    const clip = parsed.sequence.tracks[0]!.clips[0]!
+    expect(clip).toMatchObject({ opacity: 0.5, rotation: 45, flipX: true, flipY: true })
+    expect(clip.animStatics).toEqual({ scale: 2 })
+    expect(clip.keyframes?.opacity).toHaveLength(2)
+    expect(clip.keyframes?.opacity?.[0]?.easeOut).toEqual([0, 0, 1, 1])
+    expect(clip.keyframes?.opacity?.[1]?.interpolation).toBe('linear')
+  })
+
+  it.each([
+    [{ sequence: undefined }, /has no sequence/],
+    [{ sequence: { id: 'seq_t', name: 'S' } }, /sequence has no tracks/],
+    [{ sequence: { id: 'seq_t', name: 'S', tracks: [] } }, /Template has no tracks/],
+    [{ sequence: { id: 'seq_t', name: 'S', tracks: [null] } }, /track is not an object/],
+    [
+      {
+        sequence: {
+          id: 'seq_t',
+          name: 'S',
+          tracks: [{ id: 'tr_t', kind: 'audio', name: 'A', clips: [] }],
+        },
+      },
+      /video or text tracks/,
+    ],
+    [
+      {
+        sequence: {
+          id: 'seq_t',
+          name: 'S',
+          tracks: [{ id: 'tr_t', kind: 'text', name: 'T' }],
+        },
+      },
+      /track has no clips/,
+    ],
+    [
+      {
+        sequence: {
+          id: 'seq_t',
+          name: 'S',
+          tracks: [{ id: 'tr_t', kind: 'text', name: 'T', clips: [] }],
+        },
+      },
+      /Template has no clips/,
+    ],
+  ])('refuses malformed sequence shapes', (overrides, message) => {
+    expect(() => parseTemplate(rawTemplate(overrides))).toThrow(message)
+  })
+
+  it('refuses a non-object template', () => {
+    expect(() => parseTemplate(5)).toThrow(/not an object/)
+    expect(() => parseTemplate(null)).toThrow(/not an object/)
+  })
+
+  it('captures and mints every visual field', () => {
+    const doc = createDoc()
+    const textTrack = createTrack('text', 1, { id: 'track_visual' })
+    textTrack.clips = [
+      createTextClip({
+        id: 'clip_visual',
+        text: 'Styled',
+        start: 0,
+        duration: 2,
+        linkId: 'link_a',
+        flipX: true,
+        flipY: true,
+        animStatics: { scale: 2, opacity: 0.5 } as never,
+        keyframes: { opacity: [{ time: 0, value: 0.5 }], volume: [{ time: 0, value: 0.5 }] },
+      } as never),
+      createTextClip({
+        id: 'clip_visual_2',
+        text: 'Paired',
+        start: 2,
+        duration: 2,
+        linkId: 'link_a',
+      } as never),
+    ]
+    doc.project.tracks.unshift(textTrack)
+    const template = templateFromSequence(
+      { id: 'seq_visual', name: 'Visual', tracks: doc.project.tracks },
+      { name: 'Captured' },
+    )
+    const clip = template.sequence.tracks[0]!.clips[0]!
+    expect(clip.flipY).toBe(true)
+    expect(clip.linkId).toBe('link_a')
+    expect(clip.animStatics).toEqual({ scale: 2 })
+    expect(clip.keyframes).toMatchObject({ opacity: [{ time: 0, value: 0.5 }] })
+    const minted = mintTemplateSequence(template)
+    const mintedClips = minted.sequence.tracks[0]!.clips
+    expect(mintedClips[0]!.flipY).toBe(true)
+    // Both halves mint to the same fresh link id, never the captured one.
+    const freshLink = mintedClips[0]!.linkId
+    expect(freshLink).toBeDefined()
+    expect(freshLink).not.toBe('link_a')
+    expect(mintedClips[1]!.linkId).toBe(freshLink)
+  })
+})
+
+describe('template default visual fields (0.29.0)', () => {
+  const withClip = (clip: unknown) =>
+    rawTemplate({
+      sequence: {
+        id: 'seq_t',
+        name: 'S',
+        tracks: [{ id: 'tr_t', kind: 'text', name: 'T', clips: [clip] }],
+      },
+    })
+
+  it('omits explicit defaults instead of storing them', () => {
+    const parsed = parseTemplate(
+      withClip({
+        id: 'clip_defaults',
+        start: 0,
+        duration: 1,
+        text: 'Hi',
+        style: { fontFamily: 'Arial, sans-serif' },
+        opacity: 1,
+        rotation: 0,
+        flipX: false,
+        flipY: false,
+        animStatics: { scale: 1 },
+        keyframes: { opacity: [] },
+      }),
+    )
+    const clip = parsed.sequence.tracks[0]!.clips[0]!
+    expect(clip.opacity).toBeUndefined()
+    expect(clip.rotation).toBeUndefined()
+    expect(clip.flipX).toBeUndefined()
+    expect(clip.flipY).toBeUndefined()
+    expect(clip.animStatics).toBeUndefined()
+    expect(clip.keyframes).toBeUndefined()
+  })
+
+  it('skips a project font whose family has no primary token', () => {
+    const doc = createDoc()
+    doc.project.fonts = [{ id: 'font_blank', name: 'Blank', family: '' } as never]
+    const template = createBuiltinTemplates()[0]!
+    expect(() => validateTemplateForDoc(template, doc)).not.toThrow()
+  })
+})
+
+describe('template capture omits empty visual maps (0.29.0)', () => {
+  it('drops invalid statics and unsupported curves instead of storing empty maps', () => {
+    const doc = createDoc()
+    const track = createTrack('text', 1, { id: 'track_capture' })
+    track.clips = [
+      createTextClip({
+        id: 'clip_capture',
+        text: 'Hi',
+        start: 0,
+        duration: 2,
+        animStatics: { opacity: 0.5, scale: 'bad' },
+        keyframes: { volume: [{ time: 0, value: 0.5 }] },
+      } as never),
+    ]
+    doc.project.tracks.unshift(track)
+    const template = templateFromSequence(
+      { id: 'seq_capture', name: 'S', tracks: doc.project.tracks },
+      { name: 'Capture' },
+    )
+    const clip = template.sequence.tracks[0]!.clips[0]!
+    expect(clip.animStatics).toBeUndefined()
+    expect(clip.keyframes).toBeUndefined()
+  })
+})

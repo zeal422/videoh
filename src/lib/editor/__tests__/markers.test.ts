@@ -18,6 +18,7 @@ import {
   markerColorValue,
   MARKER_COLOR_VALUES,
   markerFromSelection,
+  reIdMarkers,
   markerSelectionExists,
   markersEnd,
   markerTooltip,
@@ -29,7 +30,7 @@ import {
   staggerMarkerPositions,
   visibleClipMarkers,
 } from '../markers'
-import { createClip, createDoc, createTextClip, sourceTimeAt } from '../factories'
+import { createClip, createDoc, createTextClip, createTrack, sourceTimeAt } from '../factories'
 import type { Clip } from '../types'
 
 /** Forward reference clip: starts at 2s, 4s long, reading source 1..5. */
@@ -370,5 +371,87 @@ describe('markerTooltip', () => {
     expect(markerTooltip(createMarker(0, { name: 'Cue', notes: 'fix audio' }), 5)).toBe(
       'Cue · 0:05.0 · fix audio',
     )
+  })
+})
+
+describe('marker container and navigation guards (0.29.0)', () => {
+  it('re-ids no markers without allocating and returns undefined for absent lists', () => {
+    expect(reIdMarkers(undefined)).toBeUndefined()
+    expect(reIdMarkers([])).toEqual([])
+    const markers = [{ id: 'm1', time: 0 }]
+    expect(reIdMarkers(markers)![0]!.id).not.toBe('m1')
+  })
+
+  it('clamps a compound marker time and rejects one outside its span', () => {
+    const clip = { id: 'c', start: 4, duration: 2, sequenceId: 'seq' } as never
+    expect(clipMarkerLocalTime(clip, 1.5)).toBe(1.5)
+    expect(clipMarkerLocalTime(clip, -1)).toBeNull()
+    expect(sourceTimeForClipMarker(clip, 5)).toBe(1)
+  })
+
+  it('does not use root markers for a missing sequence path', () => {
+    const doc = createDoc()
+    const track = doc.project.tracks.find((t) => t.kind === 'video')!
+    track.clips = [clip({ start: 0, duration: 4, inPoint: 0 })]
+    doc.project.markers = [{ id: 'm', time: 1 }]
+    // The root path reaches the marker inside its four-second duration; a
+    // missing sequence path has no active tracks and must not fall back to it.
+    expect(neighborMarker(doc, 0, 'next')).toMatchObject({
+      timelineTime: 1,
+      marker: { id: 'm' },
+    })
+    expect(neighborMarker(doc, 0, 'next', ['gone'])).toBeNull()
+  })
+
+  it('inverts a descending time-remap curve by bisection', () => {
+    const clip = {
+      id: 'c',
+      start: 0,
+      duration: 2,
+      inPoint: 0,
+      reverse: true,
+      keyframes: {
+        timeScale: [
+          { time: 0, value: 2 },
+          { time: 2, value: 1 },
+        ],
+      },
+    } as never
+    const local = clipMarkerLocalTime(clip, 2)
+    expect(local).not.toBeNull()
+    // The mapping is the inverse of sourceTimeAt: feeding the local time back
+    // must reproduce the source time, not merely land inside the clip.
+    expect(sourceTimeAt(clip, local!)).toBeCloseTo(2, 5)
+    expect(local).toBeGreaterThanOrEqual(0)
+    expect(local).toBeLessThanOrEqual(2)
+  })
+})
+
+describe('timeline marker ordering (0.29.0)', () => {
+  it('sorts equal-time clip markers by id', () => {
+    const doc = createDoc()
+    const track = createTrack('video', 1, { id: 'v1' })
+    track.clips = [
+      createClip({
+        id: 'c1',
+        start: 0,
+        duration: 2,
+        markers: [
+          { id: 'd', time: 1 },
+          { id: 'b', time: 1 },
+        ],
+      } as never),
+      createClip({
+        id: 'c2',
+        start: 0,
+        duration: 2,
+        markers: [
+          { id: 'c', time: 1 },
+          { id: 'a', time: 1 },
+        ],
+      } as never),
+    ]
+    doc.project.tracks = [track]
+    expect(allMarkersOnTimeline(doc, []).map((m) => m.marker.id)).toEqual(['a', 'b', 'c', 'd'])
   })
 })

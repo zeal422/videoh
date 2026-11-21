@@ -297,3 +297,22 @@ describe('appearance palettes', () => {
     }
   })
 })
+
+describe('theme storage failures (0.29.0)', () => {
+  it('ignores a missing storage and a storage that throws', () => {
+    expect(() => writeTheme(null, DEFAULT_THEME)).not.toThrow()
+    expect(() =>
+      writeTheme(
+        {
+          setItem: () => {
+            throw new Error('quota')
+          },
+          removeItem: () => {
+            throw new Error('blocked')
+          },
+        },
+        DEFAULT_THEME,
+      ),
+    ).not.toThrow()
+  })
+})

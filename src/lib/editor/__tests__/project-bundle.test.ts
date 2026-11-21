@@ -15,6 +15,7 @@ import {
   normalizeBundlePath,
   planBundleEntries,
   referencedFontFamilies,
+  sanitizeBundleDisplayName,
   sanitizeBundleFileName,
   validateBundleManifest,
 } from '../project-bundle'
@@ -406,5 +407,91 @@ describe('bundle manifest font cap (0.28.2)', () => {
     const manifest = manifestFor([asset('media_a', 'clip.mp4')], [])
     manifest.assets[0] = { ...manifest.assets[0]!, size: 9 * 1024 * 1024 }
     expect('manifest' in validateBundleManifest(manifest)).toBe(true)
+  })
+})
+
+describe('bundle hostile inputs (0.29.0)', () => {
+  it('refuses a control character in a path and an empty sanitized name uses its fallback', () => {
+    expect(normalizeBundlePath('media/media_a/clip\u0001.mp4')).toBeNull()
+    expect(sanitizeBundleFileName('...')).toBe('file')
+    expect(sanitizeBundleFileName('...', 'media')).toBe('media')
+    expect(sanitizeBundleDisplayName('\u0001\u0002')).toBe('file')
+    expect(sanitizeBundleDisplayName('\u0001\u0002', 'font')).toBe('font')
+  })
+
+  it('refuses malformed media entries', () => {
+    const base = manifestFor([asset('media_a', 'a.mp4')])
+    const cases: [Record<string, unknown>, string][] = [
+      [{ ...base.assets[0], id: 'bad id' }, 'invalid media id'],
+      [{ ...base.assets[0], name: '' }, 'no valid name'],
+      [{ ...base.assets[0], name: 'x'.repeat(400) }, 'no valid name'],
+      [{ ...base.assets[0], name: 'a\u0001.mp4' }, 'no valid name'],
+      [{ ...base.assets[0], size: '4' }, 'invalid size'],
+      [{ ...base.assets[0], size: 1.5 }, 'invalid size'],
+      [{ ...base.assets[0], size: -1 }, 'invalid size'],
+      [{ ...base.assets[0], sha256: 'bad' }, 'invalid hash'],
+    ]
+    for (const [entry, message] of cases) {
+      const manifest = { ...base, assets: [entry] }
+      const result = validateBundleManifest(manifest)
+      expect('error' in result && result.error).toContain(message)
+    }
+    const malformed = { ...base, assets: [null] }
+    expect(validateBundleManifest(malformed)).toEqual({
+      error: 'The bundle has a malformed media entry.',
+    })
+  })
+
+  it('refuses malformed font entries', () => {
+    const base = manifestFor([], [font('font_a', 'A.woff2')])
+    const cases: [Record<string, unknown>, string][] = [
+      [{ ...base.fonts[0], id: 'bad font id' }, 'invalid font id'],
+      [{ ...base.fonts[0], name: '' }, 'no valid name'],
+      [{ ...base.fonts[0], name: 'a\u0001.woff2' }, 'no valid name'],
+      [{ ...base.fonts[0], size: '8' }, 'invalid size'],
+      [{ ...base.fonts[0], sha256: 'bad' }, 'invalid hash'],
+    ]
+    for (const [entry, message] of cases) {
+      const manifest = { ...base, fonts: [entry] }
+      const result = validateBundleManifest(manifest)
+      expect('error' in result && result.error).toContain(message)
+    }
+    const duplicate = { ...base, fonts: [base.fonts[0], base.fonts[0]] }
+    expect(validateBundleManifest(duplicate)).toEqual({
+      error: 'The bundle has a duplicate font id.',
+    })
+    const malformed = { ...base, fonts: [null] }
+    expect(validateBundleManifest(malformed)).toEqual({
+      error: 'The bundle has a malformed font entry.',
+    })
+  })
+
+  it('refuses a missing entry list and an invalid creation date', () => {
+    const base = manifestFor([])
+    expect(validateBundleManifest({ ...base, assets: undefined, fonts: undefined })).toEqual({
+      error: 'The bundle manifest is missing its entry lists.',
+    })
+    expect(validateBundleManifest({ ...base, createdAt: 'not-a-date' })).toEqual({
+      error: 'The bundle manifest has no valid creation date.',
+    })
+    expect(validateBundleManifest({ ...base, createdAt: 7 })).toEqual({
+      error: 'The bundle manifest has no valid creation date.',
+    })
+  })
+
+  it('ignores non-string and empty font family tokens', () => {
+    const doc = docWith([])
+    doc.project.tracks[0]!.clips.push({
+      id: 'clip_b',
+      start: 0,
+      duration: 2,
+      inPoint: 0,
+      style: { fontFamily: 7 as unknown as string } as never,
+    })
+    doc.project.brandKit = { colors: [], fontFamilies: [' , ', '  "Inter"  '] }
+    const families = referencedFontFamilies(doc)
+    expect(families.has('Inter')).toBe(true)
+    expect(families.has('')).toBe(false)
+    expect(isFontReferenced(doc, font('font_empty', 'Empty', { family: '' }))).toBe(false)
   })
 })

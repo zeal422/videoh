@@ -412,3 +412,59 @@ describe('resolveMatteTrack', () => {
     expect(resolveMatteTrack(doc, clipId, matte(v1))?.id).toBe(v1)
   })
 })
+
+describe('effect keyframe easing sanitization (0.29.0)', () => {
+  it('keeps a valid quad, drops malformed quads, and falls interpolation back to linear', () => {
+    const clean = sanitizeEffectKeyframes('shutter', [
+      {
+        time: 0,
+        value: 180,
+        interpolation: 'bogus' as never,
+        easeOut: [0, 0, 1, 1],
+      },
+      { time: 1, value: 180, easeOut: [0, 0, 1] as never },
+      { time: 2, value: 180, easeOut: [0, 0, 1, 2] as never },
+      { time: 3, value: 180, easeOut: [0, 0, 1, Number.NaN] as never },
+    ])
+    // All four keyframes survive; only the malformed easeOut fields are
+    // stripped, so the loop below cannot pass by dropping the rows.
+    expect(clean).toHaveLength(4)
+    expect(clean.map((keyframe) => keyframe.time)).toEqual([0, 1, 2, 3])
+    expect(clean[0]).toMatchObject({ interpolation: 'linear', easeOut: [0, 0, 1, 1] })
+    for (const keyframe of clean.slice(1)) expect(keyframe.easeOut).toBeUndefined()
+  })
+})
+
+describe('effect interpolation and non-crop sampling (0.29.0)', () => {
+  it('keeps a valid interpolation name', () => {
+    const clean = sanitizeEffectKeyframes('shutter', [
+      { time: 0, value: 180, interpolation: 'easeIn' },
+    ])
+    expect(clean[0]!.interpolation).toBe('easeIn')
+  })
+
+  it('skips non-crop entries while sampling stack inputs', () => {
+    const blur = createEffectEntry('motionBlur')
+    const clip = createClip({ id: 'c1', start: 0, duration: 4, effects: [blur] })
+    const shutter = { ...blur, shutter: 360 } as never
+    expect(areBlurSamplesIdentical(clip, [shutter], [shutter], 0, 1, 1, 30)).toBe(true)
+    // `sampleInputs` receives an un-narrowed keyframe map, so a direct caller
+    // can hand it crop-named curves on a non-crop entry (hydration filters
+    // them, this is the defensive boundary). They must not enter the sample
+    // comparison: a moving curve would read as a changed frame and wrongly
+    // prevent the blur from collapsing. Red-first: deleting the
+    // `entry.type !== 'crop'` skip in effects.ts fails this assertion.
+    const hostile = {
+      ...blur,
+      shutter: 360,
+      keyframes: {
+        left: [
+          { time: 0, value: 0 },
+          { time: 1, value: 50 },
+        ],
+      },
+    } as never
+    const hostileClip = createClip({ id: 'c2', start: 0, duration: 4, effects: [hostile] })
+    expect(areBlurSamplesIdentical(hostileClip, [hostile], [hostile], 0, 1, 1, 30)).toBe(true)
+  })
+})

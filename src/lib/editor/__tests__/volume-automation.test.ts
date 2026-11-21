@@ -17,6 +17,7 @@ import {
   DB_CEIL,
   DB_FLOOR,
 } from '../volume-automation'
+import { createDoc } from '../factories'
 import { animatedValue } from '../keyframes'
 import { clipGainSchedule, planAudioFrame } from '../export/offline'
 import { createClip, createMediaAsset, createTrack } from '../factories'
@@ -405,5 +406,102 @@ describe('engine gain schedule after an edit', () => {
     const sampled = sampleVolumeCurve(edited, 9).find((s) => s.time === 2)
     expect(sampled?.gain).toBeCloseTo(0.25, 10)
     expect(gainToDb(sampled!.gain)).toBeCloseTo(gainToDb(0.25), 10)
+  })
+})
+
+describe('volume automation guards (0.29.0)', () => {
+  it('maps hostile dB inputs without NaN', () => {
+    expect(dbToGain(Number.NaN)).toBe(0)
+    expect(dbToGain(Infinity)).toBe(2)
+    expect(dbToUnit(Infinity)).toBe(1)
+    expect(dbToUnit(Number.NaN)).toBe(0)
+  })
+
+  it('clamps a non-finite keyframe time and replaces an exact point', () => {
+    const clip = { id: 'c', start: 0, duration: 2 } as never
+    expect(clampVolumeTime(clip, Number.NaN)).toBe(0)
+    const curve = addVolumeKeyframe(clip, 1, 1)
+    expect(
+      addVolumeKeyframe(
+        { id: 'c', start: 0, duration: 2, keyframes: { volume: curve } } as never,
+        1,
+        0.5,
+      ),
+    ).toEqual([{ time: 1, value: 0.5, interpolation: 'linear' }])
+  })
+
+  // Coverage filler, not a red-first guard: deleting the out-of-range early
+  // return in volume-automation.ts keeps this green, because the filtered and
+  // mapped result matches for a sorted curve and an index no element matches.
+  // The output contract is still worth locking; do not count it as mutation
+  // proof.
+  it('returns a copy for an out-of-range keyframe index', () => {
+    const clip = {
+      id: 'c',
+      start: 0,
+      duration: 2,
+      keyframes: { volume: [{ time: 0, value: 1 }] },
+    } as never
+    expect(removeVolumeKeyframe(clip, 9)).toEqual([{ time: 0, value: 1 }])
+    expect(moveVolumeKeyframe(clip, -1, 0, 1)).toEqual([{ time: 0, value: 1 }])
+  })
+
+  it('refuses sound through a compound chain at the depth limit', () => {
+    const audible = createMediaAsset({
+      id: 'm',
+      kind: 'video',
+      duration: 2,
+      hasAudio: true,
+      url: 'blob:m',
+    })
+    const chain = (length: number) => {
+      const doc = createDoc()
+      doc.media = [audible]
+      doc.project.sequences = Array.from({ length }, (_, index) => ({
+        id: `s${index}`,
+        name: `S${index}`,
+        tracks: [
+          {
+            id: `t${index}`,
+            kind: 'video',
+            name: 'V',
+            clips: [
+              {
+                id: `c${index}`,
+                start: 0,
+                duration: 2,
+                ...(index < length - 1 ? { sequenceId: `s${index + 1}` } : { mediaId: 'm' }),
+              },
+            ],
+          },
+        ],
+      })) as never
+      return doc
+    }
+    const clip = { id: 'root', start: 0, duration: 2, sequenceId: 's0' } as never
+    // The shorter chain reaches an audible terminal clip, while the long chain
+    // is refused by depth before it can reach that clip.
+    expect(clipCarriesSound(chain(4), clip)).toBe(true)
+    expect(clipCarriesSound(chain(12), clip)).toBe(false)
+  })
+})
+
+describe('multi-point volume replacement (0.29.0)', () => {
+  it('keeps every other point when replacing an exact one', () => {
+    const clip = {
+      id: 'c',
+      start: 0,
+      duration: 2,
+      keyframes: {
+        volume: [
+          { time: 0, value: 1 },
+          { time: 1, value: 0.5 },
+        ],
+      },
+    } as never
+    expect(addVolumeKeyframe(clip, 1, 0.25)).toEqual([
+      { time: 0, value: 1 },
+      { time: 1, value: 0.25 },
+    ])
   })
 })

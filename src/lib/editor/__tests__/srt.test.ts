@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   collectCaptionCues,
+  compareSrtCues,
   MAX_SRT_TIME_SECONDS,
   parseSrt,
   serializeSrt,
@@ -342,5 +343,33 @@ describe('SRT round trip', () => {
 
   it('MAX_SRT_TIME_SECONDS names the supported bound', () => {
     expect(MAX_SRT_TIME_SECONDS).toBe(1_000_000_000)
+  })
+})
+
+describe('SRT timestamp guards (0.29.0)', () => {
+  it('refuses out-of-range minutes/seconds and a missing side', () => {
+    const minutes = parseSrt('1\n00:60:00,000 --> 00:61:00,000\nbad')
+    expect(minutes.cues).toEqual([])
+    expect(minutes.dropped).toBe(1)
+    const seconds = parseSrt('1\n00:00:60,000 --> 00:00:61,000\nbad')
+    expect(seconds.cues).toEqual([])
+    expect(seconds.dropped).toBe(1)
+    const missing = parseSrt('1\n--> 00:00:01,000\nbad')
+    expect(missing.cues).toEqual([])
+    expect(missing.dropped).toBe(1)
+  })
+
+  it('treats a numeric first line without a timestamp as a malformed block', () => {
+    const { cues, dropped } = parseSrt('1\nnot a timestamp\ntext')
+    expect(cues).toEqual([])
+    expect(dropped).toBe(1)
+  })
+
+  it('orders equal-time cues by text', () => {
+    const a = { startMs: 0, endMs: 1, text: 'a' }
+    const b = { startMs: 0, endMs: 1, text: 'b' }
+    expect(compareSrtCues(b, a)).toBe(1)
+    expect(compareSrtCues(a, b)).toBe(-1)
+    expect(compareSrtCues(a, a)).toBe(0)
   })
 })

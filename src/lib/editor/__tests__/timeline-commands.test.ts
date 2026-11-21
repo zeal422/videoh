@@ -955,3 +955,109 @@ describe('joinClips effect comparison (0.28.2)', () => {
     }
   })
 })
+
+describe('timeline planners: remaining branch matrix (0.29.0)', () => {
+  it('plans equal-offset linked members on one lane without a duplicate move', () => {
+    const a = clip('a', 2, 2, { linkId: 'l1' })
+    const b = clip('b', 4, 2, { linkId: 'l1' })
+    const doc = docOf([lane('video', 'v1', [a, b])])
+    const plan = planCloseGaps(doc, 'v1')
+    expect(plan.ok).toBe(true)
+    if (!plan.ok) return
+    expect(plan.moves).toEqual([
+      { clipId: 'a', trackId: 'v1', start: 0 },
+      { clipId: 'b', trackId: 'v1', start: 2 },
+    ])
+  })
+
+  it('sorts a lane whose array order is later-first before measuring overlap', () => {
+    const late = clip('late', 6, 2)
+    const early = clip('early', 0, 2)
+    const doc = docOf([lane('video', 'v1', [late, early])])
+    const plan = planCloseGaps(doc, 'v1')
+    expect(plan.ok).toBe(true)
+    if (!plan.ok) return
+    // The already-placed clip stays at 0 and is not moved; only late moves.
+    expect(plan.moves).toEqual([{ clipId: 'late', trackId: 'v1', start: 2 }])
+    expect(doc.project.tracks[0]!.clips.find((item) => item.id === 'early')!.start).toBe(0)
+  })
+
+  it('pairs a reversed selection and a reversed explicit group by start time', () => {
+    const first = clip('first', 0, 2, { mediaId: 'm1' })
+    const second = clip('second', 2, 2, { mediaId: 'm1', inPoint: 2 })
+    const doc = docOf([lane('video', 'v1', [first, second])])
+    // Selection order is not timeline order: the planner swaps both groups.
+    const selection = planJoinSelection(doc, ['second', 'first'])
+    expect(selection).toMatchObject({ ok: true })
+    if (!selection.ok) return
+    expect(selection.pairs).toEqual([{ previousId: 'first', nextId: 'second' }])
+    const explicit = planJoinGroup(doc, 'second', 'first')
+    expect(explicit).toMatchObject({ ok: true })
+    if (!explicit.ok) return
+    expect(explicit.pairs).toEqual([{ previousId: 'first', nextId: 'second' }])
+    expect(planJoinGroup(doc, 'first', 'first')).toMatchObject({ ok: false })
+  })
+
+  it('refuses a join of two clips already linked to each other', () => {
+    const first = clip('first', 0, 2, { linkId: 'l1' })
+    const second = clip('second', 2, 2, { linkId: 'l1' })
+    const doc = docOf([lane('video', 'v1', [first, second])])
+    expect(planJoinGroup(doc, 'first', 'second')).toEqual({
+      ok: false,
+      reason: 'The clips are already linked to each other',
+    })
+  })
+
+  it('ignores unknown selection ids and refuses a cross-track pair', () => {
+    const a = clip('a', 0, 2)
+    const b = clip('b', 0, 2)
+    const doc = docOf([lane('video', 'v1', [a]), lane('video', 'v2', [b])])
+    expect(planJoinSelection(doc, ['a', 'b'])).toEqual({
+      ok: false,
+      reason: 'The joined clips must sit on matching tracks',
+    })
+    expect(planJoinSelection(doc, ['a', 'ghost'])).toMatchObject({ ok: false })
+  })
+
+  it('accepts joinable clips with an undefined curve slot, equal EQ, and unnamed markers', () => {
+    const keyframes = { opacity: undefined } as unknown as Clip['keyframes']
+    const markers = [{ id: 'm1', time: 0 }]
+    const first = clip('first', 0, 2, {
+      mediaId: 'm1',
+      keyframes,
+      eq: { low: 1, mid: 0, high: -1 },
+      markers,
+    })
+    const second = clip('second', 2, 2, {
+      mediaId: 'm1',
+      inPoint: 2,
+      keyframes: { opacity: undefined } as unknown as Clip['keyframes'],
+      eq: { low: 1, mid: 0, high: -1 },
+      markers: [{ id: 'm2', time: 0 }],
+    })
+    const doc = docOf([lane('video', 'v1', [first, second])])
+    expect(planJoinSelection(doc, ['first', 'second'])).toMatchObject({ ok: true })
+  })
+
+  it('refuses a retained field whose runtime type differs', () => {
+    const first = clip('first', 0, 2, { mediaId: 'm1', opacity: 1 })
+    const second = clip('second', 2, 2, {
+      mediaId: 'm1',
+      inPoint: 2,
+      opacity: '1' as unknown as number,
+    })
+    const doc = docOf([lane('video', 'v1', [first, second])])
+    expect(planJoinSelection(doc, ['first', 'second'])).toEqual({
+      ok: false,
+      reason: 'Opacity differs between the clips',
+    })
+  })
+})
+
+describe('canJoinClips refusals (0.29.0)', () => {
+  it('is unavailable when the selection does not plan', () => {
+    const doc = docOf([lane('video', 'v1', [clip('a', 0, 2, { mediaId: 'm1' })])])
+    expect(canJoinClips(doc, ['a'])).toBe(false)
+    expect(canJoinClips(doc, ['a', 'ghost'])).toBe(false)
+  })
+})

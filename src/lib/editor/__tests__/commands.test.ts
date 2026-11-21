@@ -36,6 +36,7 @@ import { LUT_LIBRARY_MAX_CHARS, lutLibraryChars, parseCubeLut } from '../lut'
 import { relinkPatchFrom } from '../media/relink'
 import { COMMAND_BOUNDARY_CASES } from './command-boundary-cases'
 import { deserializeDoc, serializeDoc } from '../serialization'
+import { createBuiltinTemplates } from '../templates'
 import type {
   Clip,
   Doc,
@@ -49,7 +50,14 @@ import type {
   ShapeStyle,
   Track,
 } from '../types'
-import { MIN_CLIP_DURATION, MAX_TIMELINE_SECONDS, WAVEFORM_BUCKETS } from '../constants'
+import {
+  BRAND_FONT_FAMILIES_MAX,
+  MIN_CLIP_DURATION,
+  MAX_TIMELINE_SECONDS,
+  TRACK_GROUPS_MAX,
+  TRANSITION_MIN,
+  WAVEFORM_BUCKETS,
+} from '../constants'
 
 /** A 2-cube in `.cube` row order (red fastest): enough to exercise the model. */
 const CUBE_3D = [
@@ -4811,5 +4819,759 @@ describe('command payload boundary', () => {
     ).toThrow(EditorCommandError)
     expect(doc.project.width).toBe(width)
     expect(doc.project.height).toBe(height)
+  })
+})
+
+describe('command branch matrix (0.29.0)', () => {
+  function base() {
+    const doc = createDoc()
+    const media = createMediaAsset({
+      id: 'm1',
+      kind: 'video',
+      name: 'clip.mp4',
+      duration: 10,
+      width: 640,
+      height: 360,
+      url: 'blob:m1',
+    })
+    const video = createTrack('video', 1, {
+      id: 'v1',
+      clips: [createClip({ id: 'c1', mediaId: 'm1', start: 0, duration: 2 })],
+    })
+    const audio = createTrack('audio', 1, { id: 'a1', clips: [] })
+    doc.project.tracks = [video, audio]
+    doc.media = [media]
+    return { doc, media, video, audio }
+  }
+
+  it('rejects malformed media assets and unknown relink targets', () => {
+    const { doc, media } = base()
+    expect(() =>
+      applyCommand(doc, { type: 'addMediaAsset', asset: { ...media, id: '  ' } }),
+    ).toThrow(/non-empty string/)
+    expect(() =>
+      applyCommand(doc, {
+        type: 'addMediaAsset',
+        asset: { ...media, id: 'm2', duration: Number.NaN },
+      }),
+    ).toThrow(/finite non-negative/)
+    expect(() => applyCommand(doc, { type: 'removeMediaAsset', mediaId: 'gone' })).toThrow(
+      'Unknown media asset',
+    )
+    expect(() =>
+      applyCommand(doc, { type: 'relinkMedia', mediaId: 'gone', patch: { url: 'blob:x' } }),
+    ).toThrow('Unknown media asset')
+    expect(() =>
+      applyCommand(doc, { type: 'relinkMedia', mediaId: 'm1', patch: { contentHash: 'bad' } }),
+    ).toThrow('Invalid relink patch')
+    class Patch {}
+    expect(() =>
+      applyCommand(doc, {
+        type: 'relinkMedia',
+        mediaId: 'm1',
+        patch: new Patch() as never,
+      }),
+    ).toThrow('Invalid relink patch')
+  })
+
+  it('refuses a sequence id that collides with the project id', () => {
+    const { doc } = base()
+    const sequence = {
+      id: doc.project.id,
+      name: 'S',
+      tracks: [],
+    } as unknown as Sequence
+    expect(() => applyCommand(doc, { type: 'addSequence', sequence })).toThrow(/collides/)
+  })
+
+  it('guards compound creation and expands a linked group once', () => {
+    const { doc, video, audio } = base()
+    expect(() =>
+      applyCommand(doc, { type: 'createCompoundClip', clipIds: [], trackId: 'v1' }),
+    ).toThrow('Select at least one clip')
+    expect(() =>
+      applyCommand(doc, { type: 'createCompoundClip', clipIds: ['c1'], trackId: 'gone' }),
+    ).toThrow('Unknown track')
+    expect(() =>
+      applyCommand(doc, { type: 'createCompoundClip', clipIds: ['c1'], trackId: 'a1' }),
+    ).toThrow('Compound clips live on video tracks')
+
+    video.clips[0]!.linkId = 'pair'
+    const twin = createClip({
+      id: 'c2',
+      mediaId: 'm1',
+      start: 0,
+      duration: 2,
+      linkId: 'pair',
+      audioOnly: true,
+    })
+    audio.clips.push(twin)
+    const next = applyCommand(doc, { type: 'createCompoundClip', clipIds: ['c1'], trackId: 'v1' })
+    const compound = next.project.sequences![0]!
+    expect(compound.tracks.flatMap((t) => t.clips)).toHaveLength(2)
+  })
+
+  it('rejects a compound selection that spans two sequences', () => {
+    const { doc } = base()
+    const seqClip = createClip({ id: 'seq_clip', mediaId: 'm1', start: 0, duration: 2 })
+    doc.project.sequences = [
+      {
+        id: 'seq1',
+        name: 'S',
+        tracks: [{ id: 'sv1', kind: 'video', name: 'V', clips: [seqClip] }],
+      } as never,
+    ]
+    expect(() =>
+      applyCommand(doc, {
+        type: 'createCompoundClip',
+        clipIds: ['c1', 'seq_clip'],
+        trackId: 'v1',
+      }),
+    ).toThrow('Cannot combine clips across sequences')
+  })
+
+  it('rebases matte references that move into the compound', () => {
+    const { doc, media } = base()
+    const top = createTrack('video', 1, {
+      id: 'v2',
+      clips: [createClip({ id: 'matte', mediaId: 'm1', start: 0, duration: 2 })],
+    })
+    doc.project.tracks.unshift(top)
+    doc.project.tracks[1]!.clips[0]!.effects = [{ id: 'fx1', type: 'trackMatte', trackId: 'v2' }]
+    const next = applyCommand(doc, {
+      type: 'createCompoundClip',
+      clipIds: ['c1', 'matte'],
+      trackId: 'v2',
+    })
+    const clips = next.project.sequences![0]!.tracks.flatMap((t) => t.clips)
+    const effect = clips.find((c) => c.id === 'c1')!.effects![0]!
+    expect(effect.type).toBe('trackMatte')
+    if (effect.type === 'trackMatte') {
+      expect(effect.trackId).not.toBe('v2')
+      expect(next.project.sequences![0]!.tracks.some((t) => t.id === effect.trackId)).toBe(true)
+    }
+    void media
+  })
+
+  it('guards track edits and strips mattes when a lane is removed', () => {
+    const { doc } = base()
+    expect(() =>
+      applyCommand(doc, { type: 'addTrack', kind: 'video', sequenceId: 'gone' }),
+    ).toThrow('Unknown sequence')
+    expect(() => applyCommand(doc, { type: 'removeTrack', trackId: 'gone' })).toThrow(
+      'Unknown track',
+    )
+    const renamed = applyCommand(doc, { type: 'renameTrack', trackId: 'v1', name: '   ' })
+    expect(renamed.project.tracks[0]!.name).toBe(doc.project.tracks[0]!.name)
+
+    const top = createTrack('video', 1, {
+      id: 'v2',
+      clips: [createClip({ id: 'matte', mediaId: 'm1', start: 0, duration: 2 })],
+    })
+    doc.project.tracks.unshift(top)
+    doc.project.tracks[1]!.clips[0]!.effects = [{ id: 'fx1', type: 'trackMatte', trackId: 'v2' }]
+    const next = applyCommand(doc, { type: 'removeTrack', trackId: 'v2' })
+    expect(next.project.tracks.find((t) => t.id === 'v1')!.clips[0]!.effects).toBeUndefined()
+  })
+
+  it('validates and applies the full track group lifecycle', () => {
+    const { doc } = base()
+    doc.project.tracks.push(createTrack('video', 1, { id: 'v2' }))
+    expect(() =>
+      applyCommand(doc, {
+        type: 'createTrackGroup',
+        name: 'G',
+        trackIds: ['v1', 'v2'],
+        groupId: 'bad id',
+      }),
+    ).toThrow('Invalid group id')
+    const grouped = applyCommand(doc, {
+      type: 'createTrackGroup',
+      name: 'G',
+      trackIds: ['v1', 'v2'],
+      groupId: 'g1',
+    })
+    expect(() =>
+      applyCommand(grouped, {
+        type: 'createTrackGroup',
+        name: 'H',
+        trackIds: ['v1', 'v2'],
+        groupId: 'g1',
+      }),
+    ).toThrow(/already exists/)
+    expect(() =>
+      applyCommand(doc, { type: 'createTrackGroup', name: '  ', trackIds: ['v1', 'v2'] }),
+    ).toThrow('Group name is invalid')
+    expect(() =>
+      applyCommand(grouped, { type: 'createTrackGroup', name: 'g', trackIds: ['v1', 'v2'] }),
+    ).toThrow(/already exists/)
+    expect(() =>
+      applyCommand(grouped, { type: 'addTrackToGroup', groupId: 'g1', trackId: 'gone' }),
+    ).toThrow('Unknown track')
+    expect(() => applyCommand(grouped, { type: 'removeTrackFromGroup', trackId: 'gone' })).toThrow(
+      'Unknown track',
+    )
+    expect(
+      applyCommand(grouped, { type: 'removeTrackFromGroup', trackId: 'a1' }).project.trackGroups,
+    ).toEqual(grouped.project.trackGroups)
+    expect(() =>
+      applyCommand(grouped, {
+        type: 'setTrackGroupFlag',
+        groupId: 'g1',
+        flag: 'hidden',
+        value: 1 as never,
+      }),
+    ).toThrow(/boolean/)
+    expect(() =>
+      applyCommand(grouped, {
+        type: 'setTrackGroupFlag',
+        groupId: 'gone',
+        flag: 'hidden',
+        value: true,
+      }),
+    ).toThrow('Unknown group')
+    const hidden = applyCommand(grouped, {
+      type: 'setTrackGroupFlag',
+      groupId: 'g1',
+      flag: 'hidden',
+      value: false,
+    })
+    expect(hidden.project.tracks[0]!.visible).toBeUndefined()
+    expect(() =>
+      applyCommand(grouped, {
+        type: 'setTrackGroupFlag',
+        groupId: 'g1',
+        flag: 'solo',
+        value: true,
+      }),
+    ).toThrow(/audio tracks only/)
+    const audioBase = structuredClone(grouped)
+    audioBase.project.tracks.push(createTrack('audio', 1, { id: 'a2' }))
+    const audioGroup = applyCommand(audioBase, {
+      type: 'createTrackGroup',
+      name: 'Audio',
+      trackIds: ['a1', 'a2'],
+      groupId: 'ag',
+    })
+    const soloed = applyCommand(audioGroup, {
+      type: 'setTrackGroupFlag',
+      groupId: 'ag',
+      flag: 'solo',
+      value: true,
+    })
+    expect(soloed.project.tracks.find((t) => t.id === 'a1')!.solo).toBe(true)
+    const ungrouped = applyCommand(grouped, { type: 'removeTrackGroup', groupId: 'g1' })
+    expect(ungrouped.project.trackGroups).toBeUndefined()
+    expect(ungrouped.project.tracks[0]!.groupId).toBeUndefined()
+
+    const many = base().doc
+    many.project.trackGroups = Array.from({ length: TRACK_GROUPS_MAX }, (_, index) => ({
+      id: `g${index}`,
+      name: `Group ${index}`,
+    }))
+    many.project.tracks.push(createTrack('video', 1, { id: 'v2' }))
+    expect(() =>
+      applyCommand(many, { type: 'createTrackGroup', name: 'Overflow', trackIds: ['v1', 'v2'] }),
+    ).toThrow(/at most/)
+  })
+
+  it('guards template placement and invalid ranges', () => {
+    const { doc } = base()
+    const template = createBuiltinTemplates()[0]!
+    expect(() => applyCommand(doc, { type: 'applyTemplate', template, start: Number.NaN })).toThrow(
+      /position/,
+    )
+    expect(() =>
+      applyCommand(doc, { type: 'applyTemplate', template, start: 0, sequenceId: 'gone' }),
+    ).toThrow('Unknown sequence')
+    expect(() =>
+      applyCommand(doc, { type: 'applyTemplate', template, start: 0, trackId: 'gone' }),
+    ).toThrow('Unknown template destination track')
+    const badDuration = structuredClone(template)
+    badDuration.sequence.tracks[0]!.clips[0]!.duration = 0
+    expect(() =>
+      applyCommand(doc, { type: 'applyTemplate', template: badDuration, start: 0 }),
+    ).toThrow(/duration/)
+  })
+
+  it('guards trim, split, unlink, and link boundaries', () => {
+    const { doc } = base()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'trimClip',
+        clipId: 'c1',
+        start: 0,
+        inPoint: 0,
+        duration: 20,
+        edge: 'tail',
+      }),
+    ).toThrow(/end of the source/)
+    expect(() => applyCommand(doc, { type: 'linkClips', clipIds: ['c1'] })).toThrow(
+      'Linking needs at least two clips',
+    )
+
+    const { doc: pairDoc, video, audio } = base()
+    video.clips[0]!.linkId = 'pair'
+    audio.clips.push(createClip({ id: 'c2', mediaId: 'm1', start: 0, duration: 2, linkId: 'pair' }))
+    const unlinked = applyCommand(pairDoc, { type: 'unlinkClip', clipId: 'c1' })
+    expect(unlinked.project.tracks.flatMap((t) => t.clips).every((c) => !c.linkId)).toBe(true)
+  })
+
+  it('guards keyframes, reverse, EQ, text style, presets, fonts, and brand kit', () => {
+    const { doc } = base()
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setClipKeyframes',
+        clipId: 'c1',
+        property: 'bogus' as never,
+        keyframes: [],
+      }),
+    ).toThrow(/Unknown animatable property/)
+    const keyed = applyCommand(doc, {
+      type: 'setClipKeyframes',
+      clipId: 'c1',
+      property: 'opacity',
+      keyframes: [{ time: 0, value: 0.5 }],
+    })
+    const cleared = applyCommand(keyed, {
+      type: 'setClipKeyframes',
+      clipId: 'c1',
+      property: 'opacity',
+      keyframes: [],
+    })
+    expect(cleared.project.tracks[0]!.clips[0]!.keyframes).toBeUndefined()
+
+    const textTrack = createTrack('text', 1, { id: 't1' })
+    const textClip = createTextClip({ id: 'tc', text: 'Hi', start: 0, duration: 2 })
+    textTrack.clips = [textClip]
+    doc.project.tracks.push(textTrack)
+    expect(() =>
+      applyCommand(doc, { type: 'setClipReverse', clipId: 'tc', reverse: true }),
+    ).toThrow('Text clips cannot reverse')
+    expect(() => applyCommand(doc, { type: 'setTextStyle', clipId: 'c1', style: {} })).toThrow(
+      'Not a text clip',
+    )
+    const styled = applyCommand(doc, {
+      type: 'setTextStyle',
+      clipId: 'tc',
+      style: undefined as never,
+    })
+    const styledClip = styled.project.tracks
+      .find((track) => track.id === 't1')!
+      .clips.find((clip) => clip.id === 'tc')!
+    expect(styledClip.style).toEqual(textClip.style)
+
+    const noEq = applyCommand(doc, { type: 'setClipEq', clipId: 'c1', eq: null })
+    expect(noEq.project.tracks[0]!.clips[0]!.eq).toBeUndefined()
+
+    const renamed = applyCommand(doc, { type: 'setProjectSettings', patch: { name: '   ' } })
+    expect(renamed.project.name).toBe(doc.project.name)
+
+    const withPreset = applyCommand(doc, {
+      type: 'saveTextPreset',
+      preset: {
+        id: 'p1',
+        name: 'P',
+        style: createDefaultTextStyle(),
+      },
+    })
+    expect(withPreset.project.textPresets).toHaveLength(1)
+    expect(() =>
+      applyCommand(withPreset, {
+        type: 'renameTextPreset',
+        presetId: 'p1',
+        name: 'x'.repeat(61),
+      }),
+    ).toThrow(/too long/)
+
+    expect(() => applyCommand(doc, { type: 'removeProjectFont', fontId: 'gone' })).toThrow(
+      'Unknown font',
+    )
+    expect(() =>
+      applyCommand(doc, { type: 'renameProjectFont', fontId: 'gone', name: 'A' }),
+    ).toThrow('Unknown font')
+    expect(() =>
+      applyCommand(doc, { type: 'renameProjectFont', fontId: 'gone', name: '  ' }),
+    ).toThrow('Font name cannot be empty')
+    expect(() => applyCommand(doc, { type: 'removeBrandColor', colorId: 'gone' })).toThrow(
+      /Unknown brand color/,
+    )
+    expect(() => applyCommand(doc, { type: 'removeBrandFont', family: 'Arial' })).toThrow(
+      'This project has no brand kit',
+    )
+    expect(() => applyCommand(doc, { type: 'removeBrandFont', family: 7 as never })).toThrow(
+      'Unknown brand font',
+    )
+  })
+
+  it('guards effects and resets each effect family', () => {
+    const { doc } = base()
+    const clip = doc.project.tracks[0]!.clips[0]!
+    clip.effects = [
+      { id: 'fx_crop', type: 'crop', left: 0.2, right: 0, top: 0, bottom: 0, feather: 0 },
+      {
+        id: 'fx_chroma',
+        type: 'chromaKey',
+        key: '#ff0000',
+        similarity: 0.5,
+        blend: 0.5,
+        clipBlack: 0,
+        clipWhite: 1,
+        despill: 0,
+      },
+      { id: 'fx_blur', type: 'motionBlur', shutter: 90 },
+    ]
+    expect(() =>
+      applyCommand(doc, { type: 'removeEffect', clipId: 'c1', effectId: 'gone' }),
+    ).toThrow('Unknown effect')
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setEffectEnabled',
+        clipId: 'c1',
+        effectId: 'gone',
+        enabled: true,
+      }),
+    ).toThrow('Unknown effect')
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setEffectEnabled',
+        clipId: 'c1',
+        effectId: 'fx_crop',
+        enabled: 1 as never,
+      }),
+    ).toThrow(/boolean/)
+    expect(() =>
+      applyCommand(doc, { type: 'resetEffect', clipId: 'c1', effectId: 'gone' }),
+    ).toThrow('Unknown effect')
+    expect(() =>
+      applyCommand(doc, { type: 'setEffectParams', clipId: 'c1', effectId: 'gone', params: {} }),
+    ).toThrow('Unknown effect')
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setEffectKeyframes',
+        clipId: 'c1',
+        effectId: 'gone',
+        property: 'left',
+        keyframes: [],
+      }),
+    ).toThrow('Unknown effect')
+    const resetCrop = applyCommand(doc, { type: 'resetEffect', clipId: 'c1', effectId: 'fx_crop' })
+    const cropEntry = resetCrop.project.tracks[0]!.clips[0]!.effects![0]!
+    expect(cropEntry).toMatchObject({ id: 'fx_crop', type: 'crop' })
+    expect(cropEntry.type === 'crop' ? cropEntry.left : undefined).toBeUndefined()
+    const resetChroma = applyCommand(doc, {
+      type: 'resetEffect',
+      clipId: 'c1',
+      effectId: 'fx_chroma',
+    })
+    const chromaEntry = resetChroma.project.tracks[0]!.clips[0]!.effects![1]!
+    expect(chromaEntry).toMatchObject({ id: 'fx_chroma', type: 'chromaKey', key: '#00ff00' })
+    expect(chromaEntry.type === 'chromaKey' ? chromaEntry.similarity : undefined).toBeUndefined()
+    const resetBlur = applyCommand(doc, { type: 'resetEffect', clipId: 'c1', effectId: 'fx_blur' })
+    const blurEntry = resetBlur.project.tracks[0]!.clips[0]!.effects![2]!
+    expect(blurEntry).toMatchObject({ id: 'fx_blur', type: 'motionBlur' })
+    expect(blurEntry.type === 'motionBlur' ? blurEntry.shutter : undefined).toBeUndefined()
+    const removed = applyCommand(doc, { type: 'removeEffect', clipId: 'c1', effectId: 'fx_crop' })
+    expect(removed.project.tracks[0]!.clips[0]!.effects).toHaveLength(2)
+    const cleared = applyCommand(removed, {
+      type: 'removeEffect',
+      clipId: 'c1',
+      effectId: 'fx_chroma',
+    })
+    const twice = applyCommand(cleared, { type: 'removeEffect', clipId: 'c1', effectId: 'fx_blur' })
+    expect(twice.project.tracks[0]!.clips[0]!.effects).toBeUndefined()
+  })
+
+  it('guards matte params, blend modes, markers, and track visibility', () => {
+    const { doc } = base()
+    doc.project.tracks.unshift(
+      createTrack('video', 1, {
+        id: 'v2',
+        clips: [createClip({ id: 'matte', mediaId: 'm1', start: 0, duration: 2 })],
+      }),
+    )
+    const clip = doc.project.tracks[1]!.clips[0]!
+    clip.effects = [{ id: 'fx_matte', type: 'trackMatte', trackId: 'v2' }]
+    const badId = {
+      type: 'setEffectParams',
+      clipId: 'c1',
+      effectId: 'fx_matte',
+      params: { trackId: '' },
+    } as const
+    expect(() => applyCommand(doc, badId)).toThrow('Matte source must be a track id')
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setEffectParams',
+        clipId: 'c1',
+        effectId: 'fx_matte',
+        params: { trackId: 'gone' },
+      }),
+    ).toThrow(/track above/)
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setEffectParams',
+        clipId: 'c1',
+        effectId: 'fx_matte',
+        params: { mode: 'bogus' },
+      }),
+    ).toThrow(/Unknown matte mode/)
+    const matte = applyCommand(doc, {
+      type: 'setEffectParams',
+      clipId: 'c1',
+      effectId: 'fx_matte',
+      params: { reverse: true },
+    })
+    expect(
+      matte.project.tracks[1]!.clips[0]!.effects?.find((entry) => entry.id === 'fx_matte'),
+    ).toMatchObject({ reverse: true })
+
+    expect(
+      applyCommand(doc, { type: 'setClipBlendMode', clipId: 'c1', blendMode: 'normal' }).project
+        .tracks[1]!.clips[0]!.blendMode,
+    ).toBeUndefined()
+    expect(() =>
+      applyCommand(doc, { type: 'setClipBlendMode', clipId: 'c1', blendMode: 'bogus' as never }),
+    ).toThrow(/Unknown blend mode/)
+    expect(() =>
+      applyCommand(doc, { type: 'setTrackVisible', trackId: 'v1', visible: 1 as never }),
+    ).toThrow(/boolean/)
+
+    doc.project.markers = [{ id: 'm1', time: 0 }]
+    expect(() =>
+      applyCommand(doc, { type: 'addSequenceMarker', marker: { id: 'm1', time: 1 } }),
+    ).toThrow(/already exists/)
+    expect(() => applyCommand(doc, { type: 'deleteSequenceMarker', markerId: 'gone' })).toThrow(
+      'Unknown marker',
+    )
+    expect(() =>
+      applyCommand(doc, { type: 'moveClipMarker', clipId: 'c1', markerId: 'gone', time: 1 }),
+    ).toThrow('Unknown marker')
+
+    const withMarker = applyCommand(doc, {
+      type: 'addClipMarker',
+      clipId: 'c1',
+      marker: { id: 'cm', time: 0.5 },
+    })
+    const removedMarker = applyCommand(withMarker, {
+      type: 'deleteClipMarker',
+      clipId: 'c1',
+      markerId: 'cm',
+    })
+    expect(removedMarker.project.tracks[1]!.clips[0]!.markers).toBeUndefined()
+  })
+
+  it('adds a track with a generated id and convention prefix', () => {
+    const { doc } = base()
+    const before = new Set(doc.project.tracks.map((track) => track.id))
+    const next = applyCommand(doc, { type: 'addTrack', kind: 'audio' })
+    const addedTracks = next.project.tracks.filter((track) => !before.has(track.id))
+    expect(addedTracks).toHaveLength(1)
+    const added = addedTracks[0]!
+    expect(added.id.length).toBeGreaterThan(0)
+    expect(before.has(added.id)).toBe(false)
+    expect(added.kind).toBe('audio')
+    expect(added.name).toMatch(/^A\d+$/)
+  })
+})
+
+describe('command branch matrix two (0.29.0)', () => {
+  function base() {
+    const doc = createDoc()
+    const media = createMediaAsset({
+      id: 'm1',
+      kind: 'video',
+      name: 'clip.mp4',
+      duration: 10,
+      url: 'blob:m1',
+    })
+    const video = createTrack('video', 1, {
+      id: 'v1',
+      clips: [createClip({ id: 'c1', mediaId: 'm1', start: 0, duration: 2 })],
+    })
+    doc.project.tracks = [video]
+    doc.media = [media]
+    return { doc, media, video }
+  }
+
+  it('applies pan, compressor, and denoise', () => {
+    const { doc } = base()
+    expect(
+      applyCommand(doc, { type: 'setClipPan', clipId: 'c1', pan: 0.5 }).project.tracks[0]!.clips[0]!
+        .pan,
+    ).toBe(0.5)
+    expect(
+      applyCommand(doc, { type: 'setClipCompressor', clipId: 'c1', enabled: true }).project
+        .tracks[0]!.clips[0]!.compressor,
+    ).toBe(true)
+    expect(
+      applyCommand(doc, { type: 'setClipDenoise', clipId: 'c1', enabled: true }).project.tracks[0]!
+        .clips[0]!.denoise,
+    ).toBe(true)
+  })
+
+  it('removes a track inside its owning sequence', () => {
+    const doc = createDoc()
+    doc.project.sequences = [
+      {
+        id: 'seq1',
+        name: 'S',
+        tracks: [
+          { id: 'sv1', kind: 'video', name: 'V', clips: [] },
+          { id: 'sv2', kind: 'video', name: 'V2', clips: [] },
+        ],
+      },
+    ] as never
+    const next = applyCommand(doc, { type: 'removeTrack', trackId: 'sv1' })
+    expect(next.project.sequences![0]!.tracks.map((t) => t.id)).toEqual(['sv2'])
+  })
+
+  it('refuses a template destination that is not a video track', () => {
+    const { doc } = base()
+    doc.project.tracks.push(createTrack('text', 1, { id: 't1' }))
+    expect(() =>
+      applyCommand(doc, {
+        type: 'applyTemplate',
+        template: createBuiltinTemplates()[0]!,
+        start: 0,
+        trackId: 't1',
+      }),
+    ).toThrow(/video track/)
+  })
+
+  it('refuses moving a clip to an unknown track', () => {
+    const { doc } = base()
+    expect(() =>
+      applyCommand(doc, { type: 'moveClip', clipId: 'c1', trackId: 'gone', start: 0 }),
+    ).toThrow('Unknown track')
+  })
+
+  it('splits a clip with effect curves and keeps the right link group fresh', () => {
+    const { doc, video } = base()
+    video.clips[0]!.linkId = 'pair'
+    video.clips[0]!.effects = [
+      {
+        id: 'fx1',
+        type: 'crop',
+        left: 0,
+        right: 0,
+        top: 0,
+        bottom: 0,
+        feather: 0,
+        keyframes: {
+          left: [
+            { time: 0, value: 0 },
+            { time: 2, value: 0.2 },
+          ],
+        },
+      },
+    ]
+    const next = applyCommand(doc, {
+      type: 'splitClip',
+      clipId: 'c1',
+      atTime: 1,
+      rightId: 'right1',
+      rightLinkId: 'rightPair',
+    })
+    const right = next.project.tracks[0]!.clips.find((c) => c.id === 'right1')!
+    expect(right.linkId).toBe('rightPair')
+    expect(right.effects?.[0]?.keyframes).toBeDefined()
+  })
+
+  it('clears a keyframe default when linear is chosen', () => {
+    const { doc } = base()
+    const eased = applyCommand(doc, {
+      type: 'setKeyframeDefault',
+      property: 'opacity',
+      interpolation: 'easeIn',
+    })
+    expect(eased.project.keyframeDefaults).toEqual({ opacity: 'easeIn' })
+    const linear = applyCommand(eased, {
+      type: 'setKeyframeDefault',
+      property: 'opacity',
+      interpolation: 'linear',
+    })
+    expect(linear.project.keyframeDefaults).toBeUndefined()
+  })
+
+  it('adds and removes the last project font', () => {
+    const { doc } = base()
+    const font = {
+      id: 'font_x',
+      name: 'X',
+      family: fontFamilyForId('font_x'),
+      contentHash: 'a'.repeat(64),
+    }
+    const added = applyCommand(doc, { type: 'addProjectFont', font })
+    expect(added.project.fonts).toHaveLength(1)
+    const removed = applyCommand(added, { type: 'removeProjectFont', fontId: 'font_x' })
+    expect(removed.project.fonts).toBeUndefined()
+  })
+
+  it('caps brand font families and removes an unknown one from an existing kit', () => {
+    const { doc } = base()
+    doc.project.brandKit = {
+      colors: [],
+      fontFamilies: Array.from({ length: BRAND_FONT_FAMILIES_MAX }, (_, i) => `F${i}`),
+    }
+    expect(() => applyCommand(doc, { type: 'addBrandFont', family: 'Overflow' })).toThrow(/at most/)
+    expect(() => applyCommand(doc, { type: 'removeBrandFont', family: 'Missing' })).toThrow(
+      /Unknown brand font/,
+    )
+  })
+
+  it('clears effect curves, sets crop zoom, and rejects a duplicated preset name', () => {
+    const { doc } = base()
+    const clip = doc.project.tracks[0]!.clips[0]!
+    clip.effects = [
+      {
+        id: 'fx1',
+        type: 'crop',
+        left: 0,
+        right: 0,
+        top: 0,
+        bottom: 0,
+        feather: 0,
+        keyframes: { left: [{ time: 0, value: 0.2 }] },
+      },
+    ]
+    const cleared = applyCommand(doc, {
+      type: 'setEffectKeyframes',
+      clipId: 'c1',
+      effectId: 'fx1',
+      property: 'left',
+      keyframes: [],
+    })
+    expect(cleared.project.tracks[0]!.clips[0]!.effects![0]!.keyframes).toBeUndefined()
+    const zoomed = applyCommand(doc, {
+      type: 'setEffectParams',
+      clipId: 'c1',
+      effectId: 'fx1',
+      params: { zoom: true },
+    })
+    expect(zoomed.project.tracks[0]!.clips[0]!.effects![0]).toMatchObject({ zoom: true })
+
+    const withPreset = applyCommand(doc, {
+      type: 'saveTextPreset',
+      preset: { id: 'p1', name: 'Same', style: createDefaultTextStyle() },
+    })
+    expect(() =>
+      applyCommand(withPreset, {
+        type: 'saveTextPreset',
+        preset: { id: 'p2', name: 'Same', style: createDefaultTextStyle() },
+      }),
+    ).toThrow(/already/)
+  })
+
+  it('normalizes a hostile clip in-point and names a text track with T', () => {
+    const { doc } = base()
+    const next = applyCommand(doc, {
+      type: 'addClip',
+      trackId: 'v1',
+      clip: createClip({ id: 'c2', mediaId: 'm1', start: 3, duration: 1, inPoint: Number.NaN }),
+    })
+    expect(next.project.tracks[0]!.clips.find((c) => c.id === 'c2')!.inPoint).toBe(0)
+    const added = applyCommand(doc, { type: 'addTrack', kind: 'text' })
+    const textTrack = added.project.tracks.find((t) => t.kind === 'text')!
+    expect(textTrack.name).toMatch(/^T\d+$/)
   })
 })

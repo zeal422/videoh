@@ -330,3 +330,50 @@ describe('LUT render readers', () => {
     }
   })
 })
+
+describe('LUT hostile decoding (0.29.0)', () => {
+  const lut = (over: Partial<ProjectLut> = {}): ProjectLut =>
+    ({ id: 'l', name: 'L', kind: '1d', size: 2, data: 'AAAAAAAA', ...over }) as ProjectLut
+
+  it('refuses a non-finite cube triple', () => {
+    expect(() =>
+      parseCube(
+        ['LUT_3D_SIZE 2', 'NaN 0 0', ...Array.from({ length: 7 }, () => '0 0 0')].join('\n'),
+      ),
+    ).toThrow()
+  })
+
+  it('decodes malformed payloads to an empty grid and ignores invalid sizes and grids', () => {
+    expect(decodeLutGrid(lut({ data: '!!!!' }))).toHaveLength(0)
+    expect(decodeLutGrid(lut({ data: 'AAAA' }))).toHaveLength(0)
+    const data = new Uint8ClampedArray([9, 8, 7, 6])
+    const grid = new Uint8ClampedArray(12)
+    expect(() => applyLut3dToRgba(data, grid, 1)).not.toThrow()
+    expect(Array.from(data)).toEqual([9, 8, 7, 6])
+    const short = new Uint8ClampedArray([1, 2, 3, 4])
+    expect(() => applyLut3dToRgba(short, new Uint8ClampedArray(3), 2)).not.toThrow()
+    expect(Array.from(short)).toEqual([1, 2, 3, 4])
+  })
+
+  it('evicts the oldest cached grid and returns null shaper values for bad shapes', () => {
+    const make = (index: number) =>
+      lut({
+        id: `valid-${index}`,
+        data: bytesToBase64(new Uint8Array([index % 256, 1, 2, 3, 4, 5])),
+      })
+    const first = decodeLutGrid(make(0))
+    expect(first).toHaveLength(6)
+    const retained: Uint8ClampedArray[] = []
+    for (let index = 1; index < 4; index += 1) retained.push(decodeLutGrid(make(index)))
+    // The cache holds 4 entries; one more evicts the oldest.
+    decodeLutGrid(make(4))
+    expect(decodeLutGrid(make(0))).not.toBe(first)
+    expect(decodeLutGrid(make(4))).toBe(decodeLutGrid(make(4)))
+    expect(lutShaperValues(lut({ kind: '3d' }))).toBeNull()
+    expect(lutShaperValues(lut({ data: 'AAAA' }))).toBeNull()
+  })
+
+  it('refuses a base64 payload with a character outside the alphabet', () => {
+    expect(base64ToBytes('éééé')).toBeNull()
+  })
+})

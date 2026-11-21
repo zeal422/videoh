@@ -108,6 +108,43 @@ describe('active sequence path normalization (0.8.1)', () => {
     // The stale A -> B step is dropped, leaving the surviving parent.
     expect(useEditorStore.getState().activeSequencePath).toEqual(['A'])
   })
+
+  it('resets the playhead when the path changes at the same depth', () => {
+    const doc = createDoc()
+    const vTrack = doc.project.tracks.find((t) => t.kind === 'video')!
+    vTrack.clips.push({ id: 'rootA', sequenceId: 'A', start: 0, duration: 1, inPoint: 0 })
+    doc.project.sequences = [
+      {
+        id: 'A',
+        name: 'A',
+        tracks: [
+          {
+            id: 'ta',
+            kind: 'video',
+            name: 'V1',
+            clips: [
+              { id: 'aB', sequenceId: 'B', start: 0, duration: 1, inPoint: 0 },
+              { id: 'aC', sequenceId: 'C', start: 1, duration: 1, inPoint: 0 },
+            ],
+          },
+        ],
+      },
+      { id: 'B', name: 'B', tracks: [{ id: 'tb', kind: 'video', name: 'V1', clips: [] }] },
+      { id: 'C', name: 'C', tracks: [{ id: 'tc', kind: 'video', name: 'V1', clips: [] }] },
+    ]
+    useEditorStore.setState({
+      doc,
+      past: [],
+      future: [],
+      activeSequencePath: ['A', 'B'],
+      playhead: 4,
+    })
+    // Same length, different tail: the `.some` callback is the only thing that
+    // can see the change, so a length-only comparison would keep the playhead.
+    useEditorStore.getState().setActiveSequencePath(['A', 'C'])
+    expect(useEditorStore.getState().activeSequencePath).toEqual(['A', 'C'])
+    expect(useEditorStore.getState().playhead).toBe(0)
+  })
 })
 
 describe('history', () => {
@@ -1248,5 +1285,120 @@ describe('relinkMedia file validation (store wiring)', () => {
     ).toThrow(EditorCommandError)
     expect(useEditorStore.getState().doc.media[0]).toEqual(before)
     expect(useEditorStore.getState().past).toHaveLength(0)
+  })
+})
+
+describe('store branch matrix (0.29.0)', () => {
+  it('keeps a live eyedropper and clears a stale one', () => {
+    addTestClip()
+    const doc = useEditorStore.getState().doc
+    const clip = doc.project.tracks.flatMap((t) => t.clips)[0]!
+    clip.effects = [{ id: 'fx1', type: 'chromaKey' } as never]
+    useEditorStore.setState({ eyedropper: { clipId: clip.id, effectId: 'fx1' } })
+    useEditorStore.getState().apply([{ type: 'setClipMuted', clipId: clip.id, muted: true }])
+    expect(useEditorStore.getState().eyedropper).toEqual({ clipId: clip.id, effectId: 'fx1' })
+
+    useEditorStore.setState({ eyedropper: { clipId: 'gone', effectId: 'fx1' } })
+    useEditorStore.getState().apply([{ type: 'setClipMuted', clipId: clip.id, muted: false }])
+    expect(useEditorStore.getState().eyedropper).toBeNull()
+  })
+
+  it('ignores resetTransient with no gesture and undo with empty history', () => {
+    useEditorStore.getState().resetTransient()
+    const doc = useEditorStore.getState().doc
+    useEditorStore.getState().undo()
+    expect(useEditorStore.getState().doc).toBe(doc)
+
+    useEditorStore.getState().beginTransient()
+    try {
+      expect(stableDocForRender(useEditorStore.getState().doc)).toBe(doc)
+    } finally {
+      useEditorStore.getState().commitTransient()
+    }
+  })
+
+  it('targets and untargets a track idempotently', () => {
+    useEditorStore.getState().setTrackTargeted('t1', false)
+    useEditorStore.getState().setTrackTargeted('t1', false)
+    expect(useEditorStore.getState().untargetedTracks).toEqual(['t1'])
+    useEditorStore.getState().setTrackTargeted('t1', true)
+    expect(useEditorStore.getState().untargetedTracks).toEqual([])
+  })
+
+  it('clears an absent proxy entry without a new object', () => {
+    useEditorStore.getState().clearProxyEntry('missing')
+    expect(useEditorStore.getState().proxyByAssetId).toEqual({})
+    useEditorStore.getState().setProxyEntry('a', { url: 'blob:proxy' } as never)
+    useEditorStore.getState().clearProxyEntry('a')
+    expect(useEditorStore.getState().proxyByAssetId).toEqual({})
+  })
+
+  it('refuses opening an unknown or already active sequence', () => {
+    const sequence = { id: 'seq1', name: 'S', tracks: [] } as never
+    const base = useEditorStore.getState().doc
+    const compound = createClip({ id: 'comp', duration: 2, sequenceId: 'seq1' } as never)
+    useEditorStore.setState({
+      doc: {
+        ...base,
+        project: {
+          ...base.project,
+          tracks: [{ ...base.project.tracks[0]!, clips: [compound] }],
+          sequences: [sequence],
+        },
+      },
+      activeSequencePath: [],
+    })
+    useEditorStore.getState().openSequence('missing')
+    expect(useEditorStore.getState().activeSequencePath).toEqual([])
+    useEditorStore.getState().openSequence('seq1')
+    expect(useEditorStore.getState().activeSequencePath).toEqual(['seq1'])
+    useEditorStore.getState().openSequence('seq1')
+    expect(useEditorStore.getState().activeSequencePath).toEqual(['seq1'])
+  })
+
+  it('selects a track only when it exists and toggles a clip group both ways', () => {
+    useEditorStore.getState().selectTrackClips('missing')
+    expect(useEditorStore.getState().selections).toEqual([])
+    const trackId = videoTrackId(useEditorStore.getState().doc)
+    addTestClip()
+    const clip = useEditorStore.getState().doc.project.tracks.find((track) => track.id === trackId)!
+      .clips[0]!
+    useEditorStore.getState().selectTrackClips(trackId)
+    expect(useEditorStore.getState().selections).toEqual([clip.id])
+    useEditorStore.getState().toggleSelection(clip.id)
+    expect(useEditorStore.getState().selections).toEqual([])
+    useEditorStore.getState().toggleSelection(clip.id)
+    expect(useEditorStore.getState().selections).toEqual([clip.id])
+  })
+
+  it('ignores a repeated preview state and a repeated snap line', () => {
+    useEditorStore.getState().setPreviewRecovering(false)
+    useEditorStore.getState().setPreviewRecovering(false)
+    expect(useEditorStore.getState().previewRecovering).toBe(false)
+    useEditorStore.getState().setSnapLine(null)
+    useEditorStore.getState().setSnapLine(null)
+    expect(useEditorStore.getState().snapLine).toBeNull()
+  })
+
+  it('keeps a missing source asset as no source window', () => {
+    useEditorStore.getState().setSourceAsset('gone')
+    useEditorStore.getState().markSourceIn()
+    useEditorStore.getState().markSourceOut()
+    expect(useEditorStore.getState().sourceIn).toBeNull()
+    expect(useEditorStore.getState().sourceOut).toBeNull()
+  })
+})
+
+describe('repeated session flags (0.29.0)', () => {
+  it('keeps identity on a repeated preview/snap/gesture value', () => {
+    useEditorStore.setState({ previewRecovering: true, snapLine: 3 })
+    useEditorStore.getState().setPreviewRecovering(true)
+    useEditorStore.getState().setSnapLine(3)
+    const afterFirst = useEditorStore.getState()
+    useEditorStore.getState().setPreviewRecovering(true)
+    useEditorStore.getState().setSnapLine(3)
+    expect(useEditorStore.getState()).toBe(afterFirst)
+    expect(useEditorStore.getState().previewRecovering).toBe(true)
+    expect(useEditorStore.getState().snapLine).toBe(3)
   })
 })

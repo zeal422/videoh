@@ -5,6 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.29.0] - 2026-11-20
+
+### Tests and docs
+
+- Raise the coverage gate from 70/60/75/70 to 96 on statements, branches, functions, and lines over the 58-module include list. No file is excluded, no `v8 ignore` is added, and no dependency changes.
+- The suite moves to 135 files and 3,677 tests. Coverage is 97.58 statements, 96.57 branches, 97.63 functions, and 98.51 lines.
+- Add hostile-input coverage at each trust boundary: serialization and migration, template application, bundle ZIP bounds and CRCs, recovered and colliding ids, command payloads, autosave coordination and persistence, and the timeline planners. A value the UI constrains is re-validated when it arrives from a file, a command payload, or hydration.
+- Add a fake IndexedDB to the browser mock harness. It models open with an upgrade callback that fires only on a version increase, a readwrite transaction, get and put in request order, staged writes that publish only on commit, one transaction per store across connections, a get-only commit, close and abort, the complete, error, and abort events, and a refusal after the transaction finishes, so the autosave coordination fallback runs in the Node harness.
+- `docs/testing.md` records each of the 206 branch paths the report still counts as uncovered, with a reason: class-b intentional, class-c unreachable, or not prioritized.
+- `bun run check` passes. The four-shard pair battery passed 74/74 on the dev server and 74/74 on the standalone artifact with `PAIR_EXIT=0` in 184s on 2026-11-21.
+
+### Changed
+
+- When a cooperative autosave write finds a fresh foreign owner, it clears this tab's heartbeat interval instead of leaving the next heartbeat to take one more coordination lock. An already queued heartbeat request is not canceled.
+- A cooperative autosave write rechecks the pause inside its serialized section, so a write queued before another tab paused this tab returns read-only if the pause is still active when the serialized section starts, instead of writing the slot during the pause. A debounced save refused this way stays pending, and the resume handler saves the live document without another edit.
+- A project-scoped write or an unfinished import fence now requires real serialization at an IndexedDB fallback. A failed database open cannot run either one directly, while an ordinary write with no ownership, install, or fence obligation keeps the direct fallback.
+- A failed live import-marker write uses the combined pending-install retry when another project's registry append is still owed, so recovering the live slot does not discard the other project's pending install. A successful save clears only its own slot retry, so another project's pending registry append keeps its timer until the append lands. A combined retry keeps the failed slot write's own sequence, so an intermediate committed save cannot supersede it.
+- A completed import or a takeover that makes this tab permanently read-only reports autosave off, instead of leaving the temporary pause's pending status spinning with no later event to clear it.
+- A save that completes a pending install establishes the import fence before it writes the slot or clears a lower-sequence retry, so an ordinary resume save cannot advance the slot ahead of the import marker.
+- A cooperative save selects a pending install and its import fence by the project id in the serialized snapshot, not by the live project. A stale snapshot whose project is no longer live returns superseded without writing the slot or consuming the install, and a superseded save leaves the pending install for the next eligible save.
+- When an ordinary save's import marker write fails after the install record is durable and no other registry append is pending, the save queues an exact-snapshot retry bound to the snapshot project and sequence. That retry writes only while the project is still live and its content still matches. If another project's append is still owed, the combined pending-install retry runs instead, serializes the live document when it fires, and may reuse the existing retry's sequence.
+- An IndexedDB fallback rechecks the serialization requirement after a failed open or read, so a pending install that arrives while the connection opens cannot run the section outside a lock.
+- Debounced and resume saves report saved only when the captured snapshot is still live and the committed slot contains it. A saved result whose newer live document is already in the store reports pending so the scheduled save owns completion, while a superseded save with a changed live document or a slot mismatch leaves the autosave status untouched. A pending-install retry whose live project still matches its slot sets pending when the slot does not contain the snapshot.
+- Ordinary and resume autosaves pass the captured project id, so the write path no longer parses the full serialized document just to select a pending install.
+- The project format and analytics contract are unchanged. The project schema stays v8.
+
 ## [0.28.5] - 2026-11-19
 
 ### Fixed

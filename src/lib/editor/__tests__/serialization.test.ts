@@ -2206,3 +2206,506 @@ describe('hostile hydration boundaries (M2)', () => {
     expect(() => deserializeDoc(json)).toThrow(/nesting is too deep/)
   })
 })
+
+describe('serialization hostile matrix (0.29.0)', () => {
+  function rawDoc(project: Record<string, unknown> = {}, media: unknown[] = []) {
+    return {
+      version: SERIALIZATION_VERSION,
+      project: {
+        id: 'proj_raw',
+        name: 'Raw',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [{ kind: 'video', name: 'V1', clips: [] }],
+        ...project,
+      },
+      media,
+    }
+  }
+
+  function oneClip(clip: Record<string, unknown>, trackKind = 'video', media: unknown[] = []) {
+    return deserializeDoc(
+      rawDoc({ tracks: [{ kind: trackKind, name: 'Lane', clips: [clip] }] }, media),
+    )
+  }
+
+  it('refuses a versioned project with no track array', () => {
+    const raw = rawDoc()
+    delete (raw.project as Record<string, unknown>).tracks
+    expect(() => deserializeDoc(raw)).toThrow('missing project tracks')
+  })
+
+  it('regenerates missing sequence ids and names, skips non-objects, and drops non-array tracks', () => {
+    const { doc } = deserializeDoc(
+      rawDoc({
+        sequences: [null, { tracks: 'nope' }, { id: 'seq_kept', name: '' }],
+      }),
+    )
+    expect(doc.project.sequences).toHaveLength(2)
+    expect(doc.project.sequences![0]!.id).toMatch(/^seq_/)
+    expect(doc.project.sequences![0]!.name).toBe('Compound Clip')
+    expect(doc.project.sequences![0]!.tracks).toEqual([])
+    expect(doc.project.sequences![1]!.id).toBe('seq_kept')
+  })
+
+  it('regenerates a missing media id and defaults an unknown kind', () => {
+    const { doc } = deserializeDoc(rawDoc({}, [{ kind: 'hologram' }]))
+    expect(doc.media[0]!.id).toMatch(/^media_/)
+    expect(doc.media[0]!.kind).toBe('video')
+  })
+
+  it('hydrates every non-default static clip field and drops non-finite statics', () => {
+    const { doc } = oneClip({
+      id: 'c1',
+      start: 0,
+      duration: 2,
+      muted: false,
+      rotation: 45,
+      speed: 2,
+      pan: 0.5,
+      eq: { low: 1, mid: 2, high: 3 },
+      temperature: 10,
+      tint: -5,
+      animStatics: { scale: 2, positionX: 'bad', bogus: 2 },
+      keyframes: {
+        opacity: [null, { time: 0, value: 0.5 }],
+        bogus: [{ time: 0, value: 1 }],
+      },
+    })
+    const clip = doc.project.tracks[0]!.clips[0]!
+    expect(clip.muted).toBe(false)
+    expect(clip.rotation).toBe(45)
+    expect(clip.speed).toBe(2)
+    expect(clip.pan).toBe(0.5)
+    expect(clip.eq).toEqual({ low: 1, mid: 2, high: 3 })
+    expect(clip.temperature).toBe(10)
+    expect(clip.tint).toBe(-5)
+    expect(clip.animStatics).toEqual({ scale: 2 })
+    expect(clip.keyframes?.opacity?.[0]?.value).toBe(0.5)
+  })
+
+  it('omits an empty keyframe map after filtering hostile entries', () => {
+    const { doc } = oneClip({
+      id: 'c2',
+      start: 0,
+      duration: 2,
+      keyframes: { opacity: [{ time: 'x', value: 'y' }], bogus: [{ time: 0, value: 1 }] },
+    })
+    expect(doc.project.tracks[0]!.clips[0]!.keyframes).toBeUndefined()
+  })
+
+  it('hydrates effect defaults, enabled false, crop zoom, chroma mode and reverse', () => {
+    const { doc } = oneClip({
+      id: 'c3',
+      start: 0,
+      duration: 2,
+      effects: [
+        {
+          type: 'crop',
+          enabled: false,
+          zoom: true,
+          keyframes: { left: [{ time: 0, value: 0.2 }] },
+        },
+        { type: 'chromaKey', key: '#ff0000' },
+        null,
+        { type: 'unknown' },
+      ],
+    })
+    const effects = doc.project.tracks[0]!.clips[0]!.effects!
+    expect(effects).toHaveLength(2)
+    expect(effects[0]).toMatchObject({ type: 'crop', enabled: false, zoom: true })
+    expect(effects[0]!.id).toMatch(/^fx_/)
+    expect(effects[0]!.keyframes?.left?.[0]?.value).toBe(0.2)
+    expect(effects[1]).toMatchObject({ type: 'chromaKey' })
+  })
+
+  it('hydrates a resolved track matte with alpha mode and reverse', () => {
+    const { doc } = deserializeDoc(
+      rawDoc({
+        tracks: [
+          { id: 'top', kind: 'video', name: 'Top', clips: [] },
+          {
+            id: 'low',
+            kind: 'video',
+            name: 'Low',
+            clips: [
+              {
+                id: 'matte_clip',
+                start: 0,
+                duration: 2,
+                effects: [{ type: 'trackMatte', trackId: 'top', mode: 'alpha', reverse: true }],
+              },
+            ],
+          },
+        ],
+      }),
+    )
+    const effect = doc.project.tracks[1]!.clips[0]!.effects![0]!
+    expect(effect).toMatchObject({ type: 'trackMatte', mode: 'alpha', reverse: true })
+  })
+
+  it('drops an effects array that becomes empty after a bad matte and a shape with no body', () => {
+    const matte = oneClip({
+      id: 'c4',
+      start: 0,
+      duration: 2,
+      effects: [{ type: 'trackMatte', trackId: 'missing' }],
+    })
+    expect(matte.doc.project.tracks[0]!.clips[0]!.effects).toBeUndefined()
+
+    const badShape = oneClip({ id: 'c5', start: 0, duration: 2, shape: 5 })
+    expect(badShape.doc.project.tracks[0]!.clips).toEqual([])
+    expect(badShape.warnings).toContain('Dropped 1 malformed shape clip.')
+  })
+
+  it('warns singular for each legacy timeline migration class', () => {
+    const cap = 86_400
+    const trimmed = oneClip({ id: 'a', start: cap - 1, duration: 10 })
+    expect(trimmed.warnings).toContain('Trimmed 1 clip to the 24-hour timeline limit.')
+    const overCap = oneClip({ id: 'b', start: cap + 1, duration: 1 })
+    expect(overCap.warnings).toContain(
+      'Dropped 1 clip that started past the 24-hour timeline limit.',
+    )
+    const overflow = oneClip({ id: 'c', start: 1e308, duration: 1e308 })
+    expect(overflow.warnings).toContain(
+      'Dropped 1 clip whose end overflowed the supported timeline range.',
+    )
+    const marker = deserializeDoc(rawDoc({ markers: [{ id: 'm', time: cap + 1 }] }))
+    expect(marker.warnings).toContain('Dropped 1 marker past the 24-hour timeline limit.')
+  })
+
+  it('warns singular when one clip does not fit its lane kind', () => {
+    const media = [{ id: 'm_audio', kind: 'audio', duration: 5 }]
+    const clip = { id: 'c6', start: 0, duration: 2, mediaId: 'm_audio' }
+    const { warnings } = deserializeDoc(
+      rawDoc({ tracks: [{ kind: 'video', name: 'V', clips: [clip] }] }, media),
+    )
+    expect(warnings).toContain('Dropped 1 clip that does not fit its track kind.')
+  })
+
+  it('regenerates an empty marker id and keeps the marker', () => {
+    const { doc } = deserializeDoc(rawDoc({ markers: [{ id: '', time: 2 }] }))
+    expect(doc.project.markers).toHaveLength(1)
+    expect(doc.project.markers![0]!.id).toMatch(/^marker_/)
+  })
+
+  it('drops malformed LUT sizes, kind-specific oversize tables, and names a nameless LUT', () => {
+    const base = deserializeDoc(rawDoc({})).doc
+    const small = 'AAAAAAAA'
+    const { doc } = deserializeDoc(
+      rawDoc({
+        luts: [
+          { id: 'l0', kind: '1d', size: 1, data: small },
+          { id: 'l1', kind: '1d', size: 2.5, data: small },
+          { id: 'l2', kind: '1d', size: 4097, data: small },
+          { id: 'l3', kind: '3d', size: 129, data: small },
+          { id: 'l4', kind: '1d', size: 2, data: small },
+        ],
+      }),
+    )
+    expect(doc.project.luts).toHaveLength(1)
+    expect(doc.project.luts![0]).toMatchObject({ id: 'l4', name: 'LUT' })
+    expect(base.project.luts).toBeUndefined()
+  })
+
+  it('drops a LUT that would push the library over its total budget', () => {
+    const data = 'A'.repeat(16_384)
+    const luts = Array.from({ length: 184 }, (_, index) => ({
+      id: `lut_${index}`,
+      kind: '1d',
+      size: 4096,
+      data,
+    }))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const { doc } = deserializeDoc(rawDoc({ luts }))
+      const kept = doc.project.luts!
+      // 3,000,000 / 16,384 = 183.1, so the first 183 fit and the 184th is the
+      // one over budget. A total rejection or a different capacity would not
+      // produce exactly this prefix.
+      expect(kept).toHaveLength(183)
+      expect(kept[0]!.id).toBe('lut_0')
+      expect(kept.at(-1)!.id).toBe('lut_182')
+      expect(warn.mock.calls[0]?.[0]).toContain('LUT library')
+      expect(warn.mock.calls[0]?.[0]).toContain('over budget')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('falls a missing preset style back to the default and an all-invalid list to absent', () => {
+    const { doc } = deserializeDoc(rawDoc({ textPresets: [{ id: 'preset_ok', name: 'Mine' }] }))
+    expect(doc.project.textPresets).toHaveLength(1)
+    expect(doc.project.textPresets![0]!.style).toEqual(createDefaultTextStyle())
+    const { doc: empty } = deserializeDoc(rawDoc({ textPresets: [{ id: '', name: '' }] }))
+    expect(empty.project.textPresets).toBeUndefined()
+  })
+
+  it('drops a duplicate track group name and a malformed brand kit entry', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const { doc } = deserializeDoc(
+        rawDoc({
+          tracks: [{ kind: 'video', name: 'V1', groupId: 'tg1', clips: [] }],
+          trackGroups: [
+            { id: 'tg1', name: 'Group 1' },
+            { id: 'tg2', name: 'group 1' },
+          ],
+          brandKit: { colors: [{ id: 'c1', value: 'not-a-color' }] },
+        }),
+      )
+      expect(doc.project.trackGroups).toEqual([{ id: 'tg1', name: 'Group 1' }])
+      expect(doc.project.brandKit).toBeUndefined()
+      expect(warn).toHaveBeenCalledWith('[serialization] dropped 1 brand kit entry while loading')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
+describe('serialization migration plurals and graph chains (0.29.0)', () => {
+  function rawDoc(project: Record<string, unknown> = {}) {
+    return {
+      version: SERIALIZATION_VERSION,
+      project: {
+        id: 'proj_raw',
+        name: 'Raw',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [{ kind: 'video', name: 'V1', clips: [] }],
+        ...project,
+      },
+      media: [],
+    }
+  }
+
+  it('pluralizes every migration warning for two entries', () => {
+    const cap = 86_400
+    const clips = [
+      { id: 't1', start: cap - 1, duration: 10 },
+      { id: 't2', start: cap - 2, duration: 10 },
+      { id: 'o1', start: cap + 1, duration: 1 },
+      { id: 'o2', start: cap + 2, duration: 1 },
+      { id: 'f1', start: 1e308, duration: 1e308 },
+      { id: 'f2', start: 1e308, duration: 1e308 },
+      { id: 's1', start: 0, duration: 1, shape: 5 },
+      { id: 's2', start: 0, duration: 1, shape: 5 },
+    ]
+    const { warnings } = deserializeDoc(rawDoc({ tracks: [{ kind: 'video', name: 'V', clips }] }))
+    expect(warnings).toContain('Trimmed 2 clips to the 24-hour timeline limit.')
+    expect(warnings).toContain('Dropped 2 clips that started past the 24-hour timeline limit.')
+    expect(warnings).toContain('Dropped 2 clips whose end overflowed the supported timeline range.')
+    expect(warnings).toContain('Dropped 2 malformed shape clips.')
+  })
+
+  it('drops a clip whose capped remainder is below the minimum duration', () => {
+    const { warnings } = deserializeDoc(
+      rawDoc({
+        tracks: [
+          { kind: 'video', name: 'V', clips: [{ id: 'edge', start: 86_399.99, duration: 1 }] },
+        ],
+      }),
+    )
+    expect(warnings).toContain('Dropped 1 clip that started past the 24-hour timeline limit.')
+  })
+
+  it('keeps a clip whose only explicit fields are the defaults', () => {
+    const clip = {
+      id: 'defaults',
+      start: 0,
+      duration: 2,
+      rotation: 0,
+      speed: 1,
+      pan: 0,
+      eq: { low: 0, mid: 0, high: 0 },
+      temperature: 0,
+      tint: 0,
+    }
+    const { doc } = deserializeDoc(
+      rawDoc({ tracks: [{ kind: 'video', name: 'V', clips: [clip] }] }),
+    )
+    const hydrated = doc.project.tracks[0]!.clips[0]!
+    expect(hydrated.rotation).toBeUndefined()
+    expect(hydrated.speed).toBeUndefined()
+    expect(hydrated.pan).toBeUndefined()
+    expect(hydrated.eq).toBeUndefined()
+    expect(hydrated.temperature).toBeUndefined()
+    expect(hydrated.tint).toBeUndefined()
+  })
+
+  it('keeps a non-empty keyframe map after stripping a picture-less timeScale curve', () => {
+    const clip = {
+      id: 'audio_clip',
+      start: 0,
+      duration: 2,
+      mediaId: 'm_audio',
+      audioOnly: true,
+      keyframes: {
+        timeScale: [{ time: 0, value: 1 }],
+        opacity: [{ time: 0, value: 0.5 }],
+      },
+    }
+    const { doc } = deserializeDoc(
+      rawDoc({ tracks: [{ kind: 'audio', name: 'A', clips: [clip] }] }),
+    )
+    expect(doc.media).toEqual([])
+    expect(doc.project.tracks[0]!.clips).toHaveLength(1)
+    expect(doc.project.tracks[0]!.clips[0]!.keyframes?.timeScale).toBeUndefined()
+    expect(doc.project.tracks[0]!.clips[0]!.keyframes?.opacity).toMatchObject([
+      { time: 0, value: 0.5 },
+    ])
+  })
+
+  it('drops an effect keyframe map whose only property is invalid', () => {
+    const clip = {
+      id: 'fx_clip',
+      start: 0,
+      duration: 2,
+      effects: [
+        {
+          type: 'crop',
+          keyframes: { bogus: [{ time: 0, value: 1 }] },
+        },
+      ],
+    }
+    const { doc } = deserializeDoc(
+      rawDoc({ tracks: [{ kind: 'video', name: 'V', clips: [clip] }] }),
+    )
+    const effect = doc.project.tracks[0]!.clips[0]!.effects![0]!
+    expect(effect.keyframes).toBeUndefined()
+  })
+
+  it('hydrates an explicit preset style instead of the default', () => {
+    const { doc } = deserializeDoc(
+      rawDoc({
+        textPresets: [
+          {
+            id: 'preset_styled',
+            name: 'Styled',
+            style: { fontSize: 44, color: '#112233' },
+          },
+        ],
+      }),
+    )
+    expect(doc.project.textPresets![0]!.style.fontSize).toBe(44)
+    expect(doc.project.textPresets![0]!.style.color).toBe('#112233')
+  })
+
+  it('walks a shared child and a chain without tripping the cycle guard', () => {
+    const seq = (id: string, refs: string[]) => ({
+      id,
+      name: id,
+      tracks: [
+        {
+          id: `t_${id}`,
+          kind: 'video',
+          name: 'V',
+          clips: refs.map((ref, index) => ({
+            id: `c_${id}_${index}`,
+            start: 0,
+            duration: 2,
+            sequenceId: ref,
+          })),
+        },
+      ],
+    })
+    const { doc } = deserializeDoc(
+      rawDoc({
+        sequences: [
+          seq('parent', ['shared', 'shared2']),
+          seq('shared', ['leaf']),
+          seq('shared2', ['leaf']),
+          seq('leaf', []),
+        ],
+      }),
+    )
+    expect(doc.project.sequences).toHaveLength(4)
+    const byId = new Map(doc.project.sequences!.map((sequence) => [sequence.id, sequence]))
+    expect(
+      byId
+        .get('parent')!
+        .tracks[0]!.clips.map((clip) => clip.sequenceId)
+        .sort(),
+    ).toEqual(['shared', 'shared2'])
+    expect(byId.get('shared')!.tracks[0]!.clips.map((clip) => clip.sequenceId)).toEqual(['leaf'])
+    expect(byId.get('shared2')!.tracks[0]!.clips.map((clip) => clip.sequenceId)).toEqual(['leaf'])
+  })
+
+  it('refuses a cyclic sequence graph', () => {
+    const seq = (id: string, ref: string) => ({
+      id,
+      name: id,
+      tracks: [
+        {
+          id: `t_${id}`,
+          kind: 'video',
+          name: 'V',
+          clips: [{ id: `c_${id}`, start: 0, duration: 2, sequenceId: ref }],
+        },
+      ],
+    })
+    expect(() => deserializeDoc(rawDoc({ sequences: [seq('a', 'b'), seq('b', 'a')] }))).toThrow(
+      /cycle/,
+    )
+  })
+})
+
+describe('serialization empty-map cleanup (0.29.0)', () => {
+  function rawClip(clip: Record<string, unknown>, kind = 'video', media: unknown[] = []) {
+    return {
+      version: SERIALIZATION_VERSION,
+      project: {
+        id: 'p',
+        name: 'P',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [{ kind, name: 'L', clips: [clip] }],
+      },
+      media,
+    }
+  }
+
+  it('clears a timeScale-only curve on a picture-less clip', () => {
+    const { doc } = deserializeDoc(
+      rawClip(
+        {
+          id: 'a',
+          start: 0,
+          duration: 2,
+          mediaId: 'm',
+          audioOnly: true,
+          keyframes: { timeScale: [{ time: 0, value: 1 }] },
+        },
+        'audio',
+      ),
+    )
+    expect(doc.project.tracks[0]!.clips[0]!.keyframes).toBeUndefined()
+  })
+
+  it('keeps a non-matte effect array', () => {
+    const { doc } = deserializeDoc(
+      rawClip({
+        id: 'fx',
+        start: 0,
+        duration: 2,
+        effects: [{ id: 'crop', type: 'crop' }],
+      }),
+    )
+    expect(doc.project.tracks[0]!.clips[0]!.effects).toHaveLength(1)
+  })
+
+  it('drops an empty effect keyframe map after filtering', () => {
+    const { doc } = deserializeDoc(
+      rawClip({
+        id: 'fx2',
+        start: 0,
+        duration: 2,
+        effects: [{ id: 'crop2', type: 'crop', keyframes: { left: [{ time: -1, value: 0 }] } }],
+      }),
+    )
+    expect(doc.project.tracks[0]!.clips[0]!.effects![0]!.keyframes).toBeUndefined()
+  })
+})

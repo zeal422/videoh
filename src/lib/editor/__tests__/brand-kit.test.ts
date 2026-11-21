@@ -148,3 +148,32 @@ describe('brand kit model (0.26.0)', () => {
     ).toThrow(/Unknown brand font/)
   })
 })
+
+describe('brand kit hostile inputs (0.29.0)', () => {
+  it('refuses non-string names and malformed color entries', () => {
+    expect(sanitizeBrandColorName(7)).toBeUndefined()
+    expect(sanitizeBrandColorName('   ')).toBeUndefined()
+    expect(sanitizeBrandColorName('x'.repeat(200))).toBeUndefined()
+    expect(sanitizeBrandColorName('bad\u0001name')).toBeUndefined()
+    expect(sanitizeBrandKit(null)).toEqual({ dropped: 0 })
+    expect(sanitizeBrandKit(5)).toEqual({ dropped: 0 })
+    const { kit, dropped } = sanitizeBrandKit({
+      colors: [
+        null,
+        { id: 'bad id', name: 'x', value: '#112233' },
+        { id: 'ok', name: '', value: '#112233' },
+      ],
+      fontFamilies: 'nope',
+    })
+    expect(kit).toBeUndefined()
+    expect(dropped).toBe(4)
+  })
+
+  it('keeps a colors-only kit and a fonts-only kit without empty fields', () => {
+    const colorsOnly = sanitizeBrandKit({ colors: [color()], fontFamilies: [] })
+    expect(colorsOnly.kit).toEqual({ colors: [color()] })
+    expect(colorsOnly.kit).not.toHaveProperty('fontFamilies')
+    const fontsOnly = sanitizeBrandKit({ colors: [], fontFamilies: ['Inter'] })
+    expect(fontsOnly.kit).toEqual({ colors: [], fontFamilies: ['Inter'] })
+  })
+})

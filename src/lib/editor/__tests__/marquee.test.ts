@@ -256,3 +256,11 @@ describe('resolveMarqueeSelection', () => {
     expect(resolveMarqueeSelection(doc, ['ghost', 'a'], [], 'replace')).toEqual(['a'])
   })
 })
+
+describe('marquee hostile lanes (0.29.0)', () => {
+  it('ignores a lane whose track no longer exists', () => {
+    const doc = docWithTracks()
+    const rect = normalizeMarquee(0, 0, 500, 500)
+    expect(marqueeHitClipIds(doc, [{ trackId: 'gone', top: 0, height: 64 }], rect, PPS)).toEqual([])
+  })
+})

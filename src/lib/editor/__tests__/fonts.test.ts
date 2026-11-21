@@ -14,6 +14,7 @@ import {
   sanitizeFontFamily,
   sanitizeFontName,
   sanitizeProjectFont,
+  validateFontBytes,
   validateFontFile,
 } from '../fonts'
 import { FONT_FILE_MAX_BYTES, FONT_NAME_MAX } from '../constants'
@@ -161,5 +162,12 @@ describe('font file validation (0.25.0)', () => {
     expect(FONT_FILE_ACCEPT).toContain('.woff2')
     expect(FONT_FILE_ACCEPT).toContain('.otf')
     expect(FONT_FILE_ACCEPT).not.toContain('svg')
+  })
+})
+
+describe('font byte validation bounds (0.29.0)', () => {
+  it('refuses empty and oversized byte arrays before reading a header', () => {
+    expect(validateFontBytes(new Uint8Array())).toBeNull()
+    expect(validateFontBytes(new Uint8Array(FONT_FILE_MAX_BYTES + 1))).toBeNull()
   })
 })

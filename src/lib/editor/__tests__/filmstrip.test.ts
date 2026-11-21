@@ -393,3 +393,40 @@ describe('filmstripCacheKey', () => {
     )
   })
 })
+
+describe('filmstrip viewport and cache guards (0.29.0)', () => {
+  it('falls a zero-width viewport back to the full clip tile', () => {
+    const clip = videoClip({ id: 'c', start: 0 })
+    const asset = videoAsset()
+    const plan = filmstripPlan(clip, asset, 100, 64, { startPx: 0, widthPx: 0 })
+    expect(plan?.tileWidthPx).toBe(100)
+  })
+
+  it('returns no prefetch for a single frame or an identical source time', () => {
+    const plan = (frames: { sourceTime: number }[]) =>
+      ({
+        frames,
+        sourceStart: 0,
+        sourceEnd: 10,
+      }) as never
+    expect(filmstripPrefetchTimes(plan([{ sourceTime: 1 }]))).toEqual([])
+    expect(filmstripPrefetchTimes(plan([{ sourceTime: 1 }, { sourceTime: 1 }]))).toEqual([])
+  })
+
+  it('changes the cache key when a timeScale curve gains easing data', () => {
+    const clip = videoClip({
+      id: 'c',
+      keyframes: { timeScale: [{ time: 0, value: 1 }] },
+    } as never)
+    const eased = structuredClone(clip)
+    eased.keyframes!.timeScale![0]!.easeOut = [0, 0, 1, 1]
+    const asset = videoAsset()
+    expect(filmstripCacheKey(clip, asset, 64, 64)).not.toBe(filmstripCacheKey(eased, asset, 64, 64))
+  })
+
+  it('returns no image plan for a width below the bucket floor', () => {
+    const clip = videoClip({ id: 'c', start: 0 })
+    const asset = videoAsset({ kind: 'image' })
+    expect(filmstripPlan(clip, asset, 10, 64)).toBeNull()
+  })
+})

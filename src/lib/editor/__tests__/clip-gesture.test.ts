@@ -630,3 +630,148 @@ describe('decideRateStretch (Alt-drag on an edge)', () => {
     expect(d.fits).toBe(false)
   })
 })
+
+describe('clip gesture branch matrix (0.29.0)', () => {
+  it('treats image and video lanes as one family in both directions', () => {
+    const mixed: LaneBox[] = [
+      { id: 'i1', kind: 'image', top: 0, bottom: 50 },
+      { id: 'v1', kind: 'video', top: 60, bottom: 100 },
+    ]
+    expect(resolveLaneDrop(mixed, 25, 'v1', 'video')).toEqual({ laneId: 'i1', blocked: null })
+    expect(resolveLaneDrop(mixed, 75, 'i1', 'image')).toEqual({ laneId: 'v1', blocked: null })
+  })
+
+  it('resolves an audio outer edge when no audio track exists, and anchors nothing on no lanes', () => {
+    const stack = [
+      { id: 't1', kind: 'text', name: 'T1' },
+      { id: 'v1', kind: 'video', name: 'V1' },
+    ]
+    expect(resolveInsertIndex(stack, { type: 'outer', kind: 'audio', side: 'bottom' })).toBe(2)
+    expect(insertAnchor([], { type: 'outer', kind: 'video', side: 'top' })).toBeNull()
+  })
+
+  it('falls back to the original lane with no lanes or a text gap', () => {
+    const empty = decideMove({
+      orig: clip(),
+      origTrackId: 't1',
+      origTrackKind: 'video',
+      startX: 100,
+      clientX: 100,
+      clientY: 25,
+      lanes: [],
+      tracks: tracks,
+      scale: 10,
+      snapping: false,
+      snapPoints: [],
+      partners: [],
+    })
+    expect(empty.targetTrackId).toBe('t1')
+    expect(empty.insert).toBeNull()
+
+    const textGap = decideMove({
+      orig: clip(),
+      origTrackId: 'x1',
+      origTrackKind: 'text',
+      startX: 100,
+      clientX: 100,
+      clientY: 50,
+      lanes: [{ id: 'v1', kind: 'video', top: 0, bottom: 40 }],
+      tracks: [{ id: 'v1', kind: 'video', name: 'V1' }],
+      scale: 10,
+      snapping: false,
+      snapPoints: [],
+      partners: [],
+    })
+    expect(textGap.targetTrackId).toBe('x1')
+    expect(textGap.insert).toBeNull()
+  })
+
+  it('carries a sequence id into every pending insert boundary', () => {
+    const gapped: LaneBox[] = [
+      { id: 'v1', kind: 'video', top: 0, bottom: 40 },
+      { id: 'v2', kind: 'video', top: 60, bottom: 100 },
+    ]
+    const gappedTracks = [
+      { id: 'v1', kind: 'video', name: 'V1' },
+      { id: 'v2', kind: 'video', name: 'V2' },
+    ]
+    const base = {
+      orig: clip(),
+      origTrackId: 'v1',
+      origTrackKind: 'video',
+      startX: 100,
+      tracks: gappedTracks,
+      scale: 10,
+      snapping: false,
+      snapPoints: [],
+      partners: [],
+      sequenceId: 'seq1',
+    }
+    expect(decideMove({ ...base, clientX: 100, clientY: -10, lanes: gapped }).insert).toEqual({
+      boundary: { type: 'outer', kind: 'video', side: 'top', sequenceId: 'seq1' },
+      kind: 'video',
+    })
+    expect(decideMove({ ...base, clientX: 100, clientY: 50, lanes: gapped }).insert).toEqual({
+      boundary: { type: 'after', trackId: 'v1', sequenceId: 'seq1' },
+      kind: 'video',
+    })
+    expect(
+      decideMove({
+        ...base,
+        origTrackKind: 'audio',
+        origTrackId: 'a1',
+        orig: clip({ audioOnly: true }),
+        clientX: 100,
+        clientY: 220,
+        lanes: [...gapped, { id: 'a1', kind: 'audio', top: 150, bottom: 190 }],
+      }).insert,
+    ).toEqual({
+      boundary: { type: 'outer', kind: 'audio', side: 'bottom', sequenceId: 'seq1' },
+      kind: 'audio',
+    })
+  })
+
+  it('falls back to a track that has no lane box and to a bottom insert for audio above all', () => {
+    const gapped: LaneBox[] = [
+      { id: 'v1', kind: 'video', top: 0, bottom: 40 },
+      { id: 'a1', kind: 'audio', top: 60, bottom: 100 },
+    ]
+    const withHidden = decideMove({
+      orig: clip(),
+      origTrackId: 'v1',
+      origTrackKind: 'video',
+      startX: 100,
+      clientX: 100,
+      clientY: 50,
+      lanes: gapped,
+      tracks: [
+        { id: 'v2', kind: 'video', name: 'V2' },
+        { id: 'a1', kind: 'audio', name: 'A1' },
+      ],
+      scale: 10,
+      snapping: false,
+      snapPoints: [],
+      partners: [],
+    })
+    expect(withHidden.targetTrackId).toBe('v2')
+
+    const audioAbove = decideMove({
+      orig: clip({ audioOnly: true }),
+      origTrackId: 'a1',
+      origTrackKind: 'audio',
+      startX: 100,
+      clientX: 100,
+      clientY: -10,
+      lanes: [{ id: 'a1', kind: 'audio', top: 0, bottom: 40 }],
+      tracks: [],
+      scale: 10,
+      snapping: false,
+      snapPoints: [],
+      partners: [],
+    })
+    expect(audioAbove.insert).toEqual({
+      boundary: { type: 'outer', kind: 'audio', side: 'bottom' },
+      kind: 'audio',
+    })
+  })
+})

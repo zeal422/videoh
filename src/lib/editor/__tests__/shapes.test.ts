@@ -202,3 +202,36 @@ describe('shape geometry (0.25.0)', () => {
     expect(pointInShape(star, W, H, 737.8, 577.3)).toBe(false)
   })
 })
+
+describe('shape default and degenerate geometry (0.29.0)', () => {
+  it('falls hostile optional fields back to their defaults', () => {
+    const stroked = sanitizeShape({
+      kind: 'rectangle',
+      fill: '#112233',
+      stroke: '#445566',
+      strokeWidth: Number.NaN,
+    })!
+    expect(stroked.strokeWidth).toBeGreaterThan(0)
+    const star = sanitizeShape({ kind: 'star', fill: '#112233', points: Number.NaN })!
+    expect(star.points).toBeGreaterThanOrEqual(3)
+    const polygon = sanitizeShape({ kind: 'polygon', fill: '#112233' })!
+    expect(polygon.points).toBeGreaterThanOrEqual(3)
+  })
+
+  it('draws a rectangle with zero radius and a star/polygon with default points', () => {
+    const rect = shapePathData({ kind: 'rectangle', fill: '#112233' }, 100, 100)
+    expect(rect).toMatchObject({ kind: 'rect', radius: 0 })
+    const star = shapePathData({ kind: 'star', fill: '#112233' }, 100, 100)
+    expect(star.kind).toBe('polygon')
+    const polygon = shapePathData({ kind: 'polygon', fill: '#112233' }, 100, 100)
+    expect(polygon.kind).toBe('polygon')
+  })
+
+  it('handles a stroke-less bounds box, a zero-radius hit, and a flat ellipse', () => {
+    const bounds = shapeBounds({ kind: 'rectangle', fill: '#112233' }, 100, 100)
+    expect(bounds.x0).toBe(10)
+    const hit = pointInShape({ kind: 'rectangle', fill: '#112233' }, 100, 100, 50, 50)
+    expect(hit).toBe(true)
+    expect(pointInShape({ kind: 'ellipse', fill: '#112233' }, 0, 0, 0, 0)).toBe(false)
+  })
+})

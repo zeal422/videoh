@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { applySnap, computeSnapPoints, snapGuide, snapMove } from '../snap'
+import { createTrack } from '../factories'
 import { createClip, createDoc, createMediaAsset } from '../factories'
 import type { Doc } from '../types'
 
@@ -137,5 +138,39 @@ describe('snapGuide', () => {
     expect(src).toContain(
       "g.mode === 'move' ? [clip.id, ...g.partners.map((p) => p.id)] : [clip.id]",
     )
+  })
+})
+
+describe('snap sequence scope (0.29.0)', () => {
+  it('collects a sequence clip and its distinct clip marker, not a root marker', () => {
+    const doc = createDoc()
+    const track = createTrack('video', 1, { id: 'seq_track' })
+    const clip = createClip({ id: 'sc', start: 2, duration: 3 })
+    clip.markers = [{ id: 'seq_clip_marker', time: 1 }]
+    track.clips = [clip]
+    doc.project.sequences = [{ id: 'seq1', name: 'S', tracks: [track] } as never]
+    doc.project.markers = [{ id: 'root_marker', time: 9 }]
+    const points = computeSnapPoints(doc, { activeSequencePath: ['seq1'] })
+    expect(points).toContain(2)
+    expect(points).toContain(5)
+    expect(points).toContain(3)
+    expect(points).not.toContain(9)
+  })
+
+  it('collects the timeline end even when its clip edge is excluded', () => {
+    const doc = createDoc()
+    const track = createTrack('video', 1, { id: 'seq_track' })
+    track.clips = [createClip({ id: 'sc', start: 2, duration: 3 })]
+    doc.project.sequences = [{ id: 'seq1', name: 'S', tracks: [track] } as never]
+    const points = computeSnapPoints(doc, {
+      activeSequencePath: ['seq1'],
+      excludeClipIds: ['sc'],
+      includeTimelineEnd: true,
+    })
+    expect(points).toContain(5)
+  })
+
+  it('prefers the tail when both edges hit a point and the head is already there', () => {
+    expect(snapMove(1, 1, [1, 2], 0.2)).toEqual({ start: 1, snapped: 2 })
   })
 })

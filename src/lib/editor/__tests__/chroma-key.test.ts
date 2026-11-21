@@ -148,3 +148,11 @@ describe('buildMatteMask', () => {
     expect(Array.from(data2)).toEqual([255, 255, 255, 155])
   })
 })
+
+describe('parseKeyColor hostile input (0.29.0)', () => {
+  it('refuses a non-string and a malformed hex', () => {
+    expect(parseKeyColor(7 as never)).toBeUndefined()
+    expect(parseKeyColor('#12')).toBeUndefined()
+    expect(parseKeyColor('#gggggg')).toBeUndefined()
+  })
+})

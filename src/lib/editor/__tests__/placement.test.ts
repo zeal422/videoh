@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { applyCommands } from '../commands'
 import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
-import { planMediaPlacement, clipDurationFor } from '../placement'
+import { avPairCommands, planMediaPlacement, clipDurationFor } from '../placement'
 import { placementRefusalMessage } from '../sequence-ops'
 import { DEFAULT_IMAGE_DURATION } from '../constants'
 import type { Doc, MediaAsset } from '../types'
@@ -293,5 +293,31 @@ describe('planMediaPlacement — refusals', () => {
     const outcome = planMediaPlacement(doc, incoming, 0.05, 'overwrite', { trackId: track.id })
     expect(outcome).toEqual({ commands: null, refusal: 'geometry' })
     expect(track.clips[0].duration).toBe(4)
+  })
+})
+
+describe('sequence-scoped pair placement (0.29.0)', () => {
+  it('creates the audio twin inside the requested sequence', () => {
+    const doc = createDoc()
+    const sequence = { id: 'seq1', name: 'S', tracks: [] }
+    doc.project.sequences = [sequence as never]
+    const asset = createMediaAsset({
+      kind: 'video',
+      name: 'v.mp4',
+      duration: 5,
+      hasAudio: true,
+      url: 'blob:v',
+    })
+    const commands = avPairCommands(doc, asset, 0, 'none', undefined, [], null, 'seq1')
+    const addTrack = commands.find((c) => c.type === 'addTrack')!
+    expect(addTrack).toMatchObject({ type: 'addTrack', sequenceId: 'seq1' })
+    const audioClip = commands.find((c) => c.type === 'addClip' && c.clip.audioOnly)
+    if (!audioClip || audioClip.type !== 'addClip') throw new Error('missing audio twin')
+    // The twin must target the audio lane created for seq1, not the video lane
+    // and not a lane outside the sequence.
+    if (typeof addTrack.trackId !== 'string') throw new Error('missing addTrack trackId')
+    expect(addTrack.trackId.length).toBeGreaterThan(0)
+    expect(audioClip.trackId).toBe(addTrack.trackId)
+    expect(audioClip.trackId).not.toBe('none')
   })
 })

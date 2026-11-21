@@ -98,3 +98,11 @@ describe('nextZoomPxPerSec', () => {
     expect(nextZoomPxPerSec(1, 1 / 1.4)).toBe(1)
   })
 })
+
+describe('zoom-out step (0.29.0)', () => {
+  it('steps down at least one pixel per second', () => {
+    expect(nextZoomPxPerSec(1, 1 / 1.4)).toBe(1)
+    expect(nextZoomPxPerSec(100, 1 / 1.4)).toBeLessThan(100)
+    expect(nextZoomPxPerSec(100, 1)).toBe(100)
+  })
+})

@@ -550,3 +550,42 @@ function createFakeCtx() {
   }
   return ctx as unknown as CanvasRenderingContext2D & { calls: { op: string; args: unknown[] }[] }
 }
+
+describe('transform geometry guards (0.29.0)', () => {
+  it('treats a full-turn angle delta as +180 and skips a zero-length handle axis', () => {
+    expect(angleDelta(0, 180)).toBe(180)
+    const degenerate = [
+      { x: 0, y: 0 },
+      { x: 0, y: 0 },
+      { x: 0, y: 0 },
+      { x: 0, y: 0 },
+    ]
+    expect(rotationHandlePoint(degenerate, 10)).toEqual({ x: 0, y: 0 })
+  })
+
+  it('rejects a non-quad and skips collinear edges', () => {
+    const point = { x: 1, y: 1 }
+    expect(pointInQuad(point, [])).toBe(false)
+    expect(
+      pointInQuad(point, [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+      ]),
+    ).toBe(false)
+    expect(
+      pointInQuad(point, [
+        { x: 0, y: 0 },
+        { x: 2, y: 0 },
+        { x: 2, y: 2 },
+        { x: 0, y: 2 },
+      ]),
+    ).toBe(true)
+  })
+
+  it('falls a zero canvas rect back to one pixel', () => {
+    expect(pointerProjectPoint(10, 10, { left: 0, top: 0, width: 0, height: 0 }, 100, 50)).toEqual({
+      x: 1000,
+      y: 500,
+    })
+  })
+})

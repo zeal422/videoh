@@ -366,6 +366,257 @@ describe('executeAction — markers and keyboard Delete', () => {
   })
 })
 
+describe('executeAction: remaining branch matrix (0.29.0)', () => {
+  it('dispatches every file callback exactly once', () => {
+    const pairs = [
+      ['file.newProject', 'newProject'],
+      ['file.openProject', 'openProject'],
+      ['file.openBundle', 'openBundle'],
+      ['file.importMedia', 'importMedia'],
+      ['file.saveProject', 'saveProject'],
+      ['file.exportBundle', 'exportBundle'],
+      ['file.exportMedia', 'openExport'],
+    ] as const
+    for (const [action, callback] of pairs) {
+      const ctx = makeContext()
+      expect(executeAction(action, ctx).handled).toBe(true)
+      expect(ctx[callback]).toHaveBeenCalledTimes(1)
+      for (const [, other] of pairs) {
+        if (other !== callback) expect(ctx[other]).not.toHaveBeenCalled()
+      }
+    }
+  })
+
+  it('prefers the multi-selection, then the single selection, then nothing', () => {
+    const { doc, media } = clipDoc()
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'c2', mediaId: media.id, start: 5, duration: 2 }),
+    )
+    const multi = executeAction(
+      'clip.delete',
+      makeContext({ state: { doc, selections: ['c1', 'c2'], selection: null } }),
+    )
+    expect(multi.commands?.map((command) => command.type)).toEqual(['deleteClip', 'deleteClip'])
+    const single = executeAction(
+      'clip.delete',
+      makeContext({ state: { doc, selections: [], selection: 'c1' } }),
+    )
+    expect(single.commands).toEqual([{ type: 'deleteClip', clipId: 'c1' }])
+    const none = executeAction(
+      'clip.delete',
+      makeContext({ state: { doc, selections: [], selection: null } }),
+    )
+    expect(none.commands).toBeNull()
+  })
+
+  it('adds a track without an active sequence', () => {
+    const track = executeAction(
+      'sequence.addAudioTrack',
+      makeContext({ state: { activeSequencePath: [] } }),
+    )
+    expect(track.commands).toEqual([expect.objectContaining({ type: 'addTrack', kind: 'audio' })])
+    expect(track.commands?.[0]).not.toHaveProperty('sequenceId')
+  })
+
+  it('handles empty clip selections across every batch action', () => {
+    const ctx = makeContext()
+    for (const action of [
+      'clip.duplicate',
+      'clip.rippleDelete',
+      'clip.cut',
+      'clip.copy',
+      'clip.link',
+      'clip.unlink',
+      'keyboard.linkToggle',
+      'clip.toggleMute',
+    ] as const) {
+      expect(executeAction(action, ctx)).toEqual({ handled: true, commands: null })
+    }
+  })
+
+  it('refuses closeGaps without a primary, on an unknown clip, and on a locked lane', () => {
+    const { doc, track } = clipDoc()
+    expect(executeAction('clip.closeGaps', makeContext({ state: { doc } })).commands).toBeNull()
+    expect(
+      executeAction('clip.closeGaps', makeContext({ state: { doc, selections: ['gone'] } }))
+        .commands,
+    ).toBeNull()
+    track.locked = true
+    expect(
+      executeAction('clip.closeGaps', makeContext({ state: { doc, selections: ['c1'] } })).commands,
+    ).toBeNull()
+  })
+
+  it('closes gaps on the primary selection lane', () => {
+    const { doc, media, track } = clipDoc()
+    track.clips.push(createClip({ id: 'c2', mediaId: media.id, start: 6, duration: 2 }))
+    expect(
+      executeAction('clip.closeGaps', makeContext({ state: { doc, selections: ['c1'] } })).commands,
+    ).toEqual([{ type: 'closeGaps', trackId: track.id }])
+  })
+
+  it('toasts the plural copy count for two clips', () => {
+    const { doc, media } = clipDoc()
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'c2', mediaId: media.id, start: 5, duration: 2 }),
+    )
+    const ctx = makeContext({ state: { doc, selections: ['c1', 'c2'] } })
+    executeAction('clip.copy', ctx)
+    expect(ctx.notify).toHaveBeenCalledWith({ title: 'Copied 2 clips' })
+  })
+
+  it('creates a compound from a video selection', () => {
+    const { doc } = clipDoc()
+    const compound = executeAction(
+      'sequence.createCompound',
+      makeContext({ state: { doc, selections: ['c1'] } }),
+    )
+    expect(compound.handled).toBe(true)
+    expect(compound.commands).not.toBeNull()
+  })
+
+  it('groups two distinct tracks and refuses a single-clip selection', () => {
+    const media = createMediaAsset({ kind: 'video', name: 'v.mp4', duration: 10 })
+    const first = createTrack('video', 1, {
+      clips: [createClip({ id: 'g1', mediaId: media.id, start: 0, duration: 2 })],
+    })
+    const second = createTrack('video', 1, {
+      clips: [createClip({ id: 'g2', mediaId: media.id, start: 0, duration: 2 })],
+    })
+    const doc = createDoc()
+    doc.project.tracks = [first, second]
+    doc.media = [media]
+    // Duplicate and unknown ids must not produce extra lanes or crash.
+    const grouped = executeAction(
+      'sequence.groupTracks',
+      makeContext({ state: { doc, selections: ['g1', 'g1', 'gone', 'g2'] } }),
+    )
+    expect(grouped.commands).toEqual([
+      expect.objectContaining({
+        type: 'createTrackGroup',
+        name: 'Group 1',
+        trackIds: [first.id, second.id],
+      }),
+    ])
+
+    const thin = makeContext({ state: { doc, selections: ['g1'] } })
+    expect(executeAction('sequence.groupTracks', thin).commands).toBeNull()
+    expect(thin.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Cannot group tracks' }),
+    )
+  })
+
+  it('names a new track group after the ones already taken', () => {
+    const media = createMediaAsset({ kind: 'video', name: 'v.mp4', duration: 10 })
+    const first = createTrack('video', 1, {
+      clips: [createClip({ id: 'n1', mediaId: media.id, start: 0, duration: 2 })],
+    })
+    const second = createTrack('video', 1, {
+      clips: [createClip({ id: 'n2', mediaId: media.id, start: 0, duration: 2 })],
+    })
+    const doc = createDoc()
+    doc.project.tracks = [first, second]
+    doc.media = [media]
+    doc.project.trackGroups = [{ id: 'tg1', name: 'Group 1' }]
+    const grouped = executeAction(
+      'sequence.groupTracks',
+      makeContext({ state: { doc, selections: ['n1', 'n2'] } }),
+    )
+    expect(grouped.commands).toEqual([
+      expect.objectContaining({ type: 'createTrackGroup', name: 'Group 2' }),
+    ])
+  })
+
+  it('deletes a marker only when one is selected', () => {
+    expect(executeAction('marker.delete', makeContext()).commands).toBeNull()
+  })
+
+  it('adds every shape kind', () => {
+    const shapes = [
+      ['graphics.addShape.rectangle', 'rectangle'],
+      ['graphics.addShape.ellipse', 'ellipse'],
+      ['graphics.addShape.triangle', 'triangle'],
+      ['graphics.addShape.star', 'star'],
+      ['graphics.addShape.polygon', 'polygon'],
+      ['graphics.addShape.heart', 'heart'],
+    ] as const
+    for (const [action, kind] of shapes) {
+      const outcome = executeAction(action, makeContext({ state: { playhead: 1 } }))
+      expect(outcome.handled).toBe(true)
+      expect(outcome.commands).not.toBeNull()
+      expect(outcome.commands).toContainEqual(
+        expect.objectContaining({
+          type: 'addClip',
+          clip: expect.objectContaining({ shape: expect.objectContaining({ kind }) }),
+        }),
+      )
+    }
+  })
+
+  it('deletes keyboard clips from the single selection and as a no-op with none', () => {
+    const { doc } = clipDoc()
+    const single = executeAction(
+      'keyboard.delete',
+      makeContext({ state: { doc, selections: [], selection: 'c1' } }),
+    )
+    expect(single.commands).toEqual([{ type: 'deleteClip', clipId: 'c1' }])
+    const none = executeAction(
+      'keyboard.delete',
+      makeContext({ state: { doc, selections: [], selection: null } }),
+    )
+    expect(none.commands).toBeNull()
+  })
+
+  it('joins clips, captures a freeze frame, and adds a text track', () => {
+    const { doc, media } = clipDoc()
+    doc.project.tracks[0].clips = [
+      createClip({ id: 'j1', mediaId: media.id, start: 0, duration: 2, inPoint: 0 }),
+      createClip({ id: 'j2', mediaId: media.id, start: 2, duration: 2, inPoint: 2 }),
+    ]
+    const joined = executeAction(
+      'clip.joinClips',
+      makeContext({ state: { doc, selections: ['j1', 'j2'] } }),
+    )
+    expect(joined.handled).toBe(true)
+    expect(joined.commands).toEqual([{ type: 'joinClips', clipId: 'j1', nextId: 'j2' }])
+    const freeze = makeContext()
+    expect(executeAction('clip.freezeFrame', freeze).handled).toBe(true)
+    expect(freeze.freezeFrame).toHaveBeenCalledTimes(1)
+    expect(
+      executeAction('sequence.addTextTrack', makeContext({ state: { activeSequencePath: ['s'] } }))
+        .commands,
+    ).toEqual([expect.objectContaining({ type: 'addTrack', kind: 'text', sequenceId: 's' })])
+  })
+
+  it('copies nothing for unknown ids and links separate keyboard selections', () => {
+    const { doc, media } = clipDoc()
+    doc.project.tracks[0].clips.push(
+      createClip({ id: 'c2', mediaId: media.id, start: 5, duration: 2 }),
+    )
+    const unknown = makeContext({ state: { doc, selections: ['gone'] } })
+    executeAction('clip.copy', unknown)
+    expect(unknown.notify).not.toHaveBeenCalled()
+
+    const separate = executeAction(
+      'keyboard.linkToggle',
+      makeContext({ state: { doc, selections: ['c1', 'c2'] } }),
+    )
+    expect(separate.commands).toEqual([{ type: 'linkClips', clipIds: ['c1', 'c2'] }])
+    const single = executeAction(
+      'keyboard.linkToggle',
+      makeContext({ state: { doc, selections: ['c1'] } }),
+    )
+    expect(single.commands).toBeNull()
+  })
+
+  it('does not seek when there is no next marker', () => {
+    const { doc } = clipDoc()
+    const ctx = makeContext({ state: { doc, playhead: 0, selections: [] } })
+    expect(executeAction('marker.next', ctx).handled).toBe(true)
+    expect(ctx.seek).not.toHaveBeenCalled()
+  })
+})
+
 describe('executor static locks', () => {
   const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8')
 

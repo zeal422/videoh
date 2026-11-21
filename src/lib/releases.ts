@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.29.0',
+    date: '2026-11-20',
+    highlights: [
+      'All four coverage metrics now sit above 96 percent, with branches at 96.5 percent or better',
+      'New hostile-input tests harden serialization, templates, bundles, commands, and autosave',
+      'Every remaining uncovered branch is listed in docs/testing.md with its reason',
+      'Autosave fences project-scoped writes, preserves pending installs through retries, and stops its heartbeat on a foreign owner',
+      'Project files stay at format version 8',
+    ],
+  },
+  {
     version: '0.28.5',
     date: '2026-11-19',
     highlights: [

@@ -489,11 +489,17 @@ function checkBatterySteps(): string | null {
  * The sentence had silently dropped `ease-segment` while the include list and
  * the report both measured it.
  */
-function checkCoverageScope(): string | null {
+function coverageModulePaths(): string[] | null {
   const cfg = readFileSync(join(ROOT, 'vitest.config.ts'), 'utf8')
   const block = cfg.match(/coverage:\s*\{[\s\S]*?include:\s*\[([\s\S]*?)\]/)?.[1]
-  if (!block) return 'vitest.config.ts: no coverage include list'
-  const modules = [...block.matchAll(/'([^']+)'/g)].map((m) => basename(m[1], '.ts'))
+  if (!block) return null
+  return [...block.matchAll(/'([^']+)'/g)].map((m) => m[1])
+}
+
+function checkCoverageScope(): string | null {
+  const paths = coverageModulePaths()
+  if (!paths) return 'vitest.config.ts: no coverage include list'
+  const modules = paths.map((path) => basename(path, '.ts'))
   const doc = readFileSync(join(ROOT, 'docs/testing.md'), 'utf8')
   const start = doc.indexOf('state modules only:')
   if (start < 0) return 'docs/testing.md: no coverage-scope sentence'
@@ -501,6 +507,112 @@ function checkCoverageScope(): string | null {
   const scope = doc.slice(start, end < 0 ? undefined : end)
   const missing = modules.filter((m) => !scope.includes(`\`${m}\``))
   if (missing.length > 0) return `docs/testing.md: coverage sentence omits ${missing.join(', ')}`
+  return null
+}
+
+/**
+ * The residual register is the release gate's record of every uncovered branch.
+ * Lock its count, keys, module names, source lines, and reason prefix so a
+ * coverage change cannot leave a stale register behind without a failure.
+ */
+const RESIDUAL_REGISTER_COUNT = 206
+
+interface ResidualRow {
+  file: string
+  line: number
+  col: number
+  type: string
+  path: number
+  reason: string
+}
+
+function residualRows(): ResidualRow[] {
+  const doc = readFileSync(join(ROOT, 'docs/testing.md'), 'utf8')
+  const start = doc.indexOf('## Coverage residual register')
+  if (start < 0) return []
+  return [
+    ...doc
+      .slice(start)
+      .matchAll(/^- `([^`]+)` line (\d+), col (\d+), ([\w-]+), path (\d+): (.+)$/gm),
+  ].map((row) => ({
+    file: row[1]!,
+    line: Number(row[2]),
+    col: Number(row[3]),
+    type: row[4]!,
+    path: Number(row[5]),
+    reason: row[6]!,
+  }))
+}
+
+function checkResidualRegister(): string | null {
+  const paths = coverageModulePaths()
+  if (!paths) return 'vitest.config.ts: no coverage include list'
+  const sources = new Map<string, string>()
+  for (const path of paths) {
+    const name = basename(path)
+    if (sources.has(name)) return `vitest.config.ts: duplicate source basename ${name}`
+    sources.set(name, join(ROOT, path))
+  }
+  const rows = residualRows()
+  if (rows.length !== RESIDUAL_REGISTER_COUNT) {
+    return `docs/testing.md: residual register has ${rows.length} entries, expected ${RESIDUAL_REGISTER_COUNT}`
+  }
+  const keys = new Set<string>()
+  for (const row of rows) {
+    const key = `${row.file}:${row.line}:${row.col}:${row.type}:${row.path}`
+    if (keys.has(key)) return `docs/testing.md: duplicate residual entry ${key}`
+    keys.add(key)
+    if (!/^(?:class-b|class-c|not prioritized):/.test(row.reason)) {
+      return `docs/testing.md: residual entry ${key} has no class reason`
+    }
+    const source = sources.get(row.file)
+    if (!source) return `docs/testing.md: residual entry ${key} names an unknown module`
+    const sourceLines = readFileSync(source, 'utf8').split('\n').length
+    if (row.line < 1 || row.line > sourceLines) {
+      return `docs/testing.md: residual entry ${key} is outside ${row.file}`
+    }
+  }
+  return null
+}
+
+interface CoverageBranchMap {
+  type: string
+  loc: { start: { line: number; column: number } }
+}
+
+function checkResidualCoverage(): string | null {
+  if (process.env.COVERAGE_GATE !== '1') return null
+  let raw: string
+  try {
+    raw = readFileSync(join(ROOT, 'coverage/coverage-final.json'), 'utf8')
+  } catch {
+    return 'docs/testing.md: coverage gate is set but coverage-final.json is missing'
+  }
+  const coverage = JSON.parse(raw) as Record<
+    string,
+    { b: Record<string, number[]>; branchMap: Record<string, CoverageBranchMap> }
+  >
+  const uncovered = new Set<string>()
+  for (const [file, data] of Object.entries(coverage)) {
+    const name = basename(file)
+    for (const [id, counts] of Object.entries(data.b)) {
+      const branch = data.branchMap[id]
+      for (let index = 0; index < counts.length; index += 1) {
+        if (counts[index] !== 0) continue
+        uncovered.add(
+          `${name}:${branch.loc.start.line}:${branch.loc.start.column}:${branch.type}:${index}`,
+        )
+      }
+    }
+  }
+  const register = new Set(
+    residualRows().map((row) => `${row.file}:${row.line}:${row.col}:${row.type}:${row.path}`),
+  )
+  const missing = [...uncovered].filter((key) => !register.has(key))
+  const extra = [...register].filter((key) => !uncovered.has(key))
+  if (uncovered.size !== register.size || missing.length > 0 || extra.length > 0) {
+    return `docs/testing.md: residual register ${register.size} entries, coverage has ${uncovered.size}; missing ${missing.length} [${missing.join(', ')}], extra ${extra.length} [${extra.join(', ')}]`
+  }
   return null
 }
 
@@ -590,8 +702,10 @@ describe('docs test-count claims match the real suite', () => {
     expect(countCasesFromSource(source, 'synthetic')).toBe(2)
   })
 
-  it('every per-file row in the testing.md inventory matches its suite', () => {
+  it('every per-file row and residual entry in testing.md matches its source', () => {
     expect(checkTestingTableRows(files)).toEqual([])
+    expect(checkResidualRegister()).toBeNull()
+    expect(checkResidualCoverage()).toBeNull()
   })
 
   it('every battery step-count claim matches e2e/battery.sh', () => {

@@ -234,7 +234,7 @@ function hydrationWarnings(stats: HydrationStats): string[] {
   }
   if (stats.droppedLaneClips > 0) {
     warnings.push(
-      `Dropped ${stats.droppedLaneClips} clip${stats.droppedLaneClips === 1 ? '' : 's'} that do not fit their track kind.`,
+      `Dropped ${stats.droppedLaneClips} clip${stats.droppedLaneClips === 1 ? '' : 's'} that ${stats.droppedLaneClips === 1 ? 'does not fit its' : 'do not fit their'} track kind.`,
     )
   }
   return warnings

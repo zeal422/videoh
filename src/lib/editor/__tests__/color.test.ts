@@ -18,6 +18,7 @@ import {
   sampleVectorscope,
   sampleWaveform,
   scopeSampleSize,
+  urlSafeFragment,
   VECTORSCOPE_SIZE,
 } from '../color'
 import { planVideoFrame } from '../export/offline'
@@ -502,5 +503,15 @@ describe('scope samplers', () => {
   it('handles an empty vectorscope buffer without throwing', () => {
     const scope = sampleVectorscope(grid([], 0, 0))
     expect(scope.bins.every((b) => b === 0)).toBe(true)
+  })
+})
+
+describe('url-safe clip ids (0.29.0)', () => {
+  it('encodes underscores and non-ascii characters injectively', () => {
+    const id = 'a_b/(c)'
+    const safe = urlSafeFragment(id)
+    expect(safe).toMatch(/^[A-Za-z0-9_-]+$/)
+    expect(safe).not.toBe(id)
+    expect(urlSafeFragment('a_b')).not.toBe(urlSafeFragment('a-b'))
   })
 })

@@ -343,8 +343,12 @@ class AutosaveCoordinationError extends Error {
 }
 
 interface SectionOptions {
-  /** Refuse to run outside a real lock or transaction when the section mutates shared state. */
-  requireSerialization?: boolean
+  /**
+   * Refuse to run outside a real lock or transaction when the section mutates
+   * shared state. A function is re-evaluated at the fallback, so a requirement
+   * that appeared while the IDB path was opening still fails closed.
+   */
+  requireSerialization?: boolean | (() => boolean)
 }
 
 /**
@@ -367,9 +371,12 @@ async function withAutosaveSection<T>(section: () => T, options: SectionOptions 
 }
 
 function withIdbSection<T>(section: () => T, options: SectionOptions = {}): Promise<T> {
-  const requireSerialization = options.requireSerialization ?? false
+  const requireSerialization = () =>
+    typeof options.requireSerialization === 'function'
+      ? options.requireSerialization()
+      : (options.requireSerialization ?? false)
   const direct = (): Promise<T> => {
-    if (requireSerialization) return Promise.reject(new AutosaveCoordinationError())
+    if (requireSerialization()) return Promise.reject(new AutosaveCoordinationError())
     try {
       return Promise.resolve(section())
     } catch (error) {
@@ -388,7 +395,7 @@ function withIdbSection<T>(section: () => T, options: SectionOptions = {}): Prom
     }
     const runDirect = () => {
       if (ran) return
-      if (requireSerialization) {
+      if (requireSerialization()) {
         settle(() => reject(new AutosaveCoordinationError()))
         return
       }
@@ -528,10 +535,14 @@ function resumePendingAutosave(): void {
     if (store.pendingRestore) return
     const savedDoc = store.doc
     const json = JSON.stringify(serializeDoc(savedDoc))
-    void writeAutosaveCooperatively(json)
+    void writeAutosaveCooperatively(json, undefined, undefined, savedDoc.project.id, savedDoc)
       .then((result) => {
         const current = editorStore.getState()
         if (result === 'saved') {
+          // A takeover or completed import can land after the slot write but
+          // before this completion. Autosave is off then; leave the error
+          // status instead of reporting saved.
+          if (readOnly) return
           // A newer edit landed while this write was queued. Its own save is
           // already scheduled; reporting it saved would hide that.
           if (current.doc !== savedDoc) {
@@ -541,6 +552,11 @@ function resumePendingAutosave(): void {
           current.setAutosaveStatus('saved')
           current.markAutosaved()
         } else if (result === 'superseded') {
+          // Only a live captured snapshot plus a committed slot proves this
+          // write safe. A live reference alone can point at a newer document,
+          // and a slot match alone can belong to the previous project.
+          if (readOnly) return
+          if (!autosaveSnapshotIsLive(current.doc, savedDoc, json)) return
           current.setAutosaveStatus('saved')
           current.markAutosaved()
         } else if (result === 'error') {
@@ -592,7 +608,11 @@ function markReadOnly(): void {
   readOnly = true
   paused = true
   try {
-    editorStore.getState().setAutosavePaused(true)
+    const store = editorStore.getState()
+    store.setAutosavePaused(true)
+    // A permanent read-only state is autosave off. A temporary peer pause does
+    // not pass through here, so its pending status survives until a resume.
+    store.setAutosaveStatus('error')
   } catch {
     // ignore
   }
@@ -1258,22 +1278,43 @@ function clearAutosaveRetry(): void {
  * `seq` orders writes: an older retry that runs after a newer write committed
  * is superseded instead of replacing the newer document. `projectId` scopes a
  * bundle write: when another project became live while it was queued, the
- * imported snapshot must not replace that project's slot.
+ * imported snapshot must not replace that project's slot. `snapshotId` is the
+ * captured doc's project id, passed by callers that already know it so the
+ * write does not re-parse the serialized JSON; when omitted it is read from the
+ * JSON. `snapshotDoc` is the captured document reference, when the caller has
+ * one, so a write queued behind another can prove the live document is still
+ * that same snapshot before it touches the registry, fence, or slot.
  */
 export function writeAutosaveCooperatively(
   json: string,
   seq = nextWriteSeq(),
   projectId?: string,
+  snapshotId?: string,
+  snapshotDoc?: Doc,
 ): Promise<AutosaveWriteResult> {
   if (isAutosavePaused()) return Promise.resolve('read-only')
-  const requireSerialization = owns || pendingInstalls.size > 0
+  // Re-evaluated at an IDB fallback: a pending install, scoped write, or fence
+  // can arrive after this call while the database open or read is in flight.
+  const requireSerialization = () =>
+    owns || pendingInstalls.size > 0 || projectId !== undefined || pendingImportFence !== null
   const run = localWrites
     .catch(() => undefined)
     .then(() =>
       withAutosaveSection(
         (): AutosaveWriteResult => {
+          // A pause can arrive after the early check while this write waits
+          // for its turn. Never persist a document for a tab that is paused.
+          if (isAutosavePaused()) return 'read-only'
+          // The captured document can be replaced while this write waits for
+          // the section. Its newer edit owns persistence, and using the stale
+          // snapshot here would consume an install or fence for old content.
+          if (snapshotDoc !== undefined && editorStore.getState().doc !== snapshotDoc) {
+            return 'superseded'
+          }
           const record = readOwnerRecord()
           if (record && record.tabId !== tabId && recordIsFresh(record)) {
+            owns = false
+            stopHeartbeat()
             markReadOnly()
             return 'read-only'
           }
@@ -1290,14 +1331,15 @@ export function writeAutosaveCooperatively(
             markReadOnly()
             return 'read-only'
           }
-          const writeProjectId = projectId ?? editorStore.getState().doc.project.id
-          const pending = pendingInstalls.get(writeProjectId)
-          if (pending && !recordPendingInstallInSection(pending)) return 'error'
+          const liveProjectId = editorStore.getState().doc.project.id
+          // The JSON was captured for one project. Selecting the pending
+          // install or the fence by the live project would let a stale
+          // snapshot consume another project's install and overwrite its slot.
+          const snapshotProjectId =
+            snapshotId ?? serializedProjectId(json) ?? projectId ?? liveProjectId
           // A project-scoped write is an import or its retry. A tab that
           // observed an older import marker must not overwrite the slot even
-          // when it missed the pause and no owner record remains. The install
-          // record above is still completed: it is bookkeeping, not a slot
-          // write, and recovery must keep its claim.
+          // when it missed the pause and no owner record remains.
           const fence = readImportFence()
           if (knownImportFence === undefined) {
             knownImportFence = fence
@@ -1307,26 +1349,53 @@ export function writeAutosaveCooperatively(
           }
           // A bundle import can finish after another project became live. Its
           // snapshot must not replace that project's slot or report it saved.
-          if (projectId !== undefined && editorStore.getState().doc.project.id !== projectId) {
+          if (projectId !== undefined && liveProjectId !== projectId) {
+            return 'superseded'
+          }
+          if (snapshotProjectId !== liveProjectId) {
+            // A pending install for this snapshot keeps its record for the
+            // retry path, which appends it without touching another slot.
             return 'superseded'
           }
           if (seq < committedSeq) return 'superseded'
+          // Consume the pending install only for an eligible snapshot. A
+          // superseded save leaves it in memory, so the next eligible save
+          // still appends the install and lands its marker.
+          const pending = pendingInstalls.get(snapshotProjectId)
+          if (pending && !recordPendingInstallInSection(pending)) return 'error'
           // The marker must be durable before the slot names the imported
           // project: a project-scoped save without it leaves a tab that missed
           // the pause free to replace the slot after the lease expires. The
           // requirement outlives the call that started it, so an ordinary
           // autosave for the same project cannot write the slot without it.
-          const fenceProjectId = projectId ?? editorStore.getState().doc.project.id
+          const fenceProjectId = snapshotProjectId
           if (pendingImportFence !== null && pendingImportFence.projectId !== fenceProjectId) {
             // The imported project no longer owns the live slot, so its
             // unfinished marker cannot protect another project's write.
             pendingImportFence = null
           }
-          if (projectId !== undefined && pendingImportFence === null) {
-            pendingImportFence = { projectId, token: randomToken() }
+          // A pending install proves an install is mid-flight even when the
+          // caller is the ordinary resume save. Establish the marker here so
+          // neither the slot nor its retry can advance ahead of the fence.
+          if ((projectId !== undefined || pending !== undefined) && pendingImportFence === null) {
+            pendingImportFence = { projectId: fenceProjectId, token: randomToken() }
           }
           if (pendingImportFence !== null) {
-            if (!writeImportFence(pendingImportFence.token)) return 'error'
+            if (!writeImportFence(pendingImportFence.token)) {
+              // The install append is durable, but the slot is not. An
+              // ordinary save has no caller-owned retry, so schedule one bound
+              // to this snapshot and sequence. With another project's append
+              // still owed, the combined retry must keep both obligations
+              // instead of replacing that project's timer.
+              if (projectId === undefined) {
+                if (pendingInstalls.size > 0) {
+                  queuePendingInstallRetry(snapshotProjectId, seq)
+                } else {
+                  queueAutosaveRetry(json, seq, snapshotProjectId)
+                }
+              }
+              return 'error'
+            }
             knownImportFence = pendingImportFence.token
           }
           try {
@@ -1340,7 +1409,24 @@ export function writeAutosaveCooperatively(
           // project-scoped write can reuse the same marker instead of fencing
           // the slot a second time.
           if (projectId !== undefined) pendingImportFence = null
-          if (retry && retry.seq < seq) clearAutosaveRetry()
+          // A live save clears only its own slot retry. Another project's
+          // pending-install retry must survive until its append completes.
+          if (
+            retry &&
+            retry.seq < seq &&
+            (retry.projectId === null || retry.projectId === snapshotProjectId)
+          ) {
+            if (pendingInstalls.size > 0) {
+              // The slot is saved, but another project's registry append is
+              // still owed. Keep its budget and reschedule that work without a
+              // slot target instead of dropping the combined retry's timer.
+              const attempts = retry.attempts
+              clearAutosaveRetry()
+              queuePendingInstallRetry(undefined, undefined, attempts)
+            } else {
+              clearAutosaveRetry()
+            }
+          }
           if (owns) {
             const current = readOwnerRecord()
             if (current && current.tabId === tabId) {
@@ -1372,14 +1458,30 @@ export function writeAutosaveCooperatively(
   return run
 }
 
+/** Reads a serialized snapshot's project id without hydrating the document. */
+function serializedProjectId(json: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(json)
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const project = (parsed as { project?: unknown }).project
+    if (typeof project !== 'object' || project === null) return null
+    const id = (project as { id?: unknown }).id
+    // A malformed id cannot name a live project, so return a value no project
+    // matches. The write is superseded instead of replacing the live slot.
+    return typeof id === 'string' ? id : ''
+  } catch {
+    return null
+  }
+}
+
 /**
  * Compares autosaved document content, not its text: `serializeDoc` stamps a
  * fresh `savedAt` on every call, so a text comparison would discard an
  * unchanged document on every retry.
  */
-function autosaveContentOf(text: string): string | null {
+function autosaveContentOf(text: string | null): string | null {
   try {
-    const parsed: unknown = JSON.parse(text)
+    const parsed: unknown = JSON.parse(String(text))
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
     const content = { ...(parsed as Record<string, unknown>) }
     delete content.savedAt
@@ -1387,6 +1489,19 @@ function autosaveContentOf(text: string): string | null {
   } catch {
     return null
   }
+}
+
+/** True when the committed slot contains exactly this serialized snapshot. */
+function autosaveSlotMatches(json: string): boolean {
+  const expected = autosaveContentOf(json)
+  const committed = autosaveContentOf(readAutosave())
+  return expected !== null && committed !== null && expected === committed
+}
+
+/** True when the live document and the committed slot both match the snapshot. */
+function autosaveSnapshotIsLive(doc: Doc, savedDoc: Doc, json: string): boolean {
+  if (doc !== savedDoc) return false
+  return autosaveSlotMatches(json)
 }
 
 /**
@@ -1414,8 +1529,8 @@ export function queueAutosaveRetry(json: string, seq?: number, projectId?: strin
     projectId: target,
     timer: setTimeout(() => {
       const scheduled = retry
+      const live = editorStore.getState()
       if (target !== null) {
-        const live = editorStore.getState()
         // A bundle slot retry belongs to the project it was captured for. Once
         // another project is live, writing it would replace that project's
         // slot and report it saved, so the retry is dropped.
@@ -1438,18 +1553,31 @@ export function queueAutosaveRetry(json: string, seq?: number, projectId?: strin
           return
         }
       }
-      void writeAutosaveCooperatively(json, useSeq, target ?? undefined).then((result) => {
+      void writeAutosaveCooperatively(
+        json,
+        useSeq,
+        target ?? undefined,
+        target ?? undefined,
+        target !== null ? live.doc : undefined,
+      ).then((result) => {
         // A newer retry was queued while this write was in flight. Clearing or
         // replacing it here would erase that payload; its own completion owns
         // the slot and the status.
         if (retry !== scheduled) return
         if (result === 'saved' || result === 'superseded') {
+          // A takeover or completed import may have turned this tab read-only
+          // after the write ran. It must not restore a saved/pending status.
+          if (readOnly) return
           retry = null
+          // A sequence supersede proves this snapshot safe only when the
+          // committed slot still contains it, not when another project won.
+          if (result === 'superseded' && !autosaveSlotMatches(json)) return
           if (target !== null) {
             const store = editorStore.getState()
-            if (store.doc.project.id !== target) return
             // An edit landed while this write was queued: its own save is
-            // scheduled, so do not report the newer document saved.
+            // scheduled, so do not report the newer document saved. The
+            // content check also covers a project switch because the project
+            // id is part of the serialized content.
             let current: string | null = null
             try {
               current = autosaveContentOf(JSON.stringify(serializeDoc(store.doc)))
@@ -1482,15 +1610,22 @@ export function queueAutosaveRetry(json: string, seq?: number, projectId?: strin
  * `projectId` names the project the pending slot write belongs to. A retry
  * restored after a reload always has a pending install record; a payload-less
  * failure in the same session passes the project it was saving.
+ *
+ * `attempts` carries an existing retry's budget when its timer is moved from a
+ * combined pass to registry-only work, so a reschedule does not reset the cap.
  */
-export function queuePendingInstallRetry(projectId?: string): void {
+export function queuePendingInstallRetry(
+  projectId?: string,
+  seq?: number,
+  attempts?: number,
+): void {
   if (retry) clearTimeout(retry.timer)
-  const attempt = (retry?.attempts ?? 0) + 1
+  const attempt = attempts ?? (retry?.attempts ?? 0) + 1
   if (attempt > MAX_RETRIES) {
     retry = null
     return
   }
-  const useSeq = retry?.seq ?? nextWriteSeq()
+  const useSeq = seq ?? retry?.seq ?? nextWriteSeq()
   const target = projectId ?? retry?.projectId ?? null
   const scheduled: AutosaveRetry = {
     json: '',
@@ -1547,14 +1682,23 @@ async function runPendingInstallRetry(scheduled: AutosaveRetry): Promise<void> {
     return
   }
   if (retry === scheduled) scheduled.json = json
-  const result = await writeAutosaveCooperatively(json, scheduled.seq, slotProjectId)
+  const result = await writeAutosaveCooperatively(
+    json,
+    scheduled.seq,
+    slotProjectId,
+    savedDoc.project.id,
+    savedDoc,
+  )
   if (retry !== scheduled) return
   if (result === 'saved' || result === 'superseded') {
+    const committed = autosaveSlotMatches(json)
     const store = editorStore.getState()
-    if (store.doc.project.id === slotProjectId) {
+    if (store.doc.project.id === slotProjectId && !readOnly) {
       // A newer edit that landed while the retry was queued owns its own save.
-      // Reporting it saved here would hide the unsaved document.
-      if (store.doc !== savedDoc) {
+      // Reporting it saved here would hide the unsaved document. A takeover or
+      // completed import has already reported autosave off, and a late retry
+      // completion must not restore saved or pending.
+      if (store.doc !== savedDoc || !committed) {
         store.setAutosaveStatus('pending')
       } else {
         store.setAutosaveStatus('saved')
@@ -1654,29 +1798,40 @@ export function initAutosave(): () => void {
       timer = null
       const savedDoc = editorStore.getState().doc
       const json = JSON.stringify(serializeDoc(savedDoc))
-      void writeAutosaveCooperatively(json, seq).then((result) => {
-        const store = editorStore.getState()
-        if (result === 'saved') {
-          // A newer edit landed while this write was queued. Its own save is
-          // already scheduled; marking it saved here would hide that.
-          if (store.doc !== savedDoc) {
-            store.setAutosaveStatus('pending')
-            return
+      void writeAutosaveCooperatively(json, seq, undefined, savedDoc.project.id, savedDoc).then(
+        (result) => {
+          const store = editorStore.getState()
+          if (result === 'saved') {
+            // A takeover or completed import can land after the slot write but
+            // before this completion. Autosave is off then; leave the error
+            // status instead of restoring pending or saved.
+            if (readOnly) return
+            // A newer edit landed while this write was queued. Its own save is
+            // already scheduled; marking it saved here would hide that.
+            if (store.doc !== savedDoc) {
+              store.setAutosaveStatus('pending')
+              return
+            }
+            store.setAutosaveStatus('saved')
+            store.markAutosaved()
+          } else if (result === 'superseded') {
+            // Only a live captured snapshot plus a committed slot proves this
+            // write safe. A live reference alone can point at a newer document,
+            // and a slot match alone can belong to the previous project.
+            if (readOnly) return
+            if (!autosaveSnapshotIsLive(store.doc, savedDoc, json)) return
+            store.setAutosaveStatus('saved')
+            store.markAutosaved()
+          } else if (result === 'error') {
+            store.setAutosaveStatus('error')
+          } else if (result === 'read-only') {
+            // A permanent refusal (takeover or completed import) is autosave
+            // off; a temporary peer pause leaves the document pending for the
+            // resume handler.
+            store.setAutosaveStatus(readOnly ? 'error' : 'pending')
           }
-          store.setAutosaveStatus('saved')
-          store.markAutosaved()
-        } else if (result === 'superseded') {
-          store.setAutosaveStatus('saved')
-          store.markAutosaved()
-        } else if (result === 'error') {
-          store.setAutosaveStatus('error')
-        } else if (result === 'read-only') {
-          // The tab is paused, imported away, or no longer owns the slot: the
-          // write will not land, so "pending" is wrong. StatusBar renders
-          // `error` as "Autosave off".
-          store.setAutosaveStatus('error')
-        }
-      })
+        },
+      )
     }, DEBOUNCE_MS)
   })
 

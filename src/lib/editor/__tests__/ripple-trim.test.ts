@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { applyCommands } from '../commands'
-import { createClip, createMediaAsset, createTrack } from '../factories'
+import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 import { planRippleShift, planRippleTrim, type RippleTrimPlan } from '../ripple-trim'
 import type { Clip, Doc, MediaAsset, Track } from '../types'
 
@@ -415,5 +415,48 @@ describe('the same-track link exception', () => {
     // The halves now disagree on start. This is the recorded 0.15.0
     // exception, asserted so it cannot be mistaken for link-group sync.
     expect(clipIn(next, 'b').start).not.toBe(clipIn(next, 'ba').start)
+  })
+})
+
+describe('ripple hostile inputs (0.29.0)', () => {
+  function docWith(clips: Clip[], kind: Track['kind'] = 'video'): Doc {
+    const doc = createDoc()
+    doc.project.tracks = [createTrack(kind, 1, { id: 'tr', clips })]
+    return doc
+  }
+
+  it('refuses an unknown clip, a non-finite delta, and a zero delta', () => {
+    const doc = docWith([createClip({ id: 'c1', start: 0, duration: 2 })])
+    expect(planRippleShift({ doc, clipId: 'gone', endDelta: 1 })).toEqual({
+      status: 'refused',
+      message: 'Unknown clip',
+    })
+    expect(planRippleShift({ doc, clipId: 'c1', endDelta: Number.NaN })).toEqual({
+      status: 'refused',
+      message: 'Invalid trim position',
+    })
+    expect(planRippleShift({ doc, clipId: 'c1', endDelta: 0 })).toEqual({ status: 'noop' })
+  })
+
+  it('names a sourceless neighbour as the next clip in an overlap refusal', () => {
+    const doc = docWith([
+      createClip({ id: 'c1', start: 0, duration: 2 }),
+      createClip({ id: 'c2', start: 1, duration: 1 }),
+    ])
+    expect(planRippleShift({ doc, clipId: 'c1', endDelta: 0.5 })).toEqual({
+      status: 'refused',
+      message: 'The trim would overlap "the next clip"',
+    })
+  })
+
+  it('plans a text ripple with no asset duration', () => {
+    const doc = docWith([createClip({ id: 't1', start: 0, duration: 2, text: 'Hi' })], 'text')
+    const plan = planRippleTrim({
+      doc,
+      clipId: 't1',
+      edge: 'tail',
+      proposal: { start: 0, inPoint: 0, duration: 3 },
+    })
+    expect(plan.status).toBe('ok')
   })
 })

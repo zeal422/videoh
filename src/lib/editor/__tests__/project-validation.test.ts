@@ -6,6 +6,7 @@ import {
   sanitizeGain,
   sanitizeThumbnail,
   sanitizeTransitionDuration,
+  recoveredProjectId,
 } from '../project-validation'
 import { GAIN_MAX, GAIN_MIN, TRANSITION_MAX, TRANSITION_MIN, WAVEFORM_BUCKETS } from '../constants'
 
@@ -120,5 +121,78 @@ describe('isValidWaveformPeaks', () => {
     high[0] = 1.1
     expect(isValidWaveformPeaks(high)).toBe(false)
     expect(isValidWaveformPeaks('peaks')).toBe(false)
+  })
+})
+
+describe('recoveredProjectId type tags (0.29.0)', () => {
+  class Foo {}
+  const values: unknown[] = [
+    null,
+    undefined,
+    true,
+    false,
+    -Infinity,
+    Infinity,
+    BigInt(10),
+    0,
+    -0,
+    Number.NaN,
+    Symbol('tag'),
+    function named() {},
+    new Date(0),
+    new Date(Number.NaN),
+    /ab+c/gi,
+    new Map<unknown, unknown>([['k', 1]]),
+    new Set([1, 2]),
+    Object.create(null),
+    new Foo(),
+    { a: 1 },
+    [1, [2]],
+  ]
+
+  it('tags every encodable type and keeps the ids distinct', () => {
+    const ids = values.map((value) => recoveredProjectId(value))
+    expect(new Set(ids).size).toBe(values.length)
+    for (const id of ids) expect(id).toMatch(/^proj_recovered_[0-9a-f]+$/)
+  })
+
+  it('keeps -0 and 0 apart, and both infinities apart', () => {
+    expect(recoveredProjectId(-0)).not.toBe(recoveredProjectId(0))
+    expect(recoveredProjectId(Infinity)).not.toBe(recoveredProjectId(-Infinity))
+  })
+
+  it('keeps an object identity for a value that cannot be encoded', () => {
+    const throwing: Record<string, unknown> = {}
+    Object.defineProperty(throwing, 'boom', {
+      enumerable: true,
+      get() {
+        throw new Error('blocked')
+      },
+    })
+    const first = recoveredProjectId(throwing)
+    expect(recoveredProjectId(throwing)).toBe(first)
+    expect(recoveredProjectId({ other: 1 })).not.toBe(first)
+
+    const { proxy, revoke } = Proxy.revocable({}, {})
+    revoke()
+    const raw = recoveredProjectId(proxy)
+    expect(recoveredProjectId(proxy)).toBe(raw)
+  })
+
+  it('marks a circular object instead of recursing forever', () => {
+    const circular: Record<string, unknown> = { name: 'loop' }
+    circular.self = circular
+    expect(recoveredProjectId(circular)).toMatch(/^proj_recovered_/)
+    expect(recoveredProjectId(circular)).toBe(recoveredProjectId(circular))
+    expect(recoveredProjectId(circular)).not.toBe(recoveredProjectId({ name: 'loop' }))
+  })
+})
+
+describe('anonymous prototype tags (0.29.0)', () => {
+  it('falls an unnamed constructor to the anonymous tag', () => {
+    const proto = { constructor: {} }
+    const value = Object.create(proto) as Record<string, unknown>
+    value.a = 1
+    expect(recoveredProjectId(value)).toMatch(/^proj_recovered_/)
   })
 })

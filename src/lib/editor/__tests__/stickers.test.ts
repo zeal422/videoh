@@ -111,3 +111,16 @@ describe('bundled stickers (0.25.0)', () => {
     expect(source).not.toMatch(/https?:\/\//)
   })
 })
+
+describe('sticker MIME fallback (0.29.0)', () => {
+  it('uses the SVG default when the response has no MIME type', async () => {
+    const blob = new Blob([new Uint8Array([1, 2, 3])])
+    const response = { ok: true, blob: async () => blob }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => response),
+    )
+    const file = await fetchStickerFile(STICKERS[0]!)
+    expect(file.type).toBe('image/svg+xml')
+  })
+})

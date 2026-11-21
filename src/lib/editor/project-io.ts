@@ -1541,6 +1541,7 @@ export async function openBundleFile(file: File): Promise<BundleOpenOutcome> {
         JSON.stringify(serializeDoc(writtenDoc)),
         undefined,
         doc.project.id,
+        doc.project.id,
       )
     } catch {
       slot = 'error'

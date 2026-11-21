@@ -1,6 +1,6 @@
 {
   "name": "videoh",
-  "version": "0.28.5",
+  "version": "0.29.0",
   "private": true,
   "license": "MIT",
   "scripts": {
@@ -13,7 +13,7 @@
     "battery": "bash e2e/run-battery.sh",
     "battery:pair": "bash e2e/run-battery-pair.sh",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage && COVERAGE_GATE=1 vitest run src/lib/editor/__tests__/docs-drift.test.ts",
     "format": "prettier --write \"src/**/*.{ts,tsx}\" \"*.{ts,md,json}\" \"docs/**/*.md\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx}\" \"*.{ts,md,json}\" \"docs/**/*.md\"",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run build"

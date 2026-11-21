@@ -511,3 +511,12 @@ describe('workspace store blocked storage', () => {
     }
   })
 })
+
+describe('keyframe graph height guards (0.29.0)', () => {
+  it('ignores a non-finite height and an unchanged clamped height', () => {
+    const state = defaultWorkspace()
+    expect(withKeyframeGraphHeight(state, 'opacity', Number.NaN)).toBe(state)
+    const first = withKeyframeGraphHeight(state, 'opacity', KEYFRAME_GRAPH_MIN_HEIGHT)
+    expect(withKeyframeGraphHeight(first, 'opacity', KEYFRAME_GRAPH_MIN_HEIGHT)).toBe(first)
+  })
+})

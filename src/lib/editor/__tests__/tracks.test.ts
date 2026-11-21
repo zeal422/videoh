@@ -7,7 +7,7 @@
  * model requires one), and removing anything when nothing was emptied.
  */
 import { describe, expect, it } from 'vitest'
-import { pruneEmptiedTracks } from '../tracks'
+import { pruneEmptiedTracks, pruneOrphanSequences } from '../tracks'
 import { createClip, createDoc } from '../factories'
 import type { Doc, TrackKind } from '../types'
 
@@ -101,5 +101,61 @@ describe('pruneEmptiedTracks', () => {
     const pruned = pruneEmptiedTracks(prev, next)
     expect(pruned.project.tracks.map((t) => t.id)).toEqual(['t0', 't1'])
     expect(pruned).toBe(next)
+  })
+})
+
+describe('pruneOrphanSequences and unchanged roots (0.29.0)', () => {
+  it('returns the same doc when a root lane is unchanged and no sequences exist', () => {
+    const prev = docWith([['video', 1]])
+    expect(pruneEmptiedTracks(prev, prev)).toBe(prev)
+  })
+
+  it('drops every unreachable sequence and keeps a reachable cycle once', () => {
+    const doc = docWith([['video', 0]])
+    doc.project.sequences = [
+      { id: 'a', name: 'A', tracks: [] },
+      { id: 'b', name: 'B', tracks: [] },
+    ] as never
+    // No root compound references: both are orphaned and disappear.
+    const pruned = pruneOrphanSequences(doc)
+    expect(pruned.project.sequences).toBeUndefined()
+  })
+})
+
+describe('reachable sequence cycles (0.29.0)', () => {
+  it('keeps a reachable cycle and drops an orphan in the same pass', () => {
+    const doc = docWith([['video', 0]])
+    doc.project.tracks[0]!.clips = [
+      createClip({ id: 'root', start: 0, duration: 1, sequenceId: 'a' }),
+    ]
+    doc.project.sequences = [
+      {
+        id: 'a',
+        name: 'A',
+        tracks: [
+          {
+            id: 'ta',
+            kind: 'video',
+            name: 'V',
+            clips: [{ id: 'ca', start: 0, duration: 1, sequenceId: 'b' }],
+          },
+        ],
+      },
+      {
+        id: 'b',
+        name: 'B',
+        tracks: [
+          {
+            id: 'tb',
+            kind: 'video',
+            name: 'V',
+            clips: [{ id: 'cb', start: 0, duration: 1, sequenceId: 'a' }],
+          },
+        ],
+      },
+      { id: 'orphan', name: 'O', tracks: [] },
+    ] as never
+    const pruned = pruneOrphanSequences(doc)
+    expect(pruned.project.sequences!.map((s) => s.id)).toEqual(['a', 'b'])
   })
 })

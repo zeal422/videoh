@@ -451,3 +451,55 @@ describe('shapes in the Freeze Frame offline scan (0.28.2)', () => {
     expect(planFreezeFrame(doc, [], 1)).toEqual({ ok: false, reason: 'offline' })
   })
 })
+
+describe('freeze plan depth guard (0.29.0)', () => {
+  function chainDoc(depth: number, terminal: Clip): Doc {
+    const doc = createDoc()
+    const root = createTrack('video', 1, { id: 'root' })
+    root.clips = [createClip({ id: 'root_clip', start: 0, duration: 4, sequenceId: 's0' } as never)]
+    doc.project.tracks = [root]
+    doc.project.sequences = Array.from({ length: depth }, (_, index) => ({
+      id: `s${index}`,
+      name: `S${index}`,
+      tracks: [
+        {
+          id: `t${index}`,
+          kind: 'video',
+          name: 'V',
+          clips: [
+            index < depth - 1
+              ? createClip({
+                  id: `c${index}`,
+                  start: 0,
+                  duration: 4,
+                  sequenceId: `s${index + 1}`,
+                } as never)
+              : terminal,
+          ],
+        },
+      ],
+    })) as never
+    return doc
+  }
+
+  it('stops descending a compound chain past the depth limit', () => {
+    const shapeTerminal = createShapeClip({ id: 'leaf', start: 0, duration: 4 })
+    expect(
+      hasVisibleFrame(chainDoc(2, shapeTerminal), chainDoc(2, shapeTerminal).project.tracks, 1),
+    ).toBe(true)
+    const deep = chainDoc(12, shapeTerminal)
+    expect(hasVisibleFrame(deep, deep.project.tracks, 1)).toBe(false)
+    expect(hasOfflineVisibleFrame(deep, deep.project.tracks, 1)).toBe(false)
+
+    const offlineTerminal = createClip({
+      id: 'offline_leaf',
+      start: 0,
+      duration: 4,
+      mediaId: 'missing_media',
+    })
+    const shallowOffline = chainDoc(2, offlineTerminal)
+    expect(hasOfflineVisibleFrame(shallowOffline, shallowOffline.project.tracks, 1)).toBe(true)
+    const deepOffline = chainDoc(12, offlineTerminal)
+    expect(hasOfflineVisibleFrame(deepOffline, deepOffline.project.tracks, 1)).toBe(false)
+  })
+})

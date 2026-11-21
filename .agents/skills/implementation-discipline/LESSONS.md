@@ -1346,3 +1346,28 @@ root positions plus two genuinely different local windows.
 Action: kept as a note; `scanOfflineClips` now carries a sequence-local
 `windowEnd`, keys by `(sequenceId, windowEnd)`, and derives a child window as
 `min(clip.duration, windowEnd - clip.start)`. Both guards are mutation-checked.
+
+## 2026-11-20 - review findings verification (untrusted finding text)
+What happened: a 33-item review list mixed valid test-strengthening (per-action callback pairing, staggered debounce/pause timers, slot-failure stub, session-identity assertions, freeze/LUT/serialization/snap guards) with inaccurate expectations (slot-error marker remains durable when the registry success consumes it; reclaim test that stays read-only when the old page answers; removeItem exactly-once when the best-effort retry runs twice; bundle-zip 4GiB reason applied to the CRC-table fallback).
+Would-have-caught: trigger 8 (findings are untrusted): open the source for each finding, reproduce the actual behavior with a run, fix only still-valid items and record skips with reasons.
+Action: kept as a note.
+
+## 2026-11-20 - 0.29.0 version bump (a green releases test hid a missing changelog entry)
+
+What happened: package.json, src/lib/releases.ts, and ROADMAP.md moved to 0.29.0 and releases.test.ts
+passed, so the bump was reported as atomic. CHANGELOG.md had no 0.29.0 entry and was never edited;
+git diff --stat CHANGELOG.md was empty. releases.test.ts only compares releases[0] and CURRENT_VERSION
+against package.json, as AGENTS.md rule 14 warns.
+Would-have-caught: rule 14 lists five places; a green test covers one of them. Treat the release
+checklist as the gate, not releases.test.ts, and diff every listed file before calling a bump atomic.
+Action: kept as a note.
+
+## 2026-11-20 - coverage audit verification (mutation claims)
+
+What happened: an audit called two tests vacuous. Mutation reproduced the volume one (deleting both
+out-of-range guards left the test green) and the effects one (deleting the non-crop skip left it green),
+but the audit's "easeOut is filler" claim was wrong: deleting templates.ts:347 fails the test. The first
+effects fix used a hostile entry that hydration filters, so the comment overclaimed file reachability.
+Would-have-caught: mutate the guard before labelling a test, and check that the hostile input actually
+crosses the boundary the comment names.
+Action: kept as a note; the mutation checks were recorded in the audit working document.

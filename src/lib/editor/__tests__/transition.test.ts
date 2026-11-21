@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  crossfadeFactor,
   featherGradient,
   getTransitionSpan,
   maxTransitionDuration,
@@ -483,5 +484,40 @@ describe('featherGradient early negative-direction wipes', () => {
         { at: 1, opacity: 0 },
       ],
     })
+  })
+})
+
+describe('transition hostile matrix (0.29.0)', () => {
+  it('returns no span for a zero or negative requested duration', () => {
+    const a = { start: 0, duration: 2, transitionOut: { type: 'crossfade', duration: 0 } }
+    const b = { start: 2, duration: 2 }
+    expect(getTransitionSpan(a as never, b as never)).toBeNull()
+  })
+
+  it('falls a non-finite feather back to the default and rejects an empty band', () => {
+    const a = {
+      start: 0,
+      duration: 4,
+      transitionOut: {
+        type: 'wipe',
+        duration: 1,
+        direction: 'left',
+        edge: 'feathered',
+        feather: Number.NaN,
+      },
+    }
+    const b = { start: 3, duration: 4 }
+    const span = getTransitionSpan(a as never, b as never)!
+    const geo = transitionGeometry(span, 3.2, 100, 50)!
+    expect(Number.isFinite(geo.featherBand!.w)).toBe(true)
+    expect(featherGradient({ ...geo, wipeRect: { ...geo.wipeRect!, w: 0 } })).toBeNull()
+  })
+
+  it('leaves a third clip outside the fading pair untouched', () => {
+    const a = { id: 'a', start: 0, duration: 4, transitionOut: { type: 'crossfade', duration: 1 } }
+    const b = { id: 'b', start: 3, duration: 4 }
+    const other = { id: 'other', start: 0, duration: 1 }
+    const track = { clips: [a, b] }
+    expect(crossfadeFactor(track as never, other as never, 3.5)).toBe(1)
   })
 })

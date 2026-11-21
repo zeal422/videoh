@@ -10,7 +10,10 @@ import {
   groupTracks,
   nextTrackGroupName,
   planGroupFlag,
+  sanitizeTrackGroup,
   sanitizeTrackGroupName,
+  trackGroupById,
+  trackGroupMembership,
   tracksShareSequence,
 } from '../track-groups'
 import { pruneEmptiedTracks } from '../tracks'
@@ -404,5 +407,39 @@ describe('track group model (0.26.0)', () => {
     const first = applyCommand(doc, groupCommand())
     const group = first.project.trackGroups![0]
     expect(groupTracks(first.project.tracks, group.id)).toHaveLength(2)
+  })
+})
+
+describe('track group hostile inputs (0.29.0)', () => {
+  it('refuses malformed group entries and resolves groups across owners', () => {
+    expect(sanitizeTrackGroup(null)).toBeUndefined()
+    expect(sanitizeTrackGroup({ id: 'bad id', name: 'G' })).toBeUndefined()
+    expect(sanitizeTrackGroup({ id: 'g', name: '  ' })).toBeUndefined()
+
+    const doc = createDoc()
+    expect(trackGroupById(doc.project, undefined)).toBeUndefined()
+    expect(trackGroupById(doc.project, 'g')).toBeUndefined()
+    doc.project.trackGroups = [{ id: 'g', name: 'G' }]
+    expect(trackGroupById(doc.project, 'g')).toEqual({ id: 'g', name: 'G' })
+
+    const root = createTrack('video', 1, { id: 'root' })
+    root.groupId = 'g'
+    const sequenceTrack = createTrack('video', 1, { id: 'seq_track' })
+    sequenceTrack.groupId = 'g'
+    doc.project.tracks = [root]
+    doc.project.sequences = [{ id: 'seq', name: 'S', tracks: [sequenceTrack] } as never]
+    expect(trackGroupMembership(doc, 'g')).toMatchObject({
+      sequenceId: undefined,
+      tracks: [{ id: 'root' }],
+    })
+    doc.project.tracks = []
+    expect(trackGroupMembership(doc, 'g')).toMatchObject({
+      sequenceId: 'seq',
+      tracks: [{ id: 'seq_track' }],
+    })
+    expect(tracksShareSequence(doc, [sequenceTrack])).toBe(true)
+    expect(
+      tracksShareSequence(doc, [sequenceTrack, createTrack('video', 1, { id: 'other' })]),
+    ).toBe(false)
   })
 })

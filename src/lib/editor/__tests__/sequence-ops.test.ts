@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { applyCommands } from '../commands'
 import { createClip, createDoc, createMediaAsset, createTrack, sourceTimeAt } from '../factories'
 import { MIN_CLIP_DURATION, MIN_SPLIT_HEADROOM } from '../constants'
-import { planInsert, planOverwrite } from '../sequence-ops'
+import { placementRefusalMessage, planInsert, planOverwrite } from '../sequence-ops'
 import { pruneEmptiedTracks } from '../tracks'
 import type { Clip, Doc, MediaAsset, Track, TrackKind } from '../types'
 
@@ -624,5 +624,37 @@ describe('placement span guard', () => {
     for (const plan of [planInsert(d, ['V1'], 0, 0.05), planOverwrite(d, ['V1'], 0, 0.05)]) {
       expect(plan).toEqual({ commands: null, refusal: 'span' })
     }
+  })
+})
+
+describe('sequence-ops refusal and lane guards (0.29.0)', () => {
+  it('maps every refusal to its toast wording', () => {
+    expect(placementRefusalMessage('span')).toMatch(/span/)
+    expect(placementRefusalMessage('geometry')).toMatch(/shorter/)
+    expect(placementRefusalMessage('source')).toMatch(/source/)
+    expect(placementRefusalMessage('time')).toMatch(/invalid/)
+  })
+
+  it('ignores a lane id that names no track and trims the covered head of a text clip', () => {
+    const doc = createDoc()
+    doc.project.tracks = [createTrack('video', 1, { id: 'v1' })]
+    expect(planOverwrite(doc, ['v1', 'gone'], 0, 1)).toEqual({ commands: [] })
+
+    const textDoc = createDoc()
+    textDoc.project.tracks = []
+    textDoc.project.tracks.push(
+      createTrack('text', 1, {
+        id: 't1',
+        clips: [createClip({ id: 'tc', text: 'Hi', start: 0, duration: 2 })],
+      }),
+    )
+    const plan = planOverwrite(textDoc, ['t1'], 0, 1)
+    const next = applyCommands(textDoc, commandsOf(plan))
+    const remaining = next.project.tracks
+      .flatMap((track) => track.clips)
+      .filter((clip) => clip.text === 'Hi')
+    expect(
+      remaining.map((clip) => ({ start: r(clip.start), end: r(clip.start + clip.duration) })),
+    ).toEqual([{ start: 1, end: 2 }])
   })
 })
