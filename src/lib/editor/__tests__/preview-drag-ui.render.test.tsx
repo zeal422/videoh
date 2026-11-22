@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 
 import { PreviewPanel } from '@/components/editor/PreviewPanel'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
-import { useEditorStore } from '../store'
-import { createTextClip, createTrack } from '../factories'
+import { isTransientActive, useEditorStore } from '../store'
+import { createShapeClip, createTextClip, createTrack } from '../factories'
 import type { Clip, Doc } from '../types'
 
 /**
@@ -276,5 +276,198 @@ describe('preview text drag', () => {
 
     expect(styleXOf(clipId)).toBeCloseTo(0.5, 5)
     expect(useEditorStore.getState().past.length).toBe(pastBefore)
+  })
+})
+
+describe('stretched and rotated text drags (0.29.5)', () => {
+  function canvasRect(canvas: HTMLElement) {
+    canvas.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 400,
+        bottom: 225,
+        width: 400,
+        height: 225,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect
+  }
+
+  function stretchedTextDoc(partial: Partial<Clip> = {}) {
+    const text = createTextClip({ id: 'clip_stretch_text', start: 0, duration: 4, ...partial })
+    text.style = { ...text.style!, x: 0.6 }
+    const track = createTrack('text', 1, { clips: [text] })
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [],
+    }
+    useEditorStore.setState({
+      doc,
+      selection: text.id,
+      selections: [text.id],
+      playhead: 1,
+      snapEnabled: true,
+    })
+    return text
+  }
+
+  it('divides each pointer axis by its own stretch', () => {
+    stretchedTextDoc({ stretchX: 2 })
+    render(<PreviewPanel />)
+    const canvas = screen.getByTestId('preview-canvas')
+    canvasRect(canvas)
+
+    fireEvent.pointerDown(canvas, { button: 0, clientX: 200, clientY: 112.5 })
+    fireEvent.pointerMove(canvas, { clientX: 250, clientY: 112.5 })
+    fireEvent.pointerUp(canvas)
+
+    // 50 client px = 240 project px; scaleX 2 means half the anchor delta.
+    expect(styleXOf('clip_stretch_text')).toBeCloseTo(0.6 + 240 / 1920 / 2, 5)
+  })
+
+  it('the existing canvas text drag uses the same snap targets as the gizmo', () => {
+    stretchedTextDoc()
+    render(<PreviewPanel />)
+    const canvas = screen.getByTestId('preview-canvas')
+    canvasRect(canvas)
+
+    // Box [1093, 1211] at style.x 0.6; moving 236 project px left puts the
+    // right edge at 975, 15px from the frame center target at 960.
+    fireEvent.pointerDown(canvas, { button: 0, clientX: 200, clientY: 112.5 })
+    fireEvent.pointerMove(canvas, { clientX: 200 - 236 / 4.8, clientY: 112.5 })
+
+    expect(styleXOf('clip_stretch_text')).toBeCloseTo(0.6 - 251 / 1920, 6)
+    expect(screen.getByTestId('canvas-snap-guide-x')).toHaveAttribute('x1', '960')
+
+    // Turning the shared flag off clears the guide immediately, without
+    // waiting for another pointer frame.
+    act(() => useEditorStore.getState().toggleSnap())
+    expect(screen.queryByTestId('canvas-snap-guide-x')).not.toBeInTheDocument()
+    expect(isTransientActive()).toBe(true)
+    fireEvent.pointerUp(canvas)
+  })
+
+  it('a Play press during a snapped text drag cancels it and clears the guides', () => {
+    stretchedTextDoc()
+    render(<PreviewPanel />)
+    const canvas = screen.getByTestId('preview-canvas')
+    canvasRect(canvas)
+
+    fireEvent.pointerDown(canvas, { button: 0, clientX: 200, clientY: 112.5 })
+    fireEvent.pointerMove(canvas, { clientX: 200 - 236 / 4.8, clientY: 112.5 })
+    expect(screen.getByTestId('canvas-snap-guide-x')).toBeInTheDocument()
+
+    act(() => useEditorStore.getState().setPlaying(true))
+    expect(screen.queryByTestId('canvas-snap-guide-x')).not.toBeInTheDocument()
+    expect(isTransientActive()).toBe(false)
+    expect(styleXOf('clip_stretch_text')).toBeCloseTo(0.6, 6)
+  })
+
+  it('clears the audio mute badge when the preview engine detaches', () => {
+    stretchedTextDoc()
+    useEditorStore.setState({ audioMutedClipIds: ['clip_a'] })
+    const { unmount } = render(<PreviewPanel />)
+    unmount()
+    expect(useEditorStore.getState().audioMutedClipIds).toEqual([])
+  })
+
+  it('snaps a scaleX 2 text box by the rendered project delta, not half of it', () => {
+    stretchedTextDoc({ stretchX: 2 })
+    render(<PreviewPanel />)
+    const canvas = screen.getByTestId('preview-canvas')
+    canvasRect(canvas)
+
+    // The measured box includes the 10px shadow pad: [1093, 1211]. At
+    // scaleX 2 it renders at [1226, 1462] (center 1344 = client 280). Moving
+    // 250 project px left puts the left edge at 976, 16px from the frame
+    // center at 960.
+    const gizmo = screen.getByTestId('transform-gizmo')
+    const move = gizmo.querySelector('[data-gizmo="move"]') as Element
+    fireEvent.pointerDown(move, { button: 0, pointerId: 41, clientX: 280, clientY: 112.5 })
+    fireEvent.pointerMove(gizmo, {
+      pointerId: 41,
+      clientX: 280 - 250 / 4.8,
+      clientY: 112.5,
+    })
+
+    const x = styleXOf('clip_stretch_text')!
+    expect(x).toBeCloseTo(0.6 - 266 / 3840, 6)
+    expect(x).not.toBeCloseTo(0.6 - 266 / 1920, 6)
+    fireEvent.pointerUp(gizmo, { pointerId: 41 })
+  })
+
+  it('drops a guide when the 0..1 anchor clamp blocks the target', () => {
+    const text = createTextClip({ id: 'clip_clamp', start: 0, duration: 4 })
+    text.style = { ...text.style!, x: 0.9 }
+    const target = createShapeClip({
+      id: 'clip_target',
+      start: 0,
+      duration: 4,
+      animStatics: { positionX: 1200 },
+    })
+    const doc: Doc = {
+      project: {
+        tracks: [
+          createTrack('text', 1, { clips: [text] }),
+          createTrack('video', 1, { clips: [target] }),
+        ],
+        id: 'p_test',
+        name: 'test',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      },
+      media: [],
+    }
+    useEditorStore.setState({
+      doc,
+      selection: text.id,
+      selections: [text.id],
+      playhead: 1,
+      snapEnabled: true,
+    })
+    render(<PreviewPanel />)
+    const canvas = screen.getByTestId('preview-canvas')
+    canvasRect(canvas)
+
+    // The target's right edge is 2640; the proposed text right edge is 2602
+    // (38px away), but landing on it needs style.x > 1, so the clamp wins and
+    // no guide may advertise the unreachable snap.
+    const gizmo = screen.getByTestId('transform-gizmo')
+    const move = gizmo.querySelector('[data-gizmo="move"]') as Element
+    // The text box is centered on 1728 project (client 360) at style.x 0.9.
+    fireEvent.pointerDown(move, { button: 0, pointerId: 42, clientX: 360, clientY: 112.5 })
+    fireEvent.pointerMove(gizmo, {
+      pointerId: 42,
+      clientX: 360 + 815 / 4.8,
+      clientY: 112.5,
+    })
+
+    expect(styleXOf('clip_clamp')).toBeCloseTo(1, 6)
+    expect(screen.queryByTestId('canvas-snap-guide-x')).not.toBeInTheDocument()
+    fireEvent.pointerUp(gizmo, { pointerId: 42 })
+  })
+
+  it('snaps a 90-degree rotated text box around its moving center', () => {
+    stretchedTextDoc({ rotation: 90 })
+    const text = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    text.style = { ...text.style!, x: 0.5 }
+    useEditorStore.setState({ doc: { ...useEditorStore.getState().doc } })
+    render(<PreviewPanel />)
+    const canvas = screen.getByTestId('preview-canvas')
+    canvasRect(canvas)
+
+    const gizmo = screen.getByTestId('transform-gizmo')
+    const move = gizmo.querySelector('[data-gizmo="move"]') as Element
+    fireEvent.pointerDown(move, { button: 0, pointerId: 43, clientX: 200, clientY: 112.5 })
+    fireEvent.pointerMove(gizmo, { pointerId: 43, clientX: 201, clientY: 112.5 })
+
+    // The rotation pivot is the measured box center, so a one-pixel nudge is
+    // snapped back to the frame center and the anchor stays put.
+    expect(styleXOf('clip_stretch_text')).toBeCloseTo(0.5, 6)
+    expect(screen.getByTestId('canvas-snap-guide-x')).toHaveAttribute('x1', '960')
+    fireEvent.pointerUp(gizmo, { pointerId: 43 })
   })
 })

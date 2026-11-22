@@ -102,7 +102,8 @@ describe('shape renderer (0.25.0)', () => {
     const transform: ClipTransform = {
       posX: 100,
       posY: 50,
-      scale: 2,
+      scaleX: 2,
+      scaleY: 2,
       rotation: 90,
       flipX: true,
       flipY: false,

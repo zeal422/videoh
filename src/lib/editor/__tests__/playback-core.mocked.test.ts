@@ -86,9 +86,11 @@ function makeCore(
   hooks: {
     onEnd?: () => void
     onMediaError?: (info: MediaErrorInfo | null, clipId?: string) => void
+    onAudioMutedChange?: (clipId: string, muted: boolean) => void
     onPreviewRecovering?: (recovering: boolean) => void
     nextKeyframe?: (url: string, sourceTime: number) => Promise<number | undefined>
     getProjectEpoch?: () => number
+    getActiveSequencePath?: () => readonly string[]
     resolveMediaUrl?: (asset: MediaAsset) => string
     createScrubSource?: () => ScrubFrameSource | null
   } = {},
@@ -101,8 +103,10 @@ function makeCore(
     getDoc: () => doc,
     resolveMediaUrl: hooks.resolveMediaUrl,
     getProjectEpoch: hooks.getProjectEpoch,
+    getActiveSequencePath: hooks.getActiveSequencePath,
     nextKeyframe: hooks.nextKeyframe,
     onMediaError: hooks.onMediaError,
+    onAudioMutedChange: hooks.onAudioMutedChange,
     onPreviewRecovering: hooks.onPreviewRecovering,
     createScrubSource: hooks.createScrubSource,
     onFrame: (t) => frames.push(t),
@@ -4904,4 +4908,508 @@ describe('paused preview recovery (mocked browser)', () => {
     expect(ctx.calls.filter((call) => call.op === 'drawImage').length).toBeGreaterThan(drawsBefore)
     core.dispose()
   }, 15_000)
+})
+
+describe('audio mute badge and retry ownership (0.29.5)', () => {
+  interface AudioPair {
+    doc: Doc
+    asset: MediaAsset
+    audioClip: Clip
+  }
+
+  function pairDoc(): AudioPair {
+    const { doc, asset } = makeDoc()
+    addVideoClip(doc, { id: 'v1', mediaId: asset.id, start: 0, duration: 10, inPoint: 0 })
+    const audioClip = createClip({
+      id: 'a1',
+      mediaId: asset.id,
+      start: 0,
+      duration: 10,
+      inPoint: 0,
+      audioOnly: true,
+    })
+    doc.project.tracks[1].clips.push(audioClip)
+    return { doc, asset, audioClip }
+  }
+
+  function patchReadyState(initial: number): { set: (value: number) => void; restore: () => void } {
+    let value = initial
+    const original = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'readyState')
+    Object.defineProperty(HTMLMediaElement.prototype, 'readyState', {
+      configurable: true,
+      get: () => value,
+    })
+    return {
+      set: (next) => {
+        value = next
+      },
+      restore: () => {
+        if (original) Object.defineProperty(HTMLMediaElement.prototype, 'readyState', original)
+        else delete (HTMLMediaElement.prototype as unknown as Record<string, unknown>).readyState
+      },
+    }
+  }
+
+  async function muteTwin(core: PlaybackCore): Promise<HTMLAudioElement> {
+    await core.play()
+    await h.pump.pump(1)
+    core.pause()
+    const el = core['pool'].peek('a1') as HTMLAudioElement
+    setMediaError(el, 4)
+    await vi.waitFor(() => expect(core['failedAudioClips'].has('a1')).toBe(true))
+    return el
+  }
+
+  it('keeps the badge after mutable operations and clears it on readiness evidence', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    try {
+      await muteTwin(core)
+      expect(events).toEqual([['a1', true]])
+      expect(warned).toHaveBeenCalledTimes(1)
+      const warning = JSON.stringify(warned.mock.calls[0]?.[1])
+      expect(warning).toContain('a1')
+      expect(warning).toContain('v.mp4')
+      expect(warning).toContain('4')
+
+      const ready = patchReadyState(0)
+      try {
+        core.retryAudio('a1')
+        expect(core['pendingAudioRetries'].has('a1')).toBe(true)
+        expect(core['failedAudioClips'].has('a1')).toBe(false)
+        // The badge did not drop on Retry alone.
+        expect(events).toEqual([['a1', true]])
+
+        const fresh = core['pool'].peek('a1') as HTMLAudioElement
+        expect(fresh).not.toBeNull()
+        ready.set(2)
+        fresh.dispatchEvent(new Event('canplay'))
+        await vi.waitFor(() =>
+          expect(events).toEqual([
+            ['a1', true],
+            ['a1', false],
+          ]),
+        )
+      } finally {
+        ready.restore()
+      }
+    } finally {
+      warned.mockRestore()
+      core.dispose()
+    }
+  })
+
+  it('a seek outside the failed region pends, a seek back re-blocks, explicit retry survives', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    try {
+      await muteTwin(core)
+      core.seek(4)
+      expect(core['pendingAudioRetries'].has('a1')).toBe(true)
+      expect(events).toEqual([['a1', true]])
+
+      core.seek(0)
+      expect(core['failedAudioClips'].has('a1')).toBe(true)
+      expect(core['pendingAudioRetries'].has('a1')).toBe(false)
+      expect(events).toEqual([
+        ['a1', true],
+        ['a1', true],
+      ])
+
+      core.retryAudio('a1')
+      expect(core['explicitAudioRetries'].has('a1')).toBe(true)
+      core.seek(0)
+      expect(core['pendingAudioRetries'].has('a1')).toBe(true)
+      expect(core['failedAudioClips'].has('a1')).toBe(false)
+    } finally {
+      core.dispose()
+    }
+  })
+
+  it('Play arms pending retries but does not clear the badge by itself', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    const ready = patchReadyState(0)
+    try {
+      await muteTwin(core)
+      await core.play()
+      expect(core['pendingAudioRetries'].has('a1')).toBe(true)
+      expect(core['failedAudioClips'].has('a1')).toBe(false)
+      expect(events).toEqual([['a1', true]])
+      await h.pump.pump(1)
+
+      // Readiness clears it without another user gesture.
+      ready.set(2)
+      const el = core['pool'].peek('a1') as HTMLAudioElement
+      el.dispatchEvent(new Event('canplay'))
+      await vi.waitFor(() => expect(events).toContainEqual(['a1', false]))
+    } finally {
+      ready.restore()
+      core.dispose()
+    }
+  })
+
+  it('removing a muted clip clears its badge, and undo does not resurrect it', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    try {
+      await muteTwin(core)
+      const removed = structuredClone(doc.project.tracks[1].clips)
+      doc.project.tracks[1].clips = []
+      core.noteDocChanged(doc)
+      expect(events).toEqual([
+        ['a1', true],
+        ['a1', false],
+      ])
+      expect(core['failedAudioClips'].size).toBe(0)
+      expect(core['pendingAudioRetries'].size).toBe(0)
+
+      // Undo restores the doc, not the mute state.
+      doc.project.tracks[1].clips = removed
+      core.noteDocChanged(doc)
+      expect(events).toEqual([
+        ['a1', true],
+        ['a1', false],
+      ])
+    } finally {
+      core.dispose()
+    }
+  })
+
+  it('project replacement clears a reused id, and a stale retry after recovery is inert', async () => {
+    const { doc } = pairDoc()
+    let epoch = 0
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, {
+      getProjectEpoch: () => epoch,
+      onAudioMutedChange: (id, muted) => events.push([id, muted]),
+    })
+    try {
+      await muteTwin(core)
+      epoch += 1
+      core.refresh(core.currentTime)
+      expect(events).toContainEqual(['a1', false])
+      expect(core['failedAudioClips'].size).toBe(0)
+
+      // A stale toast Retry after recovery changes nothing.
+      core.retryAudio('a1')
+      expect(core['pendingAudioRetries'].size).toBe(0)
+      expect(events.filter(([, muted]) => muted)).toHaveLength(1)
+    } finally {
+      core.dispose()
+    }
+  })
+
+  it('re-blocking a pending retry stops its element', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    try {
+      await muteTwin(core)
+      core.seek(4)
+      expect(core['pendingAudioRetries'].has('a1')).toBe(true)
+      const el = core['pool'].peek('a1') as HTMLAudioElement
+      await el.play()
+      expect(el.paused).toBe(false)
+
+      // Back inside the one-second failed region: the latch returns and the
+      // retry element must not keep playing while the clip reads muted.
+      core.seek(0)
+      expect(core['failedAudioClips'].has('a1')).toBe(true)
+      expect(el.paused).toBe(true)
+    } finally {
+      core.dispose()
+    }
+  })
+
+  it('a late error from the replaced element does not re-mute', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    const ready = patchReadyState(0)
+    try {
+      const old = await muteTwin(core)
+      core.retryAudio('a1')
+      const fresh = core['pool'].peek('a1') as HTMLAudioElement
+      expect(fresh).not.toBe(old)
+      setMediaError(old, 3)
+      await Promise.resolve()
+      expect(events).toEqual([['a1', true]])
+      expect(core['failedAudioClips'].has('a1')).toBe(false)
+    } finally {
+      ready.restore()
+      core.dispose()
+    }
+  })
+
+  it('an inactive retry waits for the playhead, then clears at the expected read', async () => {
+    const { doc, audioClip } = pairDoc()
+    audioClip.duration = 2
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    const ready = patchReadyState(2)
+    try {
+      await muteTwin(core)
+      core.seek(8)
+      expect(core['pendingAudioRetries'].has('a1')).toBe(true)
+      core.retryAudio('a1')
+      // Inactive: no transport move, no element, and no false badge.
+      expect(core.currentTime).toBeCloseTo(8, 6)
+      expect(core['pool'].peek('a1')).toBeUndefined()
+      expect(events.filter(([, muted]) => !muted)).toHaveLength(0)
+
+      // The explicit retry stays armed entering the failed range and recovers
+      // as soon as the clip is read.
+      core.seek(0.5)
+      await vi.waitFor(() => expect(events).toContainEqual(['a1', false]))
+    } finally {
+      ready.restore()
+      core.dispose()
+    }
+  })
+
+  it('a readiness event re-aligns a pending element to the expected read before clearing', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    const ready = patchReadyState(0)
+    try {
+      await muteTwin(core)
+      core.retryAudio('a1')
+      const el = core['pool'].peek('a1') as HTMLAudioElement
+      // The element reports current data at an old position; the watcher
+      // seeks it to the expected read, then the badge clears on that evidence.
+      // The playhead matches the read: recovery validates against the request
+      // the current playhead makes, not a source stamped in the past.
+      core['time'] = 5
+      core['audioExpectedSources'].set(el, 5)
+      ready.set(2)
+      el.dispatchEvent(new Event('canplay'))
+      expect(el.currentTime).toBeCloseTo(5, 6)
+      expect(events).toContainEqual(['a1', false])
+    } finally {
+      ready.restore()
+      core.dispose()
+    }
+  })
+
+  it('a paused explicit retry materializes an audio-asset element', async () => {
+    const { doc } = makeDoc()
+    const audio = createMediaAsset({
+      kind: 'audio',
+      name: 'a.m4a',
+      duration: 10,
+      url: 'blob:audio',
+    })
+    doc.media.push(audio)
+    doc.project.tracks[1].clips.push(
+      createClip({ id: 'a1', mediaId: audio.id, start: 0, duration: 10, inPoint: 0 }),
+    )
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    const ready = patchReadyState(0)
+    try {
+      await core.play()
+      await h.pump.pump(1)
+      core.pause()
+      const old = core['pool'].peek('a1') as HTMLAudioElement
+      setMediaError(old, 4)
+      await vi.waitFor(() => expect(core['failedAudioClips'].has('a1')).toBe(true))
+
+      core.retryAudio('a1')
+      const fresh = core['pool'].peek('a1') as HTMLAudioElement
+      expect(fresh).not.toBeNull()
+      expect(fresh).not.toBe(old)
+      expect(events).toEqual([['a1', true]])
+
+      ready.set(2)
+      fresh.dispatchEvent(new Event('canplay'))
+      await vi.waitFor(() => expect(events).toContainEqual(['a1', false]))
+    } finally {
+      ready.restore()
+      core.dispose()
+    }
+  })
+
+  it('ignores a readiness event from a superseded retry', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    const ready = patchReadyState(0)
+    try {
+      await muteTwin(core)
+      core.retryAudio('a1')
+      const stale = core['audioRetryWatchers'].get('a1')?.handlers.canplay
+      expect(stale).toBeDefined()
+      core.retryAudio('a1')
+      ready.set(2)
+      stale?.()
+      expect(events).toEqual([['a1', true]])
+    } finally {
+      ready.restore()
+      core.dispose()
+    }
+  })
+
+  it('deleting a pending clip clears its badge and undo does not resurrect it', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    try {
+      await muteTwin(core)
+      core.retryAudio('a1')
+      expect(core['pendingAudioRetries'].has('a1')).toBe(true)
+      const removed = structuredClone(doc.project.tracks[1].clips)
+      doc.project.tracks[1].clips = []
+      core.noteDocChanged(doc)
+      expect(events).toEqual([
+        ['a1', true],
+        ['a1', false],
+      ])
+      doc.project.tracks[1].clips = removed
+      core.noteDocChanged(doc)
+      expect(events).toEqual([
+        ['a1', true],
+        ['a1', false],
+      ])
+    } finally {
+      core.dispose()
+    }
+  })
+
+  it('a readiness event during the retry seek keeps the badge until it lands', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    const ready = patchReadyState(0)
+    try {
+      await muteTwin(core)
+      core.retryAudio('a1')
+      const el = core['pool'].peek('a1') as HTMLAudioElement
+      ready.set(2)
+      Object.defineProperty(el, 'seeking', { configurable: true, value: true })
+      el.dispatchEvent(new Event('canplay'))
+      expect(events).toEqual([['a1', true]])
+
+      Object.defineProperty(el, 'seeking', { configurable: true, value: false })
+      el.dispatchEvent(new Event('seeked'))
+      await vi.waitFor(() => expect(events).toContainEqual(['a1', false]))
+    } finally {
+      ready.restore()
+      core.dispose()
+    }
+  })
+
+  it('a video frame is not audio-health evidence', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    try {
+      await muteTwin(core)
+      core.seek(0)
+      const video = core['pool'].peek('v1') as HTMLVideoElement
+      presentFrame(video, 0)
+      expect(events).toEqual([['a1', true]])
+    } finally {
+      core.dispose()
+    }
+  })
+
+  it('keeps the badge when a completed seek no longer matches the current request', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    const ready = patchReadyState(0)
+    try {
+      await muteTwin(core)
+      core.retryAudio('a1')
+      const el = core['pool'].peek('a1') as HTMLAudioElement
+      ready.set(2)
+      // The element finishes a seek at source 1 while the playhead, and thus
+      // the requested read, has already moved to source 4.
+      core['time'] = 4
+      core['audioExpectedSources'].set(el, 1)
+      el.currentTime = 1
+      expect(events).toEqual([['a1', true]])
+
+      // An unchanged request at source 4 clears on the same evidence.
+      core['audioExpectedSources'].set(el, 4)
+      el.currentTime = 4
+      expect(events).toEqual([
+        ['a1', true],
+        ['a1', false],
+      ])
+    } finally {
+      ready.restore()
+      core.dispose()
+    }
+  })
+
+  it('keeps a badge for a clip outside the opened compound sequence', async () => {
+    const { doc } = pairDoc()
+    let path: readonly string[] = []
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, {
+      getActiveSequencePath: () => path,
+      onAudioMutedChange: (id, muted) => events.push([id, muted]),
+    })
+    try {
+      await muteTwin(core)
+      expect(events).toEqual([['a1', true]])
+
+      // The clip lives in the root sequence while another sequence is open.
+      doc.project.sequences = [{ id: 'seq_open', name: 'Open', tracks: [] }]
+      path = ['seq_open']
+      core.noteDocChanged(doc)
+      expect(events).toEqual([['a1', true]])
+
+      // Actual deletion still clears the badge.
+      doc.project.tracks[1].clips = []
+      core.noteDocChanged(doc)
+      expect(events).toEqual([
+        ['a1', true],
+        ['a1', false],
+      ])
+    } finally {
+      core.dispose()
+    }
+  })
+
+  it('a reload timeout releases the stalled element so a retry loads a fresh one', async () => {
+    const { doc } = pairDoc()
+    const events: [string, boolean][] = []
+    const { core } = makeCore(doc, { onAudioMutedChange: (id, muted) => events.push([id, muted]) })
+    const reload = vi.spyOn(
+      core as unknown as {
+        reloadElement: (el: HTMLMediaElement) => Promise<'ok' | 'error' | 'timeout'>
+      },
+      'reloadElement',
+    )
+    reload.mockResolvedValue('timeout')
+    try {
+      await core.play()
+      await h.pump.pump(1)
+      core.pause()
+      const old = core['pool'].peek('a1') as HTMLAudioElement
+      setMediaError(old, 3)
+      // A timeout settles without ever setting element.error.
+      Object.defineProperty(old, 'error', { configurable: true, value: null })
+      await vi.waitFor(() => expect(core['failedAudioClips'].has('a1')).toBe(true))
+      expect(events).toEqual([['a1', true]])
+      expect(core['pool'].peek('a1')).toBeUndefined()
+
+      core.retryAudio('a1')
+      const fresh = core['pool'].peek('a1') as HTMLAudioElement
+      expect(fresh).toBeDefined()
+      expect(fresh).not.toBe(old)
+    } finally {
+      reload.mockRestore()
+      core.dispose()
+    }
+  })
 })

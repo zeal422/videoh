@@ -20,23 +20,41 @@ import { attachPreviewEngine, detachPreviewEngine } from '@/lib/editor/playback/
 import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import { clamp01, measureTextBox } from '@/lib/editor/playback/text-box'
 import { clipTransform } from '@/lib/editor/export/offline'
-import { containRect } from '@/lib/editor/playback/compositor'
-import { shapeBounds } from '@/lib/editor/shapes'
+import {
+  baseRectForClip,
+  canvasSnapTargets,
+  pickVisualClipAt,
+  quadForClip,
+  quadBounds,
+  snapBoxToTargets,
+  type CanvasSnapGuides,
+  type CanvasSnapTargets,
+  type TextMeasure,
+} from '@/lib/editor/playback/monitor-geometry'
 import { animatedValue, clampPropertyValue, keyframeDefaultEasing } from '@/lib/editor/keyframes'
 import { withEasing } from '@/lib/editor/ease-segment'
 import {
   angleDelta,
   angleFromCenter,
-  gizmoQuad,
   IDENTITY_TRANSFORM,
   pointerProjectPoint,
   rotationHandleInBounds,
+  scaleFromCornerDrag,
   scaleFromDrag,
+  snapRotation,
   type ClipTransform,
   type Point,
   type Rect,
 } from '@/lib/editor/transform'
-import { ROTATION_MAX, ROTATION_MIN, SCALE_MAX, SCALE_MIN } from '@/lib/editor/constants'
+import {
+  ROTATION_MAX,
+  ROTATION_MIN,
+  ROTATION_SNAP_STEP,
+  ROTATION_SNAP_THRESHOLD,
+  SCALE_MAX,
+  SCALE_MIN,
+  SNAP_THRESHOLD_PX,
+} from '@/lib/editor/constants'
 import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
 import { lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
 import { toast } from '@/hooks/use-toast'
@@ -44,6 +62,70 @@ import { cn } from '@/lib/utils'
 import { ScopesPanel } from './ScopesPanel'
 import { TransformGizmo, type GizmoMode } from './TransformGizmo'
 import type { EditorCommand } from '@/lib/editor/commands'
+import type { Clip, MediaAsset } from '@/lib/editor/types'
+
+/** The injected text measurement for the monitor geometry module. */
+const measureText: TextMeasure = (clip, width, height) => measureTextBox(clip, width, height)
+
+/** True when one of the box's three lines on `axis` sits on `target`. */
+function boxHasLine(box: Rect, axis: 'x' | 'y', target: number): boolean {
+  const lines =
+    axis === 'x' ? [box.x0, (box.x0 + box.x1) / 2, box.x1] : [box.y0, (box.y0 + box.y1) / 2, box.y1]
+  return lines.some((line) => Math.abs(line - target) <= 1e-3)
+}
+
+interface SnappedTextArgs {
+  clip: Clip
+  asset: MediaAsset | undefined
+  width: number
+  height: number
+  startX: number
+  startY: number
+  scaleX: number
+  scaleY: number
+  transform: ClipTransform
+  dx: number
+  dy: number
+  targets: CanvasSnapTargets
+  threshold: number
+}
+
+/**
+ * The snapped normalized style anchor for a text move. The proposed box is
+ * built from unclamped normalized coordinates, snapped, then clamped; the
+ * clamped box is re-measured so a target the clamp blocked reports no guide.
+ * The project-pixel delta converts through `width * scaleX` / `height * scaleY`
+ * because the renderer scales the anchor around the frame center.
+ */
+function snappedTextAnchor(args: SnappedTextArgs): {
+  x: number
+  y: number
+  guides: CanvasSnapGuides
+} {
+  const { clip, asset, width, height, startX, startY, scaleX, scaleY, transform } = args
+  const proposedX = startX + args.dx / width / scaleX
+  const proposedY = startY + args.dy / height / scaleY
+  if (!clip.style) {
+    return { x: clamp01(proposedX), y: clamp01(proposedY), guides: { x: null, y: null } }
+  }
+  const proposedClip = { ...clip, style: { ...clip.style, x: proposedX, y: proposedY } }
+  const proposedBase = baseRectForClip(proposedClip, asset, width, height, measureText)
+  if (!proposedBase) {
+    return { x: clamp01(proposedX), y: clamp01(proposedY), guides: { x: null, y: null } }
+  }
+  const box = quadBounds(quadForClip(transform, proposedBase, width, height))
+  const snap = snapBoxToTargets(box, args.targets, args.threshold)
+  const x = clamp01(startX + (args.dx + snap.dx) / width / scaleX)
+  const y = clamp01(startY + (args.dy + snap.dy) / height / scaleY)
+  const guides = { ...snap.guides }
+  const finalClip = { ...clip, style: { ...clip.style, x, y } }
+  const finalBase = baseRectForClip(finalClip, asset, width, height, measureText)
+  if (!finalBase) return { x, y, guides: { x: null, y: null } }
+  const finalBox = quadBounds(quadForClip(transform, finalBase, width, height))
+  if (guides.x !== null && !boxHasLine(finalBox, 'x', guides.x)) guides.x = null
+  if (guides.y !== null && !boxHasLine(finalBox, 'y', guides.y)) guides.y = null
+  return { x, y, guides }
+}
 
 type TextDragOrigin = {
   clipId: string
@@ -51,7 +133,10 @@ type TextDragOrigin = {
   py: number
   x: number
   y: number
-  scale: number
+  scaleX: number
+  scaleY: number
+  transform: ClipTransform
+  targets: CanvasSnapTargets
 }
 
 /** True while the drag's captured clip is still selected and under the playhead. */
@@ -92,6 +177,8 @@ export function PreviewPanel() {
   // state, so they add no PanelId, no sanitize case and no menu entry.
   const [scopesOpen, setScopesOpen] = useState(false)
   const [draggingText, setDraggingText] = useState(false)
+  /** CSS pixels per project pixel, measured from the canvas box. */
+  const [canvasScale, setCanvasScale] = useState<number | null>(null)
   const dragOrigin = useRef<TextDragOrigin | null>(null)
   /** Initiating pointer of the active text drag (multi-touch: ignore others). */
   const textDragPointerId = useRef<number | null>(null)
@@ -120,6 +207,32 @@ export function PreviewPanel() {
       engine.width = doc.project.width
       engine.height = doc.project.height
     }
+  }, [doc.project.width, doc.project.height])
+
+  // The monitor's CSS scale keeps the handle size constant on screen. A real
+  // browser uses ResizeObserver; without it, the immediate rect plus window
+  // resize still measures. The project-relative fallback is only for an
+  // unmeasured rect (jsdom) or the first paint before the observer fires.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const measure = () => {
+      const rect = canvas.getBoundingClientRect()
+      if (rect.width <= 0 || rect.height <= 0) {
+        setCanvasScale(null)
+        return
+      }
+      const scale = Math.min(rect.width / doc.project.width, rect.height / doc.project.height)
+      setCanvasScale(scale > 0 && Number.isFinite(scale) ? scale : null)
+    }
+    measure()
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(measure)
+      observer.observe(canvas)
+      return () => observer.disconnect()
+    }
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
   }, [doc.project.width, doc.project.height])
 
   // Opening or leaving a sequence changes the timeline's coordinate space: the store
@@ -191,31 +304,15 @@ export function PreviewPanel() {
     return clip
   })()
   const gizmoLocked = gizmoClip ? lockedTrackForClip(doc, gizmoClip.id) : null
-  const gizmoBase: Rect | null = (() => {
-    if (!gizmoClip) return null
-    const { width, height } = doc.project
-    if (gizmoClip.shape) {
-      // The generated path bounds are the selection and transform box: a star
-      // or triangle does not fill the frame the way media does.
-      return shapeBounds(gizmoClip.shape, width, height)
-    }
-    if (gizmoClip.text !== undefined) {
-      const box = measureTextBox(gizmoClip, width, height)
-      return box
-        ? { x0: box.x0 * width, y0: box.y0 * height, x1: box.x1 * width, y1: box.y1 * height }
-        : null
-    }
-    if (gizmoClip.sequenceId) return { x0: 0, y0: 0, x1: width, y1: height }
-    const asset = findMedia(doc, gizmoClip.mediaId)
-    if (asset && asset.width > 0 && asset.height > 0) {
-      const rect = containRect(asset.width, asset.height, width, height, null)
-      if (rect) {
-        return { x0: rect.dx, y0: rect.dy, x1: rect.dx + rect.dw, y1: rect.dy + rect.dh }
-      }
-    }
-    // Offline or unmeasured source: the frame is still a usable move box.
-    return { x0: 0, y0: 0, x1: width, y1: height }
-  })()
+  const gizmoBase: Rect | null = gizmoClip
+    ? baseRectForClip(
+        gizmoClip,
+        findMedia(doc, gizmoClip.mediaId),
+        doc.project.width,
+        doc.project.height,
+        measureText,
+      )
+    : null
   const gizmoTransform: ClipTransform | null =
     gizmoClip && gizmoBase
       ? (clipTransform(gizmoClip, playhead - gizmoClip.start) ?? IDENTITY_TRANSFORM)
@@ -223,14 +320,17 @@ export function PreviewPanel() {
   const gizmo =
     gizmoClip && gizmoBase && gizmoTransform && !gizmoLocked
       ? (() => {
-          const quad = gizmoQuad(gizmoBase, gizmoTransform, doc.project.width, doc.project.height)
+          const quad = quadForClip(gizmoTransform, gizmoBase, doc.project.width, doc.project.height)
           const distance = Math.max(28, Math.min(doc.project.width, doc.project.height) * 0.06)
+          // CSS-relative sizing: a 10px visible dot and a 24px hit target at
+          // any monitor size. The project-relative pair is the unmeasured
+          // fallback only (jsdom, or the first paint before measurement).
+          const measured = canvasScale !== null && canvasScale > 0
           return {
             quad,
             handle: rotationHandleInBounds(quad, distance, doc.project.width, doc.project.height),
-            // Project-pixel hit radius: CSS size cancels out of the pointer
-            // mapping, so DPR and monitor letterboxing need no extra factor.
-            hitRadius: Math.max(10, doc.project.width * 0.014),
+            visualRadius: measured ? 5 / canvasScale : Math.max(5, doc.project.width * 0.007),
+            hitRadius: measured ? 12 / canvasScale : Math.max(10, doc.project.width * 0.014),
           }
         })()
       : null
@@ -249,6 +349,13 @@ export function PreviewPanel() {
     center: Point
     startPoint: Point
     startDistance: number
+    /** Snap targets captured at pointer-down; the other clips do not move. */
+    targets: CanvasSnapTargets
+    /** The clip's untransformed box and transform at pointer-down. */
+    baseRect: Rect
+    transform: ClipTransform
+    /** The playhead the gesture was captured at; any move cancels the drag. */
+    playhead: number
     /**
      * Unwrapped rotation tracking: each move adds its shortest step to
      * `turned`, so crossing the half-turn opposite the grab point keeps
@@ -257,19 +364,78 @@ export function PreviewPanel() {
      */
     lastAngle: number
     turned: number
+    /** The grabbed corner (scale mode) and where inside its hit target the press landed. */
+    corner: number
+    cornerPoint: Point
+    grabOffset: Point
+    /** The last pointer position in project pixels, replayed on a Shift key event. */
+    lastPoint: Point
+    /** True while the live scale preview is non-uniform. */
+    shiftHeld: boolean
+    /** Window Shift listener owned by this gesture. */
+    onShiftKey: (event: KeyboardEvent) => void
     start: {
       posX: number
       posY: number
       scale: number
+      stretchX: number
+      stretchY: number
       rotation: number
       x: number
       y: number
+      scaleX: number
+      scaleY: number
     }
   }
   const gizmoDrag = useRef<GizmoDrag | null>(null)
   const [gizmoActive, setGizmoActive] = useState(false)
+  const [snapGuides, setSnapGuides] = useState<CanvasSnapGuides>({ x: null, y: null })
 
-  const onGizmoPointerDown = (mode: GizmoMode, e: React.PointerEvent<SVGSVGElement>) => {
+  const showSnapGuides = (next: CanvasSnapGuides) => {
+    setSnapGuides((previous) => (previous.x === next.x && previous.y === next.y ? previous : next))
+  }
+
+  /**
+   * One scale frame from the captured base. Shift writes per-axis stretch and
+   * leaves the uniform (and any `scale` curve) alone; no Shift writes the
+   * uniform scale through the existing command path.
+   */
+  const applyScaleFrame = (drag: GizmoDrag, point: Point, shift: boolean) => {
+    const store = useEditorStore.getState()
+    if (shift) {
+      const ratios = scaleFromCornerDrag(
+        drag.cornerPoint,
+        drag.center,
+        drag.startPoint,
+        point,
+        drag.start.rotation,
+      )
+      const stretchX = Math.min(SCALE_MAX, Math.max(SCALE_MIN, drag.start.stretchX * ratios.ratioX))
+      const stretchY = Math.min(SCALE_MAX, Math.max(SCALE_MIN, drag.start.stretchY * ratios.ratioY))
+      store.applyTransient({
+        type: 'setClipStretch',
+        clipId: drag.clipId,
+        stretchX,
+        stretchY,
+      })
+      return
+    }
+    const distance = Math.hypot(point.x - drag.center.x, point.y - drag.center.y)
+    const scale = scaleFromDrag(
+      drag.startDistance,
+      distance,
+      drag.start.scale,
+      SCALE_MIN,
+      SCALE_MAX,
+    )
+    store.applyTransient(gizmoCommand(drag, 'scale', scale))
+  }
+
+  const onGizmoPointerDown = (
+    mode: GizmoMode,
+    e: React.PointerEvent<SVGSVGElement>,
+    cornerIndex?: number,
+  ) => {
     if (!gizmoClip || !gizmo || e.button !== 0) return
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect || rect.width === 0 || rect.height === 0) return
@@ -292,16 +458,79 @@ export function PreviewPanel() {
       live.doc.project.width,
       live.doc.project.height,
     )
+    // Inside the selected box a topmost overlapping clip still wins the press:
+    // the move polygon must not swallow a click meant to select it. Handles
+    // (scale, rotate) keep owning their press.
+    if (mode === 'move') {
+      const hit = pickVisualClipAt(
+        live.doc,
+        live.activeSequencePath,
+        live.playhead,
+        point,
+        measureText,
+      )
+      const modifier = e.shiftKey || e.ctrlKey || e.metaKey
+      if (hit) {
+        if (hit.id !== found.clip.id || modifier) {
+          if (e.shiftKey) live.addSelection(hit.id)
+          else if (e.ctrlKey || e.metaKey) live.toggleSelection(hit.id)
+          else live.select(hit.id)
+          return
+        }
+      } else {
+        // The move polygon can sit over a clip the picker skips (a hidden
+        // track or a fully transparent clip). That press is an empty monitor
+        // click, never the start of a transform on an invisible clip.
+        if (!(canDragText && textClip?.style) && !modifier) live.select(null)
+        return
+      }
+    }
     const center = {
       x: (gizmo.quad[0].x + gizmo.quad[1].x + gizmo.quad[2].x + gizmo.quad[3].x) / 4,
       y: (gizmo.quad[0].y + gizmo.quad[1].y + gizmo.quad[2].y + gizmo.quad[3].y) / 4,
     }
     const local = live.playhead - found.clip.start
     const transform = clipTransform(found.clip, local) ?? IDENTITY_TRANSFORM
+    // A monitor transform drag requires a paused transport: the cached target
+    // set is captured once, so a playing playhead would make it stale.
+    if (live.playing) playbackRef.current?.pause()
+    const baseRect = baseRectForClip(
+      found.clip,
+      findMedia(live.doc, found.clip.mediaId),
+      live.doc.project.width,
+      live.doc.project.height,
+      measureText,
+    )
+    if (!baseRect) return
+    const targets = canvasSnapTargets(
+      live.doc,
+      live.activeSequencePath,
+      live.playhead,
+      [found.clip.id],
+      measureText,
+    )
     // A second drag cannot join the live gesture: the store refuses the begin
     // and leaves that gesture untouched, so this drag never starts.
     const token = live.beginTransient(e.pointerId)
     if (token === null) return
+    const corner = mode === 'scale' ? (cornerIndex ?? 0) : 0
+    const cornerPoint = mode === 'scale' ? (gizmo.quad[corner] ?? center) : center
+    const grabOffset = { x: point.x - cornerPoint.x, y: point.y - cornerPoint.y }
+    // Shift is a live preview modifier, not only a pointer flag: releasing it
+    // with the mouse still down must return the preview to proportional.
+    const onShiftKey = (event: KeyboardEvent) => {
+      const drag = gizmoDrag.current
+      if (!drag || drag.pointerId !== e.pointerId || drag.mode !== 'scale') return
+      if (event.key !== 'Shift') return
+      const shift = event.type === 'keydown'
+      if (shift === drag.shiftHeld) return
+      if (currentTransientToken() !== drag.token) return
+      live.resetTransient()
+      drag.shiftHeld = shift
+      applyScaleFrame(drag, drag.lastPoint, shift)
+    }
+    window.addEventListener('keydown', onShiftKey)
+    window.addEventListener('keyup', onShiftKey)
     gizmoDrag.current = {
       mode,
       pointerId: e.pointerId,
@@ -313,15 +542,32 @@ export function PreviewPanel() {
       lastAngle: angleFromCenter(center, point),
       turned: 0,
       startDistance: Math.hypot(point.x - center.x, point.y - center.y),
+      targets,
+      baseRect,
+      transform,
+      playhead: live.playhead,
+      corner,
+      cornerPoint,
+      grabOffset,
+      lastPoint: point,
+      shiftHeld: e.shiftKey,
+      onShiftKey,
       start: {
         posX: transform.posX,
         posY: transform.posY,
-        scale: transform.scale,
+        // The proportional path writes the uniform property, so capture the
+        // curve/static `scale` alone; `scaleX` already includes the stretch.
+        scale: animatedValue(found.clip, 'scale', local),
+        stretchX: found.clip.stretchX ?? 1,
+        stretchY: found.clip.stretchY ?? 1,
         rotation: transform.rotation,
         x: found.clip.style?.x ?? 0.5,
         y: found.clip.style?.y ?? 0.5,
+        scaleX: transform.scaleX,
+        scaleY: transform.scaleY,
       },
     }
+    setSnapGuides({ x: null, y: null })
     setGizmoActive(true)
   }
 
@@ -361,6 +607,12 @@ export function PreviewPanel() {
     if (!drag || e.pointerId !== drag.pointerId) return
     const store = useEditorStore.getState()
     if (currentTransientToken() !== drag.token) return
+    // The target set was captured at pointer-down; a playhead move or a Play
+    // press would make it stale, so it cancels the gesture instead.
+    if (store.playhead !== drag.playhead || store.playing) {
+      endGizmoDrag(false)
+      return
+    }
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect || rect.width === 0 || rect.height === 0) return
     const point = pointerProjectPoint(
@@ -372,51 +624,99 @@ export function PreviewPanel() {
     )
     const found = findClip(store.doc, drag.clipId)
     if (!found) return
+    const width = store.doc.project.width
+    const height = store.doc.project.height
+    const snapping = store.snapEnabled
+    const threshold = SNAP_THRESHOLD_PX * (width / rect.width)
     if (drag.mode === 'move') {
       const dx = point.x - drag.startPoint.x
       const dy = point.y - drag.startPoint.y
+      const asset = findMedia(store.doc, found.clip.mediaId)
       if (found.clip.text !== undefined) {
-        // The style anchor moves through the positionedCenter contract: a
-        // pointer delta in project pixels needs dividing by the captured scale,
-        // or scaled text drifts faster than the pointer.
-        const scale = drag.start.scale || 1
+        const scaleX = drag.start.scaleX || 1
+        const scaleY = drag.start.scaleY || 1
+        const result = snapping
+          ? snappedTextAnchor({
+              clip: found.clip,
+              asset,
+              width,
+              height,
+              startX: drag.start.x,
+              startY: drag.start.y,
+              scaleX,
+              scaleY,
+              transform: drag.transform,
+              dx,
+              dy,
+              targets: drag.targets,
+              threshold,
+            })
+          : {
+              x: clamp01(drag.start.x + dx / width / scaleX),
+              y: clamp01(drag.start.y + dy / height / scaleY),
+              guides: { x: null, y: null },
+            }
+        showSnapGuides(result.guides)
         store.applyTransient({
           type: 'setTextStyle',
           clipId: drag.clipId,
-          style: {
-            x: clamp01(drag.start.x + dx / store.doc.project.width / scale),
-            y: clamp01(drag.start.y + dy / store.doc.project.height / scale),
-          },
+          style: { x: result.x, y: result.y },
         })
         return
       }
+      let nextDx = dx
+      let nextDy = dy
+      let guides: CanvasSnapGuides = { x: null, y: null }
+      if (snapping) {
+        const proposed = quadBounds(
+          quadForClip(
+            {
+              ...drag.transform,
+              posX: drag.start.posX + dx,
+              posY: drag.start.posY + dy,
+            },
+            drag.baseRect,
+            width,
+            height,
+          ),
+        )
+        const snap = snapBoxToTargets(proposed, drag.targets, threshold)
+        nextDx += snap.dx
+        nextDy += snap.dy
+        guides = snap.guides
+      }
+      showSnapGuides(guides)
       store.applyTransientBatch([
-        gizmoCommand(drag, 'positionX', drag.start.posX + dx),
-        gizmoCommand(drag, 'positionY', drag.start.posY + dy),
+        gizmoCommand(drag, 'positionX', drag.start.posX + nextDx),
+        gizmoCommand(drag, 'positionY', drag.start.posY + nextDy),
       ])
       return
     }
     if (drag.mode === 'scale') {
-      const distance = Math.hypot(point.x - drag.center.x, point.y - drag.center.y)
-      const scale = scaleFromDrag(
-        drag.startDistance,
-        distance,
-        drag.start.scale,
-        SCALE_MIN,
-        SCALE_MAX,
-      )
-      store.applyTransient(gizmoCommand(drag, 'scale', scale))
+      drag.lastPoint = point
+      const shift = e.shiftKey
+      // Both transitions reset the transient first: the uniform preview must
+      // not remain under the stretch preview (which would multiply it), and a
+      // stretch preview must not linger after Shift is released.
+      if (shift !== drag.shiftHeld) {
+        store.resetTransient()
+        drag.shiftHeld = shift
+      }
+      showSnapGuides({ x: null, y: null })
+      applyScaleFrame(drag, point, shift)
       return
     }
+    drag.lastPoint = point
     const angle = angleFromCenter(drag.center, point)
     // Successive shortest steps accumulate: crossing the half-turn cannot
-    // snap, and circling the center adds real turns. Bounds still clamp.
+    // snap, and circling the center adds real turns. Snap lands before the
+    // bounds clamp, and 15 divides 3600 so the two grids cannot fight.
     drag.turned += angleDelta(drag.lastAngle, angle)
     drag.lastAngle = angle
-    const rotation = Math.min(
-      ROTATION_MAX,
-      Math.max(ROTATION_MIN, drag.start.rotation + drag.turned),
-    )
+    const raw = drag.start.rotation + drag.turned
+    const snapped = snapping ? snapRotation(raw, ROTATION_SNAP_STEP, ROTATION_SNAP_THRESHOLD) : raw
+    const rotation = Math.min(ROTATION_MAX, Math.max(ROTATION_MIN, snapped))
+    showSnapGuides({ x: null, y: null })
     store.applyTransient(gizmoCommand(drag, 'rotation', rotation))
   }
 
@@ -424,8 +724,32 @@ export function PreviewPanel() {
     const drag = gizmoDrag.current
     if (!drag) return
     if (e && e.pointerId !== drag.pointerId) return
+    window.removeEventListener('keydown', drag.onShiftKey)
+    window.removeEventListener('keyup', drag.onShiftKey)
+    // A pointerup can carry a Shift state the last pointermove never saw:
+    // releasing Shift then the mouse (or pressing it then releasing) must
+    // finalize the frame the release actually asks for.
+    if (commit && e && drag.mode === 'scale' && e.shiftKey !== drag.shiftHeld) {
+      const rect = canvasRef.current?.getBoundingClientRect()
+      if (rect && rect.width > 0 && rect.height > 0) {
+        const live = useEditorStore.getState()
+        const point = pointerProjectPoint(
+          e.clientX,
+          e.clientY,
+          rect,
+          live.doc.project.width,
+          live.doc.project.height,
+        )
+        if (currentTransientToken() === drag.token) {
+          live.resetTransient()
+          drag.shiftHeld = e.shiftKey
+          applyScaleFrame(drag, point, e.shiftKey)
+        }
+      }
+    }
     gizmoDrag.current = null
     setGizmoActive(false)
+    setSnapGuides({ x: null, y: null })
     // Ownership: a foreign end (foreign apply/undo) or a replacement gesture
     // already closed or owns the slot, so committing here would finalize the
     // wrong gesture. Only the token owner commits or cancels.
@@ -440,11 +764,73 @@ export function PreviewPanel() {
   // global pointerup still finalizes the transient, but the stale ref and
   // highlight would linger, so clear them at this lifecycle boundary.
   useEffect(() => {
-    if (!gizmo && gizmoDrag.current) {
-      gizmoDrag.current = null
-      setGizmoActive(false)
-    }
+    const drag = gizmoDrag.current
+    if (gizmo || !drag) return
+    // The overlay can disappear without a Play/playhead cancel (for example a
+    // foreign selection change). Close the gesture here or it would keep a
+    // transient open and replay Shift key events into a dead drag.
+    window.removeEventListener('keydown', drag.onShiftKey)
+    window.removeEventListener('keyup', drag.onShiftKey)
+    gizmoDrag.current = null
+    setGizmoActive(false)
+    setSnapGuides({ x: null, y: null })
+    if (currentTransientToken() === drag.token) useEditorStore.getState().cancelTransient()
   })
+
+  // Unmounting the panel (panel close, editor teardown) must close any live
+  // gesture: no setState on an unmounted tree, but the transient and the
+  // window Shift listener are shared state and would outlive the component.
+  useEffect(() => {
+    return () => {
+      const gizmo = gizmoDrag.current
+      if (gizmo) {
+        window.removeEventListener('keydown', gizmo.onShiftKey)
+        window.removeEventListener('keyup', gizmo.onShiftKey)
+        gizmoDrag.current = null
+        if (currentTransientToken() === gizmo.token) useEditorStore.getState().cancelTransient()
+      }
+      const origin = dragOrigin.current
+      if (origin) {
+        const token = textDragToken.current
+        dragOrigin.current = null
+        textDragPointerId.current = null
+        if (currentTransientToken() === token) useEditorStore.getState().cancelTransient()
+      }
+    }
+  }, [])
+
+  // A monitor transform drag requires a paused transport: its snap targets are
+  // captured once at pointer-down. Pressing Play or moving the playhead cancels
+  // the gesture (and its text counterpart), so the targets cannot go stale.
+  useEffect(() => {
+    return useEditorStore.subscribe((state, previous) => {
+      if (!gizmoDrag.current && !dragOrigin.current) return
+      // Turning snapping off mid-drag clears the live guides even before the
+      // next pointer frame; the gesture itself continues unsnapped.
+      if (!state.snapEnabled && previous.snapEnabled) {
+        setSnapGuides({ x: null, y: null })
+      }
+      const startedPlaying = state.playing && !previous.playing
+      if (!startedPlaying && state.playhead === previous.playhead) return
+      const gizmo = gizmoDrag.current
+      if (gizmo) {
+        window.removeEventListener('keydown', gizmo.onShiftKey)
+        window.removeEventListener('keyup', gizmo.onShiftKey)
+        gizmoDrag.current = null
+        setGizmoActive(false)
+        setSnapGuides({ x: null, y: null })
+        if (currentTransientToken() === gizmo.token) useEditorStore.getState().cancelTransient()
+      }
+      if (dragOrigin.current) {
+        const token = textDragToken.current
+        dragOrigin.current = null
+        textDragPointerId.current = null
+        setDraggingText(false)
+        setSnapGuides({ x: null, y: null })
+        if (currentTransientToken() === token) useEditorStore.getState().cancelTransient()
+      }
+    })
+  }, [])
 
   const onCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     // Armed chroma-key eyedropper (0.8.6) takes precedence over text drags:
@@ -491,7 +877,50 @@ export function PreviewPanel() {
       store.setEyedropper(null)
       return
     }
-    if (!canDragText || !textClip?.style || e.button !== 0) return
+    if (e.button !== 0) return
+    const canvas = canvasRef.current
+    const rect = canvas?.getBoundingClientRect()
+    if (!rect || rect.width === 0 || rect.height === 0) return
+    const point = pointerProjectPoint(
+      e.clientX,
+      e.clientY,
+      rect,
+      store.doc.project.width,
+      store.doc.project.height,
+    )
+    const modifier = e.shiftKey || e.ctrlKey || e.metaKey
+    const hit = pickVisualClipAt(
+      store.doc,
+      store.activeSequencePath,
+      store.playhead,
+      point,
+      measureText,
+    )
+    if (hit) {
+      // A press on the already-selected live text clip starts the drag; a
+      // first click on an unselected one only changes the selection.
+      if (canDragText && textClip?.id === hit.id && !modifier) {
+        startTextDrag(e)
+        return
+      }
+      if (e.shiftKey) store.addSelection(hit.id)
+      else if (e.ctrlKey || e.metaKey) store.toggleSelection(hit.id)
+      else store.select(hit.id)
+      return
+    }
+    // The existing canvas text drag starts from arbitrary coordinates, so a
+    // selected live text clip keeps that surface. Only a click with no text
+    // drag to own it clears the selection.
+    if (canDragText && textClip?.style && !modifier) {
+      startTextDrag(e)
+      return
+    }
+    if (!modifier) store.select(null)
+  }
+
+  /** Starts the existing drag-to-position gesture for the selected text clip. */
+  const startTextDrag = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!canDragText || !textClip?.style) return
     // Lock gate (0.14.0): a text drag writes the clip's style, so a locked
     // lane refuses it before the transient starts (the command layer agrees).
     const lockedTrack = lockedTrackForClip(useEditorStore.getState().doc, textClip.id)
@@ -513,8 +942,11 @@ export function PreviewPanel() {
     } catch {
       /* headless/automation: proceed without capture */
     }
+    const store = useEditorStore.getState()
+    if (store.playing) playbackRef.current?.pause()
     const token = store.beginTransient(e.pointerId)
     if (token === null) return
+    const transform = clipTransform(textClip, store.playhead - textClip.start) ?? IDENTITY_TRANSFORM
     dragOrigin.current = {
       // The gesture owns this clip for its whole life: a selection change or a
       // playhead move must cancel the drag, never retarget it at whatever text
@@ -525,8 +957,18 @@ export function PreviewPanel() {
       x: textClip.style.x,
       y: textClip.style.y,
       // The style anchor moves through the positionedCenter contract, like the
-      // gizmo text move below: divide the pointer delta by the captured scale.
-      scale: clipTransform(textClip, store.playhead - textClip.start)?.scale ?? 1,
+      // gizmo text move below: divide each pointer delta by its own axis scale.
+      scaleX: transform.scaleX,
+      scaleY: transform.scaleY,
+      transform,
+      // The same target set the gizmo uses, captured once for the gesture.
+      targets: canvasSnapTargets(
+        store.doc,
+        store.activeSequencePath,
+        store.playhead,
+        [textClip.id],
+        measureText,
+      ),
     }
     textDragToken.current = token
     textDragPointerId.current = e.pointerId
@@ -551,16 +993,43 @@ export function PreviewPanel() {
     }
     const rect = canvas.getBoundingClientRect()
     if (rect.width === 0 || rect.height === 0) return
-    // Client-pixel delta ÷ displayed canvas size = normalized project delta
-    // (the monitor letterboxes to the project aspect, so this maps 1:1),
-    // divided by the captured scale through the positionedCenter contract.
-    const scale = origin.scale || 1
-    const x = clamp01(origin.x + (e.clientX - origin.px) / rect.width / scale)
-    const y = clamp01(origin.y + (e.clientY - origin.py) / rect.height / scale)
-    useEditorStore.getState().applyTransient({
+    const store = useEditorStore.getState()
+    const found = findClip(store.doc, origin.clipId)
+    if (!found) return
+    const width = store.doc.project.width
+    const height = store.doc.project.height
+    const scaleX = origin.scaleX || 1
+    const scaleY = origin.scaleY || 1
+    // Client-pixel delta ÷ displayed canvas size × project size = project
+    // pixels; the anchor conversion divides by its own axis scale.
+    const dx = ((e.clientX - origin.px) / rect.width) * width
+    const dy = ((e.clientY - origin.py) / rect.height) * height
+    const result = store.snapEnabled
+      ? snappedTextAnchor({
+          clip: found.clip,
+          asset: findMedia(store.doc, found.clip.mediaId),
+          width,
+          height,
+          startX: origin.x,
+          startY: origin.y,
+          scaleX,
+          scaleY,
+          transform: origin.transform,
+          dx,
+          dy,
+          targets: origin.targets,
+          threshold: SNAP_THRESHOLD_PX * (width / rect.width),
+        })
+      : {
+          x: clamp01(origin.x + dx / width / scaleX),
+          y: clamp01(origin.y + dy / height / scaleY),
+          guides: { x: null, y: null },
+        }
+    showSnapGuides(result.guides)
+    store.applyTransient({
       type: 'setTextStyle',
       clipId: origin.clipId,
-      style: { x, y },
+      style: { x: result.x, y: result.y },
     })
   }
 
@@ -572,6 +1041,7 @@ export function PreviewPanel() {
     dragOrigin.current = null
     textDragPointerId.current = null
     setDraggingText(false)
+    setSnapGuides({ x: null, y: null })
     // Same ownership rule as the gizmo path: only the token owner commits or
     // cancels, so a stale release cannot finalize a replacement gesture.
     if (currentTransientToken() !== token) return
@@ -604,6 +1074,7 @@ export function PreviewPanel() {
       dragOrigin.current = null
       textDragPointerId.current = null
       setDraggingText(false)
+      setSnapGuides({ x: null, y: null })
       if (currentTransientToken() === token) useEditorStore.getState().cancelTransient()
     }
     window.addEventListener('pointerup', cancelInvalidOnRelease, true)
@@ -668,7 +1139,9 @@ export function PreviewPanel() {
               projectHeight={doc.project.height}
               quad={gizmo.quad}
               rotateHandle={gizmo.handle}
+              visualRadius={gizmo.visualRadius}
               hitRadius={gizmo.hitRadius}
+              snapGuides={snapGuides}
               active={gizmoActive}
               onPointerDown={onGizmoPointerDown}
               onPointerMove={onGizmoPointerMove}

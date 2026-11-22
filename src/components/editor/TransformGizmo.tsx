@@ -12,11 +12,15 @@ interface TransformGizmoProps {
   /** The positioned, scaled, rotated box corners. */
   quad: Point[]
   rotateHandle: Point
-  /** Hit radius in project pixels (derived from the monitor's CSS scale). */
+  /** Visible radius in project pixels: about a 5px CSS radius. */
+  visualRadius: number
+  /** Hit radius in project pixels: at least a 12px CSS radius. */
   hitRadius: number
+  /** Full-height and full-width amber guides for a snapped monitor move. */
+  snapGuides?: { x: number | null; y: number | null }
   /** Drag highlight while a gesture is live. */
   active: boolean
-  onPointerDown: (mode: GizmoMode, e: ReactPointerEvent<SVGSVGElement>) => void
+  onPointerDown: (mode: GizmoMode, e: ReactPointerEvent<SVGSVGElement>, corner?: number) => void
   onPointerMove: (e: ReactPointerEvent<SVGSVGElement>) => void
   onPointerUp: (e: ReactPointerEvent<SVGSVGElement>) => void
   onPointerCancel: (e: ReactPointerEvent<SVGSVGElement>) => void
@@ -32,7 +36,9 @@ export function TransformGizmo({
   projectHeight,
   quad,
   rotateHandle,
+  visualRadius,
   hitRadius,
+  snapGuides,
   active,
   onPointerDown,
   onPointerMove,
@@ -65,12 +71,15 @@ export function TransformGizmo({
       onPointerDown={(e) => {
         const mode = modeFromTarget(e.target)
         if (!mode) return
+        const element = e.target instanceof Element ? e.target.closest('[data-gizmo]') : null
+        const rawCorner = element?.getAttribute('data-corner')
+        const corner = rawCorner === null || rawCorner === undefined ? undefined : Number(rawCorner)
         try {
           e.currentTarget.setPointerCapture(e.pointerId)
         } catch {
           // Headless/automation: proceed without capture.
         }
-        onPointerDown(mode, e)
+        onPointerDown(mode, e, Number.isFinite(corner) ? corner : undefined)
       }}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -91,6 +100,32 @@ export function TransformGizmo({
         vectorEffect="non-scaling-stroke"
         style={{ pointerEvents: 'none' }}
       />
+      {snapGuides?.x != null && (
+        <line
+          data-testid="canvas-snap-guide-x"
+          x1={snapGuides.x}
+          y1={0}
+          x2={snapGuides.x}
+          y2={projectHeight}
+          className="stroke-amber-400"
+          strokeWidth={1}
+          vectorEffect="non-scaling-stroke"
+          style={{ pointerEvents: 'none' }}
+        />
+      )}
+      {snapGuides?.y != null && (
+        <line
+          data-testid="canvas-snap-guide-y"
+          x1={0}
+          y1={snapGuides.y}
+          x2={projectWidth}
+          y2={snapGuides.y}
+          className="stroke-amber-400"
+          strokeWidth={1}
+          vectorEffect="non-scaling-stroke"
+          style={{ pointerEvents: 'none' }}
+        />
+      )}
       <line
         x1={topMid.x}
         y1={topMid.y}
@@ -102,27 +137,47 @@ export function TransformGizmo({
         style={{ pointerEvents: 'none' }}
       />
       {quad.map((point, index) => (
-        <circle
-          key={`corner-${index}`}
-          data-gizmo="scale"
-          cx={point.x}
-          cy={point.y}
-          r={hitRadius}
-          className="fill-rose-400 stroke-white"
-          strokeWidth={2}
-          vectorEffect="non-scaling-stroke"
-          style={{ pointerEvents: 'all', cursor: 'nwse-resize' }}
-        />
+        <g key={`corner-${index}`}>
+          <circle
+            data-gizmo="scale"
+            data-corner={index}
+            cx={point.x}
+            cy={point.y}
+            r={hitRadius}
+            fill="transparent"
+            stroke="none"
+            style={{ pointerEvents: 'all', cursor: 'nwse-resize' }}
+          />
+          <circle
+            data-gizmo-visual="scale"
+            cx={point.x}
+            cy={point.y}
+            r={visualRadius}
+            className="fill-rose-400 stroke-white"
+            strokeWidth={2}
+            vectorEffect="non-scaling-stroke"
+            style={{ pointerEvents: 'none' }}
+          />
+        </g>
       ))}
       <circle
         data-gizmo="rotate"
         cx={rotateHandle.x}
         cy={rotateHandle.y}
         r={hitRadius}
+        fill="transparent"
+        stroke="none"
+        style={{ pointerEvents: 'all', cursor: 'grab' }}
+      />
+      <circle
+        data-gizmo-visual="rotate"
+        cx={rotateHandle.x}
+        cy={rotateHandle.y}
+        r={visualRadius}
         className="fill-white stroke-rose-400"
         strokeWidth={2}
         vectorEffect="non-scaling-stroke"
-        style={{ pointerEvents: 'all', cursor: 'grab' }}
+        style={{ pointerEvents: 'none' }}
       />
     </svg>
   )

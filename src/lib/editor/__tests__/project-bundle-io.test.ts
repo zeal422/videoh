@@ -11,8 +11,8 @@ import {
   prepareProjectBundle,
 } from '../project-io'
 import { createFakeOpfs, FakeLockManager, type FakeOpfs } from './mocks/opfs'
-import { createDoc } from '../factories'
-import { parseSerializedDoc, serializeDoc } from '../serialization'
+import { createClip, createDoc } from '../factories'
+import { parseSerializedDoc, serializeDoc, SERIALIZATION_VERSION } from '../serialization'
 import {
   deleteMediaFile,
   ensureProjectMedia,
@@ -1433,6 +1433,46 @@ describe('bundle import (0.28.0)', () => {
         ]),
       ),
     ).rejects.toThrow('unexpected entry')
+  })
+
+  it('loads a v8 bundle with stretch 1 and round-trips v9 stretch', async () => {
+    const asset = await videoAsset()
+    const legacy = bundleDoc([asset])
+    legacy.project.tracks[0].clips = [
+      createClip({ id: 'clip_legacy', mediaId: asset.id, start: 0, duration: 2 }),
+    ]
+    const v8 = await handmadeBundle(
+      manifestFor(legacy),
+      legacy,
+      [{ path: 'media/media_a/clip.mp4', bytes: VIDEO_BYTES }],
+      8,
+    )
+    expect((await openBundleFile(v8)).status).toBe('opened')
+    const legacyClip = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(legacyClip.stretchX).toBeUndefined()
+    expect(legacyClip.stretchY).toBeUndefined()
+
+    const current = bundleDoc([asset])
+    current.project.tracks[0].clips = [
+      createClip({
+        id: 'clip_stretched',
+        mediaId: asset.id,
+        start: 0,
+        duration: 2,
+        stretchX: 1.5,
+        stretchY: 0.75,
+      }),
+    ]
+    const v9 = await handmadeBundle(
+      manifestFor(current),
+      current,
+      [{ path: 'media/media_a/clip.mp4', bytes: VIDEO_BYTES }],
+      SERIALIZATION_VERSION,
+    )
+    expect((await openBundleFile(v9)).status).toBe('opened')
+    const stretched = useEditorStore.getState().doc.project.tracks[0].clips[0]
+    expect(stretched.stretchX).toBe(1.5)
+    expect(stretched.stretchY).toBe(0.75)
   })
 
   it('refuses a newer project version inside the bundle', async () => {

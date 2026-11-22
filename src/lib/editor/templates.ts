@@ -17,6 +17,8 @@ import {
   OPACITY_MIN,
   ROTATION_MAX,
   ROTATION_MIN,
+  SCALE_MAX,
+  SCALE_MIN,
   TEMPLATE_DESCRIPTION_MAX,
   TEMPLATE_MAX_CLIPS,
   TEMPLATE_MAX_DURATION,
@@ -74,6 +76,9 @@ export interface TemplateClip {
   opacity?: number
   /** Static rotation in degrees, -3600..3600 (default 0). */
   rotation?: number
+  /** Static non-uniform stretch, 0.1..4 (default 1); asset 0.29.5. */
+  stretchX?: number
+  stretchY?: number
   /** Explicit flip pair; absent means neither axis flips. */
   flipX?: boolean
   flipY?: boolean
@@ -118,6 +123,8 @@ const CLIP_KEYS = [
   'shape',
   'opacity',
   'rotation',
+  'stretchX',
+  'stretchY',
   'flipX',
   'flipY',
   'animStatics',
@@ -284,6 +291,17 @@ function parseVisualFields(entry: Record<string, unknown>): Partial<TemplateClip
     }
     const rotation = clamp(entry.rotation, ROTATION_MIN, ROTATION_MAX)
     if (rotation !== 0) out.rotation = rotation
+  }
+  // Static stretch (0.29.5) crosses the same trust boundary as every other
+  // visual field: a non-number refuses, a finite value clamps, and 1 is absent.
+  for (const axis of ['stretchX', 'stretchY'] as const) {
+    const value = entry[axis]
+    if (value === undefined) continue
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new TemplateError('Template clip stretch is invalid')
+    }
+    const stretch = clamp(value, SCALE_MIN, SCALE_MAX)
+    if (stretch !== 1) out[axis] = stretch
   }
   if (entry.flipX !== undefined) {
     if (typeof entry.flipX !== 'boolean') throw new TemplateError('Template clip flip is invalid')
@@ -546,6 +564,8 @@ export function mintTemplateSequence(template: ProjectTemplate): {
         ...(freshLink ? { linkId: freshLink } : {}),
         ...(clip.opacity !== undefined ? { opacity: clip.opacity } : {}),
         ...(clip.rotation !== undefined ? { rotation: clip.rotation } : {}),
+        ...(clip.stretchX !== undefined ? { stretchX: clip.stretchX } : {}),
+        ...(clip.stretchY !== undefined ? { stretchY: clip.stretchY } : {}),
         ...(clip.flipX ? { flipX: true } : {}),
         ...(clip.flipY ? { flipY: true } : {}),
         ...(clip.animStatics ? { animStatics: structuredClone(clip.animStatics) } : {}),
@@ -574,6 +594,8 @@ function templateClipVisuals(clip: Clip): Partial<TemplateClip> {
   const visuals: Partial<TemplateClip> = {}
   if (clip.opacity !== undefined) visuals.opacity = clip.opacity
   if (clip.rotation !== undefined) visuals.rotation = clip.rotation
+  if (clip.stretchX !== undefined && clip.stretchX !== 1) visuals.stretchX = clip.stretchX
+  if (clip.stretchY !== undefined && clip.stretchY !== 1) visuals.stretchY = clip.stretchY
   if (clip.flipX) visuals.flipX = true
   if (clip.flipY) visuals.flipY = true
   if (clip.animStatics) {

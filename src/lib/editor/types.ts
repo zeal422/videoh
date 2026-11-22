@@ -385,6 +385,14 @@ export interface Clip {
    */
   rotation?: number
   /**
+   * Non-uniform static stretch (0.29.5), 0.1..4, default 1. Multiplies the
+   * uniform `scale` per axis for a static squash/stretch; it is not
+   * keyframeable, so the `scale` curve stays the one animation source. Absent
+   * means 1. Persisted in project format v9.
+   */
+  stretchX?: number
+  stretchY?: number
+  /**
    * Mirror the drawn picture horizontally (0.24.0). Absent means false. Flip is
    * an explicit boolean pair rather than a negative scale, so scale keyframes
    * keep their meaning and the preferred size stays positive.

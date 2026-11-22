@@ -567,6 +567,8 @@ describe('template hostile matrix (0.29.0)', () => {
     [withClip(textClip({ rotation: Number.NaN })), /rotation is invalid/],
     [withClip(textClip({ flipX: 1 })), /flip is invalid/],
     [withClip(textClip({ flipY: 'yes' })), /flip is invalid/],
+    [withClip(textClip({ stretchX: '2' })), /stretch is invalid/],
+    [withClip(textClip({ stretchY: Number.NaN })), /stretch is invalid/],
     [withClip(textClip({ animStatics: 5 })), /static values are invalid/],
     [withClip(textClip({ animStatics: { opacity: 0.5 } })), /unsupported static property/],
     [withClip(textClip({ animStatics: { scale: 'x' } })), /static value is invalid/],
@@ -675,6 +677,8 @@ describe('template hostile matrix (0.29.0)', () => {
         linkId: 'link_a',
         flipX: true,
         flipY: true,
+        stretchX: 1.5,
+        stretchY: 0.8,
         animStatics: { scale: 2, opacity: 0.5 } as never,
         keyframes: { opacity: [{ time: 0, value: 0.5 }], volume: [{ time: 0, value: 0.5 }] },
       } as never),
@@ -693,6 +697,8 @@ describe('template hostile matrix (0.29.0)', () => {
     )
     const clip = template.sequence.tracks[0]!.clips[0]!
     expect(clip.flipY).toBe(true)
+    expect(clip.stretchX).toBe(1.5)
+    expect(clip.stretchY).toBe(0.8)
     expect(clip.linkId).toBe('link_a')
     expect(clip.animStatics).toEqual({ scale: 2 })
     expect(clip.keyframes).toMatchObject({ opacity: [{ time: 0, value: 0.5 }] })
@@ -772,5 +778,27 @@ describe('template capture omits empty visual maps (0.29.0)', () => {
     const clip = template.sequence.tracks[0]!.clips[0]!
     expect(clip.animStatics).toBeUndefined()
     expect(clip.keyframes).toBeUndefined()
+  })
+})
+
+describe('template stretch bounds (0.29.5)', () => {
+  it('clamps a hostile stretch and drops the neutral value', () => {
+    const doc = createDoc()
+    const track = createTrack('text', 1, { id: 'track_stretch_tpl' })
+    track.clips = [createTextClip({ id: 'clip_stretch_tpl', start: 0, duration: 2 })]
+    doc.project.tracks.unshift(track)
+    const template = templateFromSequence(
+      { id: 'seq_stretch_tpl', name: 'S', tracks: doc.project.tracks },
+      { name: 'Stretch' },
+    )
+    const raw = structuredClone(template) as unknown as {
+      sequence: { tracks: { clips: Record<string, unknown>[] }[] }
+    }
+    raw.sequence.tracks[0]!.clips[0]!.stretchX = 99
+    raw.sequence.tracks[0]!.clips[0]!.stretchY = 1
+    const parsed = parseTemplate(raw)
+    const clip = parsed.sequence.tracks[0]!.clips[0]!
+    expect(clip.stretchX).toBe(4)
+    expect(clip.stretchY).toBeUndefined()
   })
 })

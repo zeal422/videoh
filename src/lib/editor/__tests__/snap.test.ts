@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { applySnap, computeSnapPoints, snapGuide, snapMove } from '../snap'
+import { applySnap, computeSnapPoints, snapGuide, snapMove, withLiveSnapPoint } from '../snap'
 import { createTrack } from '../factories'
 import { createClip, createDoc, createMediaAsset } from '../factories'
 import type { Doc } from '../types'
@@ -104,6 +104,34 @@ describe('marker snap points (0.5.5)', () => {
     expect(computeSnapPoints(doc, { excludeClipIds: ['c1'] })).toEqual([0, 8, 11])
     doc.project.tracks[0].clips[1].markers = [{ id: 'm_other', time: 2 }] // renders at 10
     expect(computeSnapPoints(doc, { excludeClipIds: ['c1'] })).toEqual([0, 8, 10, 11])
+  })
+})
+
+describe('withLiveSnapPoint', () => {
+  it('merges a live playhead into a cached set so a clip snaps to it', () => {
+    const cached = [0, 2, 6, 8]
+    const points = withLiveSnapPoint(cached, 5.5)
+    expect(points).toEqual([0, 2, 5.5, 6, 8])
+    expect(applySnap(5.45, points, 0.1)).toEqual({ time: 5.5, snapped: 5.5 })
+    // The cached set is not mutated: the same array can be reused next frame.
+    expect(cached).toEqual([0, 2, 6, 8])
+  })
+
+  it('moving the live point moves the snap target', () => {
+    const cached = [0, 2, 6, 8]
+    const first = withLiveSnapPoint(cached, 5.5)
+    const second = withLiveSnapPoint(cached, 7)
+    expect(applySnap(5.45, first, 0.1).snapped).toBe(5.5)
+    expect(applySnap(5.45, second, 0.1).snapped).toBeNull()
+    expect(applySnap(6.95, second, 0.1).snapped).toBe(7)
+  })
+
+  it('deduplicates an existing point and ignores a non-finite one', () => {
+    const cached = [0, 2, 6]
+    expect(withLiveSnapPoint(cached, 2)).toBe(cached)
+    expect(withLiveSnapPoint(cached, Number.NaN)).toBe(cached)
+    // Same round6 contract as computeSnapPoints, so a raw float deduplicates.
+    expect(withLiveSnapPoint(cached, 2.0000000001)).toBe(cached)
   })
 })
 

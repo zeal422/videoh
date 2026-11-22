@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.29.5] - 2026-11-22
+
+### Added
+
+- Monitor click-to-select reads the same transformed box the gizmo draws: the topmost rendered clip wins, and audio, hidden, inactive, missing, and fully transparent clips are skipped. Shift adds and Ctrl/Meta toggles.
+- Monitor position snapping under the shared `S` / magnet / View > Snapping flag, with amber full-height and full-width guides. Targets are the frame edges and center plus every other visible clip's transformed bounds; the target set is captured at pointer-down, and Play or a playhead move cancels the gesture.
+- 15-degree rotation snapping within 3 degrees, applied before the rotation bounds so authored turns survive.
+- Inspector > Transform gains Stretch X and Stretch Y (0.1..4), a Reset stretch button, and the shared Snapping switch.
+- Shift + corner drag scales X and Y independently. The gesture keeps its captured stretch, so a pre-stretched clip is not double-counted; releasing or pressing Shift mid-drag reapplies the correct frame, and a pointerup with no move finalizes the frame its Shift state asks for.
+- The Media panel gains Media and Project tabs with a native tablist (`aria-selected`/`aria-controls`/`aria-labelledby`, roving `tabIndex`, Arrow/Home/End activation). Project lists generated text, shapes, and compound clips in the active sequence and selects and seeks to one on click, revealing a hidden track first.
+- Audio failures keep an `AUDIO MUTED` badge on the sound carrier and its linked video half, and the toast names the clip and offers Retry. Retry, Play, and a seek outside the failed time re-arm the clip; a seek back inside re-blocks an ordinary retry. Badges clear only on audio readiness at the expected read, and a video frame is not evidence.
+
+### Changed
+
+- Clip moves, trims, and media drops merge the live playhead into their cached snap targets, so they snap to it exactly.
+- The visible transform handle is about a 10px CSS diameter with an invisible 24px hit target, measured from the canvas CSS scale. The unmeasured fallback stays project-relative.
+- Static `stretchX`/`stretchY` multiply the uniform `scale` per axis in preview and export. The `scale` curve remains the one animation source, and stretch is omitted at 1.
+- Join Clips refuses a differing stretch instead of silently keeping the previous clip's stretch, matching the existing Rotation and Flip refusal.
+
+### Fixed
+
+- A failed audio element is released before a retry so a fresh one can load; retries never move the transport, and a stale Retry after deletion or recovery changes nothing.
+- Deleting a muted clip clears its badge synchronously on every doc change, including during playback, so a rapid delete and undo cannot resurrect it. Project replacement clears every muted id even when the new project reuses it.
+- A late error from a replaced element, or from a read superseded by a seek, cannot re-mute the clip or record the new playhead as the failure time.
+- An audio badge clears only when the element holds data at the source the playhead currently requests. An earlier seek that lands after the playhead moved on no longer clears it.
+- Opening a compound sequence keeps mute badges for clips in other sequences; only deleting the clip clears its badge.
+- A reload timeout releases the stalled audio element, so Retry or Play loads a fresh one instead of reusing an element that never became ready.
+- `docs/flows.md` no longer claims timeline-end snapping for clip drags.
+
+### Project format
+
+- The project format moves to v9 for the persisted stretch pair. v1 through v8 files load with stretch 1; a v9 file is refused by older builds.
+
 ## [0.29.0] - 2026-11-20
 
 ### Tests and docs

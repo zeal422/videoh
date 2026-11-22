@@ -204,7 +204,15 @@ describe('planVideoFrame', () => {
       [],
     )
     const t = planVideoFrame(d, 0).draws[0].transform
-    expect(t).toEqual({ posX: 120, posY: 0, scale: 1.5, rotation: 0, flipX: false, flipY: false })
+    expect(t).toEqual({
+      posX: 120,
+      posY: 0,
+      scaleX: 1.5,
+      scaleY: 1.5,
+      rotation: 0,
+      flipX: false,
+      flipY: false,
+    })
   })
 
   it('crossfade overlaps produce complementary alphas', () => {
@@ -1405,7 +1413,8 @@ describe('compound clip plans (0.8.1)', () => {
     expect(group.transform).toEqual({
       posX: 100,
       posY: 0,
-      scale: 2,
+      scaleX: 2,
+      scaleY: 2,
       rotation: 0,
       flipX: false,
       flipY: false,

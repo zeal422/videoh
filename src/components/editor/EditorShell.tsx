@@ -24,6 +24,7 @@ import { CURRENT_VERSION } from '@/lib/releases'
 import { useEditorKeyboard } from '@/hooks/editor/useEditorKeyboard'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { refreshPausedPreview } from '@/lib/editor/playback/preview'
+import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import {
   activeTransientPointerId,
   isTransientActive,
@@ -355,6 +356,15 @@ export function EditorShell() {
       window.removeEventListener('pointerup', commitDangling)
       window.removeEventListener('blur', onBlur)
     }
+  }, [])
+
+  // Every doc change runs removed-clip cleanup synchronously, playing or
+  // paused: a delete followed immediately by undo must be observed between
+  // commits, and `refreshPausedPreview` is skipped during pointer drags.
+  useEffect(() => {
+    return useEditorStore.subscribe((state, previous) => {
+      if (state.doc !== previous.doc) playbackRef.current?.noteDocChanged(state.doc)
+    })
   }, [])
 
   // When the doc changes while paused, refresh the preview frame. A pointer-owned

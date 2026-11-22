@@ -2,6 +2,7 @@ import {
   activeTracks,
   clampSourceTime,
   docDuration,
+  findClip,
   findMedia,
   findSequence,
   mediaPlayable,
@@ -61,6 +62,8 @@ export interface PlaybackCoreOptions {
   nextKeyframe?: (url: string, sourceTime: number) => Promise<number | undefined>
   /** Persistent decode-recovery status for the preview overlay. */
   onMediaError?: (info: MediaErrorInfo | null, clipId?: string) => void
+  /** Audio mute badge state: true on mute, false only when the clip recovers or leaves. */
+  onAudioMutedChange?: (clipId: string, muted: boolean) => void
   /** Neutral scrub-recovery notice, separate from the damaged-media notice. */
   onPreviewRecovering?: (recovering: boolean) => void
   /**
@@ -365,6 +368,26 @@ export class PlaybackCore {
   private audioRecoveryToken = 0
   /** Audio-only clips muted after a repeated in-place recovery failure. */
   private failedAudioClips = new Set<string>()
+  /** Muted clips whose next read should retry (seek, Play, or explicit Retry). */
+  private pendingAudioRetries = new Set<string>()
+  /** Pending retries the user asked for explicitly; a seek back inside keeps them armed. */
+  private explicitAudioRetries = new Set<string>()
+  /** Timeline time of the read that produced each mute (one-second seek window). */
+  private failedAudioAt = new Map<string, number>()
+  /** Per-clip retry generation: a late readiness event from an old retry is ignored. */
+  private audioRetryTokens = new Map<string, number>()
+  /** The expected timeline and source time of each element's current read. */
+  private audioReadTimes = new WeakMap<HTMLMediaElement, number>()
+  private audioExpectedSources = new WeakMap<HTMLMediaElement, number>()
+  /** One readiness watcher per pending clip, bound to the element and retry token. */
+  private audioRetryWatchers = new Map<
+    string,
+    {
+      el: HTMLAudioElement
+      token: number
+      handlers: { loadeddata: () => void; canplay: () => void; seeked: () => void }
+    }
+  >()
   /** Last in-place audio failure per element, to bound the retry. */
   private audioFailures = new WeakMap<HTMLMediaElement, { count: number; at: number }>()
   private recoveryRecords = new Map<string, RecoveryState>()
@@ -448,7 +471,7 @@ export class PlaybackCore {
 
   async play(from?: number): Promise<void> {
     // A user play is the retry gesture for a clip muted after a failed audio
-    // reload; the next sync re-discovers the element error and reloads it once.
+    // reload. Badges stay until each clip's audio actually recovers.
     this.resetMutedAudio()
     this.recoveryEpoch++
     this.playToken++
@@ -669,8 +692,56 @@ export class PlaybackCore {
 
   seek(t: number): void {
     this.clearRecoveryForSeek(t)
+    this.audioRetryForSeek(t)
     this.recoveryEpoch++
     if (this.recoveryInFlight !== null) this.recoveryCancelDiscard = false
+    this.scrubInProgress = true
+    try {
+      this.applySeek(t)
+    } finally {
+      this.scrubInProgress = false
+    }
+  }
+
+  /**
+   * Retries muted audio. With an id, only that clip is armed and the transport
+   * never moves: an active clip rearms at the current time, an inactive one
+   * waits for the playhead. No argument arms every muted clip and rearms the
+   * active ones once at the current time.
+   */
+  retryAudio(clipId?: string): void {
+    const doc = this.opts.getDoc()
+    if (clipId !== undefined) {
+      if (!findClip(doc, clipId)) return
+      if (!this.failedAudioClips.has(clipId) && !this.pendingAudioRetries.has(clipId)) return
+      this.markAudioRetryPending(clipId, 'explicit')
+      if (this.isClipActiveAt(clipId, this.time)) this.rearmMutedAudioAt(this.time)
+      return
+    }
+    const ids = new Set([...this.failedAudioClips, ...this.pendingAudioRetries])
+    if (ids.size === 0) return
+    for (const id of ids) {
+      if (!findClip(doc, id)) {
+        this.clearMutedAudio(id)
+        continue
+      }
+      this.markAudioRetryPending(id, 'explicit')
+    }
+    this.rearmMutedAudioAt(this.time)
+  }
+
+  /**
+   * Synchronous removed-clip cleanup for every doc change, playing or paused.
+   * `refresh` is the paused repaint and is skipped during pointer drags; this
+   * is the ownership path that drops a deleted clip's mute before an immediate
+   * undo can restore it.
+   */
+  noteDocChanged(doc: Doc): void {
+    this.releaseMissingClips(doc)
+  }
+
+  /** One paused/playing reseek after a retry, without seeking twice. */
+  private rearmMutedAudioAt(t: number): void {
     this.scrubInProgress = true
     try {
       this.applySeek(t)
@@ -766,6 +837,21 @@ export class PlaybackCore {
     return out
   }
 
+  /**
+   * The source read the current doc and playhead request for a clip, or
+   * undefined when it cannot be read. A readiness event can land after the
+   * playhead moved on, so recovery must compare it with the CURRENT request,
+   * not the last source stamped for the element.
+   */
+  private currentAudioSource(clipId: string): number | undefined {
+    const doc = this.opts.getDoc()
+    const entry = this.activeClipList(doc).find((e) => e.clip.id === clipId)
+    if (!entry) return undefined
+    const asset = findMedia(doc, entry.clip.mediaId)
+    if (!mediaPlayable(asset)) return undefined
+    return clampSourceTime(this.sourceTime(entry.clip, this.time, entry.offset), asset)
+  }
+
   /** True when the clip is inside its own window and every ancestor window. */
   private isClipActiveAt(clipId: string, t: number): boolean {
     const doc = this.opts.getDoc()
@@ -802,8 +888,19 @@ export class PlaybackCore {
     this.lastProjectEpoch = epoch
     this.terminalElements = new WeakSet()
     this.failedPartners = new WeakSet()
-    for (const clipId of [...this.failedAudioClips]) this.releaseClip(clipId)
-    this.failedAudioClips.clear()
+    // Every audio mute belongs to the replaced project, even when the new
+    // project reuses the id: clear the core state and the store badge together.
+    for (const clipId of new Set([
+      ...this.failedAudioClips,
+      ...this.pendingAudioRetries,
+      ...this.explicitAudioRetries,
+      ...this.failedAudioAt.keys(),
+    ])) {
+      this.releaseClip(clipId)
+      this.clearMutedAudio(clipId)
+    }
+    this.failedAudioAt.clear()
+    this.audioRetryTokens.clear()
     // An audio recovery in flight belongs to the replaced project: drop its
     // lock and its failure budget so a reused clip id is not silently muted.
     // Reassign the WeakMap because it has no clear().
@@ -1166,6 +1263,10 @@ export class PlaybackCore {
           if (this.pool.peek(clipId) !== el || this.failedAudioClips.has(clipId)) return
           if (result !== 'ok') {
             this.muteAudioClip(clipId, el)
+            // A reload timeout settles without an element error, so the retry's
+            // error check would hand the stalled element back from pool.get and
+            // restart nothing. Release it here; a retry creates a fresh one.
+            if (this.pool.peek(clipId) === el) this.releaseClip(clipId)
             return
           }
           const doc = this.opts.getDoc()
@@ -1196,25 +1297,170 @@ export class PlaybackCore {
   /** Mutes a clip whose audio element cannot be recovered in place. */
   private muteAudioClip(clipId: string, el: HTMLAudioElement): void {
     if (this.failedAudioClips.has(clipId)) return
+    // A stale error from a released/replaced element or a replaced project
+    // must not mute the current clip at whatever time the callback lands.
+    if (this.pool.peek(clipId) !== el) return
+    if ((this.opts.getProjectEpoch?.() ?? 0) !== this.lastProjectEpoch) return
+    const at = this.audioReadTimes.get(el) ?? this.time
+    const code = el.error?.code ?? 3
     this.failedAudioClips.add(clipId)
+    this.pendingAudioRetries.delete(clipId)
+    this.explicitAudioRetries.delete(clipId)
+    this.failedAudioAt.set(clipId, at)
+    this.detachAudioRetryWatch(clipId)
     if (!el.paused) el.pause()
     this.endSeek(el)
+    this.opts.onAudioMutedChange?.(clipId, true)
+    const doc = this.opts.getDoc()
+    const found = findClip(doc, clipId)
+    const name = found?.clip.text ?? findMedia(doc, found?.clip.mediaId)?.name ?? clipId
+    console.warn('[playback] audio muted', { clipId, name, code, time: at })
     this.opts.onMediaError?.({
       clipId,
-      code: el.error?.code ?? 3,
-      time: this.time,
+      code,
+      time: at,
       terminal: false,
       audioOnly: true,
     })
   }
 
-  /** Re-arms muted audio clips on a user play so the next sync retries them. */
-  private resetMutedAudio(): void {
-    for (const clipId of this.failedAudioClips) {
-      const el = this.pool.peek(clipId)
-      if (el) this.audioFailures.delete(el)
+  /**
+   * Moves a muted clip into the pending state. The badge stays; the element's
+   * failure budget is reset and an errored element is released so the next
+   * sync (or an active rearm) creates a fresh one. A reused failed element
+   * would never fire a new error and Retry would look inert.
+   */
+  private markAudioRetryPending(clipId: string, source: 'seek' | 'explicit'): void {
+    this.failedAudioClips.delete(clipId)
+    this.pendingAudioRetries.add(clipId)
+    if (source === 'explicit') this.explicitAudioRetries.add(clipId)
+    else this.explicitAudioRetries.delete(clipId)
+    this.audioRetryTokens.set(clipId, (this.audioRetryTokens.get(clipId) ?? 0) + 1)
+    this.detachAudioRetryWatch(clipId)
+    const el = this.pool.peek(clipId)
+    if (!el) return
+    this.audioFailures.delete(el)
+    if (el.error) this.releaseClip(clipId)
+  }
+
+  /**
+   * Clears the badge only on real recovery evidence: the pending clip is
+   * active, its AUDIO element is pooled, holds current data at the expected
+   * read, or an audio sample was presented. A video frame is not evidence.
+   */
+  private noteAudioHealthy(clipId: string): void {
+    if (!this.pendingAudioRetries.has(clipId)) return
+    if (!this.isClipActiveAt(clipId, this.time)) return
+    const el = this.pool.peek(clipId)
+    if (!(el instanceof HTMLAudioElement)) return
+    // currentTime can report a seek target before the decode lands. Only an
+    // errored or still-seeking element is rejected; a ready, idle one clears.
+    if (el.error || el.seeking || this.trackingSeek(el)) return
+    if (el.readyState < 2) return
+    // Compare with the request the playhead makes NOW: an earlier seek that
+    // just completed at the old read is not evidence for the new one.
+    const expected = this.currentAudioSource(clipId)
+    if (expected === undefined) return
+    const tolerance = Math.max(0.25, 2 / this.opts.getDoc().project.fps)
+    if (Math.abs(el.currentTime - expected) > tolerance) return
+    this.pendingAudioRetries.delete(clipId)
+    this.explicitAudioRetries.delete(clipId)
+    this.failedAudioAt.delete(clipId)
+    this.audioRetryTokens.delete(clipId)
+    this.detachAudioRetryWatch(clipId)
+    this.opts.onAudioMutedChange?.(clipId, false)
+  }
+
+  /** Removes every trace of a clip's mute and badge (removal or replacement). */
+  private clearMutedAudio(clipId: string): void {
+    const failed = this.failedAudioClips.delete(clipId)
+    const pending = this.pendingAudioRetries.delete(clipId)
+    const explicit = this.explicitAudioRetries.delete(clipId)
+    this.failedAudioAt.delete(clipId)
+    this.audioRetryTokens.delete(clipId)
+    this.detachAudioRetryWatch(clipId)
+    if (failed || pending || explicit) this.opts.onAudioMutedChange?.(clipId, false)
+  }
+
+  /** Watches one pending element for readiness, bound to the current retry. */
+  private watchPendingAudio(clipId: string, el: HTMLAudioElement): void {
+    if (!this.pendingAudioRetries.has(clipId)) return
+    const token = this.audioRetryTokens.get(clipId) ?? 0
+    const existing = this.audioRetryWatchers.get(clipId)
+    if (existing && existing.el === el && existing.token === token) return
+    this.detachAudioRetryWatch(clipId)
+    const ready = () => {
+      if (this.audioRetryTokens.get(clipId) !== token) return
+      if (this.pool.peek(clipId) !== el) return
+      const expected = this.audioExpectedSources.get(el)
+      if (
+        el.readyState >= 2 &&
+        expected !== undefined &&
+        Math.abs(el.currentTime - expected) > 0.25
+      ) {
+        try {
+          el.currentTime = expected
+        } catch {
+          // not seekable yet; another readiness event will try again
+        }
+      }
+      this.noteAudioHealthy(clipId)
     }
-    this.failedAudioClips.clear()
+    el.addEventListener('loadeddata', ready)
+    el.addEventListener('canplay', ready)
+    el.addEventListener('seeked', ready)
+    this.audioRetryWatchers.set(clipId, {
+      el,
+      token,
+      handlers: { loadeddata: ready, canplay: ready, seeked: ready },
+    })
+  }
+
+  private detachAudioRetryWatch(clipId: string): void {
+    const watch = this.audioRetryWatchers.get(clipId)
+    if (!watch) return
+    watch.el.removeEventListener('loadeddata', watch.handlers.loadeddata)
+    watch.el.removeEventListener('canplay', watch.handlers.canplay)
+    watch.el.removeEventListener('seeked', watch.handlers.seeked)
+    this.audioRetryWatchers.delete(clipId)
+  }
+
+  /**
+   * On a user seek: arm mutes whose failed time is more than one second away,
+   * and re-block an ordinary pending retry that lands back inside the failed
+   * region so scrubbing cannot retry or re-toast. Explicit Retry stays armed.
+   */
+  private audioRetryForSeek(t: number): void {
+    for (const clipId of [...this.failedAudioClips]) {
+      const failedAt = this.failedAudioAt.get(clipId)
+      if (failedAt === undefined || Math.abs(t - failedAt) > 1) {
+        this.markAudioRetryPending(clipId, 'seek')
+      }
+    }
+    for (const clipId of [...this.pendingAudioRetries]) {
+      if (this.explicitAudioRetries.has(clipId)) continue
+      const failedAt = this.failedAudioAt.get(clipId)
+      if (failedAt === undefined || Math.abs(t - failedAt) > 1) continue
+      this.pendingAudioRetries.delete(clipId)
+      this.detachAudioRetryWatch(clipId)
+      const el = this.pool.peek(clipId)
+      if (el) {
+        // A retry element may already be playing from the safe seek. The
+        // failed clip must be silent, and syncMedia skips it before it could
+        // pause the element itself.
+        if (!el.paused) el.pause()
+        this.endSeek(el)
+      }
+      this.failedAudioClips.add(clipId)
+      this.opts.onAudioMutedChange?.(clipId, true)
+    }
+  }
+
+  /** Play re-arms every muted clip; each badge clears on its own recovery. */
+  private resetMutedAudio(): void {
+    for (const clipId of new Set([...this.failedAudioClips, ...this.pendingAudioRetries])) {
+      this.markAudioRetryPending(clipId, 'seek')
+    }
   }
 
   private async recoverDecodeError(clipId: string, el: HTMLMediaElement): Promise<void> {
@@ -1527,6 +1773,16 @@ export class PlaybackCore {
 
   dispose(): void {
     this.halt()
+    // A dispose outside the panel lifecycle must not leave a store badge
+    // pointing at a clip this engine still owns.
+    for (const clipId of new Set([
+      ...this.failedAudioClips,
+      ...this.pendingAudioRetries,
+      ...this.explicitAudioRetries,
+      ...this.failedAudioAt.keys(),
+    ])) {
+      this.clearMutedAudio(clipId)
+    }
     // Cancel every self-rearming frame watch before the pool tears the
     // elements down: a pending callback would retain the engine after dispose.
     for (const id of this.pool.ids()) {
@@ -1625,8 +1881,7 @@ export class PlaybackCore {
    * deleted clip's element keeps playing audibly and its nodes keep feeding
    * masterGain for the rest of the session.
    */
-  private releaseMissingClips(): void {
-    const doc = this.opts.getDoc()
+  private releaseMissingClips(doc: Doc = this.opts.getDoc()): void {
     const live = new Set<string>()
     const docIds = new Set<string>()
     for (const { clip } of this.activeClipList(doc)) {
@@ -1666,10 +1921,19 @@ export class PlaybackCore {
       this.deferredErrors.delete(id)
       this.opts.onMediaError?.(null, id)
     }
-    // A deleted audio clip must retry if the edit is undone.
-    for (const id of [...this.failedAudioClips]) {
-      if (docIds.has(id)) continue
-      this.failedAudioClips.delete(id)
+    // A deleted audio clip must retry if the edit is undone. Clear through
+    // the badge path BEFORE the id leaves the sets, or the UI keeps a stale id.
+    // `docIds` is scoped to the open sequence for pooled elements, but a badge
+    // belongs to the whole project: a muted clip in another sequence still
+    // exists and keeps its badge until the clip itself is deleted.
+    for (const id of new Set([
+      ...this.failedAudioClips,
+      ...this.pendingAudioRetries,
+      ...this.explicitAudioRetries,
+      ...this.failedAudioAt.keys(),
+    ])) {
+      if (findClip(doc, id)) continue
+      this.clearMutedAudio(id)
     }
     // Scrub source (0.18.0): a deleted clip drops its sink and cached frame.
     // An asset whose effective URL changed (relink, proxy ready, proxy toggle)
@@ -1709,21 +1973,32 @@ export class PlaybackCore {
       // touch has always just had its element released. A compound container
       // (no media) falls through here too.
       if (!mediaPlayable(asset)) continue
-      // A muted audio-only clip stays silent until a user Play re-arms it; do
-      // not recreate or restart its failed element on every tick.
+      // A failed audio clip stays silent until a seek, Play, or Retry moves it
+      // to the pending state; do not recreate or restart its failed element on
+      // every tick.
       if (this.failedAudioClips.has(clip.id)) continue
       const start = offset + clip.start
       const active = withinAncestorWindows(t, start, start + clip.duration, ancestors)
       const el = this.pool.get(clip, asset, this.mediaUrl(asset))
+      // Clamped into the asset: a ramp may over-consume its source, and the
+      // excess freezes on the last readable frame (mp4.ts clamps identically).
+      const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
+      // A pending seek still owns the read that started it: do not overwrite
+      // its timeline/source stamp on every tick while trackingSeek skips
+      // positioning, or a late failure records the newest playhead.
+      const tracking = active && this.trackingSeek(el)
+      if (active && !tracking) {
+        this.audioReadTimes.set(el, t)
+        this.audioExpectedSources.set(el, expected)
+      }
+      if (this.pendingAudioRetries.has(clip.id)) this.watchPendingAudio(clip.id, el)
       if (el.error) {
         if (!this.terminalElements.has(el)) this.handleElementError(clip.id, el)
         if (!el.paused) el.pause()
         this.endSeek(el)
         continue
       }
-      // Clamped into the asset: a ramp may over-consume its source, and the
-      // excess freezes on the last readable frame (mp4.ts clamps identically).
-      const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
+      if (active && this.pendingAudioRetries.has(clip.id)) this.noteAudioHealthy(clip.id)
 
       if (active) {
         // A pending seek must finish before the element is touched again. An
@@ -1732,7 +2007,7 @@ export class PlaybackCore {
         // the playhead keeps advancing. `seeking` covers real browsers; the
         // map also carries fakes that never clear the flag. Inactive clips
         // still fall through to the pause below.
-        if (this.trackingSeek(el)) continue
+        if (tracking) continue
 
         if (clip.reverse || hasTimeScaleRamp(clip)) {
           // Two cases park the element and seek to the exact source position
@@ -2264,21 +2539,51 @@ export class PlaybackCore {
         continue
       }
       const asset = findMedia(doc, clip.mediaId)
-      if (!asset || asset.kind !== 'video') continue
+      if (!asset) continue
       // Missing assets have no URL: pool.get would materialize a phantom
       // <video src=""> (decode error noise) for a still frame that can
       // never render. Same skip rule as syncMedia.
       if (asset.missing || !asset.url) continue
-      // A muted audio-only element is not recreated while paused; a user Play
-      // re-arms it (see resetMutedAudio).
+      // A failed audio clip stays silent until a seek, Play, or Retry moves it
+      // to the pending state.
       if (this.failedAudioClips.has(clip.id)) continue
       const start = offset + clip.start
       const active = withinAncestorWindows(t, start, start + clip.duration, ancestors)
-      if (!active) continue
       const url = this.mediaUrl(asset)
       // Clamped into the asset: a ramp may over-consume its source, and the
       // excess freezes on the last readable frame (mp4.ts clamps identically).
       const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
+      if (asset.kind !== 'video') {
+        // Audio assets are not drawn, but an ACTIVE pending retry still needs
+        // an element to load and a readiness owner. An inactive retry waits
+        // for the playhead; an untouched paused timeline keeps its old
+        // no-element rule.
+        if (!this.pendingAudioRetries.has(clip.id) || !active) continue
+        const el = this.pool.get(clip, asset, url)
+        this.audioReadTimes.set(el, t)
+        this.audioExpectedSources.set(el, expected)
+        this.watchPendingAudio(clip.id, el)
+        if (el.error) {
+          pendingErrors.push({ clipId: clip.id, el })
+          if (!el.paused) el.pause()
+          this.endSeek(el)
+          continue
+        }
+        if (active) this.noteAudioHealthy(clip.id)
+        // Park it on the expected read; a seek before metadata lands is
+        // applied by the browser once metadata arrives, and the watcher
+        // re-aligns it if that seek is dropped.
+        this.endSeek(el)
+        if (Math.abs(el.currentTime - expected) > 1e-9) {
+          try {
+            el.currentTime = expected
+          } catch {
+            // not seekable yet; the readiness watcher re-aligns on load
+          }
+        }
+        continue
+      }
+      if (!active) continue
       const generation = this.scrubGeneration(clip.id, asset.id, url)
       // A sub-frame-rate read needs the parked partner pair. The WebCodecs
       // cache holds one frame per clip, so taking that shortcut here would
@@ -2303,6 +2608,9 @@ export class PlaybackCore {
         continue
       }
       const el = this.pool.get(clip, asset, url)
+      this.audioReadTimes.set(el, t)
+      this.audioExpectedSources.set(el, expected)
+      if (this.pendingAudioRetries.has(clip.id)) this.watchPendingAudio(clip.id, el)
       // Reaching the element for a paused video clip while a scrub source
       // exists means this URL has no WebCodecs sink: it is the fallback. A
       // blend clip reaches the element with its sink intact, by design, so it
@@ -2331,6 +2639,7 @@ export class PlaybackCore {
         this.endSeek(el)
         continue
       }
+      if (this.pendingAudioRetries.has(clip.id)) this.noteAudioHealthy(clip.id)
       // A paused repaint owns this seek. Drop any play-path tracking first so
       // a landed seek cannot be mistaken for an in-flight one on the next play,
       // and so the one-shot listener below is the only repaint owner.
@@ -2354,6 +2663,7 @@ export class PlaybackCore {
             // frame back on screen after the newer seek already drew.
             this.clearScrubFallback(clip.id)
             this.setScrubRecovering(false)
+            this.noteAudioHealthy(clip.id)
             if (!this.playingState) this.render(this.time)
           },
           { once: true },

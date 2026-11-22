@@ -232,6 +232,14 @@ export interface EditorState {
   setMediaError: (info: MediaErrorState | null, clipId?: string) => void
   /** Clear the decode notice unconditionally (Dismiss and project replacement). */
   clearMediaError: () => void
+  /**
+   * Runtime audio-mute badges (0.29.5), one entry per muted clip id. The union
+   * of the engine's failed and pending sets; view state only, never serialized.
+   */
+  audioMutedClipIds: string[]
+  /** Set one clip's badge (idempotent); false also removes pending entries. */
+  setAudioMuted: (clipId: string, muted: boolean) => void
+  clearAudioMuted: () => void
   /** Neutral scrub-recovery state; never the damaged-media notice. */
   setPreviewRecovering: (recovering: boolean) => void
   setPxPerSec: (pps: number) => void
@@ -510,6 +518,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   playhead: 0,
   playing: false,
   mediaError: null,
+  audioMutedClipIds: [],
   previewRecovering: false,
   projectEpoch: 0,
   pxPerSec: PPS_DEFAULT,
@@ -710,6 +719,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       playhead: 0,
       playing: false,
       mediaError: null,
+      audioMutedClipIds: [],
       previewRecovering: false,
       projectEpoch: get().projectEpoch + 1,
     })
@@ -867,6 +877,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return { mediaError: null }
     }),
   clearMediaError: () => set({ mediaError: null }),
+  setAudioMuted: (clipId, muted) =>
+    set((state) => {
+      const has = state.audioMutedClipIds.includes(clipId)
+      if (muted === has) return {}
+      return {
+        audioMutedClipIds: muted
+          ? [...state.audioMutedClipIds, clipId]
+          : state.audioMutedClipIds.filter((id) => id !== clipId),
+      }
+    }),
+  clearAudioMuted: () => set({ audioMutedClipIds: [] }),
   setPreviewRecovering: (recovering) => {
     if (get().previewRecovering === recovering) return
     set({ previewRecovering: recovering })

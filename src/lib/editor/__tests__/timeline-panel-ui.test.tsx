@@ -845,6 +845,103 @@ describe('ruler scrub (playhead drag) pointer ownership', () => {
   })
 })
 
+describe('timeline snapping to the live playhead (0.29.5)', () => {
+  const RULER_HEIGHT = 28
+  const LANE_Y = 10
+  const PPS = PPS_DEFAULT
+
+  function snapDoc(start: number, duration: number) {
+    const asset = createMediaAsset({ kind: 'video', duration: 30, name: 'snap.mp4' })
+    const track = createTrack('video', 1)
+    track.clips = [createClip({ id: 'clip_snap', mediaId: asset.id, start, duration, inPoint: 0 })]
+    const doc: Doc = {
+      project: { tracks: [track], id: 'p_test', name: 'test', width: 1920, height: 1080, fps: 30 },
+      media: [asset],
+    }
+    return { doc, asset }
+  }
+
+  it('a clip move lands its head exactly on the playhead and sets the guide', () => {
+    const { doc } = snapDoc(5, 1)
+    useEditorStore.setState({ doc, playhead: 3, snapEnabled: true, snapLine: null })
+    render(<TimelinePanel />)
+
+    // -2.08s at 80px/s puts the head at 2.92s: 6.4px from the playhead at 3s.
+    fireEvent.pointerDown(screen.getByTestId('clip-clip_snap'), {
+      button: 0,
+      pointerId: 3,
+      clientX: 400,
+      clientY: RULER_HEIGHT + LANE_Y,
+    })
+    fireEvent.pointerMove(window, {
+      pointerId: 3,
+      clientX: 400 - 2.08 * PPS,
+      clientY: RULER_HEIGHT + LANE_Y,
+    })
+
+    const state = useEditorStore.getState()
+    expect(state.doc.project.tracks[0].clips[0].start).toBe(3)
+    expect(state.snapLine).toBe(3)
+    fireEvent.pointerUp(window, { pointerId: 3 })
+  })
+
+  it('a trim end lands on the playhead and sets the guide', () => {
+    const { doc } = snapDoc(0.5, 2)
+    useEditorStore.setState({ doc, playhead: 3, snapEnabled: true, snapLine: null })
+    render(<TimelinePanel />)
+
+    // The clip ends at 2.5s; +0.58s proposes 3.08s, 6.4px past the playhead.
+    fireEvent.pointerDown(screen.getByLabelText('Trim clip end'), {
+      button: 0,
+      pointerId: 4,
+      clientX: 400,
+      clientY: RULER_HEIGHT + LANE_Y,
+    })
+    fireEvent.pointerMove(window, {
+      pointerId: 4,
+      clientX: 400 + 0.58 * PPS,
+      clientY: RULER_HEIGHT + LANE_Y,
+    })
+
+    const state = useEditorStore.getState()
+    expect(state.doc.project.tracks[0].clips[0].duration).toBe(2.5)
+    expect(state.snapLine).toBe(3)
+    fireEvent.pointerUp(window, { pointerId: 4 })
+  })
+
+  it('a media drop lands at the playhead, not the raw pointer time', () => {
+    const { doc, asset } = snapDoc(6, 3)
+    const incoming = createMediaAsset({ kind: 'video', name: 'drop.mp4', duration: 3 })
+    doc.media.push(incoming)
+    useEditorStore.setState({ doc, playhead: 2, snapEnabled: true, dropMode: 'place' })
+    render(<TimelinePanel />)
+
+    const content = document.querySelector('[data-timeline-scroll] > div')
+    if (!content) throw new Error('timeline content not rendered')
+    const dataTransfer = {
+      types: ['application/x-media-id', `application/x-media-kind-${incoming.kind}`],
+      getData: (key: string) => (key === 'application/x-media-id' ? incoming.id : '1'),
+      dropEffect: 'copy',
+      effectAllowed: 'copy',
+    }
+    // 2.08s is 6px from the playhead: inside the 8px threshold.
+    const event = new MouseEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      clientX: TRACK_HEADER_WIDTH + 2.08 * PPS,
+      clientY: RULER_HEIGHT + 32,
+    })
+    Object.defineProperty(event, 'dataTransfer', { value: dataTransfer })
+    fireEvent(content, event)
+
+    const placed = useEditorStore
+      .getState()
+      .doc.project.tracks[0].clips.find((c) => c.mediaId === incoming.id)
+    expect(placed?.start).toBe(2)
+    expect(asset.id).not.toBe(incoming.id)
+  })
+})
+
 describe('drag commit path (transient gesture -> one undo entry)', () => {
   it('commitTransient lands the moved clip and exactly one history entry', () => {
     const { doc, asset, trackId } = docWithClips()
@@ -1002,6 +1099,79 @@ describe('drag commit path (transient gesture -> one undo entry)', () => {
     expect(editorStore.getState().past.length).toBe(before) // still nothing
     editorStore.getState().commitTransient()
     expect(editorStore.getState().past.length).toBe(before + 1)
+  })
+})
+
+describe('audio mute badge (0.29.5)', () => {
+  const RULER_HEIGHT = 28
+  const LANE_Y = 10
+
+  function mutedPairDoc() {
+    const asset = createMediaAsset({ kind: 'video', duration: 10, name: 'pair.mp4' })
+    const videoTrack = createTrack('video', 1)
+    const audioTrack = createTrack('audio', 1)
+    videoTrack.clips = [
+      createClip({
+        id: 'clip_v',
+        linkId: 'link_1',
+        mediaId: asset.id,
+        start: 0,
+        duration: 2,
+        inPoint: 0,
+      }),
+    ]
+    audioTrack.clips = [
+      createClip({
+        id: 'clip_a',
+        linkId: 'link_1',
+        mediaId: asset.id,
+        start: 0,
+        duration: 2,
+        inPoint: 0,
+        audioOnly: true,
+      }),
+    ]
+    const doc: Doc = {
+      project: {
+        tracks: [videoTrack, audioTrack],
+        id: 'p_test',
+        name: 'test',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+      },
+      media: [asset],
+    }
+    return { doc }
+  }
+
+  it('badges both link halves, survives a re-render, and clears with the store', () => {
+    const { doc } = mutedPairDoc()
+    useEditorStore.setState({ doc, audioMutedClipIds: ['clip_a'], selection: null, selections: [] })
+    const { rerender } = render(<TimelinePanel />)
+
+    expect(screen.getByTestId('clip-audio-muted-clip_a')).toHaveTextContent('AUDIO MUTED')
+    expect(screen.getByTestId('clip-audio-muted-clip_v')).toHaveTextContent('AUDIO MUTED')
+    // The label row is pointer-events-none; the badge must opt back in or a
+    // real mouse click can never reach its handler.
+    expect(screen.getByTestId('clip-audio-muted-clip_v')).toHaveClass('pointer-events-auto')
+
+    rerender(<TimelinePanel />)
+    expect(screen.getByTestId('clip-audio-muted-clip_v')).toBeInTheDocument()
+
+    // Clicking the badge retries the carrier and never changes the selection.
+    const before = useEditorStore.getState().selections
+    fireEvent.pointerDown(screen.getByTestId('clip-audio-muted-clip_v'), {
+      button: 0,
+      clientX: TRACK_HEADER_WIDTH + 10,
+      clientY: RULER_HEIGHT + LANE_Y,
+    })
+    fireEvent.click(screen.getByTestId('clip-audio-muted-clip_v'))
+    expect(useEditorStore.getState().selections).toEqual(before)
+
+    act(() => useEditorStore.getState().setAudioMuted('clip_a', false))
+    expect(screen.queryByTestId('clip-audio-muted-clip_a')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('clip-audio-muted-clip_v')).not.toBeInTheDocument()
   })
 })
 

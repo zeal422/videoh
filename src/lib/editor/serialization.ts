@@ -27,6 +27,8 @@ import {
   PROJECT_MIN_W,
   ROTATION_MAX,
   ROTATION_MIN,
+  SCALE_MAX,
+  SCALE_MIN,
   SPEED_MAX,
   SPEED_MIN,
   TEMPERATURE_MAX,
@@ -117,11 +119,11 @@ import type {
  * compound-clip sequences (0.8.1); v5 added the per-asset media content hash
  * (0.23.0); v6 added clip rotation and the flip pair (0.24.0); v7 added the
  * project font library and shape clips (0.25.0); v8 added track groups and the
- * brand kit (0.26.0). The loader accepts every version from 1 up to the current
- * one, so older files load with the newer features absent; only files from a
- * NEWER app version are refused.
+ * brand kit (0.26.0); v9 added the static stretch pair (0.29.5). The loader
+ * accepts every version from 1 up to the current one, so older files load with
+ * the newer features absent; only files from a NEWER app version are refused.
  */
-export const SERIALIZATION_VERSION = 8
+export const SERIALIZATION_VERSION = 9
 export const PROJECT_FILE_EXTENSION = '.veproj.json'
 
 export interface SerializedMedia {
@@ -439,6 +441,12 @@ function hydrateTracks(rawTracks: unknown, media: MediaAsset[], stats: Hydration
           stats.droppedInvalidClips += 1
           return []
         }
+        // An audio lane has no picture, so a hostile stretch pair on a clip
+        // parked there is dropped after the track kind is known.
+        if (clip && kind === 'audio') {
+          delete clip.stretchX
+          delete clip.stretchY
+        }
         return clip ? [clip] : []
       }),
     }
@@ -641,6 +649,12 @@ function hydrateMedia(raw: Record<string, unknown>): MediaAsset {
   }
 }
 
+/** A finite stretch value clamped to the scale bounds; undefined otherwise. */
+function clampFiniteStretch(raw: unknown): number | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined
+  return clamp(raw, SCALE_MIN, SCALE_MAX)
+}
+
 function hydrateClip(
   raw: Record<string, unknown>,
   media: MediaAsset[],
@@ -710,6 +724,19 @@ function hydrateClip(
   }
   if (raw.flipX === true) clip.flipX = true
   if (raw.flipY === true) clip.flipY = true
+  // Static non-uniform stretch (0.29.5). Finite values clamp to the scale
+  // bounds; 1 is the default and stays absent so files remain clean. A
+  // picture-less carrier (the audioOnly twin, or a clip resolving to an audio
+  // asset) has nothing to stretch, and the command layer refuses it, so
+  // hydration drops it here. A dangling mediaId keeps the fields: without the
+  // asset kind there is no evidence the clip is picture-less. `hydrateTracks`
+  // drops them again on an audio lane, where the track kind is known.
+  const stretchX = clampFiniteStretch(raw.stretchX)
+  const stretchY = clampFiniteStretch(raw.stretchY)
+  if (clip.audioOnly !== true && asset?.kind !== 'audio') {
+    if (stretchX !== undefined && stretchX !== 1) clip.stretchX = stretchX
+    if (stretchY !== undefined && stretchY !== 1) clip.stretchY = stretchY
+  }
   // 0.5.0 re-timing + audio shaping. Defaults are omitted so files stay clean.
   if (typeof raw.speed === 'number' && Number.isFinite(raw.speed)) {
     const speed = clamp(raw.speed, SPEED_MIN, SPEED_MAX)

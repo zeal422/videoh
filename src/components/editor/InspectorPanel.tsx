@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useId, useRef } from 'react'
 import { Crosshair, Link2, Loader2 } from 'lucide-react'
 
 import { NamedSlider } from '@/components/editor/NamedSlider'
@@ -49,6 +49,8 @@ import { clipCarriesSound, formatDb } from '@/lib/editor/volume-automation'
 import {
   ROTATION_MAX,
   ROTATION_MIN,
+  SCALE_MAX,
+  SCALE_MIN,
   TEMPERATURE_MAX,
   TEMPERATURE_MIN,
   TINT_MAX,
@@ -191,6 +193,8 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
   const doc = useEditorStore((s) => s.doc)
   const apply = useEditorStore((s) => s.apply)
   const playhead = useEditorStore((s) => s.playhead)
+  const snapEnabled = useEditorStore((s) => s.snapEnabled)
+  const toggleSnap = useEditorStore((s) => s.toggleSnap)
   const asset = findMedia(doc, clip.mediaId)
   const isText = clip.text !== undefined && trackKind === 'text'
   // Linked A/V pair: volume/mute live on the AUDIO twin, whichever half is
@@ -472,9 +476,80 @@ function ClipInspector({ clip, trackKind }: { clip: Clip; trackKind: string }) {
                 </label>
               </div>
             </div>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <NumberField
+                label="Stretch X (×)"
+                value={clip.stretchX ?? 1}
+                min={SCALE_MIN}
+                max={SCALE_MAX}
+                step={0.01}
+                onCommit={(v) =>
+                  tryApply(() =>
+                    apply({
+                      type: 'setClipStretch',
+                      clipId: clip.id,
+                      stretchX: v,
+                      stretchY: clip.stretchY ?? 1,
+                    }),
+                  )
+                }
+              />
+              <NumberField
+                label="Stretch Y (×)"
+                value={clip.stretchY ?? 1}
+                min={SCALE_MIN}
+                max={SCALE_MAX}
+                step={0.01}
+                onCommit={(v) =>
+                  tryApply(() =>
+                    apply({
+                      type: 'setClipStretch',
+                      clipId: clip.id,
+                      stretchX: clip.stretchX ?? 1,
+                      stretchY: v,
+                    }),
+                  )
+                }
+              />
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2 h-7 w-full text-xs"
+              disabled={(clip.stretchX ?? 1) === 1 && (clip.stretchY ?? 1) === 1}
+              onClick={() =>
+                tryApply(() =>
+                  apply({
+                    type: 'setClipStretch',
+                    clipId: clip.id,
+                    stretchX: 1,
+                    stretchY: 1,
+                  }),
+                )
+              }
+            >
+              Reset stretch
+            </Button>
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <Label htmlFor={`snapping-${clip.id}`} className="text-xs">
+                  Snapping
+                </Label>
+                <p className="text-[10px] leading-relaxed text-muted-foreground">
+                  <Kbd>S</Kbd> toggles timeline and monitor snapping.
+                </p>
+              </div>
+              <Switch
+                id={`snapping-${clip.id}`}
+                aria-label="Snapping"
+                checked={snapEnabled}
+                onCheckedChange={() => toggleSnap()}
+              />
+            </div>
             <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-              Drag inside the monitor to move the selected clip, use a corner handle to scale, and
-              the top handle to rotate. Rotation is in degrees and keeps its authored turns.
+              Select a clip in the timeline or monitor, then drag it in the monitor to move it. Use
+              a corner handle to scale, the top handle to rotate, and hold Shift on a corner to
+              stretch one axis. Rotation is in degrees and keeps its authored turns.
               {rotationAnimated &&
                 ' Rotation is animated: this edits the keyframe at the playhead.'}
             </p>
@@ -1134,7 +1209,7 @@ function ShapeFields({ clip }: { clip: Clip }) {
 
           <p className="text-[11px] leading-relaxed text-muted-foreground">
             Shapes use the same position, scale, rotation, flip, opacity, blend, and keyframes as
-            other visual clips. Select one in the monitor to use the transform gizmo.
+            other visual clips. Select one in the timeline or monitor to use the transform gizmo.
           </p>
         </div>
       </Section>
@@ -1632,6 +1707,7 @@ function NumberField({
   step?: number
 }) {
   const ref = useRef<HTMLInputElement>(null)
+  const fieldId = useId()
   const [focused, setFocused] = useState(false)
   const [dirty, setDirty] = useState(false)
   const shown = Number(value.toFixed(2))
@@ -1644,9 +1720,12 @@ function NumberField({
   }, [shown, focused])
   return (
     <div>
-      <Label className="text-xs">{label}</Label>
+      <Label htmlFor={fieldId} className="text-xs">
+        {label}
+      </Label>
       <Input
         ref={ref}
+        id={fieldId}
         type="number"
         defaultValue={shown}
         min={min}

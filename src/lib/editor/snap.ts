@@ -114,6 +114,27 @@ export function snapMove(
   return { start: Math.max(0, start), snapped: null }
 }
 
+/**
+ * Merges one live snap point (the playhead) into a cached sorted set without
+ * re-walking the document. A drag caches its document targets at pointer-down,
+ * but the playhead can move during the gesture, so it has to join the set on
+ * every frame. Same `round6` contract as `computeSnapPoints`, so the merged
+ * value deduplicates against a cached playhead-free set exactly.
+ */
+export function withLiveSnapPoint(points: number[], point: number): number[] {
+  if (!Number.isFinite(point)) return points
+  const value = round6(point)
+  let lo = 0
+  let hi = points.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (points[mid] < value) lo = mid + 1
+    else hi = mid
+  }
+  if (points[lo] === value) return points
+  return [...points.slice(0, lo), value, ...points.slice(lo)]
+}
+
 function round6(n: number): number {
   return Math.round(n * 1e6) / 1e6
 }

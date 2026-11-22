@@ -188,9 +188,13 @@ them:
   matching the selection signal: a 2px `stroke-rose-400` quad with non-scaling stroke, square corner
   scale handles filled rose with a white rim, and a round rotation handle (white fill, rose rim) on a
   stem above the top edge. Dragging inside the box dims it with `fill-rose-400/10`. The box follows
-  the clip's position, scale, rotation, and the measured text box for text clips; hit radii are
-  computed in project pixels from the canvas size, so the overlay stays usable at any monitor scale.
-  A locked lane renders no gizmo at all.
+  the clip's position, per-axis scale, rotation, and the measured text box for text clips. The
+  visible dot is a 5px CSS radius and the invisible hit circle a 12px CSS radius (12 / 24px
+  diameters), measured from the canvas's CSS scale, so the overlay stays usable and small at any
+  monitor size; an unmeasured rect falls back to `Math.max(5, projectWidth * 0.007)` and
+  `Math.max(10, projectWidth * 0.014)`. A snapped monitor move draws full-height and full-width
+  `stroke-amber-400` guides, matching the timeline snap amber, with `pointer-events: none`. A locked
+  lane renders no gizmo at all.
 - **Font picker and upload (0.25.0).** The text Inspector's Font control is a standard shadcn Select
   with a compact outline Upload button beside it. Built-in families group above project fonts; the
   trigger shows the display name, never the generated CSS family. The upload dialog is a small
@@ -367,6 +371,9 @@ them:
 - A compound clip wears a `COMPOUND` badge on its timeline body and opens on double-click; the timeline
   shows a breadcrumb above the lanes only while a child sequence is open, and each crumb is a plain
   button in the standard muted/foreground token pair.
+- An audio decode failure wears an amber `AUDIO MUTED` badge on the failing sound carrier and on its
+  linked video half. It is a fixed accent (the same amber as audio and snap), stays visible until the
+  clip actually recovers or is removed, and its click retries without starting a clip drag.
 
 ## Accessibility
 

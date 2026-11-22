@@ -26,6 +26,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { RecordingDialog } from '@/components/editor/RecordingDialog'
+import { ProjectItemsPanel } from '@/components/editor/ProjectItemsPanel'
 import { Button } from '@/components/ui/button'
 import { StorageDialog } from '@/components/editor/StorageDialog'
 import { toast } from '@/hooks/use-toast'
@@ -138,130 +139,218 @@ export function MediaBin({ className, heading = true }: { className?: string; he
     }
   }
 
+  const mediaTabRef = useRef<HTMLButtonElement>(null)
+  const projectTabRef = useRef<HTMLButtonElement>(null)
+  const [tab, setTab] = useState<'media' | 'project'>('media')
+
+  const activateTab = (next: 'media' | 'project', focus = false) => {
+    setTab(next)
+    if (focus) (next === 'media' ? mediaTabRef.current : projectTabRef.current)?.focus()
+  }
+
+  // A native tablist: arrows move focus and activate (automatic activation),
+  // Home/End jump to the ends, and the roving tabIndex keeps one tab stop.
+  const onTabKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Home') {
+      e.preventDefault()
+      activateTab('media', true)
+      return
+    }
+    if (e.key === 'End') {
+      e.preventDefault()
+      activateTab('project', true)
+      return
+    }
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+    e.preventDefault()
+    activateTab(tab === 'media' ? 'project' : 'media', true)
+  }
+
   return (
     <aside
       aria-label="Media bin"
       className={cn('flex min-h-0 flex-col bg-card', className)}
       onDragOver={(e) => {
+        // Suppress the browser's file-navigation default on BOTH tabs; only
+        // the Media tab treats the drop as an import.
         e.preventDefault()
-        e.dataTransfer.dropEffect = 'copy'
+        if (tab === 'media') e.dataTransfer.dropEffect = 'copy'
       }}
       onDrop={(e) => {
         e.preventDefault()
+        if (tab !== 'media') return
         if (e.dataTransfer.files.length) void importFiles(e.dataTransfer.files)
       }}
     >
       <div
-        className={cn('flex items-center justify-between gap-2 px-3 py-2', heading && 'border-b')}
+        role="tablist"
+        aria-label="Media and project"
+        className="flex items-center gap-1 px-3 pt-2"
+        onKeyDown={onTabKeyDown}
       >
-        {heading && <h2 className="text-sm font-semibold">Media</h2>}
-        <div className="flex items-center gap-1">
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 gap-1.5"
-            aria-label="Project storage"
-            title="Project storage"
-            data-testid="media-storage"
-            onClick={() => setStorageOpen(true)}
-          >
-            <HardDrive className="size-3.5" />
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 gap-1"
-                aria-label="Record"
-                title="Record"
-                data-testid="media-record"
-              >
-                <Mic className="size-3.5" />
-                <ChevronDown className="size-3" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
-              <DropdownMenuItem
-                data-testid="record-voiceover"
-                onSelect={() => setRecordKind('voiceover')}
-              >
-                <Mic className="size-3.5" />
-                Voiceover
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                data-testid="record-screen"
-                onSelect={() => setRecordKind('screen')}
-              >
-                <Monitor className="size-3.5" />
-                Screen
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                data-testid="record-camera"
-                onSelect={() => setRecordKind('camera')}
-              >
-                <Video className="size-3.5" />
-                Camera
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button
-            size="sm"
-            variant="secondary"
-            className="h-7 gap-1.5"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            {importing > 0 ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Import className="size-3.5" />
-            )}
-            Import
-          </Button>
-        </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept="video/*,audio/*,image/*"
-          className="hidden"
-          aria-hidden="true"
-          onChange={(e) => {
-            if (e.target.files?.length) void importFiles(e.target.files)
-            e.target.value = ''
-          }}
-        />
+        <Button
+          ref={mediaTabRef}
+          type="button"
+          role="tab"
+          id="media-bin-tab-media"
+          aria-selected={tab === 'media'}
+          aria-controls="media-bin-panel-media"
+          tabIndex={tab === 'media' ? 0 : -1}
+          size="sm"
+          variant={tab === 'media' ? 'secondary' : 'ghost'}
+          className="h-7 text-xs"
+          onClick={() => activateTab('media')}
+        >
+          Media
+        </Button>
+        <Button
+          ref={projectTabRef}
+          type="button"
+          role="tab"
+          id="media-bin-tab-project"
+          aria-selected={tab === 'project'}
+          aria-controls="media-bin-panel-project"
+          tabIndex={tab === 'project' ? 0 : -1}
+          size="sm"
+          variant={tab === 'project' ? 'secondary' : 'ghost'}
+          className="h-7 text-xs"
+          onClick={() => activateTab('project')}
+        >
+          Project
+        </Button>
       </div>
 
-      <StorageDialog open={storageOpen} onOpenChange={setStorageOpen} />
-      <RecordingDialog
-        open={recordKind !== null}
-        kind={recordKind}
-        onOpenChange={(next) => {
-          if (!next) setRecordKind(null)
-        }}
-      />
-
-      <div className="editor-scroll mt-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3 pb-3">
-        {media.length === 0 && (
-          <div className="mt-6 rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
-            <p className="font-medium">No media yet</p>
-            <p className="mt-1 leading-relaxed">
-              Import video, audio, or image files, then drag assets onto the timeline.
-            </p>
+      <div
+        role="tabpanel"
+        id="media-bin-panel-media"
+        aria-labelledby="media-bin-tab-media"
+        hidden={tab !== 'media'}
+        className={cn('min-h-0 flex-1 flex-col', tab === 'media' ? 'flex' : 'hidden')}
+      >
+        <div
+          className={cn('flex items-center justify-between gap-2 px-3 py-2', heading && 'border-b')}
+        >
+          {heading && <h2 className="text-sm font-semibold">Media</h2>}
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 gap-1.5"
+              aria-label="Project storage"
+              title="Project storage"
+              data-testid="media-storage"
+              onClick={() => setStorageOpen(true)}
+            >
+              <HardDrive className="size-3.5" />
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 gap-1"
+                  aria-label="Record"
+                  title="Record"
+                  data-testid="media-record"
+                >
+                  <Mic className="size-3.5" />
+                  <ChevronDown className="size-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem
+                  data-testid="record-voiceover"
+                  onSelect={() => setRecordKind('voiceover')}
+                >
+                  <Mic className="size-3.5" />
+                  Voiceover
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  data-testid="record-screen"
+                  onSelect={() => setRecordKind('screen')}
+                >
+                  <Monitor className="size-3.5" />
+                  Screen
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  data-testid="record-camera"
+                  onSelect={() => setRecordKind('camera')}
+                >
+                  <Video className="size-3.5" />
+                  Camera
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-7 gap-1.5"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              {importing > 0 ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Import className="size-3.5" />
+              )}
+              Import
+            </Button>
           </div>
-        )}
-        {media.map((asset) => (
-          <MediaItem
-            key={asset.id}
-            asset={asset}
-            selected={asset.id === sourceAssetId}
-            onSelect={() => setSourceAsset(asset.id)}
-            onQuickAdd={() => quickAdd(asset)}
-            onRemove={() => removeAsset(asset)}
-            onRelink={(file) => void relink(asset, file)}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="video/*,audio/*,image/*"
+            className="hidden"
+            aria-hidden="true"
+            onChange={(e) => {
+              if (e.target.files?.length) void importFiles(e.target.files)
+              e.target.value = ''
+            }}
           />
-        ))}
+        </div>
+
+        <StorageDialog open={storageOpen} onOpenChange={setStorageOpen} />
+        <RecordingDialog
+          open={recordKind !== null}
+          kind={recordKind}
+          onOpenChange={(next) => {
+            if (!next) setRecordKind(null)
+          }}
+        />
+
+        <div className="editor-scroll mt-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3 pb-3">
+          {media.length === 0 && (
+            <div className="mt-6 rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
+              <p className="font-medium">No media yet</p>
+              <p className="mt-1 leading-relaxed">
+                Import video, audio, or image files, then drag assets onto the timeline.
+              </p>
+            </div>
+          )}
+          {media.map((asset) => (
+            <MediaItem
+              key={asset.id}
+              asset={asset}
+              selected={asset.id === sourceAssetId}
+              onSelect={() => setSourceAsset(asset.id)}
+              onQuickAdd={() => quickAdd(asset)}
+              onRemove={() => removeAsset(asset)}
+              onRelink={(file) => void relink(asset, file)}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div
+        role="tabpanel"
+        id="media-bin-panel-project"
+        aria-labelledby="media-bin-tab-project"
+        hidden={tab !== 'project'}
+        className={cn('min-h-0 flex-1 flex-col', tab === 'project' ? 'flex' : 'hidden')}
+      >
+        <div className="editor-scroll min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-2">
+          <ProjectItemsPanel />
+        </div>
       </div>
     </aside>
   )

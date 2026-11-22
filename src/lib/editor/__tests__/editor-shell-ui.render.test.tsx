@@ -1367,7 +1367,10 @@ describe('decode recovery overlay', () => {
     await waitFor(() => {
       expect(screen.getByText('Audio could not be decoded')).toBeInTheDocument()
     })
-    expect(screen.getByText(/The audio at 00:12.0 is muted/)).toBeInTheDocument()
+    expect(
+      screen.getByText(/Audio at 00:12.0 has a decode error. Retry to reconnect the audio./),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
 
     act(() => {
       handlePreviewMediaError({
@@ -1405,6 +1408,92 @@ describe('decode recovery overlay', () => {
     })
     expect(screen.getByTestId('media-decode-overlay')).toHaveTextContent('Damaged media')
     expect(screen.getByTestId('media-decode-overlay')).toHaveTextContent('around 00:30.0')
+  })
+
+  it('names the muted clip and its Retry action calls the controller', async () => {
+    const asset = createMediaAsset({ kind: 'audio', name: 'voice.wav', duration: 10 })
+    const track = createTrack('audio', 1)
+    track.clips = [createClip({ id: 'a1', mediaId: asset.id, start: 0, duration: 10 })]
+    useEditorStore.setState({
+      doc: {
+        project: {
+          tracks: [track],
+          id: 'p_test',
+          name: 'test',
+          width: 1920,
+          height: 1080,
+          fps: 30,
+        },
+        media: [asset],
+      },
+      playing: true,
+      audioMutedClipIds: ['a1'],
+    })
+    render(
+      <>
+        <EditorShell />
+        <Toaster />
+      </>,
+    )
+    const retry = vi.spyOn(playbackRef.current!, 'retryAudio')
+
+    act(() => {
+      handlePreviewMediaError({
+        clipId: 'a1',
+        code: 3,
+        time: 4,
+        terminal: false,
+        audioOnly: true,
+      })
+    })
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          /voice.wav at 00:04.0 was muted so the picture can continue. Press Play or Retry/,
+        ),
+      ).toBeInTheDocument()
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retry).toHaveBeenCalledWith('a1')
+    retry.mockRestore()
+  })
+})
+
+describe('doc change audio cleanup (0.29.5)', () => {
+  it('runs noteDocChanged synchronously on delete and undo', () => {
+    const asset = createMediaAsset({ kind: 'video', name: 'clean.mp4', duration: 10 })
+    const track = createTrack('video', 1)
+    track.clips = [createClip({ id: 'clean_c', mediaId: asset.id, start: 0, duration: 2 })]
+    useEditorStore.setState({
+      doc: {
+        project: {
+          tracks: [track],
+          id: 'p_test',
+          name: 'test',
+          width: 1920,
+          height: 1080,
+          fps: 30,
+        },
+        media: [asset],
+      },
+      selection: 'clean_c',
+      selections: ['clean_c'],
+    })
+    render(<EditorShell />)
+    const note = vi.spyOn(playbackRef.current!, 'noteDocChanged')
+
+    act(() => {
+      useEditorStore.getState().apply({ type: 'deleteClip', clipId: 'clean_c' })
+    })
+    expect(note).toHaveBeenCalledTimes(1)
+    expect(note.mock.calls[0]![0].project.tracks[0].clips).toHaveLength(0)
+
+    act(() => {
+      useEditorStore.getState().undo()
+    })
+    expect(note).toHaveBeenCalledTimes(2)
+    expect(note.mock.calls[1]![0].project.tracks[0].clips).toHaveLength(1)
+    note.mockRestore()
   })
 })
 

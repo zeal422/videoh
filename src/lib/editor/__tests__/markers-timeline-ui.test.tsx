@@ -598,10 +598,10 @@ describe('static-source locks (stacking, mount points)', () => {
     )
   })
 
-  it('the schema is v8 and hydrates marker arrays', () => {
+  it('the schema is v9 and hydrates marker arrays', () => {
     // v5 added the media content hash (0.23.0); the literal is pinned on
     // purpose, so a silent version change is noticed instead of restated.
-    expect(serialization).toContain('SERIALIZATION_VERSION = 8')
+    expect(serialization).toContain('SERIALIZATION_VERSION = 9')
     expect(serialization).toContain('function hydrateMarkers')
   })
 

@@ -22,6 +22,18 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.29.5',
+    date: '2026-11-22',
+    highlights: [
+      'Click a clip in the monitor to select it, drag to snap to frame and clip lines with amber guides, and Shift-stretch either axis',
+      'Smaller transform handles keep a larger invisible hit target, and rotation snaps to 15-degree steps under the shared snapping flag',
+      'Clip moves, trims, and media drops now snap to the live playhead as well as clip edges and markers',
+      'Audio decode failures name the clip, offer Retry, and keep an AUDIO MUTED badge until the sound actually recovers',
+      'The Media panel gains a Project tab for generated text, shapes, and compound clips in the active sequence',
+      'Project files move to format version 9 for the new static stretch fields',
+    ],
+  },
+  {
     version: '0.29.0',
     date: '2026-11-20',
     highlights: [

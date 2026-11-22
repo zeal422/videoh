@@ -28,13 +28,16 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/u
   auto names renumber while custom names stay; the last lane is protected, and an emptied lane is
   pruned with the edit.
 - **Editing, links, and markers.** Selection, Razor, Ripple Trim, Slip, and Pen, plus multi-select,
-  marquee, track targeting, ripple delete, Close Gaps, and Join Clips. A video with audio lands as a linked pair; compound
+  marquee, track targeting, ripple delete, Close Gaps, and Join Clips. Clip moves, trims, and media
+  drops snap to the live playhead as well as clip edges and markers, and Join Clips refuses a
+  differing stretch. A video with audio lands as a linked pair; compound
   clips fold a selection into a reusable nested sequence. The Source monitor marks In/Out for
   insert or overwrite, and sequence and clip markers carry names, eight colors, notes, and snapping.
 - **Text and graphics.** Styled text clips with built-in and uploaded fonts, built-in and saved
   presets, four animated text presets, six shape primitives, and a bundled local sticker set.
   Direct dragging in the monitor, SRT import, and an editable Captions panel with SRT/VTT download;
-  captions burn into the MP4.
+  captions burn into the MP4. The Media panel's Project tab lists generated text, shapes, and
+  compound clips in the active sequence and seeks to one on click.
 - **Libraries.** Named track groups batch mute, solo, hide, lock, and select their member tracks. A
   project brand kit saves strict hex colors beside every text and shape color control plus font
   references, and local templates create a fresh sequence from built-in or user-saved text/shape
@@ -44,11 +47,16 @@ Built with Next.js 16, React 19, TypeScript, zustand 5, Tailwind CSS 4, shadcn/u
   easing, color grading, monitor scopes, and a project-level 1D/3D `.cube` LUT library. Preview and
   export render every effect the same way.
 - **Transform.** Rotation up to ten turns each way, horizontal and vertical flip, and a monitor gizmo
-  that moves, scales, and rotates the selected clip with one undo step per drag. Rotation is
-  keyframe-able and renders through the same transform in preview and export.
+  that moves, scales, rotates, and Shift-stretches the selected clip on either axis with one undo
+  step per drag. Click a visible clip in the monitor to select it, drag near frame or clip lines to
+  snap with amber guides, and rotate to 15-degree steps under the shared `S` snapping flag. Handles
+  stay about 10px on screen with a 24px hit target. Rotation is keyframe-able and stretch is static;
+  both render through the same transform in preview and export.
 - **Speed, remapping, and audio.** 0.25x to 4x, Alt-drag rate stretch, reverse, and a `timeScale`
   curve that ramps speed without changing timeline length. Per-clip gain, mute, pan, 3-band EQ,
-  compressor, broadband denoise, volume automation, auto-ducking, and track solo/mute.
+  compressor, broadband denoise, volume automation, auto-ducking, and track solo/mute. A failed audio
+  decode names the clip, offers Retry, and keeps an `AUDIO MUTED` badge on the carrier and its linked
+  video half until the audio actually recovers.
 - **Recording.** The media bin records a voiceover from a microphone, a screen or window with
   system audio or microphone audio (one source, never mixed), and a camera with optional microphone.
   Every take imports through the normal media path and is stored in OPFS where the browser accepts
@@ -173,7 +181,7 @@ when the browser has the matching encoder. Sequence Settings offers 16:9, 9:16, 
 21:9 canvas presets that do not move existing clips. Export needs WebCodecs; HEVC and ProRes are
 deliberately not offered, and `Download` buffers the file while `Export to file` streams it to disk.
 
-Project files use `.veproj.json` (version 8; versions 1 to 7 still load, and a v8 file needs this
+Project files use `.veproj.json` (version 9; versions 1 to 8 still load, and a v9 file needs this
 build). Object URLs are stripped. Imported bytes live in OPFS under `<project-id>/<content-hash>`, and
 custom font bytes live under `<project-id>/fonts/<content-hash>`; the project file stores metadata and
 content hashes, never the bytes. Each asset persists its own hash, so an open restores file handles
@@ -210,7 +218,7 @@ bun run battery:pair   # dev + artifact concurrently (needs a current build and 
 PAIR_SHARDS=1 bun run battery:pair # sequential rollback, one session per leg
 ```
 
-Current state: **3677 tests across 135 files, all passing**. Coverage is enforced at 96/96/96/96 over
+Current state: **3796 tests across 138 files, all passing**. Coverage is enforced at 96/96/96/96 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -239,7 +247,7 @@ src/lib/editor/            # state core (commands, store, serialization) + brows
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, landing sections, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 135 test files (3677 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 138 test files (3796 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations

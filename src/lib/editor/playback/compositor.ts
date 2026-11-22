@@ -433,7 +433,7 @@ export function blitTransformed(
     ctx.drawImage(image, 0, 0)
   } else {
     ctx.translate(width / 2 + transform.posX, height / 2 + transform.posY)
-    ctx.scale(transform.scale, transform.scale)
+    ctx.scale(transform.scaleX, transform.scaleY)
     ctx.drawImage(image, -width / 2, -height / 2, width, height)
   }
   ctx.restore()
@@ -995,13 +995,14 @@ export function containRect(
   sh: number,
   width: number,
   height: number,
-  transform: { posX: number; posY: number; scale: number } | null,
+  transform: { posX: number; posY: number; scaleX: number; scaleY: number } | null,
 ): { dx: number; dy: number; dw: number; dh: number } | null {
   if (!sw || !sh) return null
-  const scale = transform?.scale ?? 1
+  const scaleX = transform?.scaleX ?? 1
+  const scaleY = transform?.scaleY ?? 1
   const fit = Math.min(width / sw, height / sh)
-  const dw = sw * fit * scale
-  const dh = sh * fit * scale
+  const dw = sw * fit * scaleX
+  const dh = sh * fit * scaleY
   // Scale grows from the frame center: the offsets come from the SCALED size,
   // so a 2x clip stays centered instead of drifting right and down.
   const dx = (width - dw) / 2 + (transform?.posX ?? 0)
@@ -1281,7 +1282,7 @@ export function drawTextClip(
   const turnedCenter = motionPivot(ctx, clip, t, width, height)
   applyRotationFlip(ctx, t, turnedCenter.x, turnedCenter.y)
   ctx.translate(frameCenter.x + t.posX, frameCenter.y + t.posY)
-  ctx.scale(t.scale, t.scale)
+  ctx.scale(t.scaleX, t.scaleY)
   ctx.translate(-frameCenter.x, -frameCenter.y)
   ctx.textAlign = style.align
   ctx.textBaseline = 'middle'
@@ -1391,7 +1392,7 @@ export function drawShapeClip(
   }
   applyRotationFlip(target, t, frameCenter.x + t.posX, frameCenter.y + t.posY)
   target.translate(frameCenter.x + t.posX, frameCenter.y + t.posY)
-  target.scale(t.scale, t.scale)
+  target.scale(t.scaleX, t.scaleY)
   target.translate(-frameCenter.x, -frameCenter.y)
 
   traceShapePath(target, shapePathData(shape, width, height))

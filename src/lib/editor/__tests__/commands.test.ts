@@ -3934,6 +3934,79 @@ describe('clip transform commands (0.24.0)', () => {
     expect(cleared.project.tracks[0].clips[0].flipY).toBe(true)
   })
 
+  it('clamps static stretch, removes the neutral pair, and refuses audio carriers', () => {
+    const doc = docWithClip()
+    const stretched = applyCommand(doc, {
+      type: 'setClipStretch',
+      clipId: 'clip_t',
+      stretchX: 99,
+      stretchY: 0.01,
+    })
+    const clip = stretched.project.tracks[0].clips[0]
+    expect(clip.stretchX).toBe(4)
+    expect(clip.stretchY).toBe(0.1)
+
+    const reset = applyCommand(stretched, {
+      type: 'setClipStretch',
+      clipId: 'clip_t',
+      stretchX: 1,
+      stretchY: 1,
+    })
+    expect(reset.project.tracks[0].clips[0].stretchX).toBeUndefined()
+    expect(reset.project.tracks[0].clips[0].stretchY).toBeUndefined()
+
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setClipStretch',
+        clipId: 'clip_t',
+        stretchX: Number.NaN,
+        stretchY: 1,
+      }),
+    ).toThrow(EditorCommandError)
+    expect(() =>
+      applyCommand(doc, {
+        type: 'setClipStretch',
+        clipId: 'clip_t',
+        stretchX: 1,
+        stretchY: Number.POSITIVE_INFINITY,
+      }),
+    ).toThrow(EditorCommandError)
+
+    // An audio-only carrier on a video lane and any clip on an audio lane
+    // have no picture to stretch.
+    const carrierDoc = docWithClip()
+    carrierDoc.project.tracks[0].clips[0].audioOnly = true
+    expect(() =>
+      applyCommand(carrierDoc, {
+        type: 'setClipStretch',
+        clipId: 'clip_t',
+        stretchX: 2,
+        stretchY: 2,
+      }),
+    ).toThrow('Stretch applies to visual clips only')
+
+    const audioDoc = docWithClip()
+    const audioTrack = createTrack('audio', 1)
+    audioTrack.clips = [
+      createClip({
+        id: 'clip_audio',
+        mediaId: audioDoc.media[0].id,
+        start: 0,
+        duration: 4,
+        audioOnly: true,
+      }),
+    ]
+    audioDoc.project.tracks = [audioTrack]
+    expect(() =>
+      applyCommand(audioDoc, {
+        type: 'setClipStretch',
+        clipId: 'clip_audio',
+        stretchX: 2,
+        stretchY: 2,
+      }),
+    ).toThrow('Stretch applies to visual clips only')
+  })
+
   it('refuses hostile flip payloads instead of coercing them', () => {
     const doc = docWithClip()
     expect(() =>

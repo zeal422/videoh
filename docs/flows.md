@@ -244,8 +244,9 @@ Stable hooks used across flows and tests:
   source window. It refuses anything it would have to reinterpret: a gap or overlap, a different
   speed or direction, a source discontinuity, an outgoing transition, any keyframe curve, text,
   compound, or a clip property that differs. Links join lane by lane or refuse whole.
-- **Snapping (`S`)** toggles snapping to clip edges, the playhead, timeline bounds and every
-  reachable marker (`SNAP_THRESHOLD_PX = 8`).
+- **Snapping (`S`)** toggles snapping to clip edges, the playhead, and every reachable marker
+  (`SNAP_THRESHOLD_PX = 8`). The timeline end is not a clip-drag target: the dragged clip can define
+  it itself, which would make the clip stick to its own tail.
 
 ## A/V links
 
@@ -790,10 +791,9 @@ Stable hooks used across flows and tests:
 
 ## Save, load, autosave, restore
 
-- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 8; versions 1 to 7 still load, and a v8
+- **Save (`Ctrl+S`)** serializes to `.veproj.json` (version 9; versions 1 to 8 still load, and a v9
   file needs this build), including the media content hashes, the project font library, track groups,
-  the brand kit, and shape
-  clips, writes a claim shard for every hash the snapshot references, and downloads the file. A
+  the brand kit, shape clips, and the static stretch pair (clamped 0.1..4, absent at 1), writes a claim shard for every hash the snapshot references, and downloads the file. A
   refused claim downloads nothing: a copy is never written with unclaimed media. Object URLs are
   stripped and never persisted.
 - **Open** parses synchronously, then rehydrates: each asset with a `contentHash` reads its verified
@@ -1197,6 +1197,72 @@ Stable hooks used across flows and tests:
 - The shared UI event names and the timeline scroll attribute live in `src/lib/editor/ui-contracts.ts`.
   Producers and consumers import them, while the CSS rule and the DOM-contract tests keep the literal
   attribute value.
+
+## Monitor selection and snapping (0.29.5)
+
+- Clicking a visible clip in the program monitor selects it. The hit test reads the same
+  transformed box the gizmo draws (`pickVisualClipAt` in `playback/monitor-geometry.ts`): the
+  topmost rendered track first, skipping audio and hidden tracks, clips outside the playhead,
+  missing media, and fully transparent clips (keyframed opacity included). Shift adds and
+  Ctrl/Meta toggles. An empty click clears the selection unless the selected live text clip owns
+  the drag surface.
+- A press on the already-selected live text clip starts the existing drag; a first click on an
+  unselected text clip only selects it.
+- `S`, the toolbar magnet, View > Snapping, and Inspector > Transform > Snapping are one flag.
+  With it on, a monitor move snaps the box's left/center/right and top/center/bottom lines to the
+  frame edges, the frame center, and every other visible clip's transformed bounds. Amber
+  full-height and full-width guides show the match. The target set is captured at pointer-down;
+  pressing Play or moving the playhead cancels the drag instead of using stale targets. A text move
+  converts the winning project delta back through `scaleX`/`scaleY` and verifies the clamped box
+  still lands on the guide.
+- Rotation snaps to the nearest 15-degree step within 3 degrees, before the bounds, so a 720-degree
+  turn stays two turns.
+- Inspector > Transform also exposes Stretch X and Stretch Y (0.1..4), a Reset stretch button, and
+  the shared Snapping switch.
+
+## Static stretch and smaller handles (0.29.5)
+
+- Shift + corner drag scales X and Y independently. The gesture captures the uniform `scale`,
+  stretch, rotation, grab offset, and corner; `scaleFromCornerDrag` projects the pointer onto the
+  clip's rotated axes and returns per-axis ratios, so a pre-stretched clip multiplies its captured
+  stretch instead of double-counting the effective scale. Releasing Shift (or pressing it mid-drag)
+  resets the transient and reapplies the correct frame from the last pointer position; a pointerup
+  with no intervening move finalizes the frame its Shift state asks for. Each gesture is one undo
+  entry.
+- The uniform `scale` curve stays the one animation source; `stretchX`/`stretchY` are static,
+  clamped, and omitted at 1. Project format v9 persists them; v1..v8 load with stretch 1.
+- The visible handle is a 5px CSS radius and the hit target 12px (10/24px diameters), measured from
+  the canvas CSS scale; an unmeasured rect uses the project-relative fallback.
+
+## Audio mute recovery (0.29.5)
+
+- A decode failure on a sound carrier mutes it so the picture continues. The toast names the clip
+  and time, uses playing or paused copy, and offers Retry. The clip and its linked video half wear an
+  amber `AUDIO MUTED` badge until the audio actually recovers or the clip is removed. One
+  `console.warn` records the clip id, name, MediaError code, and timeline time.
+- Retry, Play, and a seek more than one second from the failed time move the clip to a pending
+  state: the badge stays, the failure budget resets, and an errored element is released so a fresh
+  one is created. A seek back inside the failed range re-blocks an ordinary pending retry (no reload
+  or toast loop); an explicit Retry stays armed. Play re-arms every muted clip and badges clear per
+  clip as each recovers.
+- Recovery requires audio evidence: the pending clip must be active and its audio element must hold
+  current data at the expected read (or present an audio sample). A video frame does not clear the
+  badge. Readiness listeners are bound to the element and retry generation, so a late event from a
+  superseded retry is ignored.
+- Deleting a clip clears its mute synchronously on every doc change, including during playback, so a
+  rapid delete and undo cannot resurrect the badge. Project replacement clears every muted id even
+  when the new project reuses it.
+
+## Media and Project tabs (0.29.5)
+
+- The left panel has Media and Project tabs. Media is the default runtime-only tab and keeps import,
+  record, storage, relink, and the asset list. Project lists generated text, shapes, and compound
+  clips in the ACTIVE sequence (nested sequences too); imported media never appears.
+- Each row is one button: type icon, label (text, shape kind, or sequence name), start and duration,
+  and a `Go to` hint. Activation reveals a hidden track, selects the clip, and seeks to its
+  sequence-local start. The list is empty on a sequence with no generated clips. The tablist uses
+  `role="tab"`/`tabpanel`, `aria-selected`, `aria-controls`/`aria-labelledby`, a roving `tabIndex`,
+  and ArrowLeft/ArrowRight/Home/End activation.
 
 ## Audit hardening (0.28.5)
 

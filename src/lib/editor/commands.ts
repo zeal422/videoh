@@ -26,6 +26,8 @@ import {
   PROJECT_MIN_W,
   ROTATION_MAX,
   ROTATION_MIN,
+  SCALE_MAX,
+  SCALE_MIN,
   SPEED_MAX,
   SPEED_MIN,
   EQ_DB_MIN,
@@ -291,6 +293,7 @@ export type EditorCommand =
   // transform (0.24.0): static rotation and the explicit flip pair
   | { type: 'setClipRotation'; clipId: string; rotation: number }
   | { type: 'setClipFlip'; clipId: string; flipX: boolean; flipY: boolean }
+  | { type: 'setClipStretch'; clipId: string; stretchX: number; stretchY: number }
   // keyframes + speed + transform/color statics (0.5.0)
   | {
       type: 'setClipKeyframes'
@@ -605,6 +608,7 @@ const LOCK_RULES: LockRuleMap = {
   setClipOpacity: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setClipRotation: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setClipFlip: { tracks: (doc, command) => clipRef(doc, command.clipId) },
+  setClipStretch: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setClipKeyframes: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   setClipSpeed: { tracks: (doc, command) => clipRef(doc, command.clipId) },
   // Slip writes the whole linked group that shares the source window, so every
@@ -1952,6 +1956,34 @@ function mutateDoc(doc: Doc, command: EditorCommand, options?: ApplyCommandOptio
       else delete clip.flipX
       if (command.flipY) clip.flipY = true
       else delete clip.flipY
+      return
+    }
+
+    case 'setClipStretch': {
+      const found = requireClip(doc, command.clipId)
+      const { clip, track } = found
+      // A non-finite payload refuses; finite values clamp to the same bounds
+      // the UI and hydration enforce.
+      const stretchX = clamp(
+        requireFiniteNumber(command.stretchX, 'Stretch X'),
+        SCALE_MIN,
+        SCALE_MAX,
+      )
+      const stretchY = clamp(
+        requireFiniteNumber(command.stretchY, 'Stretch Y'),
+        SCALE_MIN,
+        SCALE_MAX,
+      )
+      // The command refuses what the Inspector hides: an audio carrier has no
+      // picture to stretch, whether it sits on an audio lane or an audio-only
+      // clip on a video lane.
+      if (clip.audioOnly === true || track.kind === 'audio') {
+        throw new EditorCommandError('Stretch applies to visual clips only')
+      }
+      if (stretchX === 1) delete clip.stretchX
+      else clip.stretchX = stretchX
+      if (stretchY === 1) delete clip.stretchY
+      else clip.stretchY = stretchY
       return
     }
 

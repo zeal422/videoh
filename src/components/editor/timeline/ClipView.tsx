@@ -27,7 +27,8 @@ import {
 import { hasTimeScaleCurve } from '@/lib/editor/keyframes'
 import { shapeKindLabel } from '@/lib/editor/shapes'
 import { TIMELINE_SCROLL_SELECTOR } from '@/lib/editor/ui-contracts'
-import { computeSnapPoints } from '@/lib/editor/snap'
+import { computeSnapPoints, withLiveSnapPoint } from '@/lib/editor/snap'
+import { playbackRef } from '@/lib/editor/playback/engine-ref'
 import {
   decideMove,
   decideRateStretch,
@@ -132,6 +133,7 @@ export function ClipView({
 }) {
   const selections = useEditorStore((s) => s.selections)
   const activeTool = useEditorStore((s) => s.activeTool)
+  const audioMutedClipIds = useEditorStore((s) => s.audioMutedClipIds)
   // Right-click must (a) select the clip BEFORE any menu action runs and
   // (b) re-evaluate clipboard/split enablement at open time — both are
   // store-external facts (module clipboard, live playhead) that a plain
@@ -153,6 +155,16 @@ export function ClipView({
   const widthPx = Math.max(6, clip.duration * pxPerSec)
   const leftPx = clip.start * pxPerSec
   const isLinked = !!clip.linkId && linkedClips(doc, clip.id).length > 1
+  // A muted sound carrier badges its whole link group, so the video half
+  // shows the same failure as the audio twin that actually failed.
+  const audioMutedCarrierId =
+    audioMutedClipIds.length === 0
+      ? null
+      : audioMutedClipIds.includes(clip.id)
+        ? clip.id
+        : clip.linkId
+          ? (linkedClips(doc, clip.id).find((c) => audioMutedClipIds.includes(c.id))?.id ?? null)
+          : null
   // The Pen edits one property per clip: volume on audio, opacity on picture.
   // A solo video's opacity is the Pen curve; its volume envelope keeps direct
   // dot gestures but leaves the line alone.
@@ -580,14 +592,17 @@ export function ClipView({
     // whole move. A TRIM leaves partners stationary, so their edges and
     // markers stay legitimate targets — exclude them in move mode only.
     // Cached at pointerdown for a move or plain trim; a ripple trim shifts
-    // other clips, so it recomputes.
-    const points =
+    // other clips, so it recomputes. The live playhead joins the set on every
+    // frame: it can move mid-gesture, and a clip must still snap to it.
+    const points = withLiveSnapPoint(
       g.snapPoints ??
-      computeSnapPoints(liveDoc, {
-        excludeClipIds: g.mode === 'move' ? [clip.id, ...g.partners.map((p) => p.id)] : [clip.id],
-        includeTimelineEnd: false,
-        activeSequencePath: useEditorStore.getState().activeSequencePath,
-      })
+        computeSnapPoints(liveDoc, {
+          excludeClipIds: g.mode === 'move' ? [clip.id, ...g.partners.map((p) => p.id)] : [clip.id],
+          includeTimelineEnd: false,
+          activeSequencePath: useEditorStore.getState().activeSequencePath,
+        }),
+      store.playhead,
+    )
 
     if (g.mode === 'move') {
       // Re-read the lane boxes every move: the rows can have moved under the
@@ -1336,6 +1351,28 @@ export function ClipView({
             )}
             {clip.muted && (
               <span className="shrink-0 rounded bg-black/40 px-1 text-[9px]">MUTED</span>
+            )}
+            {audioMutedCarrierId && (
+              <span
+                role="button"
+                tabIndex={0}
+                data-testid={`clip-audio-muted-${clip.id}`}
+                title="Audio decode failed. Click to retry, or press Play."
+                className="pointer-events-auto shrink-0 cursor-pointer rounded bg-amber-400 px-1 text-[9px] font-semibold text-black"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  playbackRef.current?.retryAudio(audioMutedCarrierId)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter' && e.key !== ' ') return
+                  e.preventDefault()
+                  e.stopPropagation()
+                  playbackRef.current?.retryAudio(audioMutedCarrierId)
+                }}
+              >
+                AUDIO MUTED
+              </span>
             )}
             {(clip.speed ?? 1) !== 1 && !hasTimeScaleCurve(clip) && (
               <span

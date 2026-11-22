@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
+import { createClip, createDoc, createMediaAsset, createTextClip, createTrack } from '../factories'
 import { animatedValue } from '../keyframes'
 import { blitTransformed, drawContain, drawTextClip, motionPivot } from '../playback/compositor'
 import { clipTransform, planVideoFrame } from '../export/offline'
@@ -26,8 +26,10 @@ import {
   rotationHandlePoint,
   rotationMatrix,
   rotatedRectCorners,
+  scaleFromCornerDrag,
   scaleFromDrag,
   scaleMatrix,
+  snapRotation,
   transformPoint,
   translationMatrix,
   type ClipTransform,
@@ -112,15 +114,19 @@ describe('rotation and flip matrix', () => {
   })
 
   it('maps a point through the position-and-scale factor around the frame center', () => {
-    const center = positionedCenter({ x: 100, y: 200 }, { posX: 10, posY: -20, scale: 2 }, FC)
+    const center = positionedCenter(
+      { x: 100, y: 200 },
+      { posX: 10, posY: -20, scaleX: 2, scaleY: 2 },
+      FC,
+    )
     expect(center).toEqual({ x: 960 + 10 + (100 - 960) * 2, y: 540 - 20 + (200 - 540) * 2 })
   })
 
   it('builds the gizmo quad from the base box, transform, and frame', () => {
     const base = { x0: FC.x - 200, y0: FC.y - 100, x1: FC.x + 200, y1: FC.y + 100 }
-    const scaled = positionedRect(base, { posX: 0, posY: 0, scale: 2 }, 1920, 1080)
+    const scaled = positionedRect(base, { posX: 0, posY: 0, scaleX: 2, scaleY: 2 }, 1920, 1080)
     expect(scaled).toEqual({ x0: 560, y0: 340, x1: 1360, y1: 740 })
-    const quad = gizmoQuad(base, transform({ scale: 2, rotation: 90 }), 1920, 1080)
+    const quad = gizmoQuad(base, transform({ scaleX: 2, scaleY: 2, rotation: 90 }), 1920, 1080)
     const average = {
       x: quad.reduce((sum, p) => sum + p.x, 0) / 4,
       y: quad.reduce((sum, p) => sum + p.y, 0) / 4,
@@ -159,11 +165,66 @@ describe('gizmo math', () => {
     expect(rotationFromDrag(3590, 0, 90, -3600, 3600)).toBe(3600)
   })
 
+  it('snaps rotation to the nearest step within the threshold', () => {
+    expect(snapRotation(44, 15, 3)).toBe(45)
+    expect(snapRotation(46, 15, 3)).toBe(45)
+    expect(snapRotation(7, 15, 3)).toBe(7)
+    expect(snapRotation(733, 15, 3)).toBe(735)
+    // The authored turn count is preserved: 721 snaps to 720, not to 0.
+    expect(snapRotation(721, 15, 3)).toBe(720)
+    expect(snapRotation(722, 15, 3)).toBe(720)
+  })
+
+  it('leaves rotation untouched for a non-finite value, step, or threshold', () => {
+    expect(snapRotation(Number.NaN, 15, 3)).toBe(Number.NaN)
+    expect(snapRotation(44, 0, 3)).toBe(44)
+    expect(snapRotation(44, Number.NaN, 3)).toBe(44)
+    expect(snapRotation(44, 15, Number.NaN)).toBe(44)
+    expect(snapRotation(44, 15, -1)).toBe(44)
+  })
+
   it('scales uniformly from a corner drag and clamps', () => {
     expect(scaleFromDrag(100, 200, 1, 0.1, 4)).toBe(2)
     expect(scaleFromDrag(100, 1000, 1, 0.1, 4)).toBe(4)
     expect(scaleFromDrag(100, 1, 1, 0.1, 4)).toBe(0.1)
     expect(scaleFromDrag(0, 200, 1, 0.1, 4)).toBe(1)
+  })
+
+  it('projects a Shift corner drag onto the clip axes and subtracts the grab offset', () => {
+    const center = { x: 0, y: 0 }
+    const corner = { x: 100, y: 50 }
+    // Press inside the hit target, off the corner center; holding still is
+    // ratio 1 on both axes (no first-move jump).
+    expect(scaleFromCornerDrag(corner, center, { x: 110, y: 55 }, { x: 110, y: 55 }, 0)).toEqual({
+      ratioX: 1,
+      ratioY: 1,
+    })
+    // Dragging the adjusted corner to 2x on X keeps Y unchanged.
+    expect(scaleFromCornerDrag(corner, center, { x: 110, y: 55 }, { x: 210, y: 55 }, 0)).toEqual({
+      ratioX: 2,
+      ratioY: 1,
+    })
+    // A 90-degree clip compares on its own axes: the corner points down.
+    expect(
+      scaleFromCornerDrag({ x: 0, y: 100 }, center, { x: 0, y: 100 }, { x: 0, y: 200 }, 90),
+    ).toEqual({ ratioX: 2, ratioY: 1 })
+    // A corner on an axis line has no measurement on the other axis.
+    expect(
+      scaleFromCornerDrag({ x: 0, y: 100 }, center, { x: 0, y: 100 }, { x: 10, y: 150 }, 0),
+    ).toEqual({ ratioX: 1, ratioY: 1.5 })
+  })
+
+  it('does not double-count a pre-stretched clip in the corner ratio', () => {
+    // Captured stretch 1.5 with effective scale 2: the ratio comes from the
+    // corner vector, so 2x pointer displacement gives 1.5 * 2 = 3, never 3.6.
+    const ratio = scaleFromCornerDrag(
+      { x: 200, y: 100 },
+      { x: 0, y: 0 },
+      { x: 200, y: 100 },
+      { x: 400, y: 100 },
+      0,
+    )
+    expect(1.5 * ratio.ratioX).toBe(3)
   })
 
   it('maps client pixels to project pixels through the canvas rect', () => {
@@ -278,7 +339,7 @@ describe('shared draw paths apply rotation and flip', () => {
 
   it('drawContain issues the rotation/flip factor around the moved center', () => {
     const ctx = createFakeCtx()
-    const t = transform({ posX: 10, posY: 20, scale: 2, rotation: 90, flipX: true })
+    const t = transform({ posX: 10, posY: 20, scaleX: 2, scaleY: 2, rotation: 90, flipX: true })
     drawContain(ctx as unknown as CanvasRenderingContext2D, source(), 1920, 1080, 1, 'none', t)
     const ops = ctx.calls.filter((call) => ['translate', 'rotate', 'scale'].includes(call.op))
     expectMatrix(replay(ops), rotationFlipMatrix(t, 970, 560))
@@ -300,7 +361,7 @@ describe('shared draw paths apply rotation and flip', () => {
     }
     const clip = createClip({ id: 'c', text: 'Hi', style })
     const ctx = createFakeCtx()
-    const t = transform({ posX: 30, posY: -10, scale: 2, rotation: 45, flipY: true })
+    const t = transform({ posX: 30, posY: -10, scaleX: 2, scaleY: 2, rotation: 45, flipY: true })
     drawTextClip(ctx as unknown as CanvasRenderingContext2D, clip, 1920, 1080, 1, 'none', t)
     const box = textLayoutBox(clip, 1920, 1080, (line) => line.length * 7)!
     // Left-aligned text: the measured box center sits right of the anchor.
@@ -311,7 +372,7 @@ describe('shared draw paths apply rotation and flip', () => {
       multiplyMatrix(
         multiplyMatrix(
           translationMatrix(FC.x + t.posX, FC.y + t.posY),
-          scaleMatrix(t.scale, t.scale),
+          scaleMatrix(t.scaleX, t.scaleY),
         ),
         translationMatrix(-FC.x, -FC.y),
       ),
@@ -334,7 +395,7 @@ describe('shared draw paths apply rotation and flip', () => {
     }
     const clip = createClip({ id: 'c', text: 'Hi', style })
     const ctx = createFakeCtx()
-    const t = transform({ posX: 12, posY: 8, scale: 2 })
+    const t = transform({ posX: 12, posY: 8, scaleX: 2, scaleY: 2 })
     drawTextClip(ctx as unknown as CanvasRenderingContext2D, clip, 1920, 1080, 1, 'none', t)
     const expected = multiplyMatrix(
       multiplyMatrix(translationMatrix(FC.x + 12, FC.y + 8), scaleMatrix(2, 2)),
@@ -380,6 +441,65 @@ describe('preview and export parity', () => {
     return { doc, clip }
   }
 
+  it('a uniform scale curve combines with static stretch, which stays static', () => {
+    const clip = createClip({
+      id: 'clip_curve',
+      start: 0,
+      duration: 4,
+      animStatics: { scale: 1 },
+      keyframes: {
+        scale: [
+          { time: 0, value: 2 },
+          { time: 4, value: 2 },
+        ],
+      },
+      stretchX: 1.5,
+      stretchY: 0.5,
+    })
+    const t = clipTransform(clip, 1)!
+    // The curve keeps its uniform 2 and the static stretch multiplies per axis.
+    expect(animatedValue(clip, 'scale', 1)).toBe(2)
+    expect(t.scaleX).toBe(3)
+    expect(t.scaleY).toBe(1)
+  })
+
+  it('defaults an absent stretch axis to 1 without touching the other', () => {
+    const clip = createClip({
+      id: 'clip_axis_default',
+      start: 0,
+      duration: 4,
+      animStatics: { scale: 2 },
+      stretchX: 1.5,
+    })
+    const t = clipTransform(clip, 1)!
+    expect(t.scaleX).toBe(3)
+    expect(t.scaleY).toBe(2)
+  })
+
+  it('text and shape draws carry the same stretched transform', () => {
+    const text = createTextClip({ id: 'clip_text_p', start: 0, duration: 4, stretchX: 1.5 })
+    const shape = createClip({
+      id: 'clip_shape_p',
+      start: 0,
+      duration: 4,
+      shape: { kind: 'rectangle', fill: '#ff0000' },
+      stretchY: 0.5,
+    })
+    const doc = createDoc()
+    doc.project.tracks = [
+      createTrack('text', 1, { clips: [text] }),
+      createTrack('video', 1, { clips: [shape] }),
+    ]
+    doc.project.tracks.push(createTrack('audio', 1))
+    const plan = planVideoFrame(doc, 1, doc.project.tracks)
+    const textDraw = plan.draws.find((draw) => draw.clip.id === text.id)!
+    const shapeDraw = plan.draws.find((draw) => draw.clip.id === shape.id)!
+    expect(textDraw.transform).toEqual(clipTransform(text, 1))
+    expect(textDraw.transform).toMatchObject({ scaleX: 1.5, scaleY: 1 })
+    expect(shapeDraw.transform).toEqual(clipTransform(shape, 1))
+    expect(shapeDraw.transform).toMatchObject({ scaleX: 1, scaleY: 0.5 })
+  })
+
   it('the export plan carries the same transform the preview draws', () => {
     const { doc, clip } = transformedDoc()
     const plan = planVideoFrame(doc, 1, doc.project.tracks)
@@ -388,7 +508,8 @@ describe('preview and export parity', () => {
       rotation: 90,
       flipX: true,
       flipY: true,
-      scale: 1.5,
+      scaleX: 1.5,
+      scaleY: 1.5,
       posX: 40,
     })
   })
@@ -452,7 +573,7 @@ describe('effect-path pivot (motionPivot)', () => {
   it('returns the positioned text-box center for rotated or flipped text', () => {
     const clip = createClip({ id: 'c', text: 'Hi', style })
     const ctx = createFakeCtx()
-    const t = transform({ posX: 30, posY: -10, scale: 2, rotation: 45, flipY: true })
+    const t = transform({ posX: 30, posY: -10, scaleX: 2, scaleY: 2, rotation: 45, flipY: true })
     const pivot = motionPivot(ctx as unknown as CanvasRenderingContext2D, clip, t, 1920, 1080)
     const box = textLayoutBox(clip, 1920, 1080, measure)!
     const expected = positionedCenter({ x: box.centerX, y: box.centerY }, t, FC)
@@ -471,7 +592,7 @@ describe('effect-path pivot (motionPivot)', () => {
       y: 540,
     })
     const text = createClip({ id: 'c', text: 'Hi', style })
-    const neutral = transform({ posX: 12, scale: 2 })
+    const neutral = transform({ posX: 12, scaleX: 2, scaleY: 2 })
     expect(
       motionPivot(ctx as unknown as CanvasRenderingContext2D, text, neutral, 1920, 1080),
     ).toEqual({
@@ -507,7 +628,7 @@ describe('effect-path pivot (motionPivot)', () => {
 
   it('blitTransformed pivots rotation on the given origin', () => {
     const ctx = createFakeCtx()
-    const t = transform({ posX: 30, scale: 2, rotation: 90 })
+    const t = transform({ posX: 30, scaleX: 2, scaleY: 2, rotation: 90 })
     const origin = { x: 100, y: 200 }
     blitTransformed(
       ctx as unknown as CanvasRenderingContext2D,

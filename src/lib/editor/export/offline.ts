@@ -114,11 +114,23 @@ export function clipTransform(clip: Clip, local: number): ClipTransform | null {
   const posX = animatedValue(clip, 'positionX', local)
   const posY = animatedValue(clip, 'positionY', local)
   const scale = animatedValue(clip, 'scale', local)
+  const stretchX = clip.stretchX ?? 1
+  const stretchY = clip.stretchY ?? 1
   const rotation = animatedValue(clip, 'rotation', local)
   const flipX = clip.flipX === true
   const flipY = clip.flipY === true
-  const transformed = posX !== 0 || posY !== 0 || scale !== 1 || rotation !== 0 || flipX || flipY
-  return transformed ? { posX, posY, scale, rotation, flipX, flipY } : null
+  const transformed =
+    posX !== 0 ||
+    posY !== 0 ||
+    scale !== 1 ||
+    stretchX !== 1 ||
+    stretchY !== 1 ||
+    rotation !== 0 ||
+    flipX ||
+    flipY
+  return transformed
+    ? { posX, posY, scaleX: scale * stretchX, scaleY: scale * stretchY, rotation, flipX, flipY }
+    : null
 }
 
 /** True when the clip shows a frame at timeline time `t` (text tracks excluded). */

@@ -666,6 +666,29 @@ describe('decode-recovery overlay state', () => {
   })
 })
 
+describe('audio mute badge state (0.29.5)', () => {
+  it('adds once, removes once, and is idempotent', () => {
+    const store = useEditorStore.getState()
+    expect(store.audioMutedClipIds).toEqual([])
+    store.setAudioMuted('a', true)
+    store.setAudioMuted('a', true)
+    expect(useEditorStore.getState().audioMutedClipIds).toEqual(['a'])
+    store.setAudioMuted('b', true)
+    expect(useEditorStore.getState().audioMutedClipIds).toEqual(['a', 'b'])
+    store.setAudioMuted('a', false)
+    store.setAudioMuted('a', false)
+    expect(useEditorStore.getState().audioMutedClipIds).toEqual(['b'])
+    store.clearAudioMuted()
+    expect(useEditorStore.getState().audioMutedClipIds).toEqual([])
+  })
+
+  it('replaceDoc clears the badges with the rest of the runtime state', () => {
+    useEditorStore.getState().setAudioMuted('a', true)
+    useEditorStore.getState().replaceDoc(createDoc())
+    expect(useEditorStore.getState().audioMutedClipIds).toEqual([])
+  })
+})
+
 describe('pending restore (0.20.0)', () => {
   it('stores a typed restore object and clears it on demand', () => {
     const restore = { doc: createDoc(), warnings: ['trimmed'] }

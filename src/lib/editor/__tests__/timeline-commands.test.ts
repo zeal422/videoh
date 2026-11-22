@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { applyCommand, TrackLockedError, type EditorCommand } from '../commands'
-import { commandsToJoinClips } from '../actions'
+import { applyCommand, applyCommands, TrackLockedError, type EditorCommand } from '../commands'
+import { commandsToDuplicateClips, commandsToJoinClips } from '../actions'
+import { clearClipboard, commandsToPasteClips, copyClips } from '../clipboard'
 import { EditorCommandError } from '../commands'
 import { createClip, createDoc, createMediaAsset, createTrack } from '../factories'
 import { useEditorStore } from '../store'
@@ -437,6 +438,25 @@ describe('planJoinSelection / planJoinGroup', () => {
       ok: false,
       reason: 'Effects differs between the clips',
     })
+  })
+
+  it('refuses a stretch mismatch and accepts matching or explicit 1', () => {
+    const stretched = pair()
+    stretched.project.tracks[0].clips[1].stretchX = 1.5
+    expect(planJoinSelection(stretched, ['p', 'n'])).toEqual({
+      ok: false,
+      reason: 'Stretch differs between the clips',
+    })
+
+    const defaults = pair()
+    defaults.project.tracks[0].clips[0].stretchX = 1
+    defaults.project.tracks[0].clips[1].stretchY = 1
+    expect(planJoinSelection(defaults, ['p', 'n']).ok).toBe(true)
+
+    const matching = pair()
+    matching.project.tracks[0].clips[0].stretchX = 1.5
+    matching.project.tracks[0].clips[1].stretchX = 1.5
+    expect(planJoinSelection(matching, ['p', 'n']).ok).toBe(true)
   })
 
   it('refuses a transform mismatch and accepts matching or default transforms', () => {
@@ -1059,5 +1079,38 @@ describe('canJoinClips refusals (0.29.0)', () => {
     const doc = docOf([lane('video', 'v1', [clip('a', 0, 2, { mediaId: 'm1' })])])
     expect(canJoinClips(doc, ['a'])).toBe(false)
     expect(canJoinClips(doc, ['a', 'ghost'])).toBe(false)
+  })
+})
+describe('static stretch survives split, duplicate, copy and paste (0.29.5)', () => {
+  const stretchedDoc = () =>
+    docOf([
+      lane('video', 'v1', [clip('s', 0, 4, { mediaId: 'm1', stretchX: 1.5, stretchY: 0.75 })]),
+    ])
+
+  it('split gives both halves the captured stretch', () => {
+    const doc = stretchedDoc()
+    const next = applyCommand(doc, {
+      type: 'splitClip',
+      clipId: 's',
+      atTime: 2,
+      rightId: 'r',
+    })
+    const [left, right] = next.project.tracks[0].clips
+    expect(left).toMatchObject({ id: 's', stretchX: 1.5, stretchY: 0.75 })
+    expect(right).toMatchObject({ id: 'r', stretchX: 1.5, stretchY: 0.75 })
+  })
+
+  it('duplicate and paste clone the stretch fields', () => {
+    const doc = stretchedDoc()
+    const duplicated = applyCommands(doc, commandsToDuplicateClips(doc, ['s'])!)
+    const copy = duplicated.project.tracks[0].clips.find((c) => c.id !== 's')!
+    expect(copy).toMatchObject({ stretchX: 1.5, stretchY: 0.75 })
+
+    clearClipboard()
+    expect(copyClips(doc, ['s'])).toBe(1)
+    const pasted = applyCommands(doc, commandsToPasteClips(doc, 8)!)
+    const pastedClip = pasted.project.tracks[0].clips.find((c) => c.start === 8)!
+    expect(pastedClip).toMatchObject({ stretchX: 1.5, stretchY: 0.75 })
+    clearClipboard()
   })
 })

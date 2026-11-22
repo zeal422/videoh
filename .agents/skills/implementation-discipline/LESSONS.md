@@ -1371,3 +1371,44 @@ effects fix used a hostile entry that hydration filters, so the comment overclai
 Would-have-caught: mutate the guard before labelling a test, and check that the hostile input actually
 crosses the boundary the comment names.
 Action: kept as a note; the mutation checks were recorded in the audit working document.
+
+## 2026-11-22 - 0.29.5 residual register after code insertion
+
+What happened: adding code above documented uncovered branches shifted every later line in
+`docs/testing.md`'s residual register. The coverage gate reported the same branches as "extra" and
+"missing" at new line numbers, and the count constant still matched, so the failure was easy to
+misread as new coverage.
+Would-have-caught: treat the register as line-numbered source, not prose. Re-key it after any edit to
+a coverage-included module: pair the sorted extra and missing line lists per file, update the switch
+case path when a new `case` moves it, and update `RESIDUAL_REGISTER_COUNT`.
+Action: kept as a note; the remap is scriptable and the gate confirms it.
+
+## 2026-11-22 - 0.29.5 transient leak across render tests
+
+What happened: one failing assertion ran before `pointerup`, leaving a store transient open. The next
+tests' `beginTransient` returned null, so their drags never started and they failed with unrelated
+symptoms (undefined values, missing guides).
+Would-have-caught: render suites that open gestures should cancel any live transient in `afterEach`,
+not only at the end of each successful test. A failure must not poison later tests.
+Action: promoted into the checklist: add the `afterEach` cancel guard to new gesture suites.
+
+## 2026-11-22 - 0.29.5 docs counts in the same phase
+
+What happened: new cases changed the per-file and headline counts, and `docs-drift.test.ts` failed at
+the phase gate before the final docs pass. The counts live in README, testing, and structure, plus the
+per-file rows.
+Would-have-caught: after adding or removing cases, run `docs-drift.test.ts` before the full gate and
+move the row, the three headline counts, and the test-table totals together.
+Action: kept as a note; the phase gate caught it before the tree left the phase.
+
+## 2026-11-22 - 0.29.5 state checks against the wrong scope
+
+What happened: three late review findings survived a green suite. Recovery compared readiness with the
+last stamped source instead of the current playhead request; badge cleanup used the active sequence's
+id set as if it were the whole document; and a timed-out reload stayed pooled because the retry only
+released elements with `error`.
+Would-have-caught: for every cleanup, name the scope it must use and test a second scope (another
+sequence, a newer playhead, a timeout with no error). A state keyed by a mutable global needs a check
+against the current request, not the last write.
+Action: kept as a note; the three regression locks name the crossing scope, not only the same-scope
+case.

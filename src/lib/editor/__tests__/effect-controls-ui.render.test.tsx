@@ -1990,14 +1990,21 @@ describe('InspectorPanel transition picker', () => {
 })
 
 describe('clip transform controls (0.24.0)', () => {
+  /** The rotation NumberField by its label (stretch fields follow it). */
+  function rotationField(root: HTMLElement): HTMLInputElement {
+    const label = Array.from(root.querySelectorAll('label')).find(
+      (element) => element.textContent === 'Rotation (°)',
+    )
+    const input = label?.parentElement?.querySelector('input[type="number"]')
+    if (!input) throw new Error('rotation field not found')
+    return input as HTMLInputElement
+  }
+
   it('the Clip tab writes rotation and the flip pair through commands', () => {
     docWithSelectedVideoClip()
     const { container } = render(<InspectorPanel />)
 
-    // Timing holds Start and Duration; the Transform field is the last number
-    // input on the Clip tab.
-    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
-    const rotation = numbers[numbers.length - 1]
+    const rotation = rotationField(container)
     fireEvent.change(rotation, { target: { value: '90' } })
     fireEvent.blur(rotation)
     expect(useEditorStore.getState().doc.project.tracks[0].clips[0].rotation).toBe(90)
@@ -2036,8 +2043,7 @@ describe('clip transform controls (0.24.0)', () => {
     const { container } = render(<InspectorPanel />)
 
     // The field shows the animated value at the playhead, not the static fallback.
-    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
-    const rotation = numbers[numbers.length - 1]
+    const rotation = rotationField(container)
     expect(rotation.value).toBe('90')
     expect(screen.getByText(/edits the keyframe at the playhead/)).toBeInTheDocument()
 
@@ -2065,8 +2071,7 @@ describe('clip transform controls (0.24.0)', () => {
     const pastBefore = useEditorStore.getState().past.length
     const { container } = render(<InspectorPanel />)
 
-    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
-    const rotation = numbers[numbers.length - 1]
+    const rotation = rotationField(container)
     expect(rotation.value).toBe('66.67')
     fireEvent.focus(rotation)
     // The playhead moves under the untouched focus: the draft text goes stale.
@@ -2095,8 +2100,7 @@ describe('clip transform controls (0.24.0)', () => {
     useEditorStore.setState({ doc: withCurve, playhead: 2 })
     const { container } = render(<InspectorPanel />)
 
-    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
-    const rotation = numbers[numbers.length - 1]
+    const rotation = rotationField(container)
     expect(rotation.value).toBe('66.67')
     act(() => {
       useEditorStore.setState({ playhead: 3 })
@@ -2116,8 +2120,7 @@ describe('clip transform controls (0.24.0)', () => {
     useEditorStore.setState({ doc: withCurve, playhead: 2 })
     const { container } = render(<InspectorPanel />)
 
-    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
-    const rotation = numbers[numbers.length - 1]
+    const rotation = rotationField(container)
     fireEvent.focus(rotation)
     fireEvent.change(rotation, { target: { value: '45' } })
     // Playback moves the animated value underneath the draft.
@@ -2152,8 +2155,7 @@ describe('clip transform controls (0.24.0)', () => {
     const pastBefore = useEditorStore.getState().past.length
     const { container } = render(<InspectorPanel />)
 
-    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
-    const rotation = numbers[numbers.length - 1]
+    const rotation = rotationField(container)
     expect(rotation.value).toBe('0')
     fireEvent.focus(rotation)
     fireEvent.change(rotation, { target: { value: '45' } })
@@ -2162,9 +2164,9 @@ describe('clip transform controls (0.24.0)', () => {
     act(() => {
       useEditorStore.setState({ selection: 'clip_other', selections: ['clip_other'] })
     })
-    const after = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
-    expect(after[after.length - 1].value).toBe('30')
-    fireEvent.blur(after[after.length - 1])
+    const after = rotationField(container)
+    expect(after.value).toBe('30')
+    fireEvent.blur(after)
 
     const clips = useEditorStore.getState().doc.project.tracks[0].clips
     expect(clips.find((c) => c.id === 'clip_ec')!.rotation).toBeUndefined()
@@ -2204,8 +2206,7 @@ describe('clip transform controls (0.24.0)', () => {
     useEditorStore.setState({ doc, selection: clip.id, selections: [clip.id], playhead: 1 })
     const { container } = render(<InspectorPanel />)
 
-    const numbers = container.querySelectorAll<HTMLInputElement>('input[type="number"]')
-    expect(numbers[numbers.length - 1].value).toBe('0')
+    expect(rotationField(container).value).toBe('0')
     expect(screen.getByLabelText('Flip horizontally')).toBeInTheDocument()
     expect(screen.getByLabelText('Flip vertically')).toBeInTheDocument()
   })

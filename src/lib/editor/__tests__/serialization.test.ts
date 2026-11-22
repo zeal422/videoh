@@ -84,9 +84,9 @@ describe('serializeDoc', () => {
     expect(json.media[0].waveformPeaks).toEqual([0.1, 0.5, 0.9])
     expect(json.media[0].thumbnail).toBeTruthy()
     // Pin the WIRE value, not the constant serializeDoc itself stamps: the
-    // round-trip contract is "this text is version 7", and a literal here
+    // round-trip contract is "this text is version 9", and a literal here
     // notices a silent constant change instead of restating it.
-    expect(json.version).toBe(8)
+    expect(json.version).toBe(9)
     expect(json.project.tracks[0].clips[0].transitionOut).toEqual({
       type: 'crossfade',
       duration: 0.5,
@@ -859,7 +859,7 @@ describe('marker serialization (0.5.5)', () => {
       },
     ]
     const json = serializeDoc(doc)
-    expect(json.version).toBe(8)
+    expect(json.version).toBe(9)
     expect(json.project.textPresets).toEqual(doc.project.textPresets)
     const back = deserializeDoc(json)
     expect(back.doc.project.textPresets).toEqual(doc.project.textPresets)
@@ -934,7 +934,7 @@ describe('marker serialization (0.5.5)', () => {
     doc.project.luts = [lut]
     doc.project.tracks[0].clips[0].lutId = 'lut_fixed'
     const json = serializeDoc(doc)
-    expect(json.version).toBe(8)
+    expect(json.version).toBe(9)
     expect(json.project.luts).toEqual([lut])
     const back = deserializeDoc(json)
     expect(back.doc.project.luts).toEqual([lut])
@@ -1314,7 +1314,7 @@ describe('effects serialization (0.8.6)', () => {
     return doc
   }
 
-  it('round-trips effects, blend mode and visibility at v8', () => {
+  it('round-trips effects, blend mode and visibility at v9', () => {
     const doc = fxWireDoc()
     doc.project.tracks[1].clips[0].effects = [
       { id: 'fx_crop', type: 'crop', left: 10, feather: 5 },
@@ -1323,7 +1323,7 @@ describe('effects serialization (0.8.6)', () => {
     doc.project.tracks[1].clips[0].blendMode = 'multiply'
     doc.project.tracks[1].visible = false
     const json = serializeDoc(doc)
-    expect(json.version).toBe(8)
+    expect(json.version).toBe(9)
     const { doc: loaded } = deserializeDoc(JSON.parse(JSON.stringify(json)))
     expect(loaded.project.tracks[1].clips[0].effects).toEqual([
       { id: 'fx_crop', type: 'crop', left: 10, right: 0, top: 0, bottom: 0, feather: 5 },
@@ -1425,9 +1425,9 @@ describe('track solo and lock serialization (0.14.0)', () => {
     return doc
   }
 
-  it('round-trips solo and locked at v8 without a schema bump', () => {
+  it('round-trips solo and locked at v9', () => {
     const json = serializeDoc(flagsDoc())
-    expect(json.version).toBe(8)
+    expect(json.version).toBe(9)
     const { doc } = deserializeDoc(JSON.parse(JSON.stringify(json)))
     expect(doc.project.tracks[0].locked).toBe(true)
     expect(doc.project.tracks[0].solo).toBeUndefined()
@@ -1483,11 +1483,11 @@ describe('track solo and lock serialization (0.14.0)', () => {
 describe('media content hash serialization (0.23.0)', () => {
   const HASH = 'a'.repeat(64)
 
-  it('round-trips a valid content hash and writes schema version 8', () => {
+  it('round-trips a valid content hash and writes schema version 9', () => {
     const doc = makeDoc()
     doc.media[0].contentHash = HASH
     const wire = serializeDoc(doc)
-    expect(wire.version).toBe(8)
+    expect(wire.version).toBe(9)
     expect(wire.media[0].contentHash).toBe(HASH)
     const { doc: restored } = deserializeDoc(JSON.parse(JSON.stringify(wire)))
     expect(restored.media[0].contentHash).toBe(HASH)
@@ -1573,10 +1573,10 @@ describe('fonts and shapes at schema v7 (0.25.0)', () => {
     return doc
   }
 
-  it('writes version 8 and round-trips a project font and a shape clip', () => {
+  it('writes version 9 and round-trips a project font and a shape clip', () => {
     const doc = docWithFontAndShape()
     const wire = serializeDoc(doc)
-    expect(wire.version).toBe(8)
+    expect(wire.version).toBe(9)
     expect(wire.project.fonts).toEqual([font()])
     const { doc: loaded } = deserializeDoc(JSON.parse(JSON.stringify(wire)))
     expect(loaded.project.fonts).toEqual([font()])
@@ -1729,7 +1729,7 @@ describe('fonts and shapes at schema v7 (0.25.0)', () => {
   })
 })
 
-describe('track groups and brand kit at schema v8 (0.26.0)', () => {
+describe('track groups and brand kit at the current schema (0.26.0 features)', () => {
   function v8Doc() {
     const doc = createDoc()
     doc.project.tracks[0].groupId = 'grp_pair'
@@ -1745,9 +1745,9 @@ describe('track groups and brand kit at schema v8 (0.26.0)', () => {
     return doc
   }
 
-  it('round-trips a two-track group and a brand kit at v8', () => {
+  it('round-trips a two-track group and a brand kit at v9', () => {
     const wire = serializeDoc(v8Doc())
-    expect(wire.version).toBe(8)
+    expect(wire.version).toBe(9)
     const { doc } = deserializeDoc(JSON.parse(JSON.stringify(wire)))
     expect(doc.project.trackGroups).toEqual([{ id: 'grp_pair', name: 'Pair' }])
     expect(doc.project.tracks.map((track) => track.groupId)).toEqual(['grp_pair', 'grp_pair'])
@@ -2707,5 +2707,109 @@ describe('serialization empty-map cleanup (0.29.0)', () => {
       }),
     )
     expect(doc.project.tracks[0]!.clips[0]!.effects![0]!.keyframes).toBeUndefined()
+  })
+  it('loads a v8 clip without stretch as stretch 1 and round-trips v9 stretch', () => {
+    const media = [{ id: 'm', name: 'v.mp4', kind: 'video', duration: 10, width: 640, height: 360 }]
+    const legacy = {
+      version: 8,
+      project: {
+        id: 'p',
+        name: 'P',
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        tracks: [
+          { kind: 'video', name: 'V1', clips: [{ id: 'c', start: 0, duration: 2, mediaId: 'm' }] },
+        ],
+      },
+      media,
+    }
+    const { doc } = deserializeDoc(legacy)
+    expect(doc.project.tracks[0]!.clips[0]!.stretchX).toBeUndefined()
+    expect(doc.project.tracks[0]!.clips[0]!.stretchY).toBeUndefined()
+
+    const current = createDoc()
+    const asset = createMediaAsset({
+      id: 'media_stretch',
+      kind: 'video',
+      duration: 10,
+      width: 640,
+      height: 360,
+      url: 'blob:v',
+    })
+    current.media = [asset]
+    current.project.tracks[0]!.clips = [
+      createClip({
+        id: 'clip_stretch',
+        mediaId: asset.id,
+        start: 0,
+        duration: 2,
+        stretchX: 1.5,
+        stretchY: 0.75,
+      }),
+    ]
+    const wire = serializeDoc(current)
+    const loaded = deserializeDoc(JSON.parse(JSON.stringify(wire))).doc
+    expect(loaded.project.tracks[0]!.clips[0]!.stretchX).toBe(1.5)
+    expect(loaded.project.tracks[0]!.clips[0]!.stretchY).toBe(0.75)
+  })
+
+  it('clamps hostile stretch values and drops them for audio carriers', () => {
+    const media = [
+      { id: 'm', name: 'v.mp4', kind: 'video', duration: 10, width: 640, height: 360 },
+      { id: 'a', name: 'a.wav', kind: 'audio', duration: 10, width: 0, height: 0 },
+    ]
+    const high = deserializeDoc(
+      rawClip(
+        { id: 'high', start: 0, duration: 2, mediaId: 'm', stretchX: 99, stretchY: -5 },
+        'video',
+        media,
+      ),
+    ).doc
+    expect(high.project.tracks[0]!.clips[0]!.stretchX).toBe(4)
+    expect(high.project.tracks[0]!.clips[0]!.stretchY).toBe(0.1)
+
+    const one = deserializeDoc(
+      rawClip(
+        { id: 'one', start: 0, duration: 2, mediaId: 'm', stretchX: 1, stretchY: Number.NaN },
+        'video',
+        media,
+      ),
+    ).doc
+    expect(one.project.tracks[0]!.clips[0]!.stretchX).toBeUndefined()
+    expect(one.project.tracks[0]!.clips[0]!.stretchY).toBeUndefined()
+
+    const string = deserializeDoc(
+      rawClip({ id: 's', start: 0, duration: 2, mediaId: 'm', stretchX: '2' }, 'video', media),
+    ).doc
+    expect(string.project.tracks[0]!.clips[0]!.stretchX).toBeUndefined()
+
+    const audioTwin = deserializeDoc(
+      rawClip(
+        { id: 'twin', start: 0, duration: 2, mediaId: 'm', audioOnly: true, stretchX: 2 },
+        'audio',
+        media,
+      ),
+    ).doc
+    expect(audioTwin.project.tracks[0]!.clips[0]!.stretchX).toBeUndefined()
+
+    const audioAsset = deserializeDoc(
+      rawClip({ id: 'a1', start: 0, duration: 2, mediaId: 'a', stretchY: 2 }, 'audio', media),
+    ).doc
+    expect(audioAsset.project.tracks[0]!.clips[0]!.stretchY).toBeUndefined()
+
+    // A dangling mediaId has no asset kind to prove picture-less, so the pair
+    // survives hydration (the command layer still governs edits).
+    const dangling = deserializeDoc(
+      rawClip({ id: 'd', start: 0, duration: 2, mediaId: 'gone', stretchX: 2 }, 'video', media),
+    ).doc
+    expect(dangling.project.tracks[0]!.clips[0]!.stretchX).toBe(2)
+
+    // An audio lane drops it after the track kind is known, even when the clip
+    // names a video asset (a hostile file).
+    const audioLane = deserializeDoc(
+      rawClip({ id: 'al', start: 0, duration: 2, mediaId: 'gone', stretchY: 3 }, 'audio', media),
+    ).doc
+    expect(audioLane.project.tracks[0]!.clips[0]!.stretchY).toBeUndefined()
   })
 })

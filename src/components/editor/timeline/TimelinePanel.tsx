@@ -583,6 +583,7 @@ export function TimelinePanel() {
     if (store.snapEnabled) {
       const points = computeSnapPoints(store.doc, {
         includeTimelineEnd: false,
+        playhead: store.playhead,
         activeSequencePath: store.activeSequencePath,
       })
       t = applySnap(t, points, SNAP_THRESHOLD_PX / store.pxPerSec).time

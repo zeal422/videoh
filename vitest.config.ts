@@ -38,6 +38,7 @@ export default defineConfig({
         'src/lib/editor/pen.ts',
         'src/lib/editor/playback/denoise.ts',
         'src/lib/editor/playback/audio-chain.ts',
+        'src/lib/editor/playback/monitor-geometry.ts',
         'src/lib/editor/commands.ts',
         'src/lib/editor/clip-invariants.ts',
         'src/lib/editor/trim.ts',

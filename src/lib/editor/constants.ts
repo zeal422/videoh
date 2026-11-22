@@ -209,6 +209,9 @@ export const SCALE_MAX = 4
 /** Rotation limits in degrees (0.24.0): ten turns each way, authored value kept. */
 export const ROTATION_MIN = -3600
 export const ROTATION_MAX = 3600
+/** Monitor rotation snapping (0.29.5): nearest 15-degree step within 3 degrees. */
+export const ROTATION_SNAP_STEP = 15
+export const ROTATION_SNAP_THRESHOLD = 3
 
 /** Legal value bounds + neutral defaults per animatable property. */
 export const KEYFRAME_PROPERTY_BOUNDS: Record<

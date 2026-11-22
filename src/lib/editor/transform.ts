@@ -10,7 +10,9 @@
 export interface ClipTransform {
   posX: number
   posY: number
-  scale: number
+  /** Uniform scale from the `scale` curve multiplied by the static stretch. */
+  scaleX: number
+  scaleY: number
   /** Degrees, -3600..3600; 0 is neutral. */
   rotation: number
   flipX: boolean
@@ -21,7 +23,8 @@ export interface ClipTransform {
 export const IDENTITY_TRANSFORM: ClipTransform = {
   posX: 0,
   posY: 0,
-  scale: 1,
+  scaleX: 1,
+  scaleY: 1,
   rotation: 0,
   flipX: false,
   flipY: false,
@@ -100,15 +103,15 @@ export function rotationFlipMatrix(
   )
 }
 
-/** The transformed center of a point under position and scale around `center`. */
+/** The transformed center of a point under position and per-axis scale around `center`. */
 export function positionedCenter(
   point: Point,
-  transform: Pick<ClipTransform, 'posX' | 'posY' | 'scale'>,
+  transform: Pick<ClipTransform, 'posX' | 'posY' | 'scaleX' | 'scaleY'>,
   center: Point,
 ): Point {
   return {
-    x: center.x + transform.posX + (point.x - center.x) * transform.scale,
-    y: center.y + transform.posY + (point.y - center.y) * transform.scale,
+    x: center.x + transform.posX + (point.x - center.x) * transform.scaleX,
+    y: center.y + transform.posY + (point.y - center.y) * transform.scaleY,
   }
 }
 
@@ -152,19 +155,19 @@ export function rotatedRectCorners(rect: Rect, rotation: number): Point[] {
   ]
 }
 
-/** Applies position and scale around the frame center, keeping the rect shape. */
+/** Applies position and per-axis scale around the frame center, keeping the rect shape. */
 export function positionedRect(
   rect: Rect,
-  transform: Pick<ClipTransform, 'posX' | 'posY' | 'scale'>,
+  transform: Pick<ClipTransform, 'posX' | 'posY' | 'scaleX' | 'scaleY'>,
   frameWidth: number,
   frameHeight: number,
 ): Rect {
   const center = { x: frameWidth / 2, y: frameHeight / 2 }
   const scaled = {
-    x0: center.x + transform.posX + (rect.x0 - center.x) * transform.scale,
-    y0: center.y + transform.posY + (rect.y0 - center.y) * transform.scale,
-    x1: center.x + transform.posX + (rect.x1 - center.x) * transform.scale,
-    y1: center.y + transform.posY + (rect.y1 - center.y) * transform.scale,
+    x0: center.x + transform.posX + (rect.x0 - center.x) * transform.scaleX,
+    y0: center.y + transform.posY + (rect.y0 - center.y) * transform.scaleY,
+    x1: center.x + transform.posX + (rect.x1 - center.x) * transform.scaleX,
+    y1: center.y + transform.posY + (rect.y1 - center.y) * transform.scaleY,
   }
   return scaled
 }
@@ -195,6 +198,49 @@ export function scaleFromDrag(
   return Math.min(max, Math.max(min, next))
 }
 
+export interface CornerScaleRatio {
+  ratioX: number
+  ratioY: number
+}
+
+/**
+ * Per-axis ratios for a Shift corner drag, in the clip's rotated axis space.
+ * `startPointer` and `pointer` are project pixels; the grab offset (where
+ * inside the hit target the press landed) is removed, so a press off the
+ * corner center does not jump on the first move. Ratios are NOT effective
+ * scale factors: the caller multiplies its captured stretch, so a
+ * pre-stretched clip is never counted twice. A corner on an axis line
+ * (component near zero) keeps that axis at ratio 1.
+ */
+export function scaleFromCornerDrag(
+  startCorner: Point,
+  center: Point,
+  startPointer: Point,
+  pointer: Point,
+  rotation: number,
+): CornerScaleRatio {
+  const adjusted = {
+    x: pointer.x - (startPointer.x - startCorner.x),
+    y: pointer.y - (startPointer.y - startCorner.y),
+  }
+  const radians = (rotation * Math.PI) / 180
+  const cos = Math.cos(radians)
+  const sin = Math.sin(radians)
+  // Rotate both vectors by -rotation so the comparison happens on the clip's
+  // own X and Y axes rather than screen axes.
+  const rotate = (vector: Point): Point => ({
+    x: vector.x * cos + vector.y * sin,
+    y: -vector.x * sin + vector.y * cos,
+  })
+  const start = rotate({ x: startCorner.x - center.x, y: startCorner.y - center.y })
+  const current = rotate({ x: adjusted.x - center.x, y: adjusted.y - center.y })
+  const epsilon = 1e-6
+  return {
+    ratioX: Math.abs(start.x) > epsilon ? current.x / start.x : 1,
+    ratioY: Math.abs(start.y) > epsilon ? current.y / start.y : 1,
+  }
+}
+
 /** Shortest signed angle from `from` to `to`, in degrees (-180, 180]. */
 export function angleDelta(from: number, to: number): number {
   const delta = ((to - from + 540) % 360) - 180
@@ -211,6 +257,19 @@ export function rotationFromDrag(
 ): number {
   const next = startRotation + angleDelta(startAngle, currentAngle)
   return Math.min(max, Math.max(min, next))
+}
+
+/**
+ * Snaps a rotation to the nearest `step` when it is within `threshold`
+ * degrees. Applied before the bounds: 15 divides 3600 exactly, so a snapped
+ * step never fights the clamp grid, and the authored turn count is preserved
+ * (720 stays two turns; 735 is the next step).
+ */
+export function snapRotation(rotation: number, step: number, threshold: number): number {
+  if (!Number.isFinite(rotation) || !Number.isFinite(step) || step <= 0) return rotation
+  if (!Number.isFinite(threshold) || threshold < 0) return rotation
+  const nearest = Math.round(rotation / step) * step
+  return Math.abs(rotation - nearest) <= threshold ? nearest : rotation
 }
 
 /**

@@ -351,6 +351,7 @@ const RETAINED_FIELDS: { label: string; read: (clip: Clip) => unknown }[] = [
   // rotation reads as 0 and absent flips as false, so an explicit default on
   // one side still joins. Keyframed clips refuse above, so only statics compare.
   { label: 'Rotation', read: (clip) => clip.rotation ?? 0 },
+  { label: 'Stretch', read: (clip) => [clip.stretchX ?? 1, clip.stretchY ?? 1] },
   { label: 'Flip', read: (clip) => [clip.flipX === true, clip.flipY === true] },
   { label: 'Blend mode', read: (clip) => clip.blendMode ?? 'normal' },
   { label: 'Temperature', read: (clip) => clip.temperature ?? 0 },

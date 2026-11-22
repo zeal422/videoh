@@ -97,10 +97,11 @@ src/components/
 │   ├── PanelMenu.tsx             #   header Close Panel menu + DOM-order focus handoff
 │   ├── NamedSlider.tsx           #   slider wrapper that names the thumb
 │   ├── Toolbar.tsx               #   tools, history, tracks, save/open, export
-│   ├── MediaBin.tsx              #   import, relink, drag source, bin row selection
+│   ├── MediaBin.tsx              #   Media/Project tabs, import, relink, drag source, bin row selection
+│   ├── ProjectItemsPanel.tsx     #   Project tab: generated text/shape/compound rows, select and seek
 │   ├── SourcePanel.tsx           #   source monitor: preview, transport, mark In/Out
-│   ├── PreviewPanel.tsx          #   program monitor + transport + text drag + gizmo + offline/decode overlays
-│   ├── TransformGizmo.tsx        #   monitor gizmo overlay: box, corner scale, rotation handle
+│   ├── PreviewPanel.tsx          #   program monitor + transport + click-select, snapping, text drag, gizmo, overlays
+│   ├── TransformGizmo.tsx        #   monitor gizmo overlay: box, CSS-sized handles, amber snap guides
 │   ├── FontPicker.tsx            #   built-in/project font select + upload dialog
 │   ├── BrandKitPanel.tsx         #   saved colors and font references editor
 │   ├── BrandColorSwatches.tsx    #   saved swatches beside every text/shape color control
@@ -199,7 +200,7 @@ src/lib/editor/
 ├── actions.ts            # multi-command UI actions (add media/text/shape, group ops, ripple delete)
 ├── action-executor.ts    # policy-free dispatch for the menu, toolbar, and keyboard (pure)
 ├── store.ts              # zustand store: doc, history, transients, selection, playhead, zoom
-├── serialization.ts      # .veproj.json v8 (v1 to v7 still load): serialize / parse / hydrate, fonts, shapes, media content hash
+├── serialization.ts      # .veproj.json v9 (v1 to v8 still load): serialize / parse / hydrate, fonts, shapes, stretch, media content hash
 ├── persistence.ts        # debounced localStorage autosave; readValidAutosave returns a typed PendingRestore
 ├── workspace.ts          # panel + keyframe-graph layout state (pure)
 ├── workspace-store.ts    # zustand wrapper over workspace.ts (layout + graph heights)
@@ -241,13 +242,14 @@ src/lib/editor/
 │   ├── project-lock.ts   # shared Web Lock per open project; exclusive clean refuses a second tab
 │   └── freeze-frame.ts   # two-pass compositor render to an opaque PNG still
 ├── playback/
-│   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate, blend partner, decode recovery
+│   ├── monitor-geometry.ts # pure monitor box source: base rect, quad, topmost pick, canvas snap targets
+│   ├── core.ts           # PlaybackCore: clock, media pool, drift correction, Web Audio graph, live rate, blend partner, decode recovery, audio retry
 │   ├── compositor.ts     # drawFrame + the draws the exporter shares: contain-fit geometry, text, crossfade, blends, the 3D LUT pass
 │   ├── denoise.ts        # noise-reduction biquad chain, shared by the preview mixer and the export mix
 │   ├── audio-chain.ts    # shared shaping builder: EQ, denoise, always-on panner (before compressor), compressor
 │   ├── scrub-source.ts   # WebCodecs paused/scrub frame source (worker or main-thread sink)
 │   ├── scrub-worker.ts   # module worker behind scrub-source: Inputs, CanvasSinks, coalesced decode
-│   ├── preview.ts        # preview engine singleton (attach/detach)
+│   ├── preview.ts        # preview engine singleton (attach/detach, audio mute toast + retry action)
 │   ├── source-preview.ts # source monitor element singleton (attach/detach, one owner of sourcePlayhead)
 │   ├── engine-ref.ts     # PlaybackController ref shared by all UI
 │   └── text-box.ts       # text-box measurement (twins the compositor's text renderer)
@@ -255,7 +257,7 @@ src/lib/editor/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   ├── options.ts        # pure container matrix, output bounds/bitrate, contain fit (Node-testable)
 │   └── mp4.ts            # WebCodecs export pipeline: MP4/MOV/MKV/WAV/MP3/M4A + downloadBlob
-└── __tests__/            # 135 test files (3677 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 138 test files (3796 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```
