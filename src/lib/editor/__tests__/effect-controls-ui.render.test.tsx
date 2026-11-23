@@ -1215,6 +1215,49 @@ describe('keyframe curve, handles and easing defaults', () => {
       }) as DOMRect
   }
 
+  it('cancels a handle drag when the selected clip changes mid-drag', async () => {
+    const { doc } = docWithSelectedVideoClip()
+    const first = doc.project.tracks[0].clips[0]
+    const second = createClip({
+      id: 'clip_ec_b',
+      mediaId: doc.media[0].id,
+      start: 0,
+      duration: 6,
+    })
+    doc.project.tracks[0].clips.push(second)
+    const curve = [
+      { time: 1, value: 1, interpolation: 'easeInOut' as const },
+      { time: 5, value: 0.2 },
+    ]
+    first.keyframes = { opacity: structuredClone(curve) }
+    second.keyframes = { opacity: structuredClone(curve) }
+    useEditorStore.setState({
+      doc: structuredClone(doc),
+      selection: first.id,
+      selections: [first.id],
+      playhead: 1.1,
+    })
+    render(<InspectorPanel />)
+    await userEvent.click(screen.getByTestId('inspector-tab-effects'))
+    sizeGraph()
+
+    const handle = screen.getByTestId('kf-handle-opacity-out')
+    fireEvent.pointerDown(handle, { bubbles: true, pointerId: 55, clientX: 89, clientY: 0 })
+    fireEvent.pointerMove(window, { pointerId: 55, clientX: 100, clientY: 20 })
+    const dragged = useEditorStore.getState().doc.project.tracks[0].clips
+    expect(dragged[0].keyframes?.opacity?.[0].easeOut).toBeDefined()
+    expect(isTransientActive()).toBe(true)
+
+    act(() => useEditorStore.getState().select(second.id))
+    fireEvent.pointerMove(window, { pointerId: 55, clientX: 120, clientY: 10 })
+    fireEvent.pointerUp(window, { pointerId: 55 })
+
+    const clips = useEditorStore.getState().doc.project.tracks[0].clips
+    expect(clips[0].keyframes?.opacity?.[0].easeOut).toBeUndefined()
+    expect(clips[1].keyframes?.opacity?.[0].easeOut).toBeUndefined()
+    expect(isTransientActive()).toBe(false)
+  })
+
   it('draws an eased segment as a cubic and reports the active quad', async () => {
     // Clip duration 6: the dots sit at 16.667% / 0% and 83.333% / 20% (from
     // the bottom); an easeInOut segment's controls are its box fractions of

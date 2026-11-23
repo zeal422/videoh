@@ -1,13 +1,13 @@
 {
   "name": "videoh",
-  "version": "0.29.5",
+  "version": "0.29.6",
   "private": true,
   "license": "MIT",
   "scripts": {
     "dev": "set -o pipefail && next dev -p 3000 2>&1 | tee dev.log",
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "start": "set -o pipefail && NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "battery": "bash e2e/run-battery.sh",

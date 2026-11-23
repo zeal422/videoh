@@ -143,7 +143,8 @@ describe('effect controls surface', () => {
 
   it('lays the two easing handles on the active segment and drags them through the helpers', () => {
     expect(ec).toMatch(/data-testid=\{`kf-handle-\$\{property\}-\$\{which\}`\}/)
-    expect(ec).toMatch(/withQuadHandle\(raw, handleDrag\.which, \{/)
+    expect(ec).toMatch(/withQuadHandle\(raw, drag\.which, \{/)
+    expect(ec).toMatch(/clipId: drag\.clipId/)
     expect(ec).toMatch(/EASE_HANDLE_KEYBOARD_STEP/)
     // The handle drag keeps the transient protocol (token, applyTransient per
     // frame, commit on release, cancel on pointercancel) the dot lock above

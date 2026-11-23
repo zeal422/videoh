@@ -515,7 +515,7 @@ function checkCoverageScope(): string | null {
  * Lock its count, keys, module names, source lines, and reason prefix so a
  * coverage change cannot leave a stale register behind without a failure.
  */
-const RESIDUAL_REGISTER_COUNT = 206
+const RESIDUAL_REGISTER_COUNT = 239
 
 interface ResidualRow {
   file: string

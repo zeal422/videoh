@@ -698,7 +698,7 @@ describe('project lock', () => {
     // read; the later read must still wait behind the head. An unrelated
     // completion triggers the drain that would otherwise skip ahead.
     const other = `${PROJECT}-other`
-    locks.request(projectLockName(PROJECT), { mode: 'shared' }, () => new Promise(() => {}))
+    void locks.request(projectLockName(PROJECT), { mode: 'shared' }, () => new Promise(() => {}))
     const head = locks.request(projectLockName(PROJECT), {}, async () => {
       order.push('head')
       return 'head'

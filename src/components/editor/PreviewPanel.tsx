@@ -103,25 +103,31 @@ function snappedTextAnchor(args: SnappedTextArgs): {
   guides: CanvasSnapGuides
 } {
   const { clip, asset, width, height, startX, startY, scaleX, scaleY, transform } = args
-  const proposedX = startX + args.dx / width / scaleX
-  const proposedY = startY + args.dy / height / scaleY
+  // Normalize every denominator once: a direct zero dimension or scale must
+  // not produce NaN/Infinity even though the current callers are bounded.
+  const w = width || 1
+  const h = height || 1
+  const sx = scaleX || 1
+  const sy = scaleY || 1
+  const proposedX = startX + args.dx / w / sx
+  const proposedY = startY + args.dy / h / sy
   if (!clip.style) {
     return { x: clamp01(proposedX), y: clamp01(proposedY), guides: { x: null, y: null } }
   }
   const proposedClip = { ...clip, style: { ...clip.style, x: proposedX, y: proposedY } }
-  const proposedBase = baseRectForClip(proposedClip, asset, width, height, measureText)
+  const proposedBase = baseRectForClip(proposedClip, asset, w, h, measureText)
   if (!proposedBase) {
     return { x: clamp01(proposedX), y: clamp01(proposedY), guides: { x: null, y: null } }
   }
-  const box = quadBounds(quadForClip(transform, proposedBase, width, height))
+  const box = quadBounds(quadForClip(transform, proposedBase, w, h))
   const snap = snapBoxToTargets(box, args.targets, args.threshold)
-  const x = clamp01(startX + (args.dx + snap.dx) / width / scaleX)
-  const y = clamp01(startY + (args.dy + snap.dy) / height / scaleY)
+  const x = clamp01(startX + (args.dx + snap.dx) / w / sx)
+  const y = clamp01(startY + (args.dy + snap.dy) / h / sy)
   const guides = { ...snap.guides }
   const finalClip = { ...clip, style: { ...clip.style, x, y } }
-  const finalBase = baseRectForClip(finalClip, asset, width, height, measureText)
+  const finalBase = baseRectForClip(finalClip, asset, w, h, measureText)
   if (!finalBase) return { x, y, guides: { x: null, y: null } }
-  const finalBox = quadBounds(quadForClip(transform, finalBase, width, height))
+  const finalBox = quadBounds(quadForClip(transform, finalBase, w, h))
   if (guides.x !== null && !boxHasLine(finalBox, 'x', guides.x)) guides.x = null
   if (guides.y !== null && !boxHasLine(finalBox, 'y', guides.y)) guides.y = null
   return { x, y, guides }
@@ -149,6 +155,20 @@ function textDragStillValid(origin: TextDragOrigin): boolean {
     live.playhead >= captured.clip.start &&
     live.playhead < captured.clip.start + captured.clip.duration
   )
+}
+
+/**
+ * Pauses a playing monitor for a transform gesture. True means the press must
+ * be consumed: the pause moved the playhead, or the transport is still playing
+ * because no controller is attached. The caller then waits for the overlay to
+ * follow the store instead of dragging from geometry captured before the pause.
+ */
+function monitorGestureNeedsRestart(): boolean {
+  const before = useEditorStore.getState()
+  if (!before.playing) return false
+  playbackRef.current?.pause()
+  const after = useEditorStore.getState()
+  return after.playing || after.playhead !== before.playhead
 }
 
 /**
@@ -442,15 +462,6 @@ export function PreviewPanel() {
     const live = useEditorStore.getState()
     const found = findClip(live.doc, gizmoClip.id)
     if (!found) return
-    const locked = lockedTrackForClip(live.doc, gizmoClip.id)
-    if (locked) {
-      toast({
-        title: 'Track locked',
-        description: trackLockMessage(locked),
-        variant: 'destructive',
-      })
-      return
-    }
     const point = pointerProjectPoint(
       e.clientX,
       e.clientY,
@@ -485,36 +496,71 @@ export function PreviewPanel() {
         return
       }
     }
-    const center = {
-      x: (gizmo.quad[0].x + gizmo.quad[1].x + gizmo.quad[2].x + gizmo.quad[3].x) / 4,
-      y: (gizmo.quad[0].y + gizmo.quad[1].y + gizmo.quad[2].y + gizmo.quad[3].y) / 4,
+    const locked = lockedTrackForClip(live.doc, gizmoClip.id)
+    if (locked) {
+      toast({
+        title: 'Track locked',
+        description: trackLockMessage(locked),
+        variant: 'destructive',
+      })
+      return
     }
-    const local = live.playhead - found.clip.start
-    const transform = clipTransform(found.clip, local) ?? IDENTITY_TRANSFORM
-    // A monitor transform drag requires a paused transport: the cached target
-    // set is captured once, so a playing playhead would make it stale.
-    if (live.playing) playbackRef.current?.pause()
+    // A monitor transform requires a paused transport: the target set is
+    // captured once, so a pause that moves the playhead invalidates the press.
+    if (monitorGestureNeedsRestart()) return
+    // Everything below comes from the post-pause store, never the render prop.
+    const live2 = useEditorStore.getState()
+    // The overlay may still show the previous selection for one commit.
+    if (live2.selection !== gizmoClip.id) return
+    const found2 = findClip(live2.doc, gizmoClip.id)
+    if (!found2) return
+    if (
+      live2.playhead < found2.clip.start ||
+      live2.playhead >= found2.clip.start + found2.clip.duration
+    ) {
+      return
+    }
+    const width = live2.doc.project.width
+    const height = live2.doc.project.height
     const baseRect = baseRectForClip(
-      found.clip,
-      findMedia(live.doc, found.clip.mediaId),
-      live.doc.project.width,
-      live.doc.project.height,
+      found2.clip,
+      findMedia(live2.doc, found2.clip.mediaId),
+      width,
+      height,
       measureText,
     )
     if (!baseRect) return
+    const local = live2.playhead - found2.clip.start
+    const transform = clipTransform(found2.clip, local) ?? IDENTITY_TRANSFORM
+    const quad = quadForClip(transform, baseRect, width, height)
+    // The press landed on a stale overlay: consume it and let React catch up
+    // instead of starting from a fresh center under a stale pointer point.
+    if (
+      quad.some(
+        (corner, index) =>
+          Math.abs(corner.x - gizmo.quad[index].x) > 1e-6 ||
+          Math.abs(corner.y - gizmo.quad[index].y) > 1e-6,
+      )
+    ) {
+      return
+    }
+    const center = {
+      x: (quad[0].x + quad[1].x + quad[2].x + quad[3].x) / 4,
+      y: (quad[0].y + quad[1].y + quad[2].y + quad[3].y) / 4,
+    }
     const targets = canvasSnapTargets(
-      live.doc,
-      live.activeSequencePath,
-      live.playhead,
-      [found.clip.id],
+      live2.doc,
+      live2.activeSequencePath,
+      live2.playhead,
+      [found2.clip.id],
       measureText,
     )
     // A second drag cannot join the live gesture: the store refuses the begin
     // and leaves that gesture untouched, so this drag never starts.
-    const token = live.beginTransient(e.pointerId)
+    const token = live2.beginTransient(e.pointerId)
     if (token === null) return
     const corner = mode === 'scale' ? (cornerIndex ?? 0) : 0
-    const cornerPoint = mode === 'scale' ? (gizmo.quad[corner] ?? center) : center
+    const cornerPoint = mode === 'scale' ? (quad[corner] ?? center) : center
     const grabOffset = { x: point.x - cornerPoint.x, y: point.y - cornerPoint.y }
     // Shift is a live preview modifier, not only a pointer flag: releasing it
     // with the mouse still down must return the preview to proportional.
@@ -525,7 +571,7 @@ export function PreviewPanel() {
       const shift = event.type === 'keydown'
       if (shift === drag.shiftHeld) return
       if (currentTransientToken() !== drag.token) return
-      live.resetTransient()
+      useEditorStore.getState().resetTransient()
       drag.shiftHeld = shift
       applyScaleFrame(drag, drag.lastPoint, shift)
     }
@@ -535,7 +581,7 @@ export function PreviewPanel() {
       mode,
       pointerId: e.pointerId,
       token,
-      clipId: gizmoClip.id,
+      clipId: found2.clip.id,
       at: local,
       center,
       startPoint: point,
@@ -545,7 +591,7 @@ export function PreviewPanel() {
       targets,
       baseRect,
       transform,
-      playhead: live.playhead,
+      playhead: live2.playhead,
       corner,
       cornerPoint,
       grabOffset,
@@ -557,12 +603,12 @@ export function PreviewPanel() {
         posY: transform.posY,
         // The proportional path writes the uniform property, so capture the
         // curve/static `scale` alone; `scaleX` already includes the stretch.
-        scale: animatedValue(found.clip, 'scale', local),
-        stretchX: found.clip.stretchX ?? 1,
-        stretchY: found.clip.stretchY ?? 1,
+        scale: animatedValue(found2.clip, 'scale', local),
+        stretchX: found2.clip.stretchX ?? 1,
+        stretchY: found2.clip.stretchY ?? 1,
         rotation: transform.rotation,
-        x: found.clip.style?.x ?? 0.5,
-        y: found.clip.style?.y ?? 0.5,
+        x: found2.clip.style?.x ?? 0.5,
+        y: found2.clip.style?.y ?? 0.5,
         scaleX: transform.scaleX,
         scaleY: transform.scaleY,
       },
@@ -775,7 +821,7 @@ export function PreviewPanel() {
     setGizmoActive(false)
     setSnapGuides({ x: null, y: null })
     if (currentTransientToken() === drag.token) useEditorStore.getState().cancelTransient()
-  })
+  }, [gizmo])
 
   // Unmounting the panel (panel close, editor teardown) must close any live
   // gesture: no setState on an unmounted tree, but the transient and the
@@ -840,7 +886,14 @@ export function PreviewPanel() {
     if (armed && e.button === 0) {
       const canvas = canvasRef.current
       const rect = canvas?.getBoundingClientRect()
-      if (canvas && rect && rect.width > 0 && rect.height > 0) {
+      if (
+        canvas &&
+        rect &&
+        rect.width > 0 &&
+        rect.height > 0 &&
+        canvas.width > 0 &&
+        canvas.height > 0
+      ) {
         // Clamped to the last pixel: a click on the exact monitor edge maps
         // to canvas.width/height, which getImageData rejects with an
         // IndexSizeError (misreported as an unreadable pixel below).
@@ -935,6 +988,31 @@ export function PreviewPanel() {
     const canvas = canvasRef.current
     const rect = canvas?.getBoundingClientRect()
     if (!rect || rect.width === 0 || rect.height === 0) return
+    // A text drag also needs a paused transport: a pause that moves the
+    // playhead invalidates the captured transform and target set.
+    if (monitorGestureNeedsRestart()) return
+    const store = useEditorStore.getState()
+    // The canvas overlay may still show the previous selection for one commit.
+    const selectedNow = store.selection ? findClip(store.doc, store.selection) : undefined
+    if (!selectedNow || selectedNow.track.kind !== 'text') return
+    const liveText = selectedNow.clip
+    if (liveText.text === undefined || liveText.id !== textClip.id || !liveText.style) return
+    if (store.playhead < liveText.start || store.playhead >= liveText.start + liveText.duration) {
+      return
+    }
+    const width = store.doc.project.width
+    const height = store.doc.project.height
+    const freshBox = measureTextBox(liveText, width, height)
+    if (!freshBox || !textBox) return
+    // The press landed on a stale outline: consume it and let React catch up.
+    if (
+      Math.abs(freshBox.x0 - textBox.x0) > 1e-9 ||
+      Math.abs(freshBox.y0 - textBox.y0) > 1e-9 ||
+      Math.abs(freshBox.x1 - textBox.x1) > 1e-9 ||
+      Math.abs(freshBox.y1 - textBox.y1) > 1e-9
+    ) {
+      return
+    }
     // Synthetic pointer events (automation) carry an inactive pointerId —
     // capture is a UX nicety, not required for the gesture to work.
     try {
@@ -942,20 +1020,18 @@ export function PreviewPanel() {
     } catch {
       /* headless/automation: proceed without capture */
     }
-    const store = useEditorStore.getState()
-    if (store.playing) playbackRef.current?.pause()
     const token = store.beginTransient(e.pointerId)
     if (token === null) return
-    const transform = clipTransform(textClip, store.playhead - textClip.start) ?? IDENTITY_TRANSFORM
+    const transform = clipTransform(liveText, store.playhead - liveText.start) ?? IDENTITY_TRANSFORM
     dragOrigin.current = {
       // The gesture owns this clip for its whole life: a selection change or a
       // playhead move must cancel the drag, never retarget it at whatever text
       // clip the next render happens to derive.
-      clipId: textClip.id,
+      clipId: liveText.id,
       px: e.clientX,
       py: e.clientY,
-      x: textClip.style.x,
-      y: textClip.style.y,
+      x: liveText.style.x,
+      y: liveText.style.y,
       // The style anchor moves through the positionedCenter contract, like the
       // gizmo text move below: divide each pointer delta by its own axis scale.
       scaleX: transform.scaleX,
@@ -966,7 +1042,7 @@ export function PreviewPanel() {
         store.doc,
         store.activeSequencePath,
         store.playhead,
-        [textClip.id],
+        [liveText.id],
         measureText,
       ),
     }

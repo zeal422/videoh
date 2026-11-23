@@ -867,7 +867,13 @@ Stable hooks used across flows and tests:
   Coordination teardown releases the tab's presence lock, so a remount or an
   in-page unmount cannot leave another tab waiting for an acknowledgement that never comes, and it
   invalidates an initialization still awaiting its session probe so a torn-down tab cannot reclaim
-  ownership or start a heartbeat. It also clears the in-memory ownership flag: a remount may
+  ownership or start a heartbeat. In 0.29.6 each probe owns a map entry and timer, so two overlapping probes settle independently.
+  An initialization probe holds ordinary saves until it resolves; the reclaim compares the strict
+  live slot with the text this tab last saw or wrote and refuses a storage read failure. Replies
+  must name the current session, acknowledgements must name an expected tab, and every owner-record
+  write is checked. A failed claim, reclaim, heartbeat refresh, save-time refresh, or missing-record
+  re-establish turns autosave off for the session, and a peer-present or storage-failure read-only
+  arms one lease check so a crashed peer cannot strand the tab until reload. A changed import fence is permanent for this session, so it keeps the tab read-only and stops the retry timer. It also clears the in-memory ownership flag: a remount may
   reclaim a fresh same-session record, but it cannot refresh or recreate a stale one. Discarding a restore clears only the slot text its banner was built
   from, and never while a live record names another tab, so a stale banner cannot delete a project
   that tab imported.
@@ -1217,6 +1223,10 @@ Stable hooks used across flows and tests:
   still lands on the guide.
 - Rotation snaps to the nearest 15-degree step within 3 degrees, before the bounds, so a 720-degree
   turn stays two turns.
+- 0.29.6 pauses a playing monitor before capturing geometry and consumes the press when that pause
+  moved the playhead or no controller is attached. The next press recomputes the quad, text box,
+  targets, and selected identity from the post-pause store, and a press on a stale overlay is
+  consumed so React can catch up.
 - Inspector > Transform also exposes Stretch X and Stretch Y (0.1..4), a Reset stretch button, and
   the shared Snapping switch.
 

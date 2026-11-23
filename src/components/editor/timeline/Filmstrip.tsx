@@ -214,11 +214,13 @@ export function Filmstrip({
     read()
     return subscribeFilmstripProgress(read)
   }, [planKey])
+  const progressKey = progress?.key
+  const progressPhase = progress?.phase
   useEffect(() => {
-    if (!progress || progress.phase === 'ready') return
-    const timer = setTimeout(() => setVisibleProgressKey(progress.key), FILMSTRIP_PROGRESS_DELAY_MS)
+    if (!progressKey || progressPhase === 'ready') return
+    const timer = setTimeout(() => setVisibleProgressKey(progressKey), FILMSTRIP_PROGRESS_DELAY_MS)
     return () => clearTimeout(timer)
-  }, [progress?.key, progress?.phase])
+  }, [progressKey, progressPhase])
   const showProgress =
     !!progress && progress.phase !== 'ready' && visibleProgressKey === progress.key
 

@@ -5413,3 +5413,164 @@ describe('audio mute badge and retry ownership (0.29.5)', () => {
     }
   })
 })
+
+describe('presented-frame liveness (0.29.6)', () => {
+  type FrameCallback = (now: number, metadata: VideoFrameCallbackMetadata) => void
+
+  function installFrameCallbacks() {
+    const pending = new Map<number, FrameCallback>()
+    const cancelled: number[] = []
+    let nextId = 1
+    const videoProto = HTMLVideoElement.prototype as unknown as {
+      requestVideoFrameCallback?: unknown
+      cancelVideoFrameCallback?: unknown
+    }
+    const originalRequest = Object.getOwnPropertyDescriptor(videoProto, 'requestVideoFrameCallback')
+    const originalCancel = Object.getOwnPropertyDescriptor(videoProto, 'cancelVideoFrameCallback')
+    Object.defineProperty(videoProto, 'requestVideoFrameCallback', {
+      configurable: true,
+      value: (callback: FrameCallback) => {
+        const id = nextId++
+        pending.set(id, callback)
+        return id
+      },
+    })
+    Object.defineProperty(videoProto, 'cancelVideoFrameCallback', {
+      configurable: true,
+      value: (id: number) => {
+        cancelled.push(id)
+        pending.delete(id)
+      },
+    })
+    return {
+      pending,
+      cancelled,
+      restore: () => {
+        if (originalRequest) {
+          Object.defineProperty(videoProto, 'requestVideoFrameCallback', originalRequest)
+        } else {
+          delete videoProto.requestVideoFrameCallback
+        }
+        if (originalCancel) {
+          Object.defineProperty(videoProto, 'cancelVideoFrameCallback', originalCancel)
+        } else {
+          delete videoProto.cancelVideoFrameCallback
+        }
+      },
+    }
+  }
+
+  it('stops an already-dispatched callback after the clip is released', () => {
+    const callbacks = installFrameCallbacks()
+    try {
+      const { doc, asset } = makeDoc()
+      addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 2, inPoint: 0 })
+      const { core } = makeCore(doc)
+      core.refresh(1)
+      expect(callbacks.pending.size).toBe(1)
+      const el = core['pool'].peek('c1') as HTMLVideoElement
+      const [id, callback] = [...callbacks.pending.entries()][0]
+      callbacks.pending.delete(id)
+
+      doc.project.tracks[0].clips = []
+      core.refresh(5)
+      const render = renderSpy(core)
+      callback(0, { mediaTime: 1 } as VideoFrameCallbackMetadata)
+
+      expect(callbacks.pending.size).toBe(0)
+      expect(core['presentedTimes'].get(el)).toBeUndefined()
+      expect(render).not.toHaveBeenCalled()
+    } finally {
+      callbacks.restore()
+    }
+  })
+
+  it('cancels the old watch when the pool replaces an element internally', () => {
+    const callbacks = installFrameCallbacks()
+    try {
+      const { doc, asset } = makeDoc()
+      addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 2, inPoint: 0 })
+      const { core } = makeCore(doc)
+      core.refresh(1)
+      const old = core['pool'].peek('c1') as HTMLVideoElement
+      const [oldId, oldCallback] = [...callbacks.pending.entries()][0]
+      callbacks.pending.delete(oldId)
+
+      asset.url = 'blob:video-2'
+      core.refresh(1)
+      const replacement = core['pool'].peek('c1') as HTMLVideoElement
+      expect(replacement).not.toBe(old)
+      expect(callbacks.pending.size).toBe(1)
+
+      const render = renderSpy(core)
+      oldCallback(0, { mediaTime: 1 } as VideoFrameCallbackMetadata)
+      expect(callbacks.pending.size).toBe(1)
+      expect(core['presentedTimes'].get(old)).toBeUndefined()
+      expect(render).not.toHaveBeenCalled()
+    } finally {
+      callbacks.restore()
+    }
+  })
+
+  it('cancels a pending callback on dispose', () => {
+    const callbacks = installFrameCallbacks()
+    try {
+      const { doc, asset } = makeDoc()
+      addVideoClip(doc, { id: 'c1', mediaId: asset.id, start: 0, duration: 2, inPoint: 0 })
+      const { core } = makeCore(doc)
+      core.refresh(1)
+      const [callback] = [...callbacks.pending.values()]
+      core.dispose()
+      const render = renderSpy(core)
+      callback(0, { mediaTime: 1 } as VideoFrameCallbackMetadata)
+      expect(callbacks.pending.size).toBe(0)
+      expect(render).not.toHaveBeenCalled()
+    } finally {
+      callbacks.restore()
+    }
+  })
+
+  it('does not re-arm after the paused render replaces the element', () => {
+    const callbacks = installFrameCallbacks()
+    try {
+      const { doc, asset } = makeDoc()
+      const clip = addVideoClip(doc, {
+        id: 'c1',
+        mediaId: asset.id,
+        start: 0,
+        duration: 2,
+        inPoint: 0,
+      })
+      const { core } = makeCore(doc)
+      core.refresh(1)
+      const [callback] = [...callbacks.pending.values()]
+      const originalRender = core['render'].bind(core)
+      core['render'] = () => {
+        core['acquirePrimary'](clip, asset, 'blob:video-2')
+        core['render'] = originalRender
+      }
+      callback(0, { mediaTime: 1 } as VideoFrameCallbackMetadata)
+      expect(callbacks.pending.size).toBe(0)
+    } finally {
+      callbacks.restore()
+    }
+  })
+
+  it('keeps one watch when the same element is watched twice', () => {
+    const callbacks = installFrameCallbacks()
+    try {
+      const { doc } = makeDoc()
+      const { core } = makeCore(doc)
+      const el = document.createElement('video')
+      core['watchPresentedFrames'](el)
+      core['watchPresentedFrames'](el)
+      expect(callbacks.pending.size).toBe(1)
+      const [id, callback] = [...callbacks.pending.entries()][0]
+      callbacks.pending.delete(id)
+      callback(0, { mediaTime: 1 } as VideoFrameCallbackMetadata)
+      expect(callbacks.pending.size).toBe(1)
+    } finally {
+      callbacks.restore()
+    }
+  })
+})

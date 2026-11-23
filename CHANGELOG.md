@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.29.6] - 2026-11-23
+
+### Fixed
+
+- A monitor transform or text drag pauses first and consumes the press when that pause moved the playhead or no playback controller is attached. The next press recomputes the quad, text box, targets, and selected identity from the post-pause store, and a press that lands on a stale overlay is consumed while React catches up.
+- Overlapping autosave probes no longer share one slot: each request owns its map entry and timer, teardown and the test reset settle every pending probe, and a late answer cannot turn a live session into a false absent result.
+- A failed owner-record write is fail-closed in the reclaim, claim, heartbeat, save-time refresh, and missing-record re-establish paths. The tab stops its heartbeat and reports autosave off instead of writing against a record it cannot refresh.
+- Reclaim, claim, and the ownership recheck compare the strict live slot with the text this tab last saw or wrote. A storage read failure or a peer write keeps the newer slot; an explicit claim drops a stale in-memory claim.
+- Replies must name the current session and acknowledgements must name an expected tab. A probe reply from another session no longer settles the request.
+- A released, disposed, or pool-replaced video element cannot repaint the monitor or re-arm its presented-frame callback. Replacing an element through the pool now cancels the old watch.
+- `quadBounds([])` returns a finite zero rect, and a degenerate zero-width or zero-height box no longer snaps to frame edge 0. The text anchor normalizes width, height, scaleX, and scaleY once, and the eyedropper checks the canvas bitmap dimensions.
+- A handle drag in Effect Controls cancels when the selected clip changes mid-drag instead of writing the old clip's keyframe index into the new clip.
+- An ownership recovery that finds a changed import fence now stays read-only and stops rescheduling the retry; the fence cannot match again in this session.
+
+### Changed
+
+- The monitor gesture start recomputes all drag geometry from the post-pause store and treats a stale overlay identity, quad, or text box as a consumed press.
+- Autosave saves are held while an initialization reclaim probe is unresolved, then resumed once the probe settles and the tab is writable.
+- A peer-present or storage-failure read-only state arms one lease check, so a peer that crashes after answering cannot strand autosave until reload.
+
+### Tests and docs
+
+- Added render, autosave, playback, geometry, and static source locks for the gesture-start, probe, owner-write, presented-frame, and guard behavior.
+- Added monitor regression tests for the deliberate locked-track stale-gizmo order: a top clip still selects, while the locked clip and its move, scale, and rotate handles refuse with the toast.
+- Enabled `react-hooks/exhaustive-deps` and `@typescript-eslint/no-floating-promises` as errors, with `--max-warnings=0`, and fixed the four findings.
+- Updated the architecture, flow, testing, structure, deployment, README, and roadmap records for 0.29.6.
+
 ## [0.29.5] - 2026-11-22
 
 ### Added

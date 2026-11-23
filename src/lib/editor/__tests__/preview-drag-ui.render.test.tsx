@@ -2,10 +2,12 @@
 import '@testing-library/jest-dom/vitest'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { startTransition } from 'react'
 
 import { PreviewPanel } from '@/components/editor/PreviewPanel'
 import { installBrowserMocks, type MockHarness } from './mocks/browser-mocks'
 import { isTransientActive, useEditorStore } from '../store'
+import { playbackRef } from '../playback/engine-ref'
 import { createShapeClip, createTextClip, createTrack } from '../factories'
 import type { Clip, Doc } from '../types'
 
@@ -28,6 +30,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   h.uninstall()
+  playbackRef.current = null
 })
 
 function docWithSelectedTextClip(partial: Partial<Clip> = {}): { doc: Doc; clipId: string } {
@@ -469,5 +472,83 @@ describe('stretched and rotated text drags (0.29.5)', () => {
     expect(styleXOf('clip_stretch_text')).toBeCloseTo(0.5, 6)
     expect(screen.getByTestId('canvas-snap-guide-x')).toHaveAttribute('x1', '960')
     fireEvent.pointerUp(gizmo, { pointerId: 43 })
+  })
+})
+
+describe('preview text drag gesture start (0.29.6)', () => {
+  function pauseTo(playhead: number) {
+    playbackRef.current = {
+      pause: () => {
+        const store = useEditorStore.getState()
+        store.setPlaying(false)
+        store.setPlayhead(playhead)
+      },
+    } as unknown as typeof playbackRef.current
+  }
+
+  function sizedCanvas() {
+    const canvas = screen.getByTestId('preview-canvas')
+    canvas.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 400,
+        bottom: 225,
+        width: 400,
+        height: 225,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect
+    return canvas
+  }
+
+  it('consumes a text press when the pause moves the playhead', () => {
+    docWithSelectedTextClip()
+    useEditorStore.setState({ playing: true })
+    render(<PreviewPanel />)
+    pauseTo(2)
+    const canvas = sizedCanvas()
+
+    fireEvent.pointerDown(canvas, { button: 0, pointerId: 31, clientX: 200, clientY: 112.5 })
+    expect(isTransientActive()).toBe(false)
+    expect(textStyleX()).toBe(0.5)
+
+    fireEvent.pointerDown(canvas, { button: 0, pointerId: 31, clientX: 200, clientY: 112.5 })
+    expect(isTransientActive()).toBe(true)
+    fireEvent.pointerMove(canvas, { pointerId: 31, clientX: 240, clientY: 112.5 })
+    expect(textStyleX()).toBeCloseTo(0.6, 5)
+    fireEvent.pointerUp(canvas, { pointerId: 31 })
+  })
+
+  it('refuses a text press when playing has no controller', () => {
+    docWithSelectedTextClip()
+    useEditorStore.setState({ playing: true })
+    render(<PreviewPanel />)
+    playbackRef.current = null
+    const canvas = sizedCanvas()
+
+    fireEvent.pointerDown(canvas, { button: 0, pointerId: 32, clientX: 200, clientY: 112.5 })
+    expect(isTransientActive()).toBe(false)
+    expect(useEditorStore.getState().playing).toBe(true)
+  })
+
+  it('consumes a text press on a stale outline', () => {
+    const { clipId } = docWithSelectedTextClip()
+    render(<PreviewPanel />)
+    const canvas = sizedCanvas()
+
+    act(() => {
+      startTransition(() => {
+        useEditorStore.getState().apply({
+          type: 'setTextStyle',
+          clipId,
+          style: { x: 0.6 },
+        })
+      })
+      fireEvent.pointerDown(canvas, { button: 0, pointerId: 33, clientX: 200, clientY: 112.5 })
+    })
+    expect(isTransientActive()).toBe(false)
+    expect(textStyleX()).toBeCloseTo(0.6, 5)
   })
 })

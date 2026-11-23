@@ -48,6 +48,16 @@ const eslintConfig = [
     },
   },
   {
+    files: ['src/**/*.{ts,tsx}'],
+    languageOptions: {
+      parserOptions: { projectService: true, tsconfigRootDir: __dirname },
+    },
+    rules: {
+      'react-hooks/exhaustive-deps': 'error',
+      '@typescript-eslint/no-floating-promises': ['error', { ignoreVoid: true }],
+    },
+  },
+  {
     ignores: [
       'node_modules/**',
       '.next/**',

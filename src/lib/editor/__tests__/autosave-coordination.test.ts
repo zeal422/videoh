@@ -1412,6 +1412,8 @@ describe('autosave pause handshake (0.28.0)', () => {
       const cleanup = initAutosaveCoordination()
       await vi.advanceTimersByTimeAsync(0)
       cleanup()
+      // Teardown clears the probe timer with the rest of the coordination state.
+      expect(vi.getTimerCount()).toBe(0)
       // The probe times out after teardown. A late takeover would rewrite the
       // record and start a heartbeat for an unmounted editor.
       await vi.advanceTimersByTimeAsync(3_000)
@@ -2889,7 +2891,11 @@ describe('autosave branch matrix (0.29.0)', () => {
     peer.addEventListener('message', (event) => {
       const data = event.data as { type?: string; requestId?: string }
       if (data.type === 'probe-session' && data.requestId) {
-        peer.postMessage({ type: 'session-present', requestId: data.requestId })
+        peer.postMessage({
+          type: 'session-present',
+          requestId: data.requestId,
+          sessionId: record.sessionId,
+        })
       }
     })
     try {
@@ -3120,7 +3126,9 @@ describe('autosave branch matrix (0.29.0)', () => {
         }),
       )
       expect(await writeAutosaveCooperatively('{"taken":true}')).toBe('read-only')
-      expect(vi.getTimerCount()).toBe(0)
+      // The heartbeat is gone; the one remaining timer is the armed ownership
+      // recheck, which runs after the lease and must not write by itself.
+      expect(vi.getTimerCount()).toBe(1)
       const locks = navigator.locks as unknown as FakeLockManager
       const request = vi.spyOn(locks, 'request')
       await vi.advanceTimersByTimeAsync(5_100)
@@ -3944,7 +3952,11 @@ describe('autosave branch matrix (0.29.0)', () => {
     peer.addEventListener('message', (event) => {
       const data = event.data as { type?: string; requestId?: string }
       if (data.type === 'probe-session' && data.requestId) {
-        peer.postMessage({ type: 'session-present', requestId: data.requestId })
+        peer.postMessage({
+          type: 'session-present',
+          requestId: data.requestId,
+          sessionId: record.sessionId,
+        })
       }
     })
     const cleanup = initAutosaveCoordination()
@@ -4443,6 +4455,833 @@ describe('autosave session identity (0.29.0)', () => {
       }
     } finally {
       fresh.resetAutosaveCoordinationForTests()
+    }
+  })
+})
+
+describe('autosave hardening (0.29.6)', () => {
+  function ownerNow(): { tabId: string; epoch: number; sessionId: string } | null {
+    const raw = storage.get(OWNER_KEY)
+    return raw ? (JSON.parse(raw) as { tabId: string; epoch: number; sessionId: string }) : null
+  }
+
+  async function seededOwner(): Promise<Record<string, unknown>> {
+    expect(await claimAutosaveOwnership()).toMatchObject({ ok: true })
+    const record = JSON.parse(storage.get(OWNER_KEY)!) as Record<string, unknown>
+    resetAutosaveCoordinationForTests()
+    storage.set(
+      OWNER_KEY,
+      JSON.stringify({ ...record, tabId: 'prior-page', epoch: 7, heartbeatAt: Date.now() }),
+    )
+    return record
+  }
+
+  it('keeps independent probes when coordination and a claim overlap', async () => {
+    const record = await seededOwner()
+    vi.useFakeTimers()
+    const peer = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    const probes: string[] = []
+    peer.addEventListener('message', (event) => {
+      const data = event.data as { type?: string; requestId?: string }
+      if (data.type === 'probe-session' && data.requestId) probes.push(data.requestId)
+    })
+    const cleanup = initAutosaveCoordination()
+    const claim = claimAutosaveOwnership()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      // Both probes are outstanding before any answer: the initialization
+      // probe starts first, then the claim's.
+      expect(probes).toHaveLength(2)
+      // Answer the claim first, then the initialization probe. A single-slot
+      // implementation drops the first request, so its operation never sees
+      // the paused state its own matching answer should produce.
+      peer.postMessage({
+        type: 'session-present',
+        requestId: probes[1],
+        sessionId: record.sessionId,
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      // The claim settled on its own answer while the initialization probe
+      // is still outstanding.
+      expect(await claim).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining('Another tab is saving this project'),
+      })
+      expect(isAutosavePaused()).toBe(false)
+      peer.postMessage({
+        type: 'session-present',
+        requestId: probes[0],
+        sessionId: record.sessionId,
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(isAutosavePaused()).toBe(true)
+      expect(ownerNow()).toMatchObject({ tabId: 'prior-page', epoch: 7 })
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores a session-present reply with the wrong session id', async () => {
+    const record = await seededOwner()
+    const peer = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    peer.addEventListener('message', (event) => {
+      const data = event.data as { type?: string; requestId?: string }
+      if (data.type === 'probe-session' && data.requestId) {
+        peer.postMessage({
+          type: 'session-present',
+          requestId: data.requestId,
+          sessionId: 'wrong-session',
+        })
+      }
+    })
+    vi.useFakeTimers()
+    const cleanup = initAutosaveCoordination()
+    try {
+      await vi.advanceTimersByTimeAsync(300)
+      // The wrong reply did not settle the probe; the timeout reclaimed the
+      // stale same-session record for this page.
+      expect(ownerNow()?.tabId).not.toBe('prior-page')
+      // Reclaim keeps the record's epoch; only a claim advances it.
+      expect(ownerNow()?.epoch).toBe(7)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('fails a reclaim write closed without starting the heartbeat', async () => {
+    await seededOwner()
+    vi.useFakeTimers()
+    const interval = vi.spyOn(globalThis, 'setInterval')
+    const setItem = vi.spyOn(localStorageMock, 'setItem')
+    setItem.mockImplementation((key: string, value: string) => {
+      if (key === OWNER_KEY) throw new Error('quota')
+      storage.set(key, value)
+    })
+    const cleanup = initAutosaveCoordination()
+    try {
+      await vi.advanceTimersByTimeAsync(300)
+      expect(isAutosavePaused()).toBe(true)
+      expect(ownerNow()).toMatchObject({ tabId: 'prior-page', epoch: 7 })
+      expect(interval).not.toHaveBeenCalled()
+    } finally {
+      cleanup()
+      interval.mockRestore()
+      setItem.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops the heartbeat after an owner refresh failure', async () => {
+    vi.useFakeTimers()
+    expect(await claimAutosaveOwnership()).toMatchObject({ ok: true })
+    const setItem = vi.spyOn(localStorageMock, 'setItem')
+    let ownerWrites = 0
+    setItem.mockImplementation((key: string, value: string) => {
+      if (key === OWNER_KEY) {
+        ownerWrites += 1
+        throw new Error('quota')
+      }
+      storage.set(key, value)
+    })
+    try {
+      await vi.advanceTimersByTimeAsync(5_100)
+      expect(isAutosavePaused()).toBe(true)
+      // A storage write failure is not retried by the automatic recheck.
+      expect(vi.getTimerCount()).toBe(0)
+      const afterFailure = ownerWrites
+      await vi.advanceTimersByTimeAsync(25_000)
+      expect(ownerWrites).toBe(afterFailure)
+      expect(isAutosavePaused()).toBe(true)
+    } finally {
+      setItem.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('refuses a claim whose probe is in flight when coordination tears down', async () => {
+    const record = await seededOwner()
+    vi.useFakeTimers()
+    const cleanup = initAutosaveCoordination()
+    const claim = claimAutosaveOwnership()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      cleanup()
+      await vi.advanceTimersByTimeAsync(300)
+      expect(await claim).toMatchObject({ ok: false })
+      expect(ownerNow()).toMatchObject({ tabId: 'prior-page', epoch: 7 })
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps a pause that arrives during the reclaim probe', async () => {
+    await seededOwner()
+    storage.set(AUTOSAVE_KEY, JSON.stringify(serializeDoc(useEditorStore.getState().doc)))
+    readValidAutosave()
+    vi.useFakeTimers()
+    const cleanup = initAutosaveCoordination()
+    const other = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      other.postMessage({ type: 'pause', requestId: 'pause-reclaim', tabId: 'other' })
+      await vi.advanceTimersByTimeAsync(300)
+      expect(isAutosavePaused()).toBe(true)
+      expect(ownerNow()).toMatchObject({ tabId: 'prior-page', epoch: 7 })
+
+      // The pause ends while the peer's lease is still fresh: the reclaim
+      // never claimed, so the resume path must not restore writes yet.
+      const watched: boolean[] = []
+      const stopWatching = useEditorStore.subscribe((state) => watched.push(state.autosavePaused))
+      other.postMessage({ type: 'resume', requestId: 'pause-reclaim' })
+      await vi.advanceTimersByTimeAsync(0)
+      stopWatching()
+      expect(watched).not.toContain(false)
+      expect(isAutosavePaused()).toBe(true)
+
+      // Once the lease expires and the slot is unchanged, the recheck may
+      // resume ordinary multi-tab editing.
+      await vi.advanceTimersByTimeAsync(20_100)
+      expect(isAutosavePaused()).toBe(false)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('stays read-only when the observed slot changed while the probe is pending', async () => {
+    await seededOwner()
+    const live = createDoc()
+    const original = JSON.stringify(serializeDoc(live))
+    storage.set(AUTOSAVE_KEY, original)
+    expect(readValidAutosave()).not.toBeNull()
+    vi.useFakeTimers()
+    const peer = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    const probes: string[] = []
+    peer.addEventListener('message', (event) => {
+      const data = event.data as { type?: string; requestId?: string }
+      if (data.type === 'probe-session' && data.requestId) probes.push(data.requestId)
+    })
+    const cleanup = initAutosaveCoordination()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(probes).toHaveLength(1)
+      // Replace the slot after the outbound probe is observed, then let the
+      // timeout run: only an in-section strict read can catch this race.
+      storage.set(AUTOSAVE_KEY, '{"peer":true}')
+      await vi.advanceTimersByTimeAsync(300)
+      expect(isAutosavePaused()).toBe(true)
+      expect(readAutosave()).toBe('{"peer":true}')
+      expect(ownerNow()).toMatchObject({ tabId: 'prior-page', epoch: 7 })
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('stays read-only when the strict slot read fails during a reclaim', async () => {
+    await seededOwner()
+    const live = createDoc()
+    storage.set(AUTOSAVE_KEY, JSON.stringify(serializeDoc(live)))
+    readValidAutosave()
+    vi.useFakeTimers()
+    const getItem = vi.spyOn(localStorageMock, 'getItem')
+    getItem.mockImplementation((key: string) => {
+      if (key === AUTOSAVE_KEY) throw new Error('blocked')
+      return storage.get(key) ?? null
+    })
+    const cleanup = initAutosaveCoordination()
+    try {
+      await vi.advanceTimersByTimeAsync(300)
+      expect(isAutosavePaused()).toBe(true)
+      expect(ownerNow()).toMatchObject({ tabId: 'prior-page', epoch: 7 })
+      // The strict read failure arms a retry instead of giving up until reload.
+      expect(vi.getTimerCount()).toBe(1)
+    } finally {
+      cleanup()
+      getItem.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('holds saves while an initialization probe owns the lock', async () => {
+    await seededOwner()
+    const live = createDoc()
+    const original = JSON.stringify(serializeDoc(live))
+    storage.set(AUTOSAVE_KEY, original)
+    readValidAutosave()
+    vi.useFakeTimers()
+    const locks = navigator.locks as unknown as FakeLockManager
+    let release!: () => void
+    const hold = new Promise<void>((resolve) => (release = resolve))
+    const held = locks.request(AUTOSAVE_LOCK_NAME, { mode: 'exclusive' }, () => hold)
+    const cleanup = initAutosaveCoordination()
+    try {
+      await vi.advanceTimersByTimeAsync(300)
+      expect(await writeAutosaveCooperatively('{"held":true}')).toBe('read-only')
+      expect(readAutosave()).toBe(original)
+
+      release()
+      await held
+      await vi.advanceTimersByTimeAsync(0)
+      // The finally block cleared the marker and resumed the live document.
+      const resumed = readValidAutosave()
+      expect(resumed?.doc.project.id).toBe(useEditorStore.getState().doc.project.id)
+      expect(await writeAutosaveCooperatively('{"after":true}')).toBe('saved')
+      expect(readAutosave()).toBe('{"after":true}')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps autosave enabled when a discard lands during a reclaim', async () => {
+    await seededOwner()
+    const live = createDoc()
+    const original = JSON.stringify(serializeDoc(live))
+    storage.set(AUTOSAVE_KEY, original)
+    const restore = readValidAutosave()
+    vi.useFakeTimers()
+    const cleanup = initAutosaveCoordination()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      await clearAutosave(restore?.raw)
+      await vi.advanceTimersByTimeAsync(300)
+      expect(isAutosavePaused()).toBe(false)
+      expect(ownerNow()?.tabId).not.toBe('prior-page')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('autosave ownership hardening (0.29.6)', () => {
+  function ownerNow(): { tabId: string; epoch: number } | null {
+    const raw = storage.get(OWNER_KEY)
+    return raw ? (JSON.parse(raw) as { tabId: string; epoch: number }) : null
+  }
+
+  function ownerRecord(): Record<string, unknown> | null {
+    const raw = storage.get(OWNER_KEY)
+    return raw ? (JSON.parse(raw) as Record<string, unknown>) : null
+  }
+
+  async function seededOwner(): Promise<Record<string, unknown>> {
+    expect(await claimAutosaveOwnership()).toMatchObject({ ok: true })
+    const record = JSON.parse(storage.get(OWNER_KEY)!) as Record<string, unknown>
+    resetAutosaveCoordinationForTests()
+    storage.set(
+      OWNER_KEY,
+      JSON.stringify({ ...record, tabId: 'prior-page', epoch: 7, heartbeatAt: Date.now() }),
+    )
+    return record
+  }
+
+  it('refuses a claim when the observed slot changed while its probe is pending', async () => {
+    await seededOwner()
+    const live = createDoc()
+    storage.set(AUTOSAVE_KEY, JSON.stringify(serializeDoc(live)))
+    expect(readValidAutosave()).not.toBeNull()
+    vi.useFakeTimers()
+    const peer = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    const probes: string[] = []
+    peer.addEventListener('message', (event) => {
+      const data = event.data as { type?: string; requestId?: string }
+      if (data.type === 'probe-session' && data.requestId) probes.push(data.requestId)
+    })
+    // seededOwner reset coordination, so establish the channel before the
+    // claim: without it the probe resolves absent immediately and there is no
+    // pending window to exercise.
+    const cleanup = initAutosaveCoordination()
+    const claim = claimAutosaveOwnership()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(probes).toHaveLength(2)
+      storage.set(AUTOSAVE_KEY, '{"peer":true}')
+      await vi.advanceTimersByTimeAsync(300)
+      expect(await claim).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining('saved this project after this page loaded'),
+      })
+      expect(readAutosave()).toBe('{"peer":true}')
+      expect(ownerNow()).toMatchObject({ tabId: 'prior-page', epoch: 7 })
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('lets the newer of two overlapping claims own the slot', async () => {
+    await seededOwner()
+    vi.useFakeTimers()
+    const older = claimAutosaveOwnership()
+    const newer = claimAutosaveOwnership()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      const [olderResult, newerResult] = await Promise.all([older, newer])
+      expect(olderResult).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining('Another import took over'),
+      })
+      expect(newerResult.ok).toBe(true)
+      if (!newerResult.ok) throw new Error('newer claim refused')
+      expect(ownerNow()).toMatchObject({ epoch: newerResult.epoch })
+      expect(ownerNow()?.tabId).not.toBe('prior-page')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('refuses a queued claim when an import lands while it waits', async () => {
+    await seededOwner()
+    vi.useFakeTimers()
+    const locks = navigator.locks as unknown as FakeLockManager
+    let release!: () => void
+    const hold = new Promise<void>((resolve) => (release = resolve))
+    const held = locks.request(AUTOSAVE_LOCK_NAME, { mode: 'exclusive' }, () => hold)
+    const cleanup = initAutosaveCoordination()
+    const other = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    const claim = claimAutosaveOwnership()
+    try {
+      await vi.advanceTimersByTimeAsync(300)
+      other.postMessage({ type: 'imported' })
+      await vi.advanceTimersByTimeAsync(0)
+      release()
+      await held
+      await vi.advanceTimersByTimeAsync(0)
+      expect(await claim).toMatchObject({
+        ok: false,
+        reason: expect.stringContaining('reload before it can import'),
+      })
+      expect(ownerNow()).toMatchObject({ tabId: 'prior-page', epoch: 7 })
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('stays read-only when a stale record carries a newer epoch', async () => {
+    const live = createDoc()
+    storage.set(AUTOSAVE_KEY, JSON.stringify(serializeDoc(live)))
+    readValidAutosave()
+    vi.useFakeTimers()
+    const cleanup = initAutosaveCoordination()
+    const other = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    try {
+      expect(await claimAutosaveOwnership()).toMatchObject({ ok: true })
+      const claimed = ownerRecord()!
+      storage.set(
+        OWNER_KEY,
+        JSON.stringify({
+          ...claimed,
+          tabId: 'newer-owner',
+          epoch: (claimed.epoch as number) + 1,
+          heartbeatAt: Date.now() - 60_000,
+        }),
+      )
+      // The write path marks this tab read-only against the newer record.
+      expect(await writeAutosaveCooperatively('{"mine":true}')).toBe('read-only')
+      expect(isAutosavePaused()).toBe(true)
+      const watched: boolean[] = []
+      const stopWatching = useEditorStore.subscribe((state) => watched.push(state.autosavePaused))
+      other.postMessage({ type: 'resume', requestId: 'epoch-check' })
+      await vi.advanceTimersByTimeAsync(0)
+      stopWatching()
+      // A stale lease does not make the older epoch valid again, and the
+      // recheck must not briefly publish an unpaused state before the write
+      // path rejects it.
+      expect(watched).not.toContain(false)
+      expect(isAutosavePaused()).toBe(true)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps autosave off when an import lands while a resume waits', async () => {
+    const live = createDoc()
+    storage.set(AUTOSAVE_KEY, JSON.stringify(serializeDoc(live)))
+    readValidAutosave()
+    vi.useFakeTimers()
+    const cleanup = initAutosaveCoordination()
+    const other = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    try {
+      expect(await claimAutosaveOwnership()).toMatchObject({ ok: true })
+      const claimed = ownerRecord()!
+      storage.set(
+        OWNER_KEY,
+        JSON.stringify({
+          ...claimed,
+          tabId: 'newer-owner',
+          epoch: (claimed.epoch as number) + 1,
+          heartbeatAt: Date.now(),
+        }),
+      )
+      expect(await writeAutosaveCooperatively('{"mine":true}')).toBe('read-only')
+      expect(isAutosavePaused()).toBe(true)
+      // Let the record pass the lease and epoch checks so only the import
+      // check can keep the tab read-only.
+      storage.set(
+        OWNER_KEY,
+        JSON.stringify({
+          tabId: 'other-tab',
+          sessionId: 'other-session',
+          tokenHash: 'old',
+          epoch: claimed.epoch,
+          heartbeatAt: Date.now() - 60_000,
+        }),
+      )
+      const locks = navigator.locks as unknown as FakeLockManager
+      let release!: () => void
+      const hold = new Promise<void>((resolve) => (release = resolve))
+      const held = locks.request(AUTOSAVE_LOCK_NAME, { mode: 'exclusive' }, () => hold)
+      const watched: boolean[] = []
+      const stopWatching = useEditorStore.subscribe((state) => watched.push(state.autosavePaused))
+      other.postMessage({ type: 'resume', requestId: 'import-wait' })
+      await vi.advanceTimersByTimeAsync(0)
+      other.postMessage({ type: 'imported' })
+      await vi.advanceTimersByTimeAsync(0)
+      release()
+      await held
+      await vi.advanceTimersByTimeAsync(0)
+      stopWatching()
+      // The import check must win inside the section, before the store is
+      // published as unpaused.
+      expect(watched).not.toContain(false)
+      expect(isAutosavePaused()).toBe(true)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps autosave off when an import fence moves while a resume waits', async () => {
+    const live = createDoc()
+    const original = JSON.stringify(serializeDoc(live))
+    storage.set(AUTOSAVE_KEY, original)
+    readValidAutosave()
+    vi.useFakeTimers()
+    const cleanup = initAutosaveCoordination()
+    const other = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    try {
+      expect(await claimAutosaveOwnership()).toMatchObject({ ok: true })
+      const claimed = ownerRecord()!
+      storage.set(
+        OWNER_KEY,
+        JSON.stringify({
+          ...claimed,
+          tabId: 'newer-owner',
+          epoch: (claimed.epoch as number) + 1,
+          heartbeatAt: Date.now(),
+        }),
+      )
+      expect(await writeAutosaveCooperatively('{"mine":true}')).toBe('read-only')
+      expect(isAutosavePaused()).toBe(true)
+      storage.set(
+        OWNER_KEY,
+        JSON.stringify({
+          tabId: 'other-tab',
+          sessionId: 'other-session',
+          tokenHash: 'old',
+          epoch: claimed.epoch,
+          heartbeatAt: Date.now() - 60_000,
+        }),
+      )
+      const locks = navigator.locks as unknown as FakeLockManager
+      let release!: () => void
+      const hold = new Promise<void>((resolve) => (release = resolve))
+      const held = locks.request(AUTOSAVE_LOCK_NAME, { mode: 'exclusive' }, () => hold)
+      const watched: boolean[] = []
+      const stopWatching = useEditorStore.subscribe((state) => watched.push(state.autosavePaused))
+      other.postMessage({ type: 'resume', requestId: 'fence-wait' })
+      await vi.advanceTimersByTimeAsync(0)
+      storage.set(IMPORT_KEY, 'import-token')
+      await vi.advanceTimersByTimeAsync(0)
+      release()
+      await held
+      await vi.advanceTimersByTimeAsync(0)
+      stopWatching()
+      // The changed fence keeps the tab read-only inside the section.
+      expect(watched).not.toContain(false)
+      expect(isAutosavePaused()).toBe(true)
+      expect(readAutosave()).toBe(original)
+      // The marker is permanent for this session. Do not keep a retry timer
+      // alive that can never match again.
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not write the boot document when a reclaim holds no save', async () => {
+    await seededOwner()
+    const saved = createDoc()
+    saved.project.name = 'Saved project'
+    const original = JSON.stringify(serializeDoc(saved))
+    storage.set(AUTOSAVE_KEY, original)
+    expect(readValidAutosave()?.doc.project.name).toBe('Saved project')
+    vi.useFakeTimers()
+    const cleanup = initAutosaveCoordination()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      // A project-scoped write rejected by the probe is not an ordinary held
+      // save; the import retry owns it.
+      expect(await writeAutosaveCooperatively('{"scoped":true}', undefined, 'proj_scoped')).toBe(
+        'read-only',
+      )
+      await vi.advanceTimersByTimeAsync(300)
+      expect(isAutosavePaused()).toBe(false)
+      expect(ownerNow()?.tabId).not.toBe('prior-page')
+      // Nothing was waiting, so the restore candidate is untouched.
+      expect(readAutosave()).toBe(original)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('lets an own save that lands before the claim match the slot', async () => {
+    expect(await writeAutosaveCooperatively('{"own":true}')).toBe('saved')
+    expect(await claimAutosaveOwnership()).toMatchObject({ ok: true })
+    expect(readAutosave()).toBe('{"own":true}')
+  })
+
+  it('fails a claim write closed without leaving the heartbeat armed', async () => {
+    vi.useFakeTimers()
+    expect(await claimAutosaveOwnership()).toMatchObject({ ok: true })
+    const firstOwner = ownerNow()
+    const setItem = vi.spyOn(localStorageMock, 'setItem')
+    let ownerWrites = 0
+    setItem.mockImplementation((key: string, value: string) => {
+      if (key === OWNER_KEY) {
+        ownerWrites += 1
+        throw new Error('quota')
+      }
+      storage.set(key, value)
+    })
+    try {
+      expect(await claimAutosaveOwnership()).toMatchObject({ ok: false })
+      expect(isAutosavePaused()).toBe(true)
+      expect(ownerNow()).toMatchObject(firstOwner!)
+      const afterFailure = ownerWrites
+      await vi.advanceTimersByTimeAsync(5_100)
+      expect(ownerWrites).toBe(afterFailure)
+    } finally {
+      setItem.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports saved but goes read-only when the save-time refresh fails', async () => {
+    vi.useFakeTimers()
+    expect(await claimAutosaveOwnership()).toMatchObject({ ok: true })
+    const firstOwner = ownerNow()
+    const setItem = vi.spyOn(localStorageMock, 'setItem')
+    let ownerWrites = 0
+    setItem.mockImplementation((key: string, value: string) => {
+      if (key === OWNER_KEY) {
+        ownerWrites += 1
+        throw new Error('quota')
+      }
+      storage.set(key, value)
+    })
+    try {
+      expect(await writeAutosaveCooperatively('{"slot":true}')).toBe('saved')
+      expect(ownerWrites).toBe(1)
+      expect(isAutosavePaused()).toBe(true)
+      expect(ownerNow()).toMatchObject(firstOwner!)
+      expect(await writeAutosaveCooperatively('{"later":true}')).toBe('read-only')
+      expect(readAutosave()).toBe('{"slot":true}')
+    } finally {
+      setItem.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('returns error when the missing-record re-establish write fails', async () => {
+    vi.useFakeTimers()
+    expect(await claimAutosaveOwnership()).toMatchObject({ ok: true })
+    storage.delete(OWNER_KEY)
+    const setItem = vi.spyOn(localStorageMock, 'setItem')
+    setItem.mockImplementation((key: string, value: string) => {
+      if (key === OWNER_KEY) throw new Error('quota')
+      storage.set(key, value)
+    })
+    try {
+      expect(await writeAutosaveCooperatively('{"slot":true}')).toBe('error')
+      expect(isAutosavePaused()).toBe(true)
+      expect(storage.has(OWNER_KEY)).toBe(false)
+      expect(await writeAutosaveCooperatively('{"later":true}')).toBe('read-only')
+    } finally {
+      setItem.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it('reclaims after a heartbeat refresh during the first probe and a crash', async () => {
+    await seededOwner()
+    vi.useFakeTimers()
+    const cleanup = initAutosaveCoordination()
+    try {
+      await vi.advanceTimersByTimeAsync(200)
+      const record = JSON.parse(storage.get(OWNER_KEY)!) as Record<string, unknown>
+      storage.set(OWNER_KEY, JSON.stringify({ ...record, heartbeatAt: Date.now() + 1_000 }))
+      await vi.advanceTimersByTimeAsync(400)
+      expect(isAutosavePaused()).toBe(false)
+      expect(ownerNow()?.tabId).not.toBe('prior-page')
+      expect(ownerNow()?.epoch).toBe(7)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('stays read-only when the peer refreshes during both probes', async () => {
+    await seededOwner()
+    storage.set(AUTOSAVE_KEY, JSON.stringify(serializeDoc(createDoc())))
+    readValidAutosave()
+    vi.useFakeTimers()
+    const cleanup = initAutosaveCoordination()
+    try {
+      await vi.advanceTimersByTimeAsync(200)
+      const first = JSON.parse(storage.get(OWNER_KEY)!) as Record<string, unknown>
+      storage.set(OWNER_KEY, JSON.stringify({ ...first, heartbeatAt: Date.now() + 1_000 }))
+      await vi.advanceTimersByTimeAsync(100)
+      const second = JSON.parse(storage.get(OWNER_KEY)!) as Record<string, unknown>
+      storage.set(OWNER_KEY, JSON.stringify({ ...second, heartbeatAt: Date.now() + 30_000 }))
+      await vi.advanceTimersByTimeAsync(400)
+      expect(isAutosavePaused()).toBe(true)
+      expect(ownerNow()).toMatchObject({ tabId: 'prior-page', epoch: 7 })
+      // A fresh peer keeps the tab read-only and the lease check reschedules.
+      expect(vi.getTimerCount()).toBe(1)
+      await vi.advanceTimersByTimeAsync(20_100)
+      expect(isAutosavePaused()).toBe(true)
+      expect(vi.getTimerCount()).toBe(1)
+      // Once the peer stops refreshing, the next lease check resumes.
+      storage.set(
+        OWNER_KEY,
+        JSON.stringify({
+          tabId: 'prior-page',
+          sessionId: 'prior-session',
+          tokenHash: 'old',
+          epoch: 7,
+          heartbeatAt: Date.now() - 60_000,
+        }),
+      )
+      await vi.advanceTimersByTimeAsync(20_100)
+      expect(isAutosavePaused()).toBe(false)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('resumes after a peer answers and then its record goes stale', async () => {
+    const record = await seededOwner()
+    const live = createDoc()
+    storage.set(AUTOSAVE_KEY, JSON.stringify(serializeDoc(live)))
+    readValidAutosave()
+    vi.useFakeTimers()
+    const peer = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    peer.addEventListener('message', (event) => {
+      const data = event.data as { type?: string; requestId?: string }
+      if (data.type === 'probe-session' && data.requestId) {
+        peer.postMessage({
+          type: 'session-present',
+          requestId: data.requestId,
+          sessionId: record.sessionId,
+        })
+      }
+    })
+    const cleanup = initAutosaveCoordination()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(isAutosavePaused()).toBe(true)
+      storage.set(
+        OWNER_KEY,
+        JSON.stringify({
+          ...record,
+          tabId: 'prior-page',
+          epoch: 7,
+          heartbeatAt: Date.now() - 60_000,
+        }),
+      )
+      await vi.advanceTimersByTimeAsync(20_100)
+      expect(isAutosavePaused()).toBe(false)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores an unexpected pause acknowledgement until the known peer answers', async () => {
+    vi.useFakeTimers()
+    const locks = Object.assign(new FakeLockManager(), {
+      query: async () => ({ held: [{ name: 'videoh-autosave-tab:peer-1' }] }),
+    })
+    vi.stubGlobal('navigator', { locks })
+    const cleanup = initAutosaveCoordination()
+    const other = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    let requestId: string | null = null
+    other.addEventListener('message', (event) => {
+      const data = event.data as { type?: string; requestId?: string }
+      if (data.type === 'pause' && data.requestId) requestId = data.requestId
+    })
+    try {
+      let settled = false
+      const pending = pauseOtherAutosaveTabs().then((result) => {
+        settled = true
+        return result
+      })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(requestId).not.toBeNull()
+      // The active request id matches, so only the tab-id check can reject it.
+      other.postMessage({ type: 'paused', requestId: requestId!, tabId: 'unexpected-tab' })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(settled).toBe(false)
+      other.postMessage({ type: 'paused', requestId: requestId!, tabId: 'peer-1' })
+      expect(await pending).toMatchObject({ ok: true })
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('autosave transient handoff (0.29.6)', () => {
+  it('defers a resumed save until a no-frame gesture ends', async () => {
+    vi.useFakeTimers()
+    const coordination = initAutosaveCoordination()
+    const autosave = initAutosave()
+    const other = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    try {
+      useEditorStore.getState().apply({ type: 'setProjectSettings', patch: { name: 'committed' } })
+      useEditorStore.getState().beginTransient(77)
+      other.postMessage({ type: 'pause', requestId: 'transient-pause' })
+      expect(isAutosavePaused()).toBe(true)
+      other.postMessage({ type: 'resume', requestId: 'transient-pause' })
+      expect(isAutosavePaused()).toBe(false)
+
+      // The resume must not persist an unfinished gesture, and the cancelled
+      // debounce timer must not fire on its own either.
+      await vi.advanceTimersByTimeAsync(900)
+      for (let i = 0; i < 10; i += 1) await Promise.resolve()
+      expect(readAutosave()).toBeNull()
+
+      // A no-frame cancel changes no doc, past, or future reference. The
+      // deferred resume must still own the flush.
+      useEditorStore.getState().cancelTransient()
+      await vi.advanceTimersByTimeAsync(900)
+      for (let i = 0; i < 10; i += 1) await Promise.resolve()
+      expect(readValidAutosave()?.doc.project.name).toBe('committed')
+    } finally {
+      autosave()
+      coordination()
+      vi.useRealTimers()
     }
   })
 })

@@ -662,3 +662,20 @@ describe('effects UI wiring (0.8.6)', () => {
     expect(commits).toBeGreaterThan(0)
   })
 })
+
+describe('preview input hardening (0.29.6)', () => {
+  const panel = read('src/components/editor/PreviewPanel.tsx')
+
+  it('checks the canvas bitmap before sampling the eyedropper', () => {
+    expect(panel).toMatch(/canvas\.width > 0\s*&&\s*canvas\.height > 0/)
+  })
+
+  it('normalizes every text-anchor denominator once', () => {
+    expect(panel).toMatch(/const w = width \|\| 1/)
+    expect(panel).toMatch(/const h = height \|\| 1/)
+    expect(panel).toMatch(/const sx = scaleX \|\| 1/)
+    expect(panel).toMatch(/const sy = scaleY \|\| 1/)
+    expect(panel).toMatch(/args\.dx \/ w \/ sx/)
+    expect(panel).toMatch(/args\.dy \/ h \/ sy/)
+  })
+})

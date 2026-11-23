@@ -93,6 +93,7 @@ export function quadForClip(
 
 /** Axis-aligned bounds of a quad. Flip does not change these. */
 export function quadBounds(quad: readonly Point[]): Rect {
+  if (quad.length === 0) return { x0: 0, y0: 0, x1: 0, y1: 0 }
   const xs = quad.map((point) => point.x)
   const ys = quad.map((point) => point.y)
   return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) }
@@ -272,6 +273,9 @@ export function snapBoxToTargets(
 ): CanvasSnapResult {
   const guides: CanvasSnapGuides = { x: null, y: null }
   if (!Number.isFinite(threshold) || threshold <= 0) return { dx: 0, dy: 0, guides }
+  // A degenerate box has no span to align. Returning no guides also keeps the
+  // empty-quad fallback from snapping every line to frame edge 0.
+  if (box.x0 === box.x1 || box.y0 === box.y1) return { dx: 0, dy: 0, guides }
   let dx = 0
   let dy = 0
   const xEdges = [box.x0, (box.x0 + box.x1) / 2, box.x1]

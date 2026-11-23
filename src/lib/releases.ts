@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.29.6',
+    date: '2026-11-23',
+    highlights: [
+      'A monitor transform or text drag never starts from geometry captured before a pause that moved the playhead',
+      'Cross-tab autosave probes are independent, and a torn-down tab clears every probe timer',
+      'A failed ownership write turns autosave off instead of writing against a record the tab cannot refresh',
+      'Released or replaced video elements can no longer repaint the monitor or re-arm their frame callback',
+      'Hook dependency and floating-promise regressions now fail lint',
+    ],
+  },
+  {
     version: '0.29.5',
     date: '2026-11-22',
     highlights: [

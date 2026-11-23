@@ -85,6 +85,15 @@ export function readAutosave(): string | null {
   }
 }
 
+/**
+ * Reads the raw autosaved JSON, letting a storage failure throw. Callers that
+ * compare ownership state must distinguish "no slot" from "cannot read the
+ * slot"; the tolerant reader above would turn both into null.
+ */
+export function readAutosaveStrict(): string | null {
+  return localStorage.getItem(AUTOSAVE_KEY)
+}
+
 function readImportFence(): string | null {
   try {
     return localStorage.getItem(IMPORT_KEY)
@@ -185,7 +194,29 @@ interface PendingPause {
  * orphaning the older promise.
  */
 const pendingPauses = new Map<string, PendingPause>()
-let pendingProbe: { requestId: string; resolve: (present: boolean) => void } | null = null
+interface PendingProbe {
+  timer: ReturnType<typeof setTimeout>
+  resolve: (present: boolean) => void
+}
+/** Probe requests are independent: a late answer must not settle another probe. */
+const pendingProbes = new Map<string, PendingProbe>()
+/**
+ * The coordination generation whose initialization probe is in flight. While
+ * set, ordinary saves are held so they cannot advance the slot the reclaim is
+ * about to compare. It is a single value safely: initializeOwnership runs once
+ * per generation and its retry is sequential; claim probes never touch it.
+ */
+let ownershipProbeGeneration: number | null = null
+/** A failed owner-record write is final for this session until a new claim or reinit. */
+let ownerWriteFailed = false
+/** One scheduled recovery check after a fail-closed read-only outcome. */
+let ownershipRecheck: ReturnType<typeof setTimeout> | null = null
+/** A resume that arrived while a gesture was live; the subscription flushes it after. */
+let resumeAfterTransient = false
+/** An ordinary save the initialization probe actually held, for the finally flush. */
+let probeHeldSave = false
+/** Monotonic claim order: a newer import supersedes an older claim still waiting. */
+let claimSequence = 0
 /**
  * Identifies the live coordination session. A teardown bumps it so an
  * `initializeOwnership` still awaiting its probe cannot reclaim the record and
@@ -533,6 +564,14 @@ function resumePendingAutosave(): void {
     // holds. Do not replace that session before the user chooses Restore or
     // Discard.
     if (store.pendingRestore) return
+    // A live gesture has not committed yet. Persisting its transient frame
+    // would mix an unfinished preview into the slot, so mark the resume and
+    // let the autosave subscription flush it when the gesture ends.
+    if (isTransientActive()) {
+      resumeAfterTransient = true
+      return
+    }
+    resumeAfterTransient = false
     const savedDoc = store.doc
     const json = JSON.stringify(serializeDoc(savedDoc))
     void writeAutosaveCooperatively(json, undefined, undefined, savedDoc.project.id, savedDoc)
@@ -579,32 +618,103 @@ function resumePendingAutosave(): void {
  * importer remains. A recorded takeover or a completed import stays read-only.
  */
 async function recheckOwnershipAfterResume(): Promise<void> {
-  if (importedAway) return
+  if (importedAway || activePauses.size > 0) {
+    if (!importedAway && readOnly) scheduleOwnershipRecheck()
+    return
+  }
+  const generation = coordinationGeneration
+  const wasPaused = paused
   let canResume = false
+  let reloadRequired = false
   try {
     canResume = await withAutosaveSection(
       () => {
+        // A teardown, a newer claim, or an owner-write failure makes this run
+        // stale. Its callback must not touch shared state.
+        if (generation !== coordinationGeneration || owns || ownerWriteFailed) return false
+        // An import can land while this run waits for the lock. Keep autosave
+        // off; the slot alone cannot prove the import is gone.
+        if (importedAway) return false
         const record = readOwnerRecord()
         if (record && recordIsFresh(record) && record.tabId !== tabId) return false
+        // A former owner must not resume against a newer epoch even after that
+        // owner's lease went stale, matching the write path.
+        if (record && ourEpoch > 0 && record.epoch > ourEpoch) return false
         if (record && record.tabId === tabId && record.epoch !== ourEpoch) return false
+        // A different text means another tab replaced the slot. A failed read
+        // proves nothing and stays read-only. The comparison and the resume
+        // live inside the section so a claim cannot land in between.
+        if (knownSlotRaw === undefined) return false
+        let live: string | null
+        try {
+          live = readAutosaveStrict()
+        } catch {
+          return false
+        }
+        if (live !== knownSlotRaw) return false
+        // An import marker that moved while this run waited means an import
+        // landed without this tab seeing its pause. Stay read-only and stop
+        // retrying: the observed marker can no longer match this session.
+        if (knownImportFence !== undefined && readImportFence() !== knownImportFence) {
+          reloadRequired = true
+          clearOwnershipRecheck()
+          return false
+        }
+        // A pause can arrive while this run waits for the lock. Leave the tab
+        // paused so a save cannot land after it acknowledged that pause.
+        if (activePauses.size > 0) return false
+        readOnly = false
+        paused = false
+        try {
+          editorStore.getState().setAutosavePaused(false)
+        } catch {
+          // The store is always available in the app; a test can call the module alone.
+        }
         return true
       },
       { requireSerialization: true },
     )
   } catch {
+    if (generation === coordinationGeneration && !importedAway && !ownerWriteFailed) {
+      scheduleOwnershipRecheck()
+    }
     return
   }
-  if (!canResume || importedAway || activePauses.size > 0) return
-  // The slot must still be the one this tab knew. A different text means a
-  // successful import replaced it, so resuming would overwrite that project.
-  // An unknown text proves nothing either: this session never observed the
-  // slot, so it stays read-only rather than guess.
-  if (knownSlotRaw === undefined || readAutosave() !== knownSlotRaw) return
-  readOnly = false
-  setResumed()
+  if (generation !== coordinationGeneration || importedAway || owns || ownerWriteFailed) return
+  if (!canResume) {
+    if (readOnly && !reloadRequired) scheduleOwnershipRecheck()
+    return
+  }
+  if (activePauses.size > 0) return
+  // The probe held the debounced write the pause cancelled. Resume it now
+  // that the slot check passed; a newer edit schedules its own save.
+  if (wasPaused) resumePendingAutosave()
+}
+
+/** Clears the scheduled ownership recovery check. */
+function clearOwnershipRecheck(): void {
+  if (ownershipRecheck !== null) clearTimeout(ownershipRecheck)
+  ownershipRecheck = null
+}
+
+/**
+ * Arms one recovery check after the lease has expired. A peer that crashes
+ * after answering (or after both failed probes) must not strand autosave until
+ * reload; a strict slot-read failure is retried the same way.
+ */
+function scheduleOwnershipRecheck(): void {
+  clearOwnershipRecheck()
+  if (importedAway || ownerWriteFailed) return
+  ownershipRecheck = setTimeout(() => {
+    ownershipRecheck = null
+    void recheckOwnershipAfterResume()
+  }, PAUSE_RECOVERY_MS)
 }
 
 function markReadOnly(): void {
+  owns = false
+  stopHeartbeat()
+  if (!importedAway && !ownerWriteFailed) scheduleOwnershipRecheck()
   readOnly = true
   paused = true
   try {
@@ -618,26 +728,46 @@ function markReadOnly(): void {
   }
 }
 
+/** The interval's identity; stopHeartbeat invalidates an already-waiting section. */
+let heartbeatInstance = 0
+
 function startHeartbeat(): void {
   stopHeartbeat()
+  const generation = coordinationGeneration
+  const instance = ++heartbeatInstance
   heartbeat = setInterval(() => {
     if (!owns) return
+    if (generation !== coordinationGeneration || instance !== heartbeatInstance) return
     void withAutosaveSection(
       () => {
+        if (generation !== coordinationGeneration || instance !== heartbeatInstance || !owns) {
+          return
+        }
         const record = readOwnerRecord()
         if (!record || record.tabId !== tabId || record.epoch !== ourEpoch) {
           // A takeover moved the slot; this tab must not write again.
+          if (generation !== coordinationGeneration || instance !== heartbeatInstance) return
           owns = false
+          stopHeartbeat()
           markReadOnly()
           return
         }
-        writeOwnerRecord({ ...record, heartbeatAt: now() })
+        if (!writeOwnerRecord({ ...record, heartbeatAt: now() })) {
+          ownerWriteFailed = true
+          owns = false
+          stopHeartbeat()
+          markReadOnly()
+        }
       },
       { requireSerialization: true },
     ).catch(() => {
       // Without a serializable section this tab cannot prove it still owns the
-      // slot. Stop writing rather than race a takeover.
+      // slot. Stop writing rather than race a takeover. A stale section from
+      // before teardown or a replacement claim must not touch the new session.
+      if (generation !== coordinationGeneration || instance !== heartbeatInstance) return
+      ownerWriteFailed = true
       owns = false
+      stopHeartbeat()
       markReadOnly()
     })
   }, HEARTBEAT_MS)
@@ -646,6 +776,7 @@ function startHeartbeat(): void {
 function stopHeartbeat(): void {
   if (heartbeat !== null) clearInterval(heartbeat)
   heartbeat = null
+  heartbeatInstance += 1
 }
 
 function post(message: unknown): void {
@@ -654,6 +785,20 @@ function post(message: unknown): void {
   } catch {
     // A closed channel loses the message; the fallback timeouts still apply.
   }
+}
+
+/** Settles one probe exactly once and clears its timer. */
+function settleProbe(requestId: string, present: boolean): void {
+  const pending = pendingProbes.get(requestId)
+  if (!pending) return
+  clearTimeout(pending.timer)
+  pendingProbes.delete(requestId)
+  pending.resolve(present)
+}
+
+/** Clears every pending probe, resolving each absent. */
+function clearPendingProbes(): void {
+  for (const requestId of [...pendingProbes.keys()]) settleProbe(requestId, false)
 }
 
 function handlePause(requestId: string): void {
@@ -753,6 +898,9 @@ function handleMessage(event: MessageEvent): void {
       if (typeof data.requestId !== 'string' || typeof data.tabId !== 'string') break
       const pending = pendingPauses.get(data.requestId)
       if (!pending) break
+      // An acknowledgement from a tab the importer did not expect proves
+      // nothing about the tabs it is waiting for.
+      if (!pending.expected.has(data.tabId)) break
       pending.acked.add(data.tabId)
       if ([...pending.expected].every((id) => pending.acked.has(id))) {
         pendingPauses.delete(data.requestId)
@@ -784,10 +932,12 @@ function handleMessage(event: MessageEvent): void {
       }
       break
     case 'session-present':
-      if (pendingProbe && data.requestId === pendingProbe.requestId) {
-        const resolve = pendingProbe.resolve
-        pendingProbe = null
-        resolve(true)
+      if (
+        typeof data.requestId === 'string' &&
+        data.sessionId === session.sessionId &&
+        pendingProbes.has(data.requestId)
+      ) {
+        settleProbe(data.requestId, true)
       }
       break
     default:
@@ -799,17 +949,8 @@ function probeSession(): Promise<boolean> {
   if (!channel) return Promise.resolve(false)
   return new Promise((resolve) => {
     const requestId = randomToken()
-    const timer = setTimeout(() => {
-      if (pendingProbe?.requestId === requestId) pendingProbe = null
-      resolve(false)
-    }, PROBE_TIMEOUT_MS)
-    pendingProbe = {
-      requestId,
-      resolve: (present) => {
-        clearTimeout(timer)
-        resolve(present)
-      },
-    }
+    const timer = setTimeout(() => settleProbe(requestId, false), PROBE_TIMEOUT_MS)
+    pendingProbes.set(requestId, { timer, resolve })
     post({ type: 'probe-session', requestId, sessionId: session.sessionId })
   })
 }
@@ -855,44 +996,127 @@ async function initializeOwnership(generation: number): Promise<void> {
     markReadOnly()
     return
   }
-  // This page may be a reload of the owner. If an old page still answers, the
-  // session is open elsewhere and this page must stay read-only.
-  const present = await probeSession()
-  if (generation !== coordinationGeneration) return
-  if (present) {
-    markReadOnly()
-    return
+
+  const startingEpoch = ourEpoch
+  const stillCurrent = () =>
+    generation === coordinationGeneration && ourEpoch === startingEpoch && !importedAway
+  const failClosed = () => {
+    // An explicit claim in the same generation advances ourEpoch; a teardown
+    // changes the generation. Neither may be revoked by this stale init.
+    if (stillCurrent()) markReadOnly()
   }
+
+  // Hold ordinary saves for the whole probe/reclaim so a write cannot advance
+  // the slot the reclaim is about to compare. A stale probe from a torn-down
+  // session cannot clear a newer session's marker because the generation
+  // differs; teardown clears it explicitly.
+  ownershipProbeGeneration = generation
   try {
-    await withAutosaveSection(
-      () => {
-        if (generation !== coordinationGeneration) return
-        const current = readOwnerRecord()
-        if (
-          !current ||
-          current.sessionId !== session.sessionId ||
-          current.tokenHash !== session.tokenHash ||
-          current.epoch !== record.epoch
-        ) {
-          markReadOnly()
-          return
-        }
-        owns = true
-        ourEpoch = current.epoch
-        readOnly = false
-        paused = false
-        try {
-          editorStore.getState().setAutosavePaused(false)
-        } catch {
-          // The store is always available in the app; a test can call the module alone.
-        }
-        writeOwnerRecord({ ...current, tabId, heartbeatAt: now() })
-        startHeartbeat()
-      },
-      { requireSerialization: true },
-    )
-  } catch {
-    markReadOnly()
+    let probed = record
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      // This page may be a reload of the owner. If an old page still answers,
+      // the session is open elsewhere and this page must stay read-only.
+      const present = await probeSession()
+      if (generation !== coordinationGeneration) return
+      if (present) {
+        failClosed()
+        return
+      }
+      let outcome: 'claimed' | 'retry' | 'stale' | 'failed' | 'paused' = 'stale'
+      let refreshed: OwnerRecord | null = null
+      try {
+        outcome = await withAutosaveSection(
+          () => {
+            if (!stillCurrent()) return 'stale'
+            // A pause that arrived during the probe still owns the tab. Stay
+            // read-only after it ends so the resume path rechecks ownership
+            // instead of restoring writes from a probe that never claimed.
+            if (activePauses.size > 0) {
+              readOnly = true
+              return 'paused'
+            }
+            // A prior owner-write failure is final until a new claim or reinit.
+            if (ownerWriteFailed) return 'stale'
+            const current = readOwnerRecord()
+            if (!current) return 'stale'
+            // Another same-session tab reclaimed while this init probed.
+            if (current.tabId !== probed.tabId) return 'stale'
+            if (
+              current.sessionId !== probed.sessionId ||
+              current.tokenHash !== probed.tokenHash ||
+              current.epoch !== probed.epoch
+            ) {
+              return 'stale'
+            }
+            // A live peer refreshed its heartbeat during the probe. Retry once
+            // against that record; a crash then leaves it unchanged and lets
+            // the second timeout reclaim it.
+            if (current.heartbeatAt !== probed.heartbeatAt) {
+              refreshed = current
+              return 'retry'
+            }
+            // The slot must still be the one this tab knew. A failed read is
+            // fail-closed, never an empty slot.
+            if (knownSlotRaw !== undefined) {
+              let live: string | null
+              try {
+                live = readAutosaveStrict()
+              } catch {
+                return 'stale'
+              }
+              if (live !== knownSlotRaw) return 'stale'
+            }
+            if (!writeOwnerRecord({ ...current, tabId, heartbeatAt: now() })) {
+              ownerWriteFailed = true
+              owns = false
+              stopHeartbeat()
+              markReadOnly()
+              return 'failed'
+            }
+            owns = true
+            ourEpoch = current.epoch
+            readOnly = false
+            paused = false
+            try {
+              editorStore.getState().setAutosavePaused(false)
+            } catch {
+              // The store is always available in the app; a test can call the module alone.
+            }
+            startHeartbeat()
+            return 'claimed'
+          },
+          { requireSerialization: true },
+        )
+      } catch {
+        failClosed()
+        return
+      }
+      if (outcome === 'claimed') return
+      if (outcome === 'paused') return
+      if (outcome === 'retry' && attempt === 0 && refreshed) {
+        probed = refreshed
+        continue
+      }
+      failClosed()
+      return
+    }
+    failClosed()
+  } finally {
+    if (ownershipProbeGeneration === generation) ownershipProbeGeneration = null
+    // Flush only a save this probe actually held. A writable tab with nothing
+    // held must not write its boot document over the slot it is about to
+    // restore. Teardown (generation changed), a read-only outcome, a pause, an
+    // import, and a restore banner all keep the save pending instead. A
+    // stale-epoch return stays writable by design: the explicit claim already
+    // took the slot and the held edit belongs to it.
+    const held = generation === coordinationGeneration && probeHeldSave
+    if (generation === coordinationGeneration) probeHeldSave = false
+    if (held) {
+      const store = editorStore.getState()
+      if (!readOnly && !paused && !importedAway && !store.pendingRestore) {
+        resumePendingAutosave()
+      }
+    }
   }
 }
 
@@ -988,6 +1212,12 @@ export function initAutosaveCoordination(): () => void {
       })
     }
     pendingPauses.clear()
+    clearPendingProbes()
+    ownershipProbeGeneration = null
+    ownerWriteFailed = false
+    resumeAfterTransient = false
+    probeHeldSave = false
+    clearOwnershipRecheck()
     if (retry) {
       clearTimeout(retry.timer)
       retry = null
@@ -1026,6 +1256,12 @@ export async function claimAutosaveOwnership(): Promise<AutosaveClaimResult> {
       reason: 'Another import is pausing this tab. Reload after it finishes, then try again.',
     }
   }
+  // A later claim supersedes this one while it probes or waits for the lock.
+  // Without it, an older import could write a higher epoch after the newer
+  // claim succeeded and take the slot from it.
+  const claimToken = ++claimSequence
+  const generation = coordinationGeneration
+  const entryEpoch = ourEpoch
   const initial = readOwnerRecord()
   let probedOwner: OwnerRecord | null = null
   if (initial && initial.tabId !== tabId && recordIsFresh(initial)) {
@@ -1038,6 +1274,9 @@ export async function claimAutosaveOwnership(): Promise<AutosaveClaimResult> {
           reason: 'Another tab is saving this project. Close or reload it, then try again.',
         }
       }
+      if (generation !== coordinationGeneration) {
+        return { ok: false, reason: 'This tab closed during the autosave claim.' }
+      }
       probedOwner = initial
     }
   }
@@ -1045,6 +1284,24 @@ export async function claimAutosaveOwnership(): Promise<AutosaveClaimResult> {
   try {
     result = await withAutosaveSection(
       (): AutosaveClaimResult => {
+        if (generation !== coordinationGeneration) {
+          return { ok: false, reason: 'This tab closed during the autosave claim.' }
+        }
+        if (importedAway) {
+          return { ok: false, reason: 'This tab must reload before it can import a project.' }
+        }
+        if (claimToken !== claimSequence) {
+          return {
+            ok: false,
+            reason: 'Another import took over the autosave claim. Reload, then try again.',
+          }
+        }
+        if (activePauses.size > 0) {
+          return {
+            ok: false,
+            reason: 'Another import is pausing this tab. Reload after it finishes, then try again.',
+          }
+        }
         const record = readOwnerRecord()
         if (record && record.tabId !== tabId && recordIsFresh(record)) {
           const sameSession =
@@ -1070,18 +1327,52 @@ export async function claimAutosaveOwnership(): Promise<AutosaveClaimResult> {
             }
           }
         }
+        // The slot this tab observed must still be the live slot. The read is
+        // strict: a storage failure is a conflict, not an empty slot. A stale
+        // claim that already lost to a newer one must not revoke it.
+        const slotConflict = (reason: string): AutosaveClaimResult => {
+          if (generation === coordinationGeneration && ourEpoch === entryEpoch) {
+            owns = false
+            stopHeartbeat()
+            markReadOnly()
+          }
+          return { ok: false, reason }
+        }
+        if (knownSlotRaw !== undefined) {
+          let live: string | null
+          try {
+            live = readAutosaveStrict()
+          } catch {
+            return slotConflict(
+              'This tab could not verify the autosave slot. Reload and try again.',
+            )
+          }
+          if (live !== knownSlotRaw) {
+            return slotConflict(
+              'Another tab saved this project after this page loaded. Reload and try again.',
+            )
+          }
+        }
         const epoch = Math.max(record?.epoch ?? 0, ourEpoch) + 1
-        owns = writeOwnerRecord({
+        const wrote = writeOwnerRecord({
           tabId,
           sessionId: session.sessionId,
           tokenHash: session.tokenHash,
           epoch,
           heartbeatAt: now(),
         })
-        if (!owns) {
+        if (!wrote) {
+          if (generation === coordinationGeneration && ourEpoch === entryEpoch) {
+            ownerWriteFailed = true
+            owns = false
+            stopHeartbeat()
+            markReadOnly()
+          }
           return { ok: false, reason: 'This browser could not record autosave ownership.' }
         }
+        owns = true
         ourEpoch = epoch
+        ownerWriteFailed = false
         readOnly = false
         paused = false
         clearActivePauses()
@@ -1293,6 +1584,14 @@ export function writeAutosaveCooperatively(
   snapshotDoc?: Doc,
 ): Promise<AutosaveWriteResult> {
   if (isAutosavePaused()) return Promise.resolve('read-only')
+  // An ownership probe compares the slot it saw before the probe. A save that
+  // advanced it would make a peer's newer slot look like this tab's own write.
+  // A project-scoped import write rejected here is preserved by the caller's
+  // pending-install retry; an ordinary save resumes from the probe finally.
+  if (ownershipProbeGeneration !== null) {
+    if (projectId === undefined) probeHeldSave = true
+    return Promise.resolve('read-only')
+  }
   // Re-evaluated at an IDB fallback: a pending install, scoped write, or fence
   // can arrive after this call while the database open or read is in flight.
   const requireSerialization = () =>
@@ -1305,6 +1604,10 @@ export function writeAutosaveCooperatively(
           // A pause can arrive after the early check while this write waits
           // for its turn. Never persist a document for a tab that is paused.
           if (isAutosavePaused()) return 'read-only'
+          if (ownershipProbeGeneration !== null) {
+            if (projectId === undefined) probeHeldSave = true
+            return 'read-only'
+          }
           // The captured document can be replaced while this write waits for
           // the section. Its newer edit owns persistence, and using the stale
           // snapshot here would consume an install or fence for old content.
@@ -1430,7 +1733,16 @@ export function writeAutosaveCooperatively(
           if (owns) {
             const current = readOwnerRecord()
             if (current && current.tabId === tabId) {
-              writeOwnerRecord({ ...current, heartbeatAt: now() })
+              if (!writeOwnerRecord({ ...current, heartbeatAt: now() })) {
+                // Fail the claim this refresh actually targeted closed. A
+                // superseded record's failure leaves the newer claim alone.
+                if (current.epoch === ourEpoch) {
+                  ownerWriteFailed = true
+                  owns = false
+                  stopHeartbeat()
+                  markReadOnly()
+                }
+              }
             } else if (!current) {
               // The record vanished (storage eviction, manual clear): re-establish
               // it before another tab can claim the slot this write just changed.
@@ -1444,6 +1756,10 @@ export function writeAutosaveCooperatively(
                   heartbeatAt: now(),
                 })
               ) {
+                ownerWriteFailed = true
+                owns = false
+                stopHeartbeat()
+                markReadOnly()
                 return 'error'
               }
               ourEpoch = epoch
@@ -1734,7 +2050,12 @@ export function resetAutosaveCoordinationForTests(): void {
   stopHeartbeat()
   for (const pending of pendingPauses.values()) clearTimeout(pending.timer)
   pendingPauses.clear()
-  pendingProbe = null
+  clearPendingProbes()
+  ownershipProbeGeneration = null
+  ownerWriteFailed = false
+  resumeAfterTransient = false
+  probeHeldSave = false
+  clearOwnershipRecheck()
   if (retry) clearTimeout(retry.timer)
   retry = null
   channel?.close()
@@ -1788,9 +2109,18 @@ export function initAutosave(): () => void {
       state.doc !== prevState.doc ||
       state.past !== prevState.past ||
       state.future !== prevState.future
-    if (!docChanged) return // ignore playhead/selection/zoom churn
+    if (!docChanged) {
+      // A resume can arrive while a gesture is live. A cancel with no frame
+      // leaves no doc change, so the ending transition owns that flush.
+      if (resumeAfterTransient && !isTransientActive() && !isAutosavePaused()) {
+        resumeAfterTransient = false
+        resumePendingAutosave()
+      }
+      return
+    }
     if (isTransientActive()) return
     if (isAutosavePaused()) return
+    resumeAfterTransient = false
     if (timer) clearTimeout(timer)
     editorStore.getState().setAutosaveStatus('pending')
     const seq = nextWriteSeq()

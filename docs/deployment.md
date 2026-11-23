@@ -228,6 +228,8 @@ At 0.29.0 on 2026-11-21 the four-shard pair measured 184s on the final
 product source, with the same server split and 74/74 on both legs with `PAIR_EXIT=0`.
 At 0.29.5 on 2026-11-22 the four-shard pair measured 184s on the final
 product source, with the same server split and 74/74 on both legs with `PAIR_EXIT=0`.
+At 0.29.6 on 2026-11-23 the four-shard pair measured 185s on the final
+product source, with the same server split and 74/74 on both legs with `PAIR_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).
 

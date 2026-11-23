@@ -416,10 +416,27 @@ describe('snapBoxToTargets', () => {
       guides: { x: null, y: null },
     })
   })
+
+  it('does not snap a degenerate box on either axis', () => {
+    expect(snapBoxToTargets({ x0: 0, y0: 400, x1: 0, y1: 450 }, targets, 8)).toEqual({
+      dx: 0,
+      dy: 0,
+      guides: { x: null, y: null },
+    })
+    expect(snapBoxToTargets({ x0: 955, y0: 540, x1: 1005, y1: 540 }, targets, 8)).toEqual({
+      dx: 0,
+      dy: 0,
+      guides: { x: null, y: null },
+    })
+  })
 })
 
 describe('monitor geometry defensive paths', () => {
   const noMeasure: TextMeasure = () => null
+
+  it('returns a finite zero rect for an empty quad', () => {
+    expect(quadBounds([])).toEqual({ x0: 0, y0: 0, x1: 0, y1: 0 })
+  })
 
   it('a text box that cannot be measured has no base and cannot be picked', () => {
     const text = createTextClip({ id: 'clip_t', start: 0, duration: 4 })

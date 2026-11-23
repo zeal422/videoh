@@ -352,6 +352,10 @@ export class PlaybackCore {
   private watchingFrames = new WeakSet<HTMLMediaElement>()
   /** The one pending presented-frame callback id per element. */
   private presentedFrameIds = new WeakMap<HTMLMediaElement, number>()
+  /** Monotonic token per presented-frame watch, so a cancelled callback dies. */
+  private presentedFrameToken = 0
+  /** The token the current watch was registered with. */
+  private presentedFrameTokens = new WeakMap<HTMLMediaElement, number>()
 
   /** Elements latched after a terminal decode error, one per failed range. */
   private terminalElements = new WeakSet<HTMLMediaElement>()
@@ -540,7 +544,7 @@ export class PlaybackCore {
       if (!mediaPlayable(asset)) continue
       const start = offset + clip.start
       if (!withinAncestorWindows(t, start, start + clip.duration, ancestors)) continue
-      const el = this.pool.get(clip, asset, this.mediaUrl(asset))
+      const el = this.acquirePrimary(clip, asset, this.mediaUrl(asset))
       if (el.error) continue
       const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
       el.playbackRate = constantRateOf(clip)
@@ -1979,7 +1983,7 @@ export class PlaybackCore {
       if (this.failedAudioClips.has(clip.id)) continue
       const start = offset + clip.start
       const active = withinAncestorWindows(t, start, start + clip.duration, ancestors)
-      const el = this.pool.get(clip, asset, this.mediaUrl(asset))
+      const el = this.acquirePrimary(clip, asset, this.mediaUrl(asset))
       // Clamped into the asset: a ramp may over-consume its source, and the
       // excess freezes on the last readable frame (mp4.ts clamps identically).
       const expected = clampSourceTime(this.sourceTime(clip, t, offset), asset)
@@ -2080,7 +2084,7 @@ export class PlaybackCore {
       this.releasePartner(clip.id)
       return
     }
-    const el = this.pool.getNext(clip, asset, this.mediaUrl(asset))
+    const el = this.acquirePartner(clip, asset, this.mediaUrl(asset))
     if (!el) return
     if (el.error) this.handleElementError(clip.id, el)
     if (this.failedPartners.has(el)) return
@@ -2097,6 +2101,34 @@ export class PlaybackCore {
   }
 
   /**
+   * Acquires a clip's primary element, cancelling a presented-frame watch on
+   * the old element when the pool replaces it internally (URL, asset, or kind
+   * change). Acquisition only: call sites keep their own watch/render calls.
+   */
+  private acquirePrimary(
+    clip: Clip,
+    asset: MediaAsset,
+    url: string,
+  ): HTMLVideoElement | HTMLAudioElement {
+    const previous = this.pool.peek(clip.id)
+    const el = this.pool.get(clip, asset, url)
+    if (previous && previous !== el) this.cancelPresentedFrames(previous)
+    return el
+  }
+
+  /** Partner counterpart of `acquirePrimary`; cancels when it returns undefined. */
+  private acquirePartner(
+    clip: Clip,
+    asset: MediaAsset,
+    url: string,
+  ): HTMLVideoElement | HTMLAudioElement | undefined {
+    const previous = this.pool.peekNext(clip.id)
+    const el = this.pool.getNext(clip, asset, url)
+    if (previous && previous !== el) this.cancelPresentedFrames(previous)
+    return el
+  }
+
+  /**
    * Tracks the media timestamp of the frame an element presents, through
    * requestVideoFrameCallback (0.7.0). The callback is one-shot, so it re-arms
    * itself; an element that never presents another frame (parked, or a browser
@@ -2106,8 +2138,14 @@ export class PlaybackCore {
     const video = el as HTMLVideoElement
     if (typeof video.requestVideoFrameCallback !== 'function') return
     if (this.watchingFrames.has(el)) return
+    const token = ++this.presentedFrameToken
+    this.presentedFrameTokens.set(el, token)
     this.watchingFrames.add(el)
     const onFrame: VideoFrameRequestCallback = (_now, metadata) => {
+      // A released, disposed, or pool-replaced element must not repaint or
+      // re-arm. The first check skips all effects; the second closes the
+      // window where the paused render itself replaces the element.
+      if (this.presentedFrameTokens.get(el) !== token) return
       this.presentedTimes.set(el, metadata.mediaTime)
       // A parked monitor repaints on the presented frame itself (0.7.0). `seeked`
       // fires when the position lands, which can be BEFORE the decoded frame
@@ -2116,6 +2154,7 @@ export class PlaybackCore {
       // nothing else would revisit the parked canvas. One repaint per presented
       // frame, and none while playing (the render loop already repaints).
       if (!this.playingState) this.render(this.time)
+      if (this.presentedFrameTokens.get(el) !== token) return
       this.presentedFrameIds.set(el, video.requestVideoFrameCallback(onFrame))
     }
     this.presentedFrameIds.set(el, video.requestVideoFrameCallback(onFrame))
@@ -2133,6 +2172,7 @@ export class PlaybackCore {
       video.cancelVideoFrameCallback(id)
     }
     this.presentedFrameIds.delete(el)
+    this.presentedFrameTokens.delete(el)
     this.watchingFrames.delete(el)
   }
 
@@ -2559,7 +2599,7 @@ export class PlaybackCore {
         // for the playhead; an untouched paused timeline keeps its old
         // no-element rule.
         if (!this.pendingAudioRetries.has(clip.id) || !active) continue
-        const el = this.pool.get(clip, asset, url)
+        const el = this.acquirePrimary(clip, asset, url)
         this.audioReadTimes.set(el, t)
         this.audioExpectedSources.set(el, expected)
         this.watchPendingAudio(clip.id, el)
@@ -2607,7 +2647,7 @@ export class PlaybackCore {
         this.clearScrubFallback(clip.id)
         continue
       }
-      const el = this.pool.get(clip, asset, url)
+      const el = this.acquirePrimary(clip, asset, url)
       this.audioReadTimes.set(el, t)
       this.audioExpectedSources.set(el, expected)
       if (this.pendingAudioRetries.has(clip.id)) this.watchPendingAudio(clip.id, el)
@@ -2676,7 +2716,7 @@ export class PlaybackCore {
         this.releasePartner(clip.id)
         continue
       }
-      const next = this.pool.getNext(clip, asset, this.mediaUrl(asset))
+      const next = this.acquirePartner(clip, asset, this.mediaUrl(asset))
       if (!next) continue
       if (next.error) this.handleElementError(clip.id, next)
       if (this.failedPartners.has(next)) continue
@@ -2760,7 +2800,7 @@ export class PlaybackCore {
         }
         cached = frame
       }
-      const el = this.pool.get(clip, asset, url) as HTMLVideoElement
+      const el = this.acquirePrimary(clip, asset, url) as HTMLVideoElement
       // A fallback asset keeps the last WebCodecs frame only while its seek is
       // still pending. Once the element is ready, the element is the truth.
       if (cached && (el.seeking || el.readyState < 2)) {

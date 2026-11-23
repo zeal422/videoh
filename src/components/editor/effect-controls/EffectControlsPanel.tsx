@@ -784,42 +784,64 @@ function KeyframeGraph({
     startIndex: number
     pointerId: number
     token: number
+    clipId: string
+    duration: number
+    mirrored: boolean
+    scale: 'linear' | 'db'
+    property: KeyframeProperty
+    axis: (t: number) => number
   } | null>(null)
   useEffect(() => {
     if (!handleDrag) return
+    const drag = handleDrag
+    // A prop change means this row now describes another clip or display.
+    // Cancel the transient instead of retargeting the live drag at it; the
+    // cleanup removes this run's listeners before the next effect adds new ones.
+    if (
+      drag.clipId !== clip.id ||
+      drag.duration !== clip.duration ||
+      drag.mirrored !== mirrored ||
+      drag.scale !== scale ||
+      drag.property !== property
+    ) {
+      if (currentTransientToken() === drag.token) useEditorStore.getState().cancelTransient()
+      // Clear after the effect settles: the identity change already removed
+      // this run's listeners, and the token is dead, so no frame can land.
+      queueMicrotask(() => setHandleDrag((current) => (current === drag ? null : current)))
+      return
+    }
     const store = useEditorStore.getState()
     const onMove = (e: PointerEvent) => {
-      if (e.pointerId !== handleDrag.pointerId) return
-      if (currentTransientToken() !== handleDrag.token) return
+      if (e.pointerId !== drag.pointerId) return
+      if (currentTransientToken() !== drag.token) return
       const rect = wrapRef.current?.getBoundingClientRect()
       if (!rect || rect.width <= 0 || rect.height <= 0) return
       const live = useEditorStore.getState().doc
-      const clipNow = findClip(live, clip.id)?.clip
-      const kfs = clipNow?.keyframes?.[property]
-      const start = kfs?.[handleDrag.startIndex]
-      const end = kfs?.[handleDrag.startIndex + 1]
+      const clipNow = findClip(live, drag.clipId)?.clip
+      const kfs = clipNow?.keyframes?.[drag.property]
+      const start = kfs?.[drag.startIndex]
+      const end = kfs?.[drag.startIndex + 1]
       if (!start || !end) return
       // The drawn box: u across the span left to right, v from the drawn left
       // endpoint's value to the drawn right endpoint's.
-      const bounds = KEYFRAME_PROPERTY_BOUNDS[property]
+      const bounds = KEYFRAME_PROPERTY_BOUNDS[drag.property]
       const span = Math.max(1e-6, bounds.max - bounds.min)
-      const axis = rowAxis(clip, property)
+      const axis = drag.axis
       const point = (k: Keyframe) => ({
         x:
-          (Math.max(0, Math.min(clip.duration, axis(k.time))) / Math.max(1e-6, clip.duration)) *
+          (Math.max(0, Math.min(drag.duration, axis(k.time))) / Math.max(1e-6, drag.duration)) *
           100,
         y:
-          scale === 'db'
+          drag.scale === 'db'
             ? gainToUnit(k.value) * 100
             : Math.max(0, Math.min(100, ((k.value - bounds.min) / span) * 100)),
       })
-      const left = point(mirrored ? end : start)
-      const right = point(mirrored ? start : end)
+      const left = point(drag.mirrored ? end : start)
+      const right = point(drag.mirrored ? start : end)
       const uRow = (e.clientX - rect.left) / rect.width
       const vRow = 1 - (e.clientY - rect.top) / rect.height
       const raw = segmentControls(start) ?? LINEAR_QUAD
-      const current =
-        handleDrag.which === 'out' ? { x: raw[0], y: raw[1] } : { x: raw[2], y: raw[3] }
+      const current = drag.which === 'out' ? { x: raw[0], y: raw[1] } : { x: raw[2], y: raw[3] }
       const spanX = right.x - left.x
       const spanY = right.y - left.y
       // BOTH axes read the drawn box: u across the segment's time span, v from
@@ -832,29 +854,34 @@ function KeyframeGraph({
       // normalized against the segment's stored values (the quad is stored in
       // value space even though its handle is drawn in dB space).
       const v =
-        scale === 'db'
+        drag.scale === 'db'
           ? Math.abs(end.value - start.value) < 1e-9
             ? current.y
             : (unitToGain(vRow) - start.value) / (end.value - start.value)
           : Math.abs(spanY) < 1e-9
             ? current.y
             : (vRow * 100 - left.y) / spanY
-      const nextQuad = withQuadHandle(raw, handleDrag.which, {
-        x: mirrored ? 1 - u : u,
-        y: mirrored ? 1 - v : v,
+      const nextQuad = withQuadHandle(raw, drag.which, {
+        x: drag.mirrored ? 1 - u : u,
+        y: drag.mirrored ? 1 - v : v,
       })
       const next = kfs.map((k, i) =>
-        i === handleDrag.startIndex
+        i === drag.startIndex
           ? withSegmentControls<Keyframe>({ ...k, interpolation: 'linear' }, nextQuad)
           : k,
       )
-      store.applyTransient({ type: 'setClipKeyframes', clipId: clip.id, property, keyframes: next })
+      store.applyTransient({
+        type: 'setClipKeyframes',
+        clipId: drag.clipId,
+        property: drag.property,
+        keyframes: next,
+      })
     }
     const onUp = (e: PointerEvent) => {
-      if (e.pointerId !== handleDrag.pointerId) return
+      if (e.pointerId !== drag.pointerId) return
       // A foreign edit ended this gesture and may have started another: a stale
       // release must not commit or cancel what it no longer owns.
-      if (currentTransientToken() !== handleDrag.token) {
+      if (currentTransientToken() !== drag.token) {
         setHandleDrag(null)
         return
       }
@@ -868,8 +895,8 @@ function KeyframeGraph({
       setHandleDrag(null)
     }
     const onCancel = (e: PointerEvent) => {
-      if (e.pointerId !== handleDrag.pointerId) return
-      if (currentTransientToken() !== handleDrag.token) {
+      if (e.pointerId !== drag.pointerId) return
+      if (currentTransientToken() !== drag.token) {
         setHandleDrag(null)
         return
       }
@@ -883,10 +910,14 @@ function KeyframeGraph({
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp, true)
       window.removeEventListener('pointercancel', onCancel, true)
+      // A selection change can unmount this row before the new effect runs.
+      // The token is still live then, so cleanup owns the cancel; a normal
+      // commit or pointercancel has already invalidated it.
+      if (currentTransientToken() === drag.token) useEditorStore.getState().cancelTransient()
     }
     // `handleDrag` carries the pointer id: a re-grab re-runs the effect with
     // the new owner, the same handover the dot drag gets from its state.
-  }, [handleDrag, clip.id, clip.duration, property, mirrored])
+  }, [handleDrag, clip.id, clip.duration, property, mirrored, scale])
 
   const onHandleKeyDown = (which: 'out' | 'in', e: ReactKeyboardEvent) => {
     if (activeStart === null) return
@@ -1011,7 +1042,18 @@ function KeyframeGraph({
                 if (refuseLockedClip(clip.id)) return
                 const token = useEditorStore.getState().beginTransient(e.pointerId)
                 if (token === null) return
-                setHandleDrag({ which, startIndex: activeStart, pointerId: e.pointerId, token })
+                setHandleDrag({
+                  which,
+                  startIndex: activeStart,
+                  pointerId: e.pointerId,
+                  token,
+                  clipId: clip.id,
+                  duration: clip.duration,
+                  mirrored,
+                  scale,
+                  property,
+                  axis,
+                })
               }}
               onKeyDown={(e) => onHandleKeyDown(which, e)}
             />
