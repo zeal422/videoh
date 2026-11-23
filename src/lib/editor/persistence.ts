@@ -51,25 +51,12 @@ const PROBE_TIMEOUT_MS = 250
 const RETRY_MS = 3_000
 const MAX_RETRIES = 5
 
-/**
- * The slot text this tab last wrote or saw at mount. A provisional resume may
- * write only when the slot still matches it: different text means another tab
- * replaced the slot (an imported project), and overwriting would lose it.
- */
-let knownSlotRaw: string | null | undefined
-
-/**
- * The import marker this tab observed at mount. `undefined` means this session
- * has not observed one yet, so the first write adopts the current marker.
- */
-let knownImportFence: string | null | undefined
-
 /** Writes the doc to localStorage. Returns false on quota/serialization errors. */
 export function writeAutosave(doc: Doc): boolean {
   try {
     const json = JSON.stringify(serializeDoc(doc))
     localStorage.setItem(AUTOSAVE_KEY, json)
-    knownSlotRaw = json
+    coordination.knownSlotRaw = json
     return true
   } catch {
     return false
@@ -90,7 +77,7 @@ export function readAutosave(): string | null {
  * compare ownership state must distinguish "no slot" from "cannot read the
  * slot"; the tolerant reader above would turn both into null.
  */
-export function readAutosaveStrict(): string | null {
+export function readAutosaveOrThrow(): string | null {
   return localStorage.getItem(AUTOSAVE_KEY)
 }
 
@@ -126,7 +113,7 @@ export async function clearAutosave(expectedRaw?: string): Promise<void> {
       // after that banner was captured.
       if (expectedRaw !== undefined && current !== expectedRaw) return
       localStorage.removeItem(AUTOSAVE_KEY)
-      knownSlotRaw = null
+      coordination.knownSlotRaw = null
     })
   } catch {
     // A failed coordination section leaves the slot in place, which is safe.
@@ -140,7 +127,7 @@ export async function clearAutosave(expectedRaw?: string): Promise<void> {
  */
 export function readValidAutosave(): PendingRestore | null {
   const json = readAutosave()
-  knownSlotRaw = json
+  coordination.knownSlotRaw = json
   if (!json) return null
   try {
     const { doc, warnings } = parseSerializedDoc(json)
@@ -170,71 +157,18 @@ export type AutosavePauseResult =
   { ok: true; requestId: string } | { ok: false; reason: string; requestId: string }
 export type AutosaveWriteResult = 'saved' | 'read-only' | 'error' | 'superseded'
 
-let initialized = false
-let channel: BroadcastChannel | null = null
-const tabId = `tab-${randomToken()}`
-const session = readSessionIdentity()
-let owns = false
-let ourEpoch = 0
-let paused = false
-let importedAway = false
-let readOnly = false
-let heartbeat: ReturnType<typeof setInterval> | null = null
-let cancelPendingWrite: (() => void) | null = null
-let localWrites: Promise<unknown> = Promise.resolve()
 interface PendingPause {
   expected: Set<string>
   acked: Set<string>
   timer: ReturnType<typeof setTimeout>
   finish: (result: AutosavePauseResult) => void
 }
-/**
- * Pause requests are keyed by request id, not held in one slot: two imports
- * that overlap in this tab must each settle instead of the newer one silently
- * orphaning the older promise.
- */
-const pendingPauses = new Map<string, PendingPause>()
+
 interface PendingProbe {
   timer: ReturnType<typeof setTimeout>
   resolve: (present: boolean) => void
 }
-/** Probe requests are independent: a late answer must not settle another probe. */
-const pendingProbes = new Map<string, PendingProbe>()
-/**
- * The coordination generation whose initialization probe is in flight. While
- * set, ordinary saves are held so they cannot advance the slot the reclaim is
- * about to compare. It is a single value safely: initializeOwnership runs once
- * per generation and its retry is sequential; claim probes never touch it.
- */
-let ownershipProbeGeneration: number | null = null
-/** A failed owner-record write is final for this session until a new claim or reinit. */
-let ownerWriteFailed = false
-/** One scheduled recovery check after a fail-closed read-only outcome. */
-let ownershipRecheck: ReturnType<typeof setTimeout> | null = null
-/** A resume that arrived while a gesture was live; the subscription flushes it after. */
-let resumeAfterTransient = false
-/** An ordinary save the initialization probe actually held, for the finally flush. */
-let probeHeldSave = false
-/** Monotonic claim order: a newer import supersedes an older claim still waiting. */
-let claimSequence = 0
-/**
- * Identifies the live coordination session. A teardown bumps it so an
- * `initializeOwnership` still awaiting its probe cannot reclaim the record and
- * start a heartbeat after unmount.
- */
-let coordinationGeneration = 0
-/**
- * Pending install records keyed by project. Two imports in one tab can both
- * fail their registry append; a single slot would drop the earlier project's
- * record and let recovery retire its claim shard.
- */
-const pendingInstalls = new Map<string, PendingInstallRecord>()
-/**
- * A project-scoped slot write whose import marker has not landed yet. An
- * ordinary autosave for the same project must finish the marker first, so a
- * failed import marker cannot be bypassed by the next edit's save.
- */
-let pendingImportFence: { projectId: string; token: string } | null = null
+
 interface AutosaveRetry {
   json: string
   attempts: number
@@ -243,23 +177,93 @@ interface AutosaveRetry {
   projectId: string | null
   timer: ReturnType<typeof setTimeout>
 }
-let retry: AutosaveRetry | null = null
-/** Monotonic sequence for slot writes, so an older retry cannot win a race. */
-let writeSeq = 0
-let committedSeq = 0
+
 /**
- * Pause request ids this tab is honoring from other importers, with receipt
- * time. An importer that crashes after pausing but before resuming would
- * otherwise leave this tab paused forever: each request gets a recovery timer
- * that rechecks ownership once the owner's lease must have expired.
+ * Everything one coordination session owns. Resetting disposes this record and
+ * installs a fresh one, so a new field cannot be forgotten by a hand-maintained
+ * reset list. `tabId` and `session` stay module constants.
+ * `coordinationGeneration`, `heartbeatInstance`, and `claimSequence` are
+ * monotonic sentinels and are carried forward by the factory. `ourEpoch` is
+ * also carried, so a stale import cannot release a replacement claim after a
+ * reset reuses the same epoch number.
  */
-const activePauses = new Map<string, number>()
-/** Recovery timers for pause requests whose importer may have crashed. */
-const pauseRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+interface CoordinationState {
+  knownSlotRaw: string | null | undefined
+  knownImportFence: string | null | undefined
+  initialized: boolean
+  channel: BroadcastChannel | null
+  detachListeners: (() => void) | null
+  owns: boolean
+  ourEpoch: number
+  paused: boolean
+  importedAway: boolean
+  readOnly: boolean
+  heartbeat: ReturnType<typeof setInterval> | null
+  cancelPendingWrite: (() => void) | null
+  localWrites: Promise<unknown>
+  pendingPauses: Map<string, PendingPause>
+  pendingProbes: Map<string, PendingProbe>
+  ownershipProbeGeneration: number | null
+  ownerWriteFailed: boolean
+  ownershipRecheck: ReturnType<typeof setTimeout> | null
+  resumeAfterTransient: boolean
+  probeHeldSave: boolean
+  claimSequence: number
+  coordinationGeneration: number
+  pendingInstalls: Map<string, PendingInstallRecord>
+  pendingImportFence: { projectId: string; token: string } | null
+  retry: AutosaveRetry | null
+  writeSeq: number
+  committedSeq: number
+  activePauses: Map<string, number>
+  pauseRecoveryTimers: Map<string, ReturnType<typeof setTimeout>>
+  releasePresence: (() => void) | null
+  heartbeatInstance: number
+}
+
+function createCoordinationState(previous?: CoordinationState): CoordinationState {
+  return {
+    knownSlotRaw: undefined,
+    knownImportFence: undefined,
+    initialized: false,
+    channel: null,
+    detachListeners: null,
+    owns: false,
+    ourEpoch: previous?.ourEpoch ?? 0,
+    paused: false,
+    importedAway: false,
+    readOnly: false,
+    heartbeat: null,
+    cancelPendingWrite: null,
+    localWrites: Promise.resolve(),
+    pendingPauses: new Map(),
+    pendingProbes: new Map(),
+    ownershipProbeGeneration: null,
+    ownerWriteFailed: false,
+    ownershipRecheck: null,
+    resumeAfterTransient: false,
+    probeHeldSave: false,
+    claimSequence: previous?.claimSequence ?? 0,
+    coordinationGeneration: previous?.coordinationGeneration ?? 0,
+    pendingInstalls: new Map(),
+    pendingImportFence: null,
+    retry: null,
+    writeSeq: 0,
+    committedSeq: 0,
+    activePauses: new Map(),
+    pauseRecoveryTimers: new Map(),
+    releasePresence: null,
+    heartbeatInstance: previous?.heartbeatInstance ?? 0,
+  }
+}
+
+const tabId = `tab-${randomToken()}`
+const session = readSessionIdentity()
+
 /** A pause outlives the owner's lease by this long before recovery checks it. */
 const PAUSE_RECOVERY_MS = LEASE_MS + 5_000
-/** Resolves the shared presence lock on coordination teardown. */
-let releasePresence: (() => void) | null = null
+
+let coordination = createCoordinationState()
 
 function randomToken(): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -495,7 +499,8 @@ function withIdbSection<T>(section: () => T, options: SectionOptions = {}): Prom
 }
 
 function holdPresence(): void {
-  if (releasePresence) return
+  const state = coordination
+  if (state.releasePresence) return
   const locks = lockManager()
   if (!locks) return
   // Other tabs query the lock manager to learn who must acknowledge a pause.
@@ -505,14 +510,15 @@ function holdPresence(): void {
   const hold = new Promise<void>((resolve) => {
     release = resolve
   })
-  releasePresence = () => {
-    releasePresence = null
+  const releasePresence = () => {
+    if (state.releasePresence === releasePresence) state.releasePresence = null
     release()
   }
+  state.releasePresence = releasePresence
   void locks
     .request(`${PRESENCE_PREFIX}${tabId}`, { mode: 'shared' }, () => hold)
     .catch(() => {
-      releasePresence = null
+      if (state.releasePresence === releasePresence) state.releasePresence = null
     })
 }
 
@@ -535,8 +541,8 @@ async function otherAutosaveTabs(): Promise<string[]> {
 }
 
 function setPausedByOtherTab(): void {
-  paused = true
-  if (cancelPendingWrite) cancelPendingWrite()
+  coordination.paused = true
+  if (coordination.cancelPendingWrite) coordination.cancelPendingWrite()
   try {
     editorStore.getState().setAutosavePaused(true)
   } catch {
@@ -545,8 +551,8 @@ function setPausedByOtherTab(): void {
 }
 
 function setResumed(): void {
-  const wasPaused = paused
-  paused = false
+  const wasPaused = coordination.paused
+  coordination.paused = false
   try {
     editorStore.getState().setAutosavePaused(false)
   } catch {
@@ -568,20 +574,23 @@ function resumePendingAutosave(): void {
     // would mix an unfinished preview into the slot, so mark the resume and
     // let the autosave subscription flush it when the gesture ends.
     if (isTransientActive()) {
-      resumeAfterTransient = true
+      coordination.resumeAfterTransient = true
       return
     }
-    resumeAfterTransient = false
+    coordination.resumeAfterTransient = false
     const savedDoc = store.doc
     const json = JSON.stringify(serializeDoc(savedDoc))
+    const record = coordination
+    const generation = record.coordinationGeneration
     void writeAutosaveCooperatively(json, undefined, undefined, savedDoc.project.id, savedDoc)
       .then((result) => {
+        if (coordination !== record || record.coordinationGeneration !== generation) return
         const current = editorStore.getState()
         if (result === 'saved') {
           // A takeover or completed import can land after the slot write but
           // before this completion. Autosave is off then; leave the error
           // status instead of reporting saved.
-          if (readOnly) return
+          if (coordination.readOnly) return
           // A newer edit landed while this write was queued. Its own save is
           // already scheduled; reporting it saved would hide that.
           if (current.doc !== savedDoc) {
@@ -594,7 +603,7 @@ function resumePendingAutosave(): void {
           // Only a live captured snapshot plus a committed slot proves this
           // write safe. A live reference alone can point at a newer document,
           // and a slot match alone can belong to the previous project.
-          if (readOnly) return
+          if (coordination.readOnly) return
           if (!autosaveSnapshotIsLive(current.doc, savedDoc, json)) return
           current.setAutosaveStatus('saved')
           current.markAutosaved()
@@ -618,12 +627,12 @@ function resumePendingAutosave(): void {
  * importer remains. A recorded takeover or a completed import stays read-only.
  */
 async function recheckOwnershipAfterResume(): Promise<void> {
-  if (importedAway || activePauses.size > 0) {
-    if (!importedAway && readOnly) scheduleOwnershipRecheck()
+  if (coordination.importedAway || coordination.activePauses.size > 0) {
+    if (!coordination.importedAway && coordination.readOnly) scheduleOwnershipRecheck()
     return
   }
-  const generation = coordinationGeneration
-  const wasPaused = paused
+  const generation = coordination.coordinationGeneration
+  const wasPaused = coordination.paused
   let canResume = false
   let reloadRequired = false
   try {
@@ -631,40 +640,49 @@ async function recheckOwnershipAfterResume(): Promise<void> {
       () => {
         // A teardown, a newer claim, or an owner-write failure makes this run
         // stale. Its callback must not touch shared state.
-        if (generation !== coordinationGeneration || owns || ownerWriteFailed) return false
+        if (
+          generation !== coordination.coordinationGeneration ||
+          coordination.owns ||
+          coordination.ownerWriteFailed
+        )
+          return false
         // An import can land while this run waits for the lock. Keep autosave
         // off; the slot alone cannot prove the import is gone.
-        if (importedAway) return false
+        if (coordination.importedAway) return false
         const record = readOwnerRecord()
         if (record && recordIsFresh(record) && record.tabId !== tabId) return false
         // A former owner must not resume against a newer epoch even after that
         // owner's lease went stale, matching the write path.
-        if (record && ourEpoch > 0 && record.epoch > ourEpoch) return false
-        if (record && record.tabId === tabId && record.epoch !== ourEpoch) return false
+        if (record && coordination.ourEpoch > 0 && record.epoch > coordination.ourEpoch)
+          return false
+        if (record && record.tabId === tabId && record.epoch !== coordination.ourEpoch) return false
         // A different text means another tab replaced the slot. A failed read
         // proves nothing and stays read-only. The comparison and the resume
         // live inside the section so a claim cannot land in between.
-        if (knownSlotRaw === undefined) return false
+        if (coordination.knownSlotRaw === undefined) return false
         let live: string | null
         try {
-          live = readAutosaveStrict()
+          live = readAutosaveOrThrow()
         } catch {
           return false
         }
-        if (live !== knownSlotRaw) return false
+        if (live !== coordination.knownSlotRaw) return false
         // An import marker that moved while this run waited means an import
         // landed without this tab seeing its pause. Stay read-only and stop
         // retrying: the observed marker can no longer match this session.
-        if (knownImportFence !== undefined && readImportFence() !== knownImportFence) {
+        if (
+          coordination.knownImportFence !== undefined &&
+          readImportFence() !== coordination.knownImportFence
+        ) {
           reloadRequired = true
           clearOwnershipRecheck()
           return false
         }
         // A pause can arrive while this run waits for the lock. Leave the tab
         // paused so a save cannot land after it acknowledged that pause.
-        if (activePauses.size > 0) return false
-        readOnly = false
-        paused = false
+        if (coordination.activePauses.size > 0) return false
+        coordination.readOnly = false
+        coordination.paused = false
         try {
           editorStore.getState().setAutosavePaused(false)
         } catch {
@@ -675,26 +693,36 @@ async function recheckOwnershipAfterResume(): Promise<void> {
       { requireSerialization: true },
     )
   } catch {
-    if (generation === coordinationGeneration && !importedAway && !ownerWriteFailed) {
+    if (
+      generation === coordination.coordinationGeneration &&
+      !coordination.importedAway &&
+      !coordination.ownerWriteFailed
+    ) {
       scheduleOwnershipRecheck()
     }
     return
   }
-  if (generation !== coordinationGeneration || importedAway || owns || ownerWriteFailed) return
+  if (
+    generation !== coordination.coordinationGeneration ||
+    coordination.importedAway ||
+    coordination.owns ||
+    coordination.ownerWriteFailed
+  )
+    return
   if (!canResume) {
-    if (readOnly && !reloadRequired) scheduleOwnershipRecheck()
+    if (coordination.readOnly && !reloadRequired) scheduleOwnershipRecheck()
     return
   }
-  if (activePauses.size > 0) return
+  if (coordination.activePauses.size > 0) return
   // The probe held the debounced write the pause cancelled. Resume it now
   // that the slot check passed; a newer edit schedules its own save.
   if (wasPaused) resumePendingAutosave()
 }
 
 /** Clears the scheduled ownership recovery check. */
-function clearOwnershipRecheck(): void {
-  if (ownershipRecheck !== null) clearTimeout(ownershipRecheck)
-  ownershipRecheck = null
+function clearOwnershipRecheck(state: CoordinationState = coordination): void {
+  if (state.ownershipRecheck !== null) clearTimeout(state.ownershipRecheck)
+  state.ownershipRecheck = null
 }
 
 /**
@@ -704,19 +732,19 @@ function clearOwnershipRecheck(): void {
  */
 function scheduleOwnershipRecheck(): void {
   clearOwnershipRecheck()
-  if (importedAway || ownerWriteFailed) return
-  ownershipRecheck = setTimeout(() => {
-    ownershipRecheck = null
+  if (coordination.importedAway || coordination.ownerWriteFailed) return
+  coordination.ownershipRecheck = setTimeout(() => {
+    coordination.ownershipRecheck = null
     void recheckOwnershipAfterResume()
   }, PAUSE_RECOVERY_MS)
 }
 
 function markReadOnly(): void {
-  owns = false
+  coordination.owns = false
   stopHeartbeat()
-  if (!importedAway && !ownerWriteFailed) scheduleOwnershipRecheck()
-  readOnly = true
-  paused = true
+  if (!coordination.importedAway && !coordination.ownerWriteFailed) scheduleOwnershipRecheck()
+  coordination.readOnly = true
+  coordination.paused = true
   try {
     const store = editorStore.getState()
     store.setAutosavePaused(true)
@@ -728,33 +756,42 @@ function markReadOnly(): void {
   }
 }
 
-/** The interval's identity; stopHeartbeat invalidates an already-waiting section. */
-let heartbeatInstance = 0
-
 function startHeartbeat(): void {
   stopHeartbeat()
-  const generation = coordinationGeneration
-  const instance = ++heartbeatInstance
-  heartbeat = setInterval(() => {
-    if (!owns) return
-    if (generation !== coordinationGeneration || instance !== heartbeatInstance) return
+  const generation = coordination.coordinationGeneration
+  const instance = ++coordination.heartbeatInstance
+  coordination.heartbeat = setInterval(() => {
+    if (!coordination.owns) return
+    if (
+      generation !== coordination.coordinationGeneration ||
+      instance !== coordination.heartbeatInstance
+    )
+      return
     void withAutosaveSection(
       () => {
-        if (generation !== coordinationGeneration || instance !== heartbeatInstance || !owns) {
+        if (
+          generation !== coordination.coordinationGeneration ||
+          instance !== coordination.heartbeatInstance ||
+          !coordination.owns
+        ) {
           return
         }
         const record = readOwnerRecord()
-        if (!record || record.tabId !== tabId || record.epoch !== ourEpoch) {
+        if (!record || record.tabId !== tabId || record.epoch !== coordination.ourEpoch) {
           // A takeover moved the slot; this tab must not write again.
-          if (generation !== coordinationGeneration || instance !== heartbeatInstance) return
-          owns = false
+          if (
+            generation !== coordination.coordinationGeneration ||
+            instance !== coordination.heartbeatInstance
+          )
+            return
+          coordination.owns = false
           stopHeartbeat()
           markReadOnly()
           return
         }
         if (!writeOwnerRecord({ ...record, heartbeatAt: now() })) {
-          ownerWriteFailed = true
-          owns = false
+          coordination.ownerWriteFailed = true
+          coordination.owns = false
           stopHeartbeat()
           markReadOnly()
         }
@@ -764,75 +801,148 @@ function startHeartbeat(): void {
       // Without a serializable section this tab cannot prove it still owns the
       // slot. Stop writing rather than race a takeover. A stale section from
       // before teardown or a replacement claim must not touch the new session.
-      if (generation !== coordinationGeneration || instance !== heartbeatInstance) return
-      ownerWriteFailed = true
-      owns = false
+      if (
+        generation !== coordination.coordinationGeneration ||
+        instance !== coordination.heartbeatInstance
+      )
+        return
+      coordination.ownerWriteFailed = true
+      coordination.owns = false
       stopHeartbeat()
       markReadOnly()
     })
   }, HEARTBEAT_MS)
 }
 
-function stopHeartbeat(): void {
-  if (heartbeat !== null) clearInterval(heartbeat)
-  heartbeat = null
-  heartbeatInstance += 1
+function stopHeartbeat(state: CoordinationState = coordination): void {
+  if (state.heartbeat !== null) clearInterval(state.heartbeat)
+  state.heartbeat = null
+  state.heartbeatInstance += 1
 }
 
 function post(message: unknown): void {
   try {
-    channel?.postMessage(message)
+    coordination.channel?.postMessage(message)
   } catch {
     // A closed channel loses the message; the fallback timeouts still apply.
   }
 }
 
 /** Settles one probe exactly once and clears its timer. */
-function settleProbe(requestId: string, present: boolean): void {
-  const pending = pendingProbes.get(requestId)
+function settleProbe(
+  requestId: string,
+  present: boolean,
+  state: CoordinationState = coordination,
+): void {
+  const pending = state.pendingProbes.get(requestId)
   if (!pending) return
   clearTimeout(pending.timer)
-  pendingProbes.delete(requestId)
+  state.pendingProbes.delete(requestId)
   pending.resolve(present)
 }
 
 /** Clears every pending probe, resolving each absent. */
-function clearPendingProbes(): void {
-  for (const requestId of [...pendingProbes.keys()]) settleProbe(requestId, false)
+function clearPendingProbes(state: CoordinationState = coordination): void {
+  for (const requestId of [...state.pendingProbes.keys()]) settleProbe(requestId, false, state)
 }
 
 function handlePause(requestId: string): void {
-  activePauses.set(requestId, now())
+  coordination.activePauses.set(requestId, now())
   setPausedByOtherTab()
   schedulePauseRecovery(requestId)
   // Acknowledge only after this tab's in-flight write settles, so an older
-  // document cannot land after the importer starts installing.
-  void localWrites.catch(() => undefined).then(() => post({ type: 'paused', requestId, tabId }))
+  // document cannot land after the importer starts installing. The pause must
+  // still belong to this coordination record when it does.
+  const generation = coordination.coordinationGeneration
+  void coordination.localWrites
+    .catch(() => undefined)
+    .then(() => {
+      if (generation !== coordination.coordinationGeneration) return
+      if (!coordination.activePauses.has(requestId)) return
+      post({ type: 'paused', requestId, tabId })
+    })
 }
 
 /** Drops one honored pause request and its recovery timer. */
 function dropActivePause(requestId: string): void {
-  activePauses.delete(requestId)
-  const timer = pauseRecoveryTimers.get(requestId)
+  coordination.activePauses.delete(requestId)
+  const timer = coordination.pauseRecoveryTimers.get(requestId)
   if (timer !== undefined) {
     clearTimeout(timer)
-    pauseRecoveryTimers.delete(requestId)
+    coordination.pauseRecoveryTimers.delete(requestId)
   }
 }
 
 /** Drops every honored pause request and its recovery timer. */
-function clearActivePauses(): void {
-  activePauses.clear()
-  for (const timer of pauseRecoveryTimers.values()) clearTimeout(timer)
-  pauseRecoveryTimers.clear()
+function clearActivePauses(state: CoordinationState = coordination): void {
+  state.activePauses.clear()
+  for (const timer of state.pauseRecoveryTimers.values()) clearTimeout(timer)
+  state.pauseRecoveryTimers.clear()
+}
+
+interface CoordinationDisposeOptions {
+  /** Settle pending pause promises with this reason. Omit to only clear timers. */
+  pauseReason?: string
+  /** Clear the editor paused flag when the tab is not imported or read-only. */
+  resetPause?: boolean
+}
+
+/**
+ * Releases everything one coordination record owns. The caller bumps
+ * `coordinationGeneration` first, so a probe continuation resolved here cannot
+ * touch the replacement record. A fresh reset then installs
+ * `createCoordinationState(state)` to carry the monotonic sentinels forward.
+ */
+function disposeCoordination(
+  state: CoordinationState,
+  options: CoordinationDisposeOptions = {},
+): void {
+  state.detachListeners?.()
+  state.detachListeners = null
+  state.cancelPendingWrite?.()
+  state.cancelPendingWrite = null
+  state.releasePresence?.()
+  state.releasePresence = null
+  stopHeartbeat(state)
+  state.owns = false
+  clearActivePauses(state)
+  if (options.resetPause && !state.importedAway && !state.readOnly) {
+    state.paused = false
+    if (coordination === state) {
+      try {
+        editorStore.getState().setAutosavePaused(false)
+      } catch {
+        // The store is always available in the app; a test can call the module alone.
+      }
+    }
+  }
+  for (const [requestId, pending] of state.pendingPauses) {
+    clearTimeout(pending.timer)
+    if (options.pauseReason !== undefined) {
+      pending.finish({ ok: false, reason: options.pauseReason, requestId })
+    }
+  }
+  state.pendingPauses.clear()
+  clearPendingProbes(state)
+  state.ownershipProbeGeneration = null
+  state.ownerWriteFailed = false
+  state.resumeAfterTransient = false
+  state.probeHeldSave = false
+  clearOwnershipRecheck(state)
+  if (state.retry) clearTimeout(state.retry.timer)
+  state.retry = null
+  state.channel?.removeEventListener('message', handleMessage)
+  state.channel?.close()
+  state.channel = null
+  state.initialized = false
 }
 
 function schedulePauseRecovery(requestId: string): void {
-  if (pauseRecoveryTimers.has(requestId)) return
-  pauseRecoveryTimers.set(
+  if (coordination.pauseRecoveryTimers.has(requestId)) return
+  coordination.pauseRecoveryTimers.set(
     requestId,
     setTimeout(() => {
-      pauseRecoveryTimers.delete(requestId)
+      coordination.pauseRecoveryTimers.delete(requestId)
       void recoverAbandonedPause(requestId)
     }, PAUSE_RECOVERY_MS),
   )
@@ -848,7 +958,7 @@ function schedulePauseRecovery(requestId: string): void {
  * rather than overwrite it.
  */
 async function recoverAbandonedPause(requestId: string): Promise<void> {
-  if (!activePauses.has(requestId) || importedAway) return
+  if (!coordination.activePauses.has(requestId) || coordination.importedAway) return
   let owned = false
   try {
     owned = await withAutosaveSection(
@@ -863,19 +973,19 @@ async function recoverAbandonedPause(requestId: string): Promise<void> {
     schedulePauseRecovery(requestId)
     return
   }
-  if (!activePauses.has(requestId) || importedAway) return
+  if (!coordination.activePauses.has(requestId) || coordination.importedAway) return
   if (owned) {
     schedulePauseRecovery(requestId)
     return
   }
-  if (knownSlotRaw === undefined || readAutosave() !== knownSlotRaw) {
+  if (coordination.knownSlotRaw === undefined || readAutosave() !== coordination.knownSlotRaw) {
     dropActivePause(requestId)
     markReadOnly()
     return
   }
   dropActivePause(requestId)
-  if (activePauses.size > 0) return
-  if (readOnly) {
+  if (coordination.activePauses.size > 0) return
+  if (coordination.readOnly) {
     await recheckOwnershipAfterResume()
     return
   }
@@ -896,30 +1006,30 @@ function handleMessage(event: MessageEvent): void {
       break
     case 'paused': {
       if (typeof data.requestId !== 'string' || typeof data.tabId !== 'string') break
-      const pending = pendingPauses.get(data.requestId)
+      const pending = coordination.pendingPauses.get(data.requestId)
       if (!pending) break
       // An acknowledgement from a tab the importer did not expect proves
       // nothing about the tabs it is waiting for.
       if (!pending.expected.has(data.tabId)) break
       pending.acked.add(data.tabId)
       if ([...pending.expected].every((id) => pending.acked.has(id))) {
-        pendingPauses.delete(data.requestId)
+        coordination.pendingPauses.delete(data.requestId)
         clearTimeout(pending.timer)
         pending.finish({ ok: true, requestId: data.requestId })
       }
       break
     }
     case 'imported':
-      importedAway = true
+      coordination.importedAway = true
       clearActivePauses()
       setPausedByOtherTab()
       markReadOnly()
       break
     case 'resume': {
-      if (importedAway || typeof data.requestId !== 'string') break
+      if (coordination.importedAway || typeof data.requestId !== 'string') break
       dropActivePause(data.requestId)
-      if (activePauses.size > 0) break
-      if (readOnly) {
+      if (coordination.activePauses.size > 0) break
+      if (coordination.readOnly) {
         void recheckOwnershipAfterResume()
         break
       }
@@ -935,7 +1045,7 @@ function handleMessage(event: MessageEvent): void {
       if (
         typeof data.requestId === 'string' &&
         data.sessionId === session.sessionId &&
-        pendingProbes.has(data.requestId)
+        coordination.pendingProbes.has(data.requestId)
       ) {
         settleProbe(data.requestId, true)
       }
@@ -946,17 +1056,17 @@ function handleMessage(event: MessageEvent): void {
 }
 
 function probeSession(): Promise<boolean> {
-  if (!channel) return Promise.resolve(false)
+  if (!coordination.channel) return Promise.resolve(false)
   return new Promise((resolve) => {
     const requestId = randomToken()
     const timer = setTimeout(() => settleProbe(requestId, false), PROBE_TIMEOUT_MS)
-    pendingProbes.set(requestId, { timer, resolve })
+    coordination.pendingProbes.set(requestId, { timer, resolve })
     post({ type: 'probe-session', requestId, sessionId: session.sessionId })
   })
 }
 
 async function initializeOwnership(generation: number): Promise<void> {
-  if (importedAway) {
+  if (coordination.importedAway) {
     markReadOnly()
     return
   }
@@ -964,7 +1074,7 @@ async function initializeOwnership(generation: number): Promise<void> {
   if (!record || !recordIsFresh(record)) {
     // A pause from an importer that arrived before this async check still
     // holds; do not clear a live request.
-    if (activePauses.size > 0) {
+    if (coordination.activePauses.size > 0) {
       setPausedByOtherTab()
       return
     }
@@ -972,7 +1082,7 @@ async function initializeOwnership(generation: number): Promise<void> {
     // finished and its tab closed). A tab that is already read-only must not
     // resume over it; a fresh mount still reads the slot after this check and
     // must not be paused by state left from an earlier coordination session.
-    if (readOnly && readAutosave() !== knownSlotRaw) {
+    if (coordination.readOnly && readAutosave() !== coordination.knownSlotRaw) {
       markReadOnly()
       return
     }
@@ -980,9 +1090,9 @@ async function initializeOwnership(generation: number): Promise<void> {
     // tab may write. A provisional read-only state from a previous coordination
     // session is gone with its owner, and the stale ownership flag must not
     // survive it.
-    owns = false
-    readOnly = false
-    paused = false
+    coordination.owns = false
+    coordination.readOnly = false
+    coordination.paused = false
     try {
       editorStore.getState().setAutosavePaused(false)
     } catch {
@@ -997,9 +1107,11 @@ async function initializeOwnership(generation: number): Promise<void> {
     return
   }
 
-  const startingEpoch = ourEpoch
+  const startingEpoch = coordination.ourEpoch
   const stillCurrent = () =>
-    generation === coordinationGeneration && ourEpoch === startingEpoch && !importedAway
+    generation === coordination.coordinationGeneration &&
+    coordination.ourEpoch === startingEpoch &&
+    !coordination.importedAway
   const failClosed = () => {
     // An explicit claim in the same generation advances ourEpoch; a teardown
     // changes the generation. Neither may be revoked by this stale init.
@@ -1010,14 +1122,14 @@ async function initializeOwnership(generation: number): Promise<void> {
   // the slot the reclaim is about to compare. A stale probe from a torn-down
   // session cannot clear a newer session's marker because the generation
   // differs; teardown clears it explicitly.
-  ownershipProbeGeneration = generation
+  coordination.ownershipProbeGeneration = generation
   try {
     let probed = record
     for (let attempt = 0; attempt < 2; attempt += 1) {
       // This page may be a reload of the owner. If an old page still answers,
       // the session is open elsewhere and this page must stay read-only.
       const present = await probeSession()
-      if (generation !== coordinationGeneration) return
+      if (generation !== coordination.coordinationGeneration) return
       if (present) {
         failClosed()
         return
@@ -1031,12 +1143,12 @@ async function initializeOwnership(generation: number): Promise<void> {
             // A pause that arrived during the probe still owns the tab. Stay
             // read-only after it ends so the resume path rechecks ownership
             // instead of restoring writes from a probe that never claimed.
-            if (activePauses.size > 0) {
-              readOnly = true
+            if (coordination.activePauses.size > 0) {
+              coordination.readOnly = true
               return 'paused'
             }
             // A prior owner-write failure is final until a new claim or reinit.
-            if (ownerWriteFailed) return 'stale'
+            if (coordination.ownerWriteFailed) return 'stale'
             const current = readOwnerRecord()
             if (!current) return 'stale'
             // Another same-session tab reclaimed while this init probed.
@@ -1057,26 +1169,26 @@ async function initializeOwnership(generation: number): Promise<void> {
             }
             // The slot must still be the one this tab knew. A failed read is
             // fail-closed, never an empty slot.
-            if (knownSlotRaw !== undefined) {
+            if (coordination.knownSlotRaw !== undefined) {
               let live: string | null
               try {
-                live = readAutosaveStrict()
+                live = readAutosaveOrThrow()
               } catch {
                 return 'stale'
               }
-              if (live !== knownSlotRaw) return 'stale'
+              if (live !== coordination.knownSlotRaw) return 'stale'
             }
             if (!writeOwnerRecord({ ...current, tabId, heartbeatAt: now() })) {
-              ownerWriteFailed = true
-              owns = false
+              coordination.ownerWriteFailed = true
+              coordination.owns = false
               stopHeartbeat()
               markReadOnly()
               return 'failed'
             }
-            owns = true
-            ourEpoch = current.epoch
-            readOnly = false
-            paused = false
+            coordination.owns = true
+            coordination.ourEpoch = current.epoch
+            coordination.readOnly = false
+            coordination.paused = false
             try {
               editorStore.getState().setAutosavePaused(false)
             } catch {
@@ -1102,18 +1214,24 @@ async function initializeOwnership(generation: number): Promise<void> {
     }
     failClosed()
   } finally {
-    if (ownershipProbeGeneration === generation) ownershipProbeGeneration = null
+    if (coordination.ownershipProbeGeneration === generation)
+      coordination.ownershipProbeGeneration = null
     // Flush only a save this probe actually held. A writable tab with nothing
     // held must not write its boot document over the slot it is about to
     // restore. Teardown (generation changed), a read-only outcome, a pause, an
     // import, and a restore banner all keep the save pending instead. A
     // stale-epoch return stays writable by design: the explicit claim already
     // took the slot and the held edit belongs to it.
-    const held = generation === coordinationGeneration && probeHeldSave
-    if (generation === coordinationGeneration) probeHeldSave = false
+    const held = generation === coordination.coordinationGeneration && coordination.probeHeldSave
+    if (generation === coordination.coordinationGeneration) coordination.probeHeldSave = false
     if (held) {
       const store = editorStore.getState()
-      if (!readOnly && !paused && !importedAway && !store.pendingRestore) {
+      if (
+        !coordination.readOnly &&
+        !coordination.paused &&
+        !coordination.importedAway &&
+        !store.pendingRestore
+      ) {
         resumePendingAutosave()
       }
     }
@@ -1126,16 +1244,17 @@ async function initializeOwnership(generation: number): Promise<void> {
  * ownership (a remount must not lose it); a pagehide does.
  */
 export function initAutosaveCoordination(): () => void {
-  if (initialized) return () => undefined
-  initialized = true
+  const mount = coordination
+  if (mount.initialized) return () => undefined
+  mount.initialized = true
   // A fresh page adopts the marker it boots on. A coordination remount keeps
   // the marker the live document already observed, so an import that landed
   // while the editor was unmounted cannot make the old document writable.
-  if (knownImportFence === undefined) knownImportFence = readImportFence()
-  const generation = (coordinationGeneration += 1)
+  if (coordination.knownImportFence === undefined) coordination.knownImportFence = readImportFence()
+  const generation = (coordination.coordinationGeneration += 1)
   if (typeof BroadcastChannel !== 'undefined') {
-    channel = new BroadcastChannel(AUTOSAVE_CHANNEL_NAME)
-    channel.addEventListener('message', handleMessage)
+    coordination.channel = new BroadcastChannel(AUTOSAVE_CHANNEL_NAME)
+    coordination.channel.addEventListener('message', handleMessage)
   }
   holdPresence()
   void initializeOwnership(generation).catch(() => undefined)
@@ -1149,7 +1268,7 @@ export function initAutosaveCoordination(): () => void {
   const onStorage = (event: StorageEvent): void => {
     if (event.key !== null && event.key !== OWNER_KEY) return
     if (event.key === OWNER_KEY && event.newValue !== null) {
-      if (importedAway || readOnly) return
+      if (coordination.importedAway || coordination.readOnly) return
       try {
         const parsed = JSON.parse(event.newValue) as Partial<OwnerRecord>
         if (
@@ -1172,66 +1291,40 @@ export function initAutosaveCoordination(): () => void {
       }
       return
     }
-    if (!readOnly || importedAway || activePauses.size > 0) return
+    if (!coordination.readOnly || coordination.importedAway || coordination.activePauses.size > 0)
+      return
     void recheckOwnershipAfterResume()
   }
   if (typeof window !== 'undefined') {
     window.addEventListener('pagehide', onPageHide)
     window.addEventListener('storage', onStorage)
-  }
-  return () => {
-    coordinationGeneration += 1
-    if (typeof window !== 'undefined') {
+    mount.detachListeners = () => {
       window.removeEventListener('pagehide', onPageHide)
       window.removeEventListener('storage', onStorage)
     }
-    releasePresence?.()
-    stopHeartbeat()
+  }
+  return () => {
+    // This cleanup owns only the record this mount initialized. A test reset
+    // can install a replacement record before the old cleanup runs; disposing
+    // the replacement would close the new channel and heartbeat.
+    mount.coordinationGeneration += 1
     // The owner record may survive for a remount, but the in-memory claim does
     // not: otherwise a stale remount refreshes the record without a heartbeat.
-    owns = false
     // A pause belongs to the coordination session. A remount starts a new
     // channel and may miss a resume sent while this one was closed, so drop
     // the transient pause and let initializeOwnership re-evaluate the record.
-    // A completed import or a recorded takeover stays paused.
-    clearActivePauses()
-    if (!importedAway && !readOnly) {
-      paused = false
-      try {
-        editorStore.getState().setAutosavePaused(false)
-      } catch {
-        // The store is always available in the app; a test can call the module alone.
-      }
-    }
-    for (const [requestId, pending] of pendingPauses) {
-      clearTimeout(pending.timer)
-      pending.finish({
-        ok: false,
-        reason: 'This tab closed during the autosave pause.',
-        requestId,
-      })
-    }
-    pendingPauses.clear()
-    clearPendingProbes()
-    ownershipProbeGeneration = null
-    ownerWriteFailed = false
-    resumeAfterTransient = false
-    probeHeldSave = false
-    clearOwnershipRecheck()
-    if (retry) {
-      clearTimeout(retry.timer)
-      retry = null
-    }
-    channel?.removeEventListener('message', handleMessage)
-    channel?.close()
-    channel = null
-    initialized = false
+    // A completed import or a recorded takeover stays paused. Disposal also
+    // detaches this mount's storage and pagehide listeners.
+    disposeCoordination(mount, {
+      pauseReason: 'This tab closed during the autosave pause.',
+      resetPause: true,
+    })
   }
 }
 
 /** True while this tab must not write the shared autosave slot. */
 export function isAutosavePaused(): boolean {
-  return paused || readOnly || importedAway
+  return coordination.paused || coordination.readOnly || coordination.importedAway
 }
 
 /**
@@ -1240,7 +1333,7 @@ export function isAutosavePaused(): boolean {
  * epoch, so a former owner that resumes cannot overwrite this tab's write.
  */
 export async function claimAutosaveOwnership(): Promise<AutosaveClaimResult> {
-  if (importedAway) {
+  if (coordination.importedAway) {
     return { ok: false, reason: 'This tab must reload before it can import a project.' }
   }
   if (!hasAutosaveSerialization()) {
@@ -1250,7 +1343,7 @@ export async function claimAutosaveOwnership(): Promise<AutosaveClaimResult> {
         'This browser cannot coordinate autosave across tabs. Use a browser with Web Locks or IndexedDB, then try again.',
     }
   }
-  if (activePauses.size > 0) {
+  if (coordination.activePauses.size > 0) {
     return {
       ok: false,
       reason: 'Another import is pausing this tab. Reload after it finishes, then try again.',
@@ -1259,9 +1352,9 @@ export async function claimAutosaveOwnership(): Promise<AutosaveClaimResult> {
   // A later claim supersedes this one while it probes or waits for the lock.
   // Without it, an older import could write a higher epoch after the newer
   // claim succeeded and take the slot from it.
-  const claimToken = ++claimSequence
-  const generation = coordinationGeneration
-  const entryEpoch = ourEpoch
+  const claimToken = ++coordination.claimSequence
+  const generation = coordination.coordinationGeneration
+  const entryEpoch = coordination.ourEpoch
   const initial = readOwnerRecord()
   let probedOwner: OwnerRecord | null = null
   if (initial && initial.tabId !== tabId && recordIsFresh(initial)) {
@@ -1274,7 +1367,7 @@ export async function claimAutosaveOwnership(): Promise<AutosaveClaimResult> {
           reason: 'Another tab is saving this project. Close or reload it, then try again.',
         }
       }
-      if (generation !== coordinationGeneration) {
+      if (generation !== coordination.coordinationGeneration) {
         return { ok: false, reason: 'This tab closed during the autosave claim.' }
       }
       probedOwner = initial
@@ -1284,19 +1377,19 @@ export async function claimAutosaveOwnership(): Promise<AutosaveClaimResult> {
   try {
     result = await withAutosaveSection(
       (): AutosaveClaimResult => {
-        if (generation !== coordinationGeneration) {
+        if (generation !== coordination.coordinationGeneration) {
           return { ok: false, reason: 'This tab closed during the autosave claim.' }
         }
-        if (importedAway) {
+        if (coordination.importedAway) {
           return { ok: false, reason: 'This tab must reload before it can import a project.' }
         }
-        if (claimToken !== claimSequence) {
+        if (claimToken !== coordination.claimSequence) {
           return {
             ok: false,
             reason: 'Another import took over the autosave claim. Reload, then try again.',
           }
         }
-        if (activePauses.size > 0) {
+        if (coordination.activePauses.size > 0) {
           return {
             ok: false,
             reason: 'Another import is pausing this tab. Reload after it finishes, then try again.',
@@ -1331,29 +1424,32 @@ export async function claimAutosaveOwnership(): Promise<AutosaveClaimResult> {
         // strict: a storage failure is a conflict, not an empty slot. A stale
         // claim that already lost to a newer one must not revoke it.
         const slotConflict = (reason: string): AutosaveClaimResult => {
-          if (generation === coordinationGeneration && ourEpoch === entryEpoch) {
-            owns = false
+          if (
+            generation === coordination.coordinationGeneration &&
+            coordination.ourEpoch === entryEpoch
+          ) {
+            coordination.owns = false
             stopHeartbeat()
             markReadOnly()
           }
           return { ok: false, reason }
         }
-        if (knownSlotRaw !== undefined) {
+        if (coordination.knownSlotRaw !== undefined) {
           let live: string | null
           try {
-            live = readAutosaveStrict()
+            live = readAutosaveOrThrow()
           } catch {
             return slotConflict(
               'This tab could not verify the autosave slot. Reload and try again.',
             )
           }
-          if (live !== knownSlotRaw) {
+          if (live !== coordination.knownSlotRaw) {
             return slotConflict(
               'Another tab saved this project after this page loaded. Reload and try again.',
             )
           }
         }
-        const epoch = Math.max(record?.epoch ?? 0, ourEpoch) + 1
+        const epoch = Math.max(record?.epoch ?? 0, coordination.ourEpoch) + 1
         const wrote = writeOwnerRecord({
           tabId,
           sessionId: session.sessionId,
@@ -1362,19 +1458,22 @@ export async function claimAutosaveOwnership(): Promise<AutosaveClaimResult> {
           heartbeatAt: now(),
         })
         if (!wrote) {
-          if (generation === coordinationGeneration && ourEpoch === entryEpoch) {
-            ownerWriteFailed = true
-            owns = false
+          if (
+            generation === coordination.coordinationGeneration &&
+            coordination.ourEpoch === entryEpoch
+          ) {
+            coordination.ownerWriteFailed = true
+            coordination.owns = false
             stopHeartbeat()
             markReadOnly()
           }
           return { ok: false, reason: 'This browser could not record autosave ownership.' }
         }
-        owns = true
-        ourEpoch = epoch
-        ownerWriteFailed = false
-        readOnly = false
-        paused = false
+        coordination.owns = true
+        coordination.ourEpoch = epoch
+        coordination.ownerWriteFailed = false
+        coordination.readOnly = false
+        coordination.paused = false
         clearActivePauses()
         startHeartbeat()
         return { ok: true, epoch }
@@ -1398,12 +1497,12 @@ export async function claimAutosaveOwnership(): Promise<AutosaveClaimResult> {
  */
 export function releaseAutosaveOwnership(epoch?: number): void {
   if (epoch !== undefined) {
-    if (ourEpoch !== epoch) return
+    if (coordination.ourEpoch !== epoch) return
     const record = readOwnerRecord()
     if (record && record.tabId === tabId && record.epoch !== epoch) return
   }
   stopHeartbeat()
-  owns = false
+  coordination.owns = false
   clearOwnerRecordIfOurs()
 }
 
@@ -1413,16 +1512,24 @@ export function releaseAutosaveOwnership(epoch?: number): void {
  * answer within the timeout refuse the import instead of risking the slot.
  */
 export async function pauseOtherAutosaveTabs(): Promise<AutosavePauseResult> {
-  if (!channel) return { ok: true, requestId: 'local' }
-  const expected = new Set(await otherAutosaveTabs())
+  if (!coordination.channel) return { ok: true, requestId: 'local' }
   const requestId = randomToken()
+  const generation = coordination.coordinationGeneration
+  const expected = new Set(await otherAutosaveTabs())
+  if (generation !== coordination.coordinationGeneration) {
+    return {
+      ok: false,
+      reason: 'This tab closed during the autosave pause.',
+      requestId,
+    }
+  }
   return new Promise((resolve) => {
     const timer = setTimeout(
       () => {
-        const pending = pendingPauses.get(requestId)
+        const pending = coordination.pendingPauses.get(requestId)
         if (!pending) return
         const missing = [...pending.expected].filter((id) => !pending.acked.has(id))
-        pendingPauses.delete(requestId)
+        coordination.pendingPauses.delete(requestId)
         resolve(
           missing.length > 0
             ? {
@@ -1436,7 +1543,7 @@ export async function pauseOtherAutosaveTabs(): Promise<AutosavePauseResult> {
       },
       expected.size > 0 ? PAUSE_TIMEOUT_MS : PROBE_TIMEOUT_MS,
     )
-    pendingPauses.set(requestId, {
+    coordination.pendingPauses.set(requestId, {
       expected,
       acked: new Set(),
       timer,
@@ -1489,8 +1596,9 @@ function recordPendingInstallInSection(pending: PendingInstallRecord): boolean {
   ) {
     return false
   }
-  const current = pendingInstalls.get(pending.projectId)
-  if (current?.installId === pending.installId) pendingInstalls.delete(pending.projectId)
+  const current = coordination.pendingInstalls.get(pending.projectId)
+  if (current?.installId === pending.installId)
+    coordination.pendingInstalls.delete(pending.projectId)
   clearPendingInstallRecord(pending.projectId, pending.installId)
   return true
 }
@@ -1516,7 +1624,7 @@ export async function markInstallPending(
   installId: string,
   hadInstallClaims = false,
 ): Promise<void> {
-  pendingInstalls.set(projectId, { projectId, installId, hadInstallClaims })
+  coordination.pendingInstalls.set(projectId, { projectId, installId, hadInstallClaims })
   // Mirror durably inside the same cross-tab section as every other pending
   // map write, so two tabs cannot read-modify-write the map past each other.
   // Best effort: when the section is unavailable the in-memory retry still
@@ -1537,30 +1645,31 @@ export async function markInstallPending(
  * install, must land this marker before it writes the slot.
  */
 export function requireAutosaveImportFence(projectId: string): void {
-  pendingImportFence = { projectId, token: randomToken() }
+  coordination.pendingImportFence = { projectId, token: randomToken() }
 }
 
 /** Restores every durable pending install from a previous page into memory. */
 function restorePendingInstalls(): void {
   for (const record of readPendingInstallRecords()) {
-    if (!pendingInstalls.has(record.projectId)) pendingInstalls.set(record.projectId, record)
+    if (!coordination.pendingInstalls.has(record.projectId))
+      coordination.pendingInstalls.set(record.projectId, record)
   }
 }
 
 /** True when an install record still awaits a durable write. */
 export function hasPendingInstall(): boolean {
-  return pendingInstalls.size > 0
+  return coordination.pendingInstalls.size > 0
 }
 
 function nextWriteSeq(): number {
-  writeSeq += 1
-  return writeSeq
+  coordination.writeSeq += 1
+  return coordination.writeSeq
 }
 
 function clearAutosaveRetry(): void {
-  if (!retry) return
-  clearTimeout(retry.timer)
-  retry = null
+  if (!coordination.retry) return
+  clearTimeout(coordination.retry.timer)
+  coordination.retry = null
 }
 
 /**
@@ -1583,29 +1692,42 @@ export function writeAutosaveCooperatively(
   snapshotId?: string,
   snapshotDoc?: Doc,
 ): Promise<AutosaveWriteResult> {
+  const origin = coordination
+  const generation = origin.coordinationGeneration
   if (isAutosavePaused()) return Promise.resolve('read-only')
   // An ownership probe compares the slot it saw before the probe. A save that
   // advanced it would make a peer's newer slot look like this tab's own write.
   // A project-scoped import write rejected here is preserved by the caller's
   // pending-install retry; an ordinary save resumes from the probe finally.
-  if (ownershipProbeGeneration !== null) {
-    if (projectId === undefined) probeHeldSave = true
+  if (origin.ownershipProbeGeneration !== null) {
+    if (projectId === undefined) origin.probeHeldSave = true
     return Promise.resolve('read-only')
   }
   // Re-evaluated at an IDB fallback: a pending install, scoped write, or fence
   // can arrive after this call while the database open or read is in flight.
   const requireSerialization = () =>
-    owns || pendingInstalls.size > 0 || projectId !== undefined || pendingImportFence !== null
-  const run = localWrites
+    origin.owns ||
+    origin.pendingInstalls.size > 0 ||
+    projectId !== undefined ||
+    origin.pendingImportFence !== null
+  const run = origin.localWrites
     .catch(() => undefined)
     .then(() =>
       withAutosaveSection(
         (): AutosaveWriteResult => {
+          // A reset can replace the coordination record while this write waits
+          // for the section. The old write must not touch the replacement
+          // record's slot, sequence, or registry. This is a failure, not a
+          // supersession by a newer committed write: a project-scoped import
+          // must keep its retry obligation when the write never ran.
+          if (coordination !== origin || origin.coordinationGeneration !== generation) {
+            return 'read-only'
+          }
           // A pause can arrive after the early check while this write waits
           // for its turn. Never persist a document for a tab that is paused.
           if (isAutosavePaused()) return 'read-only'
-          if (ownershipProbeGeneration !== null) {
-            if (projectId === undefined) probeHeldSave = true
+          if (origin.ownershipProbeGeneration !== null) {
+            if (projectId === undefined) origin.probeHeldSave = true
             return 'read-only'
           }
           // The captured document can be replaced while this write waits for
@@ -1616,7 +1738,7 @@ export function writeAutosaveCooperatively(
           }
           const record = readOwnerRecord()
           if (record && record.tabId !== tabId && recordIsFresh(record)) {
-            owns = false
+            origin.owns = false
             stopHeartbeat()
             markReadOnly()
             return 'read-only'
@@ -1624,13 +1746,13 @@ export function writeAutosaveCooperatively(
           // A former owner must not write against a newer epoch even after that
           // owner's lease went stale: a stale lease must not make an old epoch
           // valid again.
-          if (record && ourEpoch > 0 && record.epoch > ourEpoch) {
-            owns = false
+          if (record && origin.ourEpoch > 0 && record.epoch > origin.ourEpoch) {
+            origin.owns = false
             markReadOnly()
             return 'read-only'
           }
-          if (record && record.tabId === tabId && record.epoch !== ourEpoch) {
-            owns = false
+          if (record && record.tabId === tabId && record.epoch !== origin.ourEpoch) {
+            origin.owns = false
             markReadOnly()
             return 'read-only'
           }
@@ -1644,9 +1766,9 @@ export function writeAutosaveCooperatively(
           // observed an older import marker must not overwrite the slot even
           // when it missed the pause and no owner record remains.
           const fence = readImportFence()
-          if (knownImportFence === undefined) {
-            knownImportFence = fence
-          } else if (fence !== knownImportFence) {
+          if (origin.knownImportFence === undefined) {
+            origin.knownImportFence = fence
+          } else if (fence !== origin.knownImportFence) {
             markReadOnly()
             return 'read-only'
           }
@@ -1660,11 +1782,11 @@ export function writeAutosaveCooperatively(
             // retry path, which appends it without touching another slot.
             return 'superseded'
           }
-          if (seq < committedSeq) return 'superseded'
+          if (seq < origin.committedSeq) return 'superseded'
           // Consume the pending install only for an eligible snapshot. A
           // superseded save leaves it in memory, so the next eligible save
           // still appends the install and lands its marker.
-          const pending = pendingInstalls.get(snapshotProjectId)
+          const pending = origin.pendingInstalls.get(snapshotProjectId)
           if (pending && !recordPendingInstallInSection(pending)) return 'error'
           // The marker must be durable before the slot names the imported
           // project: a project-scoped save without it leaves a tab that missed
@@ -1672,26 +1794,32 @@ export function writeAutosaveCooperatively(
           // requirement outlives the call that started it, so an ordinary
           // autosave for the same project cannot write the slot without it.
           const fenceProjectId = snapshotProjectId
-          if (pendingImportFence !== null && pendingImportFence.projectId !== fenceProjectId) {
+          if (
+            origin.pendingImportFence !== null &&
+            origin.pendingImportFence.projectId !== fenceProjectId
+          ) {
             // The imported project no longer owns the live slot, so its
             // unfinished marker cannot protect another project's write.
-            pendingImportFence = null
+            origin.pendingImportFence = null
           }
           // A pending install proves an install is mid-flight even when the
           // caller is the ordinary resume save. Establish the marker here so
           // neither the slot nor its retry can advance ahead of the fence.
-          if ((projectId !== undefined || pending !== undefined) && pendingImportFence === null) {
-            pendingImportFence = { projectId: fenceProjectId, token: randomToken() }
+          if (
+            (projectId !== undefined || pending !== undefined) &&
+            origin.pendingImportFence === null
+          ) {
+            origin.pendingImportFence = { projectId: fenceProjectId, token: randomToken() }
           }
-          if (pendingImportFence !== null) {
-            if (!writeImportFence(pendingImportFence.token)) {
+          if (origin.pendingImportFence !== null) {
+            if (!writeImportFence(origin.pendingImportFence.token)) {
               // The install append is durable, but the slot is not. An
               // ordinary save has no caller-owned retry, so schedule one bound
               // to this snapshot and sequence. With another project's append
               // still owed, the combined retry must keep both obligations
               // instead of replacing that project's timer.
               if (projectId === undefined) {
-                if (pendingInstalls.size > 0) {
+                if (origin.pendingInstalls.size > 0) {
                   queuePendingInstallRetry(snapshotProjectId, seq)
                 } else {
                   queueAutosaveRetry(json, seq, snapshotProjectId)
@@ -1699,46 +1827,46 @@ export function writeAutosaveCooperatively(
               }
               return 'error'
             }
-            knownImportFence = pendingImportFence.token
+            origin.knownImportFence = origin.pendingImportFence.token
           }
           try {
             localStorage.setItem(AUTOSAVE_KEY, json)
           } catch {
             return 'error'
           }
-          committedSeq = Math.max(committedSeq, seq)
-          knownSlotRaw = json
+          origin.committedSeq = Math.max(origin.committedSeq, seq)
+          origin.knownSlotRaw = json
           // An ordinary save keeps the requirement so the import's own
           // project-scoped write can reuse the same marker instead of fencing
           // the slot a second time.
-          if (projectId !== undefined) pendingImportFence = null
+          if (projectId !== undefined) origin.pendingImportFence = null
           // A live save clears only its own slot retry. Another project's
           // pending-install retry must survive until its append completes.
           if (
-            retry &&
-            retry.seq < seq &&
-            (retry.projectId === null || retry.projectId === snapshotProjectId)
+            origin.retry &&
+            origin.retry.seq < seq &&
+            (origin.retry.projectId === null || origin.retry.projectId === snapshotProjectId)
           ) {
-            if (pendingInstalls.size > 0) {
+            if (origin.pendingInstalls.size > 0) {
               // The slot is saved, but another project's registry append is
               // still owed. Keep its budget and reschedule that work without a
               // slot target instead of dropping the combined retry's timer.
-              const attempts = retry.attempts
+              const attempts = origin.retry.attempts
               clearAutosaveRetry()
               queuePendingInstallRetry(undefined, undefined, attempts)
             } else {
               clearAutosaveRetry()
             }
           }
-          if (owns) {
+          if (origin.owns) {
             const current = readOwnerRecord()
             if (current && current.tabId === tabId) {
               if (!writeOwnerRecord({ ...current, heartbeatAt: now() })) {
                 // Fail the claim this refresh actually targeted closed. A
                 // superseded record's failure leaves the newer claim alone.
-                if (current.epoch === ourEpoch) {
-                  ownerWriteFailed = true
-                  owns = false
+                if (current.epoch === origin.ourEpoch) {
+                  origin.ownerWriteFailed = true
+                  origin.owns = false
                   stopHeartbeat()
                   markReadOnly()
                 }
@@ -1746,7 +1874,7 @@ export function writeAutosaveCooperatively(
             } else if (!current) {
               // The record vanished (storage eviction, manual clear): re-establish
               // it before another tab can claim the slot this write just changed.
-              const epoch = ourEpoch + 1
+              const epoch = origin.ourEpoch + 1
               if (
                 !writeOwnerRecord({
                   tabId,
@@ -1756,13 +1884,13 @@ export function writeAutosaveCooperatively(
                   heartbeatAt: now(),
                 })
               ) {
-                ownerWriteFailed = true
-                owns = false
+                origin.ownerWriteFailed = true
+                origin.owns = false
                 stopHeartbeat()
                 markReadOnly()
                 return 'error'
               }
-              ourEpoch = epoch
+              origin.ourEpoch = epoch
             }
           }
           return 'saved'
@@ -1770,7 +1898,7 @@ export function writeAutosaveCooperatively(
         { requireSerialization },
       ).catch(() => 'error' as AutosaveWriteResult),
     )
-  localWrites = run
+  origin.localWrites = run
   return run
 }
 
@@ -1825,10 +1953,10 @@ function autosaveSnapshotIsLive(doc: Doc, savedDoc: Doc, json: string): boolean 
  * append refused). Retries are bounded; a later edit schedules its own write.
  */
 export function queueAutosaveRetry(json: string, seq?: number, projectId?: string): void {
-  if (retry) clearTimeout(retry.timer)
-  const attempt = (retry?.attempts ?? 0) + 1
+  if (coordination.retry) clearTimeout(coordination.retry.timer)
+  const attempt = (coordination.retry?.attempts ?? 0) + 1
   if (attempt > MAX_RETRIES) {
-    retry = null
+    coordination.retry = null
     return
   }
   // Retain the original sequence across attempts: allocating a newer sequence
@@ -1836,22 +1964,22 @@ export function queueAutosaveRetry(json: string, seq?: number, projectId?: strin
   // between attempts. A newer edit allocates a higher sequence and supersedes
   // this retry instead.
   const useSeq = seq ?? nextWriteSeq()
-  const target = projectId ?? retry?.projectId ?? null
+  const target = projectId ?? coordination.retry?.projectId ?? null
   const content = target !== null ? autosaveContentOf(json) : null
-  retry = {
+  coordination.retry = {
     json,
     attempts: attempt,
     seq: useSeq,
     projectId: target,
     timer: setTimeout(() => {
-      const scheduled = retry
+      const scheduled = coordination.retry
       const live = editorStore.getState()
       if (target !== null) {
         // A bundle slot retry belongs to the project it was captured for. Once
         // another project is live, writing it would replace that project's
         // slot and report it saved, so the retry is dropped.
         if (live.doc.project.id !== target) {
-          if (retry === scheduled) retry = null
+          if (coordination.retry === scheduled) coordination.retry = null
           return
         }
         // The same project id can come back with new content (a reopen or a
@@ -1861,11 +1989,11 @@ export function queueAutosaveRetry(json: string, seq?: number, projectId?: strin
         try {
           current = JSON.stringify(serializeDoc(live.doc))
         } catch {
-          if (retry === scheduled) retry = null
+          if (coordination.retry === scheduled) coordination.retry = null
           return
         }
         if (content !== null && autosaveContentOf(current) !== content) {
-          if (retry === scheduled) retry = null
+          if (coordination.retry === scheduled) coordination.retry = null
           return
         }
       }
@@ -1879,12 +2007,12 @@ export function queueAutosaveRetry(json: string, seq?: number, projectId?: strin
         // A newer retry was queued while this write was in flight. Clearing or
         // replacing it here would erase that payload; its own completion owns
         // the slot and the status.
-        if (retry !== scheduled) return
+        if (coordination.retry !== scheduled) return
         if (result === 'saved' || result === 'superseded') {
           // A takeover or completed import may have turned this tab read-only
           // after the write ran. It must not restore a saved/pending status.
-          if (readOnly) return
-          retry = null
+          if (coordination.readOnly) return
+          coordination.retry = null
           // A sequence supersede proves this snapshot safe only when the
           // committed slot still contains it, not when another project won.
           if (result === 'superseded' && !autosaveSlotMatches(json)) return
@@ -1935,14 +2063,14 @@ export function queuePendingInstallRetry(
   seq?: number,
   attempts?: number,
 ): void {
-  if (retry) clearTimeout(retry.timer)
-  const attempt = attempts ?? (retry?.attempts ?? 0) + 1
+  if (coordination.retry) clearTimeout(coordination.retry.timer)
+  const attempt = attempts ?? (coordination.retry?.attempts ?? 0) + 1
   if (attempt > MAX_RETRIES) {
-    retry = null
+    coordination.retry = null
     return
   }
-  const useSeq = seq ?? retry?.seq ?? nextWriteSeq()
-  const target = projectId ?? retry?.projectId ?? null
+  const useSeq = seq ?? coordination.retry?.seq ?? nextWriteSeq()
+  const target = projectId ?? coordination.retry?.projectId ?? null
   const scheduled: AutosaveRetry = {
     json: '',
     attempts: attempt,
@@ -1952,7 +2080,7 @@ export function queuePendingInstallRetry(
       void runPendingInstallRetry(scheduled)
     }, RETRY_MS),
   }
-  retry = scheduled
+  coordination.retry = scheduled
 }
 
 /**
@@ -1969,22 +2097,22 @@ async function runPendingInstallRetry(scheduled: AutosaveRetry): Promise<void> {
   // boot the live doc can be a different project (the failed slot write is
   // what made the record durable), so never replace the slot with a doc the
   // install does not own.
-  for (const pending of [...pendingInstalls.values()]) {
+  for (const pending of [...coordination.pendingInstalls.values()]) {
     if (pending.projectId === liveProjectId) continue
     await recordAndClearPendingInstall(pending)
-    if (retry !== scheduled) return
+    if (coordination.retry !== scheduled) return
   }
-  if (retry !== scheduled) return
-  const livePending = pendingInstalls.has(liveProjectId)
+  if (coordination.retry !== scheduled) return
+  const livePending = coordination.pendingInstalls.has(liveProjectId)
   const slotProjectId = livePending ? liveProjectId : scheduled.projectId
   if (slotProjectId === null || (!livePending && slotProjectId !== liveProjectId)) {
-    if (pendingInstalls.size > 0) {
+    if (coordination.pendingInstalls.size > 0) {
       // Keep the attempt count, but stop carrying a slot project: the rest of
       // this pass is registry appends only.
       scheduled.projectId = null
       queuePendingInstallRetry()
     } else {
-      retry = null
+      coordination.retry = null
     }
     return
   }
@@ -1997,7 +2125,7 @@ async function runPendingInstallRetry(scheduled: AutosaveRetry): Promise<void> {
     queuePendingInstallRetry(slotProjectId)
     return
   }
-  if (retry === scheduled) scheduled.json = json
+  if (coordination.retry === scheduled) scheduled.json = json
   const result = await writeAutosaveCooperatively(
     json,
     scheduled.seq,
@@ -2005,11 +2133,11 @@ async function runPendingInstallRetry(scheduled: AutosaveRetry): Promise<void> {
     savedDoc.project.id,
     savedDoc,
   )
-  if (retry !== scheduled) return
+  if (coordination.retry !== scheduled) return
   if (result === 'saved' || result === 'superseded') {
     const committed = autosaveSlotMatches(json)
     const store = editorStore.getState()
-    if (store.doc.project.id === slotProjectId && !readOnly) {
+    if (store.doc.project.id === slotProjectId && !coordination.readOnly) {
       // A newer edit that landed while the retry was queued owns its own save.
       // Reporting it saved here would hide the unsaved document. A takeover or
       // completed import has already reported autosave off, and a late retry
@@ -2021,17 +2149,17 @@ async function runPendingInstallRetry(scheduled: AutosaveRetry): Promise<void> {
         store.markAutosaved()
       }
     }
-    if (pendingInstalls.size > 0) {
+    if (coordination.pendingInstalls.size > 0) {
       // The live slot is saved. Only another project's append remains, so the
       // next pass must not rewrite this slot or fence it again.
       scheduled.projectId = null
       queuePendingInstallRetry()
     } else {
-      retry = null
+      coordination.retry = null
     }
     return
   }
-  if (pendingInstalls.size > 0) {
+  if (coordination.pendingInstalls.size > 0) {
     queuePendingInstallRetry(slotProjectId)
     return
   }
@@ -2040,41 +2168,17 @@ async function runPendingInstallRetry(scheduled: AutosaveRetry): Promise<void> {
 
 /** Registers the callback a pause uses to cancel this tab's pending timer. */
 export function setAutosaveCancel(cancel: (() => void) | null): void {
-  cancelPendingWrite = cancel
+  coordination.cancelPendingWrite = cancel
 }
 
-/** Test hook: reset every module-level coordination bit. */
+/** Test hook: dispose the live record and install a fresh one. */
 export function resetAutosaveCoordinationForTests(): void {
-  coordinationGeneration += 1
-  releasePresence?.()
-  stopHeartbeat()
-  for (const pending of pendingPauses.values()) clearTimeout(pending.timer)
-  pendingPauses.clear()
-  clearPendingProbes()
-  ownershipProbeGeneration = null
-  ownerWriteFailed = false
-  resumeAfterTransient = false
-  probeHeldSave = false
-  clearOwnershipRecheck()
-  if (retry) clearTimeout(retry.timer)
-  retry = null
-  channel?.close()
-  channel = null
-  initialized = false
-  owns = false
-  ourEpoch = 0
-  paused = false
-  importedAway = false
-  readOnly = false
-  cancelPendingWrite = null
-  localWrites = Promise.resolve()
-  pendingInstalls.clear()
-  pendingImportFence = null
-  clearActivePauses()
-  knownSlotRaw = undefined
-  knownImportFence = undefined
-  writeSeq = 0
-  committedSeq = 0
+  const previous = coordination
+  previous.coordinationGeneration += 1
+  disposeCoordination(previous, {
+    pauseReason: 'The editor was reset during the autosave pause.',
+  })
+  coordination = createCoordinationState(previous)
   try {
     localStorage.removeItem(OWNER_KEY)
     localStorage.removeItem(SESSION_KEY)
@@ -2100,7 +2204,7 @@ export function initAutosave(): () => void {
   // registration with no further edit: restore the durable pending install
   // and retry it on the timer.
   restorePendingInstalls()
-  if (pendingInstalls.size > 0) queuePendingInstallRetry()
+  if (coordination.pendingInstalls.size > 0) queuePendingInstallRetry()
 
   const unsubscribe = editorStore.subscribe((state, prevState) => {
     // Save when the doc changes (commands) OR when a transient gesture commits
@@ -2112,30 +2216,33 @@ export function initAutosave(): () => void {
     if (!docChanged) {
       // A resume can arrive while a gesture is live. A cancel with no frame
       // leaves no doc change, so the ending transition owns that flush.
-      if (resumeAfterTransient && !isTransientActive() && !isAutosavePaused()) {
-        resumeAfterTransient = false
+      if (coordination.resumeAfterTransient && !isTransientActive() && !isAutosavePaused()) {
+        coordination.resumeAfterTransient = false
         resumePendingAutosave()
       }
       return
     }
     if (isTransientActive()) return
     if (isAutosavePaused()) return
-    resumeAfterTransient = false
+    coordination.resumeAfterTransient = false
     if (timer) clearTimeout(timer)
     editorStore.getState().setAutosaveStatus('pending')
     const seq = nextWriteSeq()
+    const record = coordination
+    const generation = record.coordinationGeneration
     timer = setTimeout(() => {
       timer = null
       const savedDoc = editorStore.getState().doc
       const json = JSON.stringify(serializeDoc(savedDoc))
       void writeAutosaveCooperatively(json, seq, undefined, savedDoc.project.id, savedDoc).then(
         (result) => {
+          if (coordination !== record || record.coordinationGeneration !== generation) return
           const store = editorStore.getState()
           if (result === 'saved') {
             // A takeover or completed import can land after the slot write but
             // before this completion. Autosave is off then; leave the error
             // status instead of restoring pending or saved.
-            if (readOnly) return
+            if (coordination.readOnly) return
             // A newer edit landed while this write was queued. Its own save is
             // already scheduled; marking it saved here would hide that.
             if (store.doc !== savedDoc) {
@@ -2148,7 +2255,7 @@ export function initAutosave(): () => void {
             // Only a live captured snapshot plus a committed slot proves this
             // write safe. A live reference alone can point at a newer document,
             // and a slot match alone can belong to the previous project.
-            if (readOnly) return
+            if (coordination.readOnly) return
             if (!autosaveSnapshotIsLive(store.doc, savedDoc, json)) return
             store.setAutosaveStatus('saved')
             store.markAutosaved()
@@ -2158,7 +2265,7 @@ export function initAutosave(): () => void {
             // A permanent refusal (takeover or completed import) is autosave
             // off; a temporary peer pause leaves the document pending for the
             // resume handler.
-            store.setAutosaveStatus(readOnly ? 'error' : 'pending')
+            store.setAutosaveStatus(coordination.readOnly ? 'error' : 'pending')
           }
         },
       )

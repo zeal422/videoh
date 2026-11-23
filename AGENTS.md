@@ -141,7 +141,9 @@ Running the suite (these are the steps agents get wrong):
    hydration, not just when the UI produces it. Regression tests must include hostile input
    (out-of-range numbers, colliding ids, untrimmed names), not only the values your own controls emit.
 7. **Grep is an indicator, not truth.** Open the cited code and verify before writing any factual claim,
-   in code, docs, or commit messages. Report problems regardless of when they were introduced.
+   in code, docs, or commit messages. Report problems regardless of when they were introduced. In a
+   review, list verified pre-existing findings separately and notify the user; treat them as report-only
+   unless the current task explicitly includes fixes or the user asks for them.
 8. **Dev server:** check first (`curl -s --max-time 3 http://localhost:3000`), never start a duplicate,
    and read the `dev.log` tail for state. If you started it, stop your own process group when done;
    never `pkill -f 'next dev'`. If the user started it, leave it running.

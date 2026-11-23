@@ -1556,7 +1556,9 @@ export async function openBundleFile(file: File): Promise<BundleOpenOutcome> {
       )
     } else if (slot === 'superseded') {
       // A newer write for this project won, or another project became live
-      // while this write was queued. Only the former means this doc is saved.
+      // while this write was queued. A replaced coordination record returns
+      // 'read-only' and takes the retry branch above, so this arm is a genuine
+      // supersession. Only a newer write for this project means this doc saved.
       if (useEditorStore.getState().doc.project.id === doc.project.id) {
         const store = useEditorStore.getState()
         store.setAutosaveStatus('saved')

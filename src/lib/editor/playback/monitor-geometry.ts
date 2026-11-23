@@ -91,7 +91,14 @@ export function quadForClip(
   return gizmoQuad(baseRect, transform, width, height)
 }
 
-/** Axis-aligned bounds of a quad. Flip does not change these. */
+/**
+ * Axis-aligned bounds of a quad. Flip does not change these.
+ *
+ * An empty quad returns a finite zero rect, not Infinity or NaN. That zero
+ * span is a sentinel, not a real box: `snapBoxToTargets` rejects a zero-width
+ * or zero-height box so the sentinel cannot snap to frame edge 0. Keep the two
+ * guards paired.
+ */
 export function quadBounds(quad: readonly Point[]): Rect {
   if (quad.length === 0) return { x0: 0, y0: 0, x1: 0, y1: 0 }
   const xs = quad.map((point) => point.x)

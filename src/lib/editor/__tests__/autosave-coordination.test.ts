@@ -132,7 +132,7 @@ describe('autosave ownership (0.28.0)', () => {
     expect(await claimAutosaveOwnership()).toMatchObject({ ok: true })
     const record = readRecord()
     expect(record.tabId).not.toBe('other-tab')
-    expect(record.epoch).toBe(5)
+    expect(record.epoch).toBeGreaterThan(4)
     expect(await writeAutosaveCooperatively('{"ours":true}')).toBe('saved')
     expect(readAutosave()).toBe('{"ours":true}')
   })
@@ -144,6 +144,22 @@ describe('autosave ownership (0.28.0)', () => {
     if (!first.ok || !second.ok) return
     expect(second.epoch).toBe(first.epoch + 1)
     releaseAutosaveOwnership(first.epoch)
+    expect(readRecord().epoch).toBe(second.epoch)
+    releaseAutosaveOwnership(second.epoch)
+    expect(storage.has(OWNER_KEY)).toBe(false)
+  })
+
+  it('a stale import cannot release a replacement claim after reset', async () => {
+    const first = await claimAutosaveOwnership()
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
+    resetAutosaveCoordinationForTests()
+    const second = await claimAutosaveOwnership()
+    expect(second.ok).toBe(true)
+    if (!second.ok) return
+    expect(second.epoch).toBeGreaterThan(first.epoch)
+    releaseAutosaveOwnership(first.epoch)
+    expect(storage.has(OWNER_KEY)).toBe(true)
     expect(readRecord().epoch).toBe(second.epoch)
     releaseAutosaveOwnership(second.epoch)
     expect(storage.has(OWNER_KEY)).toBe(false)
@@ -176,9 +192,14 @@ describe('autosave ownership (0.28.0)', () => {
   })
 
   it('refuses a former owner against a stale newer epoch', async () => {
-    writeRecord({ tabId: 'other-tab', heartbeatAt: Date.now() - 60_000, epoch: 2 })
-    expect((await claimAutosaveOwnership()).ok).toBe(true)
-    writeRecord({ tabId: 'other-tab', heartbeatAt: Date.now() - 60_000, epoch: 4 })
+    const claim = await claimAutosaveOwnership()
+    expect(claim.ok).toBe(true)
+    if (!claim.ok) return
+    writeRecord({
+      tabId: 'other-tab',
+      heartbeatAt: Date.now() - 60_000,
+      epoch: claim.epoch + 1,
+    })
     expect(await writeAutosaveCooperatively('{"late":true}')).toBe('read-only')
     expect(readAutosave()).toBeNull()
   })
@@ -1446,6 +1467,339 @@ describe('autosave pause handshake (0.28.0)', () => {
       expect(await writeAutosaveCooperatively('{}')).toBe('read-only')
     } finally {
       cleanup()
+    }
+  })
+
+  it('refuses a pause when coordination is torn down during peer discovery', async () => {
+    const cleanup = initAutosaveCoordination()
+    try {
+      let releaseQuery!: (value: { held: { name: string }[]; pending: never[] }) => void
+      const query = new Promise<{ held: { name: string }[]; pending: never[] }>((resolve) => {
+        releaseQuery = resolve
+      })
+      const locks = navigator.locks as unknown as {
+        query: () => Promise<{ held: { name: string }[]; pending: never[] }>
+      }
+      locks.query = () => query
+      const pending = pauseOtherAutosaveTabs()
+      resetAutosaveCoordinationForTests()
+      releaseQuery({ held: [], pending: [] })
+      await expect(pending).resolves.toMatchObject({
+        ok: false,
+        reason: 'This tab closed during the autosave pause.',
+      })
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('settles a pending pause when the test reset disposes coordination', async () => {
+    const cleanup = initAutosaveCoordination()
+    try {
+      const locks = navigator.locks as unknown as {
+        query: () => Promise<{ held: { name: string }[]; pending: never[] }>
+      }
+      locks.query = async () => ({
+        held: [{ name: 'videoh-autosave-tab:tab-other' }],
+        pending: [],
+      })
+      const pending = pauseOtherAutosaveTabs()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      resetAutosaveCoordinationForTests()
+      await expect(pending).resolves.toMatchObject({
+        ok: false,
+        reason: 'The editor was reset during the autosave pause.',
+      })
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('an old cleanup does not dispose a replacement mount', async () => {
+    const cleanup1 = initAutosaveCoordination()
+    resetAutosaveCoordinationForTests()
+    const cleanup2 = initAutosaveCoordination()
+    try {
+      cleanup1()
+      expect(FakeChannel.all.size).toBe(1)
+    } finally {
+      cleanup2()
+      resetAutosaveCoordinationForTests()
+    }
+  })
+
+  it('does not let a stale presence rejection clear a replacement release handle', async () => {
+    const locks = (navigator as unknown as { locks: FakeLockManager }).locks
+    const original = locks.request.bind(locks)
+    let rejectFirst!: (error: Error) => void
+    let presenceCalls = 0
+    locks.request = ((
+      name: string,
+      options: never,
+      callback: (lock: object | null) => Promise<unknown>,
+    ) => {
+      if (name.startsWith('videoh-autosave-tab:')) {
+        presenceCalls += 1
+        if (presenceCalls === 1) {
+          return new Promise<unknown>((_, reject) => {
+            rejectFirst = reject
+          })
+        }
+      }
+      return original(name, options, callback)
+    }) as typeof locks.request
+    const cleanup1 = initAutosaveCoordination()
+    cleanup1()
+    resetAutosaveCoordinationForTests()
+    const cleanup2 = initAutosaveCoordination()
+    const presenceHeld = () =>
+      locks.heldNames().some((name) => name.startsWith('videoh-autosave-tab:'))
+    try {
+      await vi.waitFor(() => expect(presenceHeld()).toBe(true))
+      rejectFirst(new Error('presence request failed'))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      cleanup2()
+      await vi.waitFor(() => expect(presenceHeld()).toBe(false))
+    } finally {
+      cleanup2()
+      locks.request = original as typeof locks.request
+      resetAutosaveCoordinationForTests()
+    }
+  })
+
+  it('does not acknowledge a pause after its coordination record is replaced', async () => {
+    const cleanup1 = initAutosaveCoordination()
+    const other = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    const locks = (navigator as unknown as { locks: FakeLockManager }).locks
+    const original = locks.request.bind(locks)
+    let releaseWrite!: () => void
+    let entered!: () => void
+    const requested = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let gate = false
+    locks.request = ((
+      name: string,
+      options: never,
+      callback: (lock: object | null) => Promise<unknown>,
+    ) => {
+      if (name !== AUTOSAVE_LOCK_NAME || !gate) return original(name, options, callback)
+      gate = false
+      return new Promise<unknown>((resolve, reject) => {
+        entered()
+        releaseWrite = () => {
+          void original(name, options, callback).then(resolve, reject)
+        }
+      })
+    }) as typeof locks.request
+    let cleanup2: (() => void) | null = null
+    try {
+      // Let the initial ownership check settle before holding the write lock.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      gate = true
+      const queued = writeAutosaveCooperatively('{"queued-ack":true}')
+      await requested
+      other.postMessage({ type: 'pause', requestId: 'r-stale-ack' })
+      expect(isAutosavePaused()).toBe(true)
+      resetAutosaveCoordinationForTests()
+      cleanup2 = initAutosaveCoordination()
+      releaseWrite()
+      await queued
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(other.received).not.toContainEqual(
+        expect.objectContaining({ type: 'paused', requestId: 'r-stale-ack' }),
+      )
+    } finally {
+      cleanup2?.()
+      locks.request = original as typeof locks.request
+      cleanup1()
+    }
+  })
+})
+
+describe('autosave lifecycle (0.29.6 follow-up)', () => {
+  it('detaches the mount listeners when reset disposes the record', () => {
+    vi.stubGlobal('BroadcastChannel', undefined)
+    const listeners = new Map<string, Set<(event: Event) => void>>()
+    vi.stubGlobal('window', {
+      addEventListener: (type: string, listener: (event: Event) => void) => {
+        const callbacks = listeners.get(type) ?? new Set()
+        callbacks.add(listener)
+        listeners.set(type, callbacks)
+      },
+      removeEventListener: (type: string, listener: (event: Event) => void) => {
+        const callbacks = listeners.get(type)
+        if (!callbacks) return
+        callbacks.delete(listener)
+        if (callbacks.size === 0) listeners.delete(type)
+      },
+    })
+    const cleanup = initAutosaveCoordination()
+    try {
+      expect(listeners.has('storage')).toBe(true)
+      expect(listeners.has('pagehide')).toBe(true)
+      resetAutosaveCoordinationForTests()
+      expect(listeners.has('storage')).toBe(false)
+      expect(listeners.has('pagehide')).toBe(false)
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('cancels the armed debounce when reset disposes the record', () => {
+    const cancel = vi.fn()
+    setAutosaveCancel(cancel)
+    resetAutosaveCoordinationForTests()
+    expect(cancel).toHaveBeenCalledTimes(1)
+  })
+
+  it('an old cleanup does not clear the replacement mount pause flag', () => {
+    const cleanup1 = initAutosaveCoordination()
+    resetAutosaveCoordinationForTests()
+    const cleanup2 = initAutosaveCoordination()
+    try {
+      useEditorStore.getState().setAutosavePaused(true)
+      cleanup1()
+      expect(useEditorStore.getState().autosavePaused).toBe(true)
+    } finally {
+      cleanup2()
+      resetAutosaveCoordinationForTests()
+    }
+  })
+
+  it('a replaced record ignores the debounced save result', async () => {
+    vi.useFakeTimers()
+    const unsubscribe = initAutosave()
+    const locks = (navigator as unknown as { locks: FakeLockManager }).locks
+    const original = locks.request.bind(locks)
+    let releaseWrite!: () => void
+    let entered!: () => void
+    const requested = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let gate = false
+    locks.request = ((
+      name: string,
+      options: never,
+      callback: (lock: object | null) => Promise<unknown>,
+    ) => {
+      if (name !== AUTOSAVE_LOCK_NAME || !gate) return original(name, options, callback)
+      gate = false
+      return new Promise<unknown>((resolve, reject) => {
+        entered()
+        releaseWrite = () => {
+          void original(name, options, callback).then(resolve, reject)
+        }
+      })
+    }) as typeof locks.request
+    try {
+      gate = true
+      const doc = useEditorStore.getState().doc
+      useEditorStore.setState({ doc: { ...doc, project: { ...doc.project, name: 'Edited' } } })
+      await vi.advanceTimersByTimeAsync(800)
+      await requested
+      resetAutosaveCoordinationForTests()
+      useEditorStore.getState().setAutosaveStatus('idle')
+      const autosaved = useEditorStore.getState().autosavedAt
+      releaseWrite()
+      await vi.advanceTimersByTimeAsync(0)
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(useEditorStore.getState().autosaveStatus).toBe('idle')
+      expect(useEditorStore.getState().autosavedAt).toBe(autosaved)
+    } finally {
+      locks.request = original as typeof locks.request
+      unsubscribe()
+      vi.useRealTimers()
+      resetAutosaveCoordinationForTests()
+    }
+  })
+
+  it('a replaced record ignores the resume save result', async () => {
+    const cleanup = initAutosaveCoordination()
+    const other = new FakeChannel(AUTOSAVE_CHANNEL_NAME)
+    const locks = (navigator as unknown as { locks: FakeLockManager }).locks
+    const original = locks.request.bind(locks)
+    let releaseWrite!: () => void
+    let entered!: () => void
+    const requested = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let gate = false
+    locks.request = ((
+      name: string,
+      options: never,
+      callback: (lock: object | null) => Promise<unknown>,
+    ) => {
+      if (name !== AUTOSAVE_LOCK_NAME || !gate) return original(name, options, callback)
+      gate = false
+      return new Promise<unknown>((resolve, reject) => {
+        entered()
+        releaseWrite = () => {
+          void original(name, options, callback).then(resolve, reject)
+        }
+      })
+    }) as typeof locks.request
+    try {
+      // Let the initial ownership check settle before holding the resume write.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      gate = true
+      other.postMessage({ type: 'pause', requestId: 'r-resume' })
+      expect(isAutosavePaused()).toBe(true)
+      other.postMessage({ type: 'resume', requestId: 'r-resume' })
+      await requested
+      resetAutosaveCoordinationForTests()
+      useEditorStore.getState().setAutosaveStatus('idle')
+      const autosaved = useEditorStore.getState().autosavedAt
+      releaseWrite()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(useEditorStore.getState().autosaveStatus).toBe('idle')
+      expect(useEditorStore.getState().autosavedAt).toBe(autosaved)
+    } finally {
+      locks.request = original as typeof locks.request
+      cleanup()
+      resetAutosaveCoordinationForTests()
+    }
+  })
+
+  it('rejects a write queued before coordination is reset', async () => {
+    const locks = (navigator as unknown as { locks: FakeLockManager }).locks
+    const original = locks.request.bind(locks)
+    let releaseWrite!: () => void
+    let entered!: () => void
+    const requested = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let gate = false
+    locks.request = ((
+      name: string,
+      options: never,
+      callback: (lock: object | null) => Promise<unknown>,
+    ) => {
+      if (name !== AUTOSAVE_LOCK_NAME || !gate) return original(name, options, callback)
+      gate = false
+      return new Promise<unknown>((resolve, reject) => {
+        entered()
+        releaseWrite = () => {
+          void original(name, options, callback).then(resolve, reject)
+        }
+      })
+    }) as typeof locks.request
+    try {
+      gate = true
+      const queued = writeAutosaveCooperatively('{"queued-reset":true}', 20)
+      await requested
+      resetAutosaveCoordinationForTests()
+      releaseWrite()
+      expect(await queued).toBe('read-only')
+      expect(readAutosave()).toBeNull()
+      expect(await writeAutosaveCooperatively('{"new":true}')).toBe('saved')
+      expect(readAutosave()).toBe('{"new":true}')
+    } finally {
+      locks.request = original as typeof locks.request
+      resetAutosaveCoordinationForTests()
     }
   })
 })

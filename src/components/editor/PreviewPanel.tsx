@@ -55,14 +55,14 @@ import {
   SCALE_MIN,
   SNAP_THRESHOLD_PX,
 } from '@/lib/editor/constants'
-import { currentTransientToken, useEditorStore } from '@/lib/editor/store'
+import { currentTransientToken, useEditorStore, type EditorState } from '@/lib/editor/store'
 import { lockedTrackForClip, trackLockMessage } from '@/lib/editor/tracks'
 import { toast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import { ScopesPanel } from './ScopesPanel'
 import { TransformGizmo, type GizmoMode } from './TransformGizmo'
 import type { EditorCommand } from '@/lib/editor/commands'
-import type { Clip, MediaAsset } from '@/lib/editor/types'
+import type { Clip, MediaAsset, Track } from '@/lib/editor/types'
 
 /** The injected text measurement for the monitor geometry module. */
 const measureText: TextMeasure = (clip, width, height) => measureTextBox(clip, width, height)
@@ -163,12 +163,42 @@ function textDragStillValid(origin: TextDragOrigin): boolean {
  * because no controller is attached. The caller then waits for the overlay to
  * follow the store instead of dragging from geometry captured before the pause.
  */
-function monitorGestureNeedsRestart(): boolean {
+function pauseMonitorForGesture(): boolean {
   const before = useEditorStore.getState()
   if (!before.playing) return false
   playbackRef.current?.pause()
   const after = useEditorStore.getState()
   return after.playing || after.playhead !== before.playhead
+}
+
+interface PostPauseGesture {
+  store: EditorState
+  found: { clip: Clip; track: Track }
+  local: number
+}
+
+/**
+ * Captures the store state a monitor gesture starts from after the pause.
+ * Null means the captured clip is no longer selected, no longer exists, or is
+ * no longer live at the playhead. The pre-pause hit test and lock gate stay in
+ * the handlers; this record only answers whether the press is still startable.
+ */
+function postPauseGesture(clipId: string): PostPauseGesture | null {
+  const store = useEditorStore.getState()
+  if (store.selection !== clipId) return null
+  const found = findClip(store.doc, clipId)
+  if (!found) return null
+  if (
+    store.playhead < found.clip.start ||
+    store.playhead >= found.clip.start + found.clip.duration
+  ) {
+    return null
+  }
+  return {
+    store,
+    found: { clip: found.clip, track: found.track },
+    local: store.playhead - found.clip.start,
+  }
 }
 
 /**
@@ -507,31 +537,23 @@ export function PreviewPanel() {
     }
     // A monitor transform requires a paused transport: the target set is
     // captured once, so a pause that moves the playhead invalidates the press.
-    if (monitorGestureNeedsRestart()) return
+    if (pauseMonitorForGesture()) return
     // Everything below comes from the post-pause store, never the render prop.
-    const live2 = useEditorStore.getState()
-    // The overlay may still show the previous selection for one commit.
-    if (live2.selection !== gizmoClip.id) return
-    const found2 = findClip(live2.doc, gizmoClip.id)
-    if (!found2) return
-    if (
-      live2.playhead < found2.clip.start ||
-      live2.playhead >= found2.clip.start + found2.clip.duration
-    ) {
-      return
-    }
-    const width = live2.doc.project.width
-    const height = live2.doc.project.height
+    const gesture = postPauseGesture(gizmoClip.id)
+    if (!gesture) return
+    const { store, local } = gesture
+    const postFound = gesture.found
+    const width = store.doc.project.width
+    const height = store.doc.project.height
     const baseRect = baseRectForClip(
-      found2.clip,
-      findMedia(live2.doc, found2.clip.mediaId),
+      postFound.clip,
+      findMedia(store.doc, postFound.clip.mediaId),
       width,
       height,
       measureText,
     )
     if (!baseRect) return
-    const local = live2.playhead - found2.clip.start
-    const transform = clipTransform(found2.clip, local) ?? IDENTITY_TRANSFORM
+    const transform = clipTransform(postFound.clip, local) ?? IDENTITY_TRANSFORM
     const quad = quadForClip(transform, baseRect, width, height)
     // The press landed on a stale overlay: consume it and let React catch up
     // instead of starting from a fresh center under a stale pointer point.
@@ -549,15 +571,15 @@ export function PreviewPanel() {
       y: (quad[0].y + quad[1].y + quad[2].y + quad[3].y) / 4,
     }
     const targets = canvasSnapTargets(
-      live2.doc,
-      live2.activeSequencePath,
-      live2.playhead,
-      [found2.clip.id],
+      store.doc,
+      store.activeSequencePath,
+      store.playhead,
+      [postFound.clip.id],
       measureText,
     )
     // A second drag cannot join the live gesture: the store refuses the begin
     // and leaves that gesture untouched, so this drag never starts.
-    const token = live2.beginTransient(e.pointerId)
+    const token = store.beginTransient(e.pointerId)
     if (token === null) return
     const corner = mode === 'scale' ? (cornerIndex ?? 0) : 0
     const cornerPoint = mode === 'scale' ? (quad[corner] ?? center) : center
@@ -581,7 +603,7 @@ export function PreviewPanel() {
       mode,
       pointerId: e.pointerId,
       token,
-      clipId: found2.clip.id,
+      clipId: postFound.clip.id,
       at: local,
       center,
       startPoint: point,
@@ -591,7 +613,7 @@ export function PreviewPanel() {
       targets,
       baseRect,
       transform,
-      playhead: live2.playhead,
+      playhead: store.playhead,
       corner,
       cornerPoint,
       grabOffset,
@@ -603,12 +625,12 @@ export function PreviewPanel() {
         posY: transform.posY,
         // The proportional path writes the uniform property, so capture the
         // curve/static `scale` alone; `scaleX` already includes the stretch.
-        scale: animatedValue(found2.clip, 'scale', local),
-        stretchX: found2.clip.stretchX ?? 1,
-        stretchY: found2.clip.stretchY ?? 1,
+        scale: animatedValue(postFound.clip, 'scale', local),
+        stretchX: postFound.clip.stretchX ?? 1,
+        stretchY: postFound.clip.stretchY ?? 1,
         rotation: transform.rotation,
-        x: found2.clip.style?.x ?? 0.5,
-        y: found2.clip.style?.y ?? 0.5,
+        x: postFound.clip.style?.x ?? 0.5,
+        y: postFound.clip.style?.y ?? 0.5,
         scaleX: transform.scaleX,
         scaleY: transform.scaleY,
       },
@@ -990,16 +1012,14 @@ export function PreviewPanel() {
     if (!rect || rect.width === 0 || rect.height === 0) return
     // A text drag also needs a paused transport: a pause that moves the
     // playhead invalidates the captured transform and target set.
-    if (monitorGestureNeedsRestart()) return
-    const store = useEditorStore.getState()
+    if (pauseMonitorForGesture()) return
+    const gesture = postPauseGesture(textClip.id)
+    if (!gesture) return
+    const { store, found } = gesture
     // The canvas overlay may still show the previous selection for one commit.
-    const selectedNow = store.selection ? findClip(store.doc, store.selection) : undefined
-    if (!selectedNow || selectedNow.track.kind !== 'text') return
-    const liveText = selectedNow.clip
-    if (liveText.text === undefined || liveText.id !== textClip.id || !liveText.style) return
-    if (store.playhead < liveText.start || store.playhead >= liveText.start + liveText.duration) {
-      return
-    }
+    const liveText = found.clip
+    if (found.track.kind !== 'text' || liveText.text === undefined || !liveText.style) return
+    if (liveText.id !== textClip.id) return
     const width = store.doc.project.width
     const height = store.doc.project.height
     const freshBox = measureTextBox(liveText, width, height)
@@ -1022,7 +1042,7 @@ export function PreviewPanel() {
     }
     const token = store.beginTransient(e.pointerId)
     if (token === null) return
-    const transform = clipTransform(liveText, store.playhead - liveText.start) ?? IDENTITY_TRANSFORM
+    const transform = clipTransform(liveText, gesture.local) ?? IDENTITY_TRANSFORM
     dragOrigin.current = {
       // The gesture owns this clip for its whole life: a selection change or a
       // playhead move must cancel the drag, never retarget it at whatever text
