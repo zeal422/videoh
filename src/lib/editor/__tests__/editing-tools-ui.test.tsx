@@ -785,6 +785,19 @@ describe('tool shortcuts', () => {
     }
   })
 
+  it('registers no shortcuts while the boot gate is closed', () => {
+    function GatedKeys() {
+      useEditorKeyboard(() => {}, false)
+      return null
+    }
+    useEditorStore.getState().setActiveTool('razor')
+    render(<GatedKeys />)
+    // The shell is mounted inert behind the veil; a window listener would
+    // ignore `inert` and act on keys the user cannot see the result of.
+    fireEvent.keyDown(window, { key: 'v' })
+    expect(useEditorStore.getState().activeTool).toBe('razor')
+  })
+
   it('Ctrl+Y still redoes instead of selecting the slip tool', () => {
     useEditorStore.getState().setActiveTool('razor')
     render(<Keys />)

@@ -64,6 +64,20 @@ afterEach(() => {
   h.uninstall()
 })
 
+describe('boot interaction gate', () => {
+  it('holds the version greeting until the boot hands off', async () => {
+    // A fresh visitor: no recorded version, so the greeting would normally
+    // open on mount. Behind the boot veil it must stay closed, because the
+    // dialog portals outside the inert rack and would take focus invisibly.
+    window.localStorage.removeItem('releases:lastSeen')
+    const { rerender } = render(<EditorShell interactive={false} />)
+    await act(async () => {})
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    rerender(<EditorShell />)
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+  })
+})
+
 describe('EditorShell dangling-gesture safety net', () => {
   it('a foreign pointer release does not end the live gesture', () => {
     const { unmount } = render(<EditorShell />)

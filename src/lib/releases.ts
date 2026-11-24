@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.29.7',
+    date: '2026-11-24',
+    highlights: [
+      'The editor boots with a wordmark focus pull: rose and blue ghosts converge into the sharp videoh mark under a violet bloom',
+      'A one-shot strip exit reveals the editor racking into focus, with the strips starting on the bloom peak',
+      'The editor mounts behind the frozen pull frame, so the handoff has no dead gap and the pull never replays',
+      'Editor shortcuts and the welcome greeting stay locked until the boot hands off',
+      'Reduced motion skips the exit, spends its minimum show from the boot start, and follows a preference change mid-boot',
+    ],
+  },
+  {
     version: '0.29.6',
     date: '2026-11-23',
     highlights: [

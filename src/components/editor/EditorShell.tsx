@@ -71,7 +71,7 @@ import { toast } from '@/hooks/use-toast'
  * their pre-workspace form). The status bar acts as the always-pinned footer of
  * the application.
  */
-export function EditorShell() {
+export function EditorShell({ interactive = true }: { interactive?: boolean } = {}) {
   const [exportOpen, setExportOpen] = useState(false)
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false)
   // False until the mount effect finished the autosave discovery; the greeting
@@ -418,9 +418,11 @@ export function EditorShell() {
   // while it waits, the release notes hold back; the moment it is gone
   // (restored, discarded, or never there), a version the user has not been
   // greeted with opens the modal once and is recorded. Help > What's new opens
-  // the same modal any time.
+  // the same modal any time. The boot gate holds it too: the dialog portals
+  // outside the inert rack, so opening it early would move focus into a
+  // control hidden behind the veil.
   useEffect(() => {
-    if (!autosaveScanned || pendingRestore) return
+    if (!interactive || !autosaveScanned || pendingRestore) return
     let seen: string | null = null
     try {
       seen = window.localStorage.getItem('releases:lastSeen')
@@ -437,7 +439,7 @@ export function EditorShell() {
     } catch {
       /* storage unavailable: the greeting just repeats, harmless */
     }
-  }, [pendingRestore, autosaveScanned])
+  }, [interactive, pendingRestore, autosaveScanned])
 
   const handleSave = useCallback(() => {
     // The save path claims this copy's stored media before it writes a file;
@@ -453,7 +455,7 @@ export function EditorShell() {
       )
   }, [])
 
-  useEditorKeyboard(handleSave)
+  useEditorKeyboard(handleSave, interactive)
 
   const restoreAutosave = async () => {
     // Read the current restore at click time: the banner's render closure

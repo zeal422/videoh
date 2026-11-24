@@ -119,8 +119,10 @@ the standalone folder so `bun run start` can serve assets without a reverse prox
 
 The public pages and metadata are server-rendered. The editor mounts client-only through the manual
 effect import in `src/components/editor/EditorBoot.tsx`, because the starter document contains random
-ids that would otherwise mismatch between server and client. The preloader stays up for the 3.2s
-minimum show while the editor chunk loads.
+ids that would otherwise mismatch between server and client. The preloader keeps its depth
+convergence at the original speed for 2.4s, holds that frame while the shell mounts behind it, then
+starts the strip exit on the bloom peak around 2.44s; the full reveal lands at about 3.44s. Reduced
+motion reveals the editor at 2.44s without the exit.
 
 Every response carries the safe security headers from `next.config.ts`: `X-Content-Type-Options:
 nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, and `X-Frame-Options: DENY`.
@@ -229,6 +231,8 @@ product source, with the same server split and 74/74 on both legs with `PAIR_EXI
 At 0.29.5 on 2026-11-22 the four-shard pair measured 184s on the final
 product source, with the same server split and 74/74 on both legs with `PAIR_EXIT=0`.
 At 0.29.6 on 2026-11-23 the four-shard pair measured 185s on the final
+product source, with the same server split and 74/74 on both legs with `PAIR_EXIT=0`.
+At 0.29.7 on 2026-11-24 the four-shard pair measured 186s on the final
 product source, with the same server split and 74/74 on both legs with `PAIR_EXIT=0`.
 Earlier 0.9.0
 through 0.11.0 records covered both the dev server and the standalone artifact build. See [testing.md](testing.md#end-to-end-battery).

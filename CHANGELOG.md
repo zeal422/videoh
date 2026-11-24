@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.29.7] - 2026-11-24
+
+### Changed
+
+- The editor boot splash is now a wordmark focus pull: three `videoh` copies (white, rose, blue) scale and rotate into one sharp mark over a violet focus rig with brackets, a distance needle, a rule, and a `LOADING...` label. The one-shot pull keeps its depth convergence at the original speed for 2.4s, holds that frame while the shell mounts behind it, then releases into the bloom peak around 2.44s, where the strip exit starts; it does not loop. The hold measures the pull's actual progress, so the glow and line never fade before the exit. The label centers the visible word under the needle and lets the ellipsis trail. Reduced motion shows the settled lockup, and the old 10x10 ripple grid and its hue loop are gone.
+- The boot now hands off to the editor with a one-shot strip exit instead of a hard swap. The shell mounts behind the held pull frame and stays inert through the exit, so the handoff never waits on a mount and the boot cannot take focus early. At 2.44s its six uneven black bands feather and slide away over 1s while the mounted editor racks from soft and scaled into focus behind a soft vignette. The settled lockup is drawn once per band from the first frame, so the pull never restarts and the handoff adds no load time; the full reveal lands at about 3.44s (the 2.44s pull plus the 1s exit). The mounted shell stays inert and input-gated until reveal, so editor shortcuts and the version greeting cannot fire behind the veil. Reduced motion reveals the editor at 2.44s without the exit, spends that minimum show from the boot start rather than after a slow import, and follows a preference change made mid-boot, including a reduce request during the exit.
+
+### Tests and docs
+
+- Added preloader and editor-boot locks for the wordmark DOM, the fixed colors, the focus keyframes, the 2.4s depth split and 5x pull tail, the hold that mounts the shell behind the frozen frame, the inert shell through the exit, the container-sized stage, the reduced-motion lockup, the preserved preloader DOM through the 2.44s handoff, and the one-shot six-band strip exit.
+- Added boot input-gate locks for shortcuts and the version greeting, plus the reduced-motion minimum show spent from the boot start, a live motion-preference change during loading, and a mid-exit reduce request that reveals at once.
+- The battery boot poll waits for the preloader veil to clear instead of the mounted menubar, matching the early shell mount, and the greeting dismissal polls briefly for the gated modal.
+- Updated the architecture, design system, flows, structure, deployment, README, roadmap, and testing records for 0.29.7.
+
 ## [0.29.6] - 2026-11-23
 
 ### Fixed

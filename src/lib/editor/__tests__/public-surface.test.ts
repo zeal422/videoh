@@ -120,7 +120,7 @@ describe('gate removal and route split', () => {
     const boot = read('src/components/editor/EditorBoot.tsx')
     expect(boot.startsWith("'use client'")).toBe(true)
     expect(boot).toContain("import { Preloader } from '@/components/editor/Preloader'")
-    expect(boot).toContain('MIN_SHOW_MS = 3200')
+    expect(boot).toContain('MIN_SHOW_MS = 2438')
     expect(boot).toContain('window.location.reload()')
 
     const editorPage = read('src/app/editor/page.tsx')

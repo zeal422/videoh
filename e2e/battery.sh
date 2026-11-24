@@ -423,10 +423,24 @@ click_clip() { # click_clip <name-regex>
 # set -e, so an empty result would leave the modal open and fail later at a
 # confusing step (same class as the menus_open fix in 0.5.5).
 dismiss_greeting() {
-  local n
-  n=$(evaln 'document.querySelectorAll("[data-testid=release-notes-modal]").length')
-  [ -n "$n" ] || { sleep 0.5; n=$(evaln 'document.querySelectorAll("[data-testid=release-notes-modal]").length'); }
-  [ -n "$n" ] || { echo "dismiss_greeting: eval failed, refusing to guess" >&2; return 1; }
+  local n='' tries=0
+  # The greeting is a passive effect after the reveal commit, so the veil can
+  # clear a beat before the modal mounts. Poll a fixed ten 0.1s intervals:
+  # SECONDS ticks once per second, so a SECONDS-based deadline can expire
+  # almost immediately. Dismissing too early would let the modal open
+  # afterwards and block the next step.
+  while [ "$tries" -lt 10 ]; do
+    n=$(evaln 'document.querySelectorAll("[data-testid=release-notes-modal]").length')
+    [ -n "$n" ] || { echo "dismiss_greeting: eval failed, refusing to guess" >&2; return 1; }
+    [ "$n" = "1" ] && break
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  # The last sleep can straddle a modal mount, so a final zero still checks.
+  if [ "$n" != "1" ]; then
+    n=$(evaln 'document.querySelectorAll("[data-testid=release-notes-modal]").length')
+    [ -n "$n" ] || { echo "dismiss_greeting: eval failed, refusing to guess" >&2; return 1; }
+  fi
   if [ "$n" = "1" ]; then
     ab press Escape >/dev/null 2>&1
     sleeps 0.5
@@ -471,16 +485,24 @@ s01_public() {
   [ "$href" = "/editor" ] || { echo "open-editor href=$href" >&2; return 1; }
 }
 
-# Boot poll: after any navigation the 3.2s preloader hold (plus dev-server
-# compile on a cold box) means a fixed sleep cannot land past the reveal.
-# Poll the mounted menubar with a 60s deadline instead; the deadline only
-# binds on failure. A DOM query, not the a11y snapshot: an open welcome
-# modal hides the chrome from snap while the page is fine.
+# Boot poll: after any navigation the ~3.44s boot (2.44s pull plus the 1s
+# strip exit, plus dev-server compile on a cold box) means a fixed sleep
+# cannot land past the reveal.
+# Poll for readiness with a 60s deadline; the deadline only binds on failure.
+# A DOM query, not the a11y snapshot: an open welcome modal hides the chrome
+# from snap while the page is fine. The shell mounts behind the boot veil
+# during the hold, so the mounted menubar is not readiness: wait for the veil
+# to go, which is the reveal that makes the rack interactive.
 wait_boot() {
   local boot=0
   local deadline=$((SECONDS + 60))
   while [ "$boot" != "1" ] && [ "$SECONDS" -lt "$deadline" ]; do
-    boot=$(evaln '(() => { const d = document; return (d.querySelector("[role=menubar]") || d.querySelector("[data-testid=release-notes-modal]")) ? "1" : "0"; })()')
+    boot=$(evaln '(() => {
+      const d = document;
+      const veil = d.querySelector("[data-testid=preloader-veil]");
+      const chrome = d.querySelector("[role=menubar]") || d.querySelector("[data-testid=release-notes-modal]");
+      return !veil && chrome ? "1" : "0";
+    })()')
     [ "$boot" = "1" ] || { boot=0; sleep 0.25; }
   done
   [ "$boot" = "1" ] || { echo "no editor boot after navigation (url=$(evaln 'location.href' 2>/dev/null))" >&2; return 1; }

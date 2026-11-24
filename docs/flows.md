@@ -36,9 +36,15 @@ Stable hooks used across flows and tests:
   closing CTA link to `/editor`; the hero and CTA also link to the public GitHub source. The page
   composes the angled timeline hero, feature strip, product showcase, tools band, privacy panel,
   a visible FAQ, and the closing CTA.
-- `/editor` renders `EditorBoot`. The preloader stays up for the client-only shell import plus the
-  3.2s minimum show, then the editor appears. A rejected import shows Try again, and a second failure
-  offers Reload page. The public route never mounts this boot.
+- `/editor` renders `EditorBoot`. The preloader keeps its depth convergence at the original speed
+  for 2.4s, holds that frame while the shell mounts behind it, then starts the strip exit on the
+  bloom peak around 2.44s. The hold starts from the pull's actual progress, so hydration cannot add
+  a dead pause and the glow and line never fade before the exit. Then its six uneven bands feather
+  and slide away over 1s while the editor racks into focus, and the full reveal lands at about 3.44s.
+  The shell stays inert and input-gated until reveal, so shortcuts and the version greeting cannot
+  fire behind the veil. The handoff adds no load time and the one-shot pull never restarts. A
+  rejected import shows Try again, and a second failure offers Reload page. Reduced motion reveals
+  the editor at 2.44s without the strip exit. The public route never mounts this boot.
 - The public site and the editor share design tokens but not component trees. Public components do not
   import the editor store, media, playback, or export modules.
 - The old password screen and login route are gone. There is no access cookie.

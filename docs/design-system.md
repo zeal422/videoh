@@ -47,8 +47,8 @@ not inherit a tinted `--foreground`. Palette borders and inputs stay at the fixe
 whites, which the token test also locks. The dialog caps itself at `calc(100vh - 2rem)` and scrolls,
 so short windows never clip; the list is a two-column grid and native radios keep arrow-key order.
 
-The boot splash stays pure black with the violet ripple. A tinted palette contrasts with it at
-reveal; that is accepted, not a defect.
+The boot splash stays pure black with the violet wordmark focus pull. A tinted palette contrasts
+with it at reveal; that is accepted, not a defect.
 
 ## Tokens
 
@@ -248,9 +248,19 @@ them:
   accents stay fixed too: image teal, missing-media red, effect-dot amber, and the recording sky
   bar. Surfaces, text, and controls still use tokens.
 - **The boot splash** is a fullscreen exception in the monitor's spirit: a pure black field
-  (`bg-black`) matching the pitch-black reference, with a violet cell base (`hsl(270, 100%, 50%)`,
-  the reference's start hue) that the wrapper hue-rotates through the full wheel. No token can
-  express a full-hue cycle, so the base stays a literal, the way the monitor stays zinc.
+  (`bg-black`) with a white `videoh` wordmark and a violet focus rig (`hsl(270, 100%, 50%)` for the
+  glow and rule, `#d8b4fe` for the brackets and needle). Rose (`#fb7185`) and blue (`#2d5bff`)
+  ghost copies start scaled, rotated, and soft, then settle into the white mark. No token expresses
+  those fixed brand colors, so they stay literals, the way the monitor stays zinc. The pull plays
+  once, keeps its depth convergence at the original speed for 2.4s, holds that
+  frame while the shell mounts behind it, and starts the strip exit on the
+  bloom peak around 2.44s; it does not loop. Holding the split frame keeps the
+  glow and line alive until the exit can start. The settled lockup is
+  drawn once per uneven band from the first frame, so at 2.44s the six black strips can feather
+  and slide away over 1s while the mounted editor racks from soft and scaled into focus behind a
+  soft vignette. The handoff is one shot and adds no load time; the full reveal lands at about
+  3.44s. The mounted shell stays inert and input-gated until reveal. Reduced motion skips the exit
+  and reveals the editor at 2.44s, never a paused first frame.
 
 ## Layout conventions
 

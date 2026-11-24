@@ -30,7 +30,7 @@ A map of the repository. For behavior read [flows.md](flows.md); for the module-
 ├── CONTRIBUTING.md          # Bun setup, checks, contribution terms
 ├── README.md                # product overview + keyboard map
 ├── ROADMAP.md               # Premiere gap analysis
-├── CHANGELOG.md             # released + unreleased changes
+├── CHANGELOG.md             # release history
 ├── AGENTS.md                # AI coding-agent instructions
 ├── .env.example             # optional public analytics template
 └── .prettierrc              # no semicolons, single quotes, 100 cols
@@ -86,13 +86,13 @@ src/components/
 │   ├── AnalyticsToggle.tsx       #   visible `skipgc` opt-out in the footer and privacy page
 │   └── PageViewBeacon.tsx        #   visit-scoped page view plus the one `#toggle-goatcounter` hash alias
 ├── editor/                       # editor UI (see architecture.md for responsibilities)
-│   ├── EditorBoot.tsx            #   client-only shell import, 3.2s preloader, retry/reload
-│   ├── EditorShell.tsx           #   panel workspace layout + autosave/restore + gesture safety net + release-notes auto-open
+│   ├── EditorBoot.tsx            #   client-only shell import, wordmark preloader + strip exit, retry/reload
+│   ├── EditorShell.tsx           #   panel workspace layout + autosave/restore + gesture safety net + release-notes auto-open after reveal
 │   ├── MenuBar.tsx               #   Premiere-style menu bar + dialogs + right-edge fullscreen toggle + version label
 │   ├── AppearanceDialog.tsx      #   View > Appearance palette picker, applies and persists immediately
 │   ├── apply-theme.ts            #   writes/removes `data-palette` on `<html>`
 │   ├── ReleaseNotesModal.tsx     #   welcome modal: last five versions, Help > What is new
-│   ├── Preloader.tsx             #   boot ripple grid behind the editor chunk import
+│   ├── Preloader.tsx             #   boot wordmark focus pull and six-band strip exit
 │   ├── PanelShell.tsx            #   resizable panel frame: header, panel menu, content wrapper
 │   ├── PanelMenu.tsx             #   header Close Panel menu + DOM-order focus handoff
 │   ├── NamedSlider.tsx           #   slider wrapper that names the thumb
@@ -257,7 +257,7 @@ src/lib/editor/
 │   ├── offline.ts        # pure frame/audio export plan + gain/crossfade schedules (Node-testable)
 │   ├── options.ts        # pure container matrix, output bounds/bitrate, contain fit (Node-testable)
 │   └── mp4.ts            # WebCodecs export pipeline: MP4/MOV/MKV/WAV/MP3/M4A + downloadBlob
-└── __tests__/            # 138 test files (3857 tests) in `src/lib/editor/__tests__/`: see testing.md
+└── __tests__/            # 138 test files (3872 tests) in `src/lib/editor/__tests__/`: see testing.md
     └── mocks/
         └── browser-mocks.ts   # FakeAudioContext / media elements / canvas / presented-frame queue
 ```

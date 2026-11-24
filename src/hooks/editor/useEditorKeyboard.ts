@@ -64,8 +64,13 @@ import { isAutomationGestureLive } from './gesture-state'
  * | + / −                  | Zoom timeline                                      |
  * | \                      | Zoom timeline to fit the whole sequence            |
  */
-export function useEditorKeyboard(onSave: () => void): void {
+export function useEditorKeyboard(onSave: () => void, enabled = true): void {
   useEffect(() => {
+    // The shell mounts behind the boot veil so the strip exit has something to
+    // reveal. A window listener ignores `inert`, so nothing may be attached
+    // until the handoff completes, or Ctrl+S and friends fire while the user
+    // still sees LOADING.
+    if (!enabled) return
     const onKeyDown = (e: KeyboardEvent) => {
       // A focused control that already consumed the key (radiogroup arrows, a
       // dialog's own shortcut) must not also drive the editor.
@@ -442,7 +447,7 @@ export function useEditorKeyboard(onSave: () => void): void {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onSave])
+  }, [enabled, onSave])
 }
 
 /**
