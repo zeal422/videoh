@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.30.0] - 2026-11-25
+
+### Added
+
+- Added a static-source browser-boundary test for the 59 pure top-level core modules. It parses each module with the TypeScript compiler API, resolves lexical bindings so local `window` shadows stay legal, and fails on banned DOM globals including `URL.createObjectURL`. The 52 cases cover static paths, wrappers, scope forms, class static blocks, namespaces including type-only erasure, enums, decorators, class heritage, and value-position generics.
+- Added a discovery lock for the exact 59-module scan set and a readability check for the four browser-bound modules.
+
+### Tests and docs
+
+- Synced the count-locked README, testing, and structure records to 139 files and 3,924 tests.
+
 ## [0.29.7] - 2026-11-24
 
 ### Changed

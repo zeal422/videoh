@@ -22,6 +22,17 @@ export interface ReleaseNotes {
 
 export const releases: ReleaseNotes[] = [
   {
+    version: '0.30.0',
+    date: '2026-11-25',
+    highlights: [
+      'A new test guard fails when the pure editor core reaches for a browser global, keeping the state core testable outside the browser',
+      'Local `window` variables stay legal: the guard resolves lexical bindings instead of matching names',
+      'Every pure top-level core module is classified, so adding one forces an explicit scan decision',
+      'The browser-bound allowlist is checked for existence, so the scan set cannot shrink silently',
+      'The 52-case guard covers path roots, wrappers, scope forms, static blocks, namespaces, enums, decorators, and class heritage',
+    ],
+  },
+  {
     version: '0.29.7',
     date: '2026-11-24',
     highlights: [

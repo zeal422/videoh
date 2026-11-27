@@ -1348,6 +1348,7 @@ Action: kept as a note; `scanOfflineClips` now carries a sequence-local
 `min(clip.duration, windowEnd - clip.start)`. Both guards are mutation-checked.
 
 ## 2026-11-20 - review findings verification (untrusted finding text)
+
 What happened: a 33-item review list mixed valid test-strengthening (per-action callback pairing, staggered debounce/pause timers, slot-failure stub, session-identity assertions, freeze/LUT/serialization/snap guards) with inaccurate expectations (slot-error marker remains durable when the registry success consumes it; reclaim test that stays read-only when the old page answers; removeItem exactly-once when the best-effort retry runs twice; bundle-zip 4GiB reason applied to the CRC-table fallback).
 Would-have-caught: trigger 8 (findings are untrusted): open the source for each finding, reproduce the actual behavior with a run, fix only still-valid items and record skips with reasons.
 Action: kept as a note.
@@ -1412,3 +1413,19 @@ sequence, a newer playhead, a timeout with no error). A state keyed by a mutable
 against the current request, not the last write.
 Action: kept as a note; the three regression locks name the crossing scope, not only the same-scope
 case.
+
+## 2026-11-25 - core browser boundary review phase
+
+What happened: six scanner escapes survived a green full gate. Class and method decorators, enum-member
+initializer references, and type-only namespaces were caught by CodeRabbit; computed method and
+accessor names fell out of the myrabbit pass. A later pass added merged enum declarations and private
+nested namespace identity: matching enum declarations share members only in one lexical scope, and a
+non-exported nested namespace is private to its own parent declaration body.
+Would-have-caught: when a static walker enumerates scope owners, list every runtime syntax form that
+carries an expression outside the obvious declarations and expressions (decorators, computed member
+keys, enum member scopes, erased namespaces, merged declarations, private nested bindings) and add a
+positive and a negative fixture for each before the first green run.
+Action: kept as a note; the computed property key fixture now has concrete and abstract controls, the
+decorator expressions fixture covers decorators, and the namespace binding and enum member names
+fixtures cover type-only namespaces, enum-member scope including merged declarations, and private
+nested namespace roots.

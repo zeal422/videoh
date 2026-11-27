@@ -218,7 +218,7 @@ bun run battery:pair   # dev + artifact concurrently (needs a current build and 
 PAIR_SHARDS=1 bun run battery:pair # sequential rollback, one session per leg
 ```
 
-Current state: **3872 tests across 138 files, all passing**. Coverage is enforced at 96/96/96/96 over
+Current state: **3924 tests across 139 files, all passing**. Coverage is enforced at 96/96/96/96 over
 the Node-testable state modules. [docs/testing.md](docs/testing.md) has the inventory, the mocked
 browser harness, and the battery details.
 
@@ -247,7 +247,7 @@ src/lib/editor/            # state core (commands, store, serialization) + brows
 src/components/editor/     # editor UI, including timeline/
 src/components/site/       # public header, footer, landing sections, legal shell
 src/hooks/editor/          # keyboard map and gesture state
-src/lib/editor/__tests__/  # 138 test files (3872 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
+src/lib/editor/__tests__/  # 139 test files (3924 tests) in src/lib/editor/__tests__; mocks/ = browser-mock harness
 ```
 
 ## Known limitations
